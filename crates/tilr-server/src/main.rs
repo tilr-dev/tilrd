@@ -1,14 +1,15 @@
 mod clipboard;
 mod fail;
+mod identity;
 mod link;
 mod pane;
+mod ps;
 mod pty;
 mod reload;
 mod supervisor;
 mod update;
 
 use std::net::SocketAddr;
-use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
@@ -63,11 +64,6 @@ struct Cli {
     #[arg(long)]
     no_auto_reload: bool,
 
-    /// Internal: take over from the supervisor that exec'd this one. The
-    /// value is the descriptor of its state file.
-    #[arg(long, hide = true)]
-    resume: Option<RawFd>,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -81,6 +77,13 @@ enum Command {
     /// reads. A running server asks before reloading into it.
     #[command(hide = true)]
     StateFormats,
+    /// List the panes of a running server: id, pid of the pane process,
+    /// size, viewers, directory and command.
+    Ps {
+        /// Where the server listens.
+        #[arg(long, default_value = "ws://127.0.0.1:7890")]
+        url: String,
+    },
     /// Replace this executable with the latest release. A running server
     /// reloads itself and keeps its shells.
     Update {
@@ -115,6 +118,7 @@ fn main() -> anyhow::Result<ExitCode> {
     match cli.command {
         Some(Command::Pane(args)) => pane::run(args)?,
         Some(Command::StateFormats) => print!("{}", reload::formats()),
+        Some(Command::Ps { url }) => ps::run(&url)?,
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
         None => supervisor::run(supervisor::Options {
             listen: cli.listen,
@@ -126,7 +130,6 @@ fn main() -> anyhow::Result<ExitCode> {
             auto_reload: !cli.no_auto_reload,
             client_timeout: (cli.client_timeout > 0)
                 .then(|| Duration::from_secs(cli.client_timeout)),
-            resume: cli.resume,
         })?,
     }
     Ok(ExitCode::SUCCESS)

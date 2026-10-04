@@ -56,7 +56,7 @@ pub fn shim_dir(runtime_dir: &Path) -> PathBuf {
 
 /// Create `dir` readable by its owner only, and make sure it is ours: under
 /// a shared /tmp somebody else could have made it first.
-fn private_dir(dir: &Path) -> Result<()> {
+pub fn private_dir(dir: &Path) -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

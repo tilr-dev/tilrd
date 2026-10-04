@@ -40,6 +40,11 @@ message Hello {
   repeated string features = 3;
 }
 
+// Panes are named by `pane_id`: a UUID in its usual text form
+// ("6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4") that the server makes up when the
+// pane is created. It names that pane and no other, on this server or any
+// other, before or after a restart.
+
 message CreatePane {
   uint32 cols = 1;
   uint32 rows = 2;
@@ -53,7 +58,7 @@ message CreatePane {
 }
 
 message ClosePane {
-  uint64 pane_id = 1;
+  string pane_id = 1;
 }
 
 message ListPanes {
@@ -63,15 +68,15 @@ message ListPanes {
 
 // Start receiving frames for a pane. The first frame after this is full.
 message Subscribe {
-  uint64 pane_id = 1;
+  string pane_id = 1;
 }
 
 message Unsubscribe {
-  uint64 pane_id = 1;
+  string pane_id = 1;
 }
 
 message Resize {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   uint32 cols = 2;
   uint32 rows = 3;
 }
@@ -116,7 +121,7 @@ enum NamedKey {
 // Modifier bitmask shared by key and mouse input.
 //   1 = shift, 2 = alt, 4 = ctrl, 8 = super
 message KeyInput {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   KeyAction action = 2;
   uint32 mods = 3;
   // Exactly one of `named` / `codepoint` identifies the key. `codepoint` is
@@ -143,7 +148,7 @@ enum MouseButton {
 }
 
 message MouseInput {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   MouseAction action = 2;
   MouseButton button = 3;
   uint32 mods = 4;
@@ -153,19 +158,19 @@ message MouseInput {
 }
 
 message Paste {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   string text = 2;
 }
 
 // Bytes written to the pty as-is, for scripts and automation.
 message RawInput {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   bytes data = 2;
 }
 
 // Move the scrollback viewport. Negative = up (into history).
 message Scroll {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   sint32 delta = 2;
   // Jump back to the live bottom; `delta` is ignored.
   bool to_bottom = 3;
@@ -230,10 +235,13 @@ message HelloAck {
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;
+  // UUID of this server: made when it first ran on the machine, the same after
+  // a restart.
+  string server_id = 5;
 }
 
 message PaneInfo {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   uint32 cols = 2;
   uint32 rows = 3;
   repeated string command = 4;
@@ -246,6 +254,9 @@ message PaneInfo {
   uint32 viewers = 7;
   // Unix time in milliseconds.
   uint64 created_at_ms = 8;
+  // Process id of the pane process on the server machine. The shell is its
+  // child.
+  uint32 pid = 9;
 }
 
 message PaneCreated {
@@ -261,7 +272,7 @@ message PaneList {
 }
 
 message PaneExited {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   int32 exit_code = 2;
 }
 
@@ -347,7 +358,7 @@ message Cursor {
 // Screen update for one pane. `full` frames carry every row and reset the
 // client's copy; otherwise only changed rows are present.
 message Frame {
-  uint64 pane_id = 1;
+  string pane_id = 1;
   uint64 seq = 2;
   bool full = 3;
   uint32 cols = 4;
@@ -378,11 +389,11 @@ message PaneStatus {
 message SupervisorState {
   // Descriptor of the listening socket.
   int32 listener = 1;
-  uint64 next_pane_id = 2;
+  reserved 2;
   repeated PaneState panes = 3;
   // Version of this message's layout and meaning. A supervisor only hands
   // over to an executable that reads the version it writes. 0 = written
-  // before versions were recorded, same as 1.
+  // before versions were recorded, same as 1; 1 named panes by number.
   uint32 format = 4;
 }
 
@@ -394,4 +405,28 @@ message PaneState {
   int32 from_pane = 4;
   // Bytes already read from `from_pane` that do not yet make a whole packet.
   bytes unparsed = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Internal: pane process -> the pane process that replaces it on reload
+// ---------------------------------------------------------------------------
+
+// Written to a file named after the pane, which the successor finds by the
+// id it was started with.
+message PaneHandover {
+  // Version of this message's layout and meaning, as in SupervisorState.
+  uint32 format = 1;
+  // Descriptor of the pty master.
+  int32 master = 2;
+  uint32 shell_pid = 3;
+  // Number of the last frame sent.
+  uint64 seq = 4;
+  // Rows the viewport was scrolled back into history.
+  uint32 scrolled_back = 5;
+  uint32 cols = 6;
+  uint32 rows = 7;
+  // Input not yet written to the pty.
+  bytes pending_input = 8;
+  // The screen, as the screen model saves it.
+  bytes snapshot = 9;
 }

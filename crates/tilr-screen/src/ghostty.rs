@@ -222,7 +222,7 @@ impl Screen for GhosttyScreen {
         self.last_modes = Some(modes);
 
         Ok(Some(Frame {
-            pane_id: 0,
+            pane_id: String::new(),
             seq: 0,
             full,
             cols: u32::from(self.size.0),
@@ -792,7 +792,7 @@ mod tests {
 
     fn key(named: NamedKey, codepoint: char, mods: u32, text: &str) -> KeyInput {
         KeyInput {
-            pane_id: 0,
+            pane_id: String::new(),
             action: KeyAction::Press as i32,
             mods,
             named: named as i32,
@@ -963,7 +963,7 @@ mod tests {
         let mut screen = screen();
         screen.feed(b"\x1b[?1000h\x1b[?1006h");
         let click = MouseInput {
-            pane_id: 0,
+            pane_id: String::new(),
             action: MouseAction::Press as i32,
             button: MouseButton::Left as i32,
             mods: 0,
@@ -1014,7 +1014,7 @@ mod tests {
     fn mouse_encoded_only_when_tracking() {
         let mut screen = screen();
         let click = MouseInput {
-            pane_id: 0,
+            pane_id: String::new(),
             action: MouseAction::Press as i32,
             button: MouseButton::Left as i32,
             mods: 0,

@@ -24,6 +24,10 @@ pub use tokio::net::TcpStream;
 pub use tokio_tungstenite::tungstenite::Message;
 pub use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+/// A pane's id, in the form that is handy to pass around; it goes over the
+/// wire as text.
+pub type PaneId = uuid::Uuid;
+
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 pub const CHUNK: usize = 256 * 1024;
 
@@ -71,6 +75,8 @@ impl Server {
             .args(["--listen", "127.0.0.1:0"])
             .args(args)
             .env("TILR_RUNTIME_DIR", dir.join("runtime"))
+            .env("TILR_STATE_DIR", dir.join("state"))
+            .env("TILR_FAILPOINTS_FILE", dir.join("failpoints"))
             .env("HOME", &dir)
             .env("PATH", "/usr/bin:/bin")
             .env("SHELL", "/bin/sh")
@@ -309,11 +315,11 @@ impl Client {
     }
 
     /// Start a shell in a new pane and watch it.
-    pub async fn open_pane(&mut self) -> u64 {
+    pub async fn open_pane(&mut self) -> PaneId {
         self.open_pane_with(100, 30, "").await
     }
 
-    pub async fn open_pane_with(&mut self, cols: u32, rows: u32, cwd: &str) -> u64 {
+    pub async fn open_pane_with(&mut self, cols: u32, rows: u32, cwd: &str) -> PaneId {
         self.send(Msg::CreatePane(CreatePane {
             cols,
             rows,
@@ -325,7 +331,7 @@ impl Client {
         let pane_id = self
             .wait_for(|msg| match msg {
                 server_message::Msg::PaneCreated(created) if created.request_id == 5 => {
-                    Some(created.pane.as_ref().unwrap().pane_id)
+                    Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
                 }
                 server_message::Msg::Error(error) => panic!("create pane: {}", error.message),
                 _ => None,
@@ -335,16 +341,19 @@ impl Client {
         pane_id
     }
 
-    pub async fn subscribe(&mut self, pane_id: u64) {
+    pub async fn subscribe(&mut self, pane_id: PaneId) {
         self.screen = Screen::default();
         self.frame = None;
-        self.send(Msg::Subscribe(Subscribe { pane_id })).await;
+        self.send(Msg::Subscribe(Subscribe {
+            pane_id: pane_id.to_string(),
+        }))
+        .await;
     }
 
     /// Type a line into the pane's shell.
-    pub async fn type_line(&mut self, pane_id: u64, line: &str) {
+    pub async fn type_line(&mut self, pane_id: PaneId, line: &str) {
         self.send(Msg::Raw(RawInput {
-            pane_id,
+            pane_id: pane_id.to_string(),
             data: Bytes::from(format!("{line}\n")),
         }))
         .await;
@@ -364,7 +373,7 @@ impl Client {
 
     /// Run `command` in the pane's shell and return its exit status. The
     /// marker is typed split in two, so only the shell's output matches.
-    pub async fn run(&mut self, pane_id: u64, command: &str) -> i32 {
+    pub async fn run(&mut self, pane_id: PaneId, command: &str) -> i32 {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         self.type_line(pane_id, &format!("{command}; echo \"<st\"\"atus{n}:$?>\""))
@@ -499,25 +508,25 @@ impl Client {
     }
 
     /// Print `line-1` to `line-<count>` in the pane, one per row.
-    pub async fn print_lines(&mut self, pane_id: u64, count: u32) {
+    pub async fn print_lines(&mut self, pane_id: PaneId, count: u32) {
         let command =
             format!("i=1; while [ $i -le {count} ]; do echo \"line-$i\"; i=$((i+1)); done");
         assert_eq!(self.run(pane_id, &command).await, 0);
     }
 
     /// Move the pane's viewport: negative `delta` goes back into history.
-    pub async fn scroll(&mut self, pane_id: u64, delta: i32) {
+    pub async fn scroll(&mut self, pane_id: PaneId, delta: i32) {
         self.send(Msg::Scroll(Scroll {
-            pane_id,
+            pane_id: pane_id.to_string(),
             delta,
             to_bottom: false,
         }))
         .await;
     }
 
-    pub async fn scroll_to_bottom(&mut self, pane_id: u64) {
+    pub async fn scroll_to_bottom(&mut self, pane_id: PaneId) {
         self.send(Msg::Scroll(Scroll {
-            pane_id,
+            pane_id: pane_id.to_string(),
             delta: 0,
             to_bottom: true,
         }))
@@ -525,9 +534,9 @@ impl Client {
     }
 
     /// Press the key of a plain character.
-    pub async fn press(&mut self, pane_id: u64, key: char) {
+    pub async fn press(&mut self, pane_id: PaneId, key: char) {
         self.send(Msg::Key(KeyInput {
-            pane_id,
+            pane_id: pane_id.to_string(),
             codepoint: u32::from(key),
             text: key.to_string(),
             ..Default::default()
@@ -568,9 +577,9 @@ impl Client {
         .await
     }
 
-    pub async fn pane_exit_code(&mut self, pane_id: u64) -> i32 {
+    pub async fn pane_exit_code(&mut self, pane_id: PaneId) -> i32 {
         self.wait_for(|msg| match msg {
-            server_message::Msg::PaneExited(exited) if exited.pane_id == pane_id => {
+            server_message::Msg::PaneExited(exited) if exited.pane_id == pane_id.to_string() => {
                 Some(exited.exit_code)
             }
             _ => None,
@@ -591,8 +600,17 @@ pub fn process_alive(pid: u32) -> bool {
     !state.is_empty() && !state.starts_with('Z')
 }
 
+/// The command line of a process, as `ps` shows it.
+pub fn process_args(pid: u32) -> String {
+    let output = Command::new("ps")
+        .args(["-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
 /// The pid of the shell in the pane, which the shell itself writes to a file.
-pub async fn shell_pid(server: &Server, client: &mut Client, pane_id: u64) -> u32 {
+pub async fn shell_pid(server: &Server, client: &mut Client, pane_id: PaneId) -> u32 {
     let file = server.dir.join(format!("shell-pid-{pane_id}"));
     let command = format!("echo $$ > '{}'", file.display());
     assert_eq!(client.run(pane_id, &command).await, 0);

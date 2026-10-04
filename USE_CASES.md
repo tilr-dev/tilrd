@@ -29,7 +29,10 @@
 | Изменение размера доходит до терминала, который видит шелл | `resizing_a_pane_resizes_the_terminal_the_shell_sees` |
 | Незнакомый тип сообщения игнорируется | `a_message_type_the_server_does_not_know_is_ignored` |
 | Битый пакет — ошибка, соединение остаётся | `a_malformed_packet_gets_an_error_and_the_connection_stays` |
-| Обращение к несуществующей панели — ошибка | `asking_for_a_pane_that_does_not_exist_gets_an_error` |
+| Обращение к несуществующей панели — ошибка; имя, которое не UUID, — тоже | `asking_for_a_pane_that_does_not_exist_gets_an_error` |
+| У панели свой UUID: шелл видит его в `$TILR_PANE`, процесс панели — в командной строке (`pane --id <uuid>`), размер там указан, только если он не 80×24 | `a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps` |
+| `tilr-server ps` показывает панели работающего сервера: id, pid, размер, команду | `ps_lists_the_panes_of_a_running_server` |
+| У сервера свой id, после перезапуска тот же; у другого сервера — другой | `a_server_keeps_its_id_when_it_restarts` |
 
 ## Переподключение — `tests/reconnect.rs`
 
@@ -108,6 +111,7 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
 | С `--no-auto-reload` замена бинаря игнорируется | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
 | Нерабочий новый бинарь: перезагрузки нет, сервер продолжает на старом коде | `a_broken_executable_is_not_reloaded_into` |
 | Новый бинарь читает другой формат состояния (супервизора или панели): перезагрузки нет, шеллы целы; подходящий бинарь после этого подхватывается | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| После перезагрузки процессы сервера и панелей выглядят в `ps` так же, как до неё; файлы с переданным состоянием прочитаны и удалены | `a_reload_shows_in_no_command_line_and_leaves_no_file_behind` |
 | Перезагрузка без панелей | `a_reload_with_no_panes_open_works` |
 | Несколько панелей: у каждой свой шелл и своё состояние | `every_pane_keeps_its_own_shell_across_a_reload` |
 | Вывод, идущий во время перезагрузки, не теряется | `output_printed_during_a_reload_is_not_lost` |

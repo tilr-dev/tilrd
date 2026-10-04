@@ -40,9 +40,18 @@ impl Process {
     }
 }
 
+/// Name of the variable that tells what runs in a pane which pane it is in.
+pub const PANE_ENV: &str = "TILR_PANE";
+
 /// Open a pty and start `command` (or the login shell) on its slave side as a
 /// session leader.
-pub fn spawn_shell(command: &[String], cwd: &str, cols: u16, rows: u16) -> Result<Spawned> {
+pub fn spawn_shell(
+    pane_id: &str,
+    command: &[String],
+    cwd: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<Spawned> {
     let (master, slave) = open_pty(cols, rows).context("openpty")?;
 
     let shell;
@@ -58,6 +67,7 @@ pub fn spawn_shell(command: &[String], cwd: &str, cols: u16, rows: u16) -> Resul
     cmd.args(args)
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
+        .env(PANE_ENV, pane_id)
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave));

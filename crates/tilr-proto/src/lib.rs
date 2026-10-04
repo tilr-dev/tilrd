@@ -9,7 +9,7 @@ use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/tilr.v1.rs"));
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Modifier bits used in [`KeyInput::mods`] and [`MouseInput::mods`].
 pub mod mods {
@@ -117,7 +117,7 @@ mod tests {
 
     fn frame(rows: u32) -> ServerMessage {
         server_message::Msg::Frame(Frame {
-            pane_id: 7,
+            pane_id: "7".into(),
             seq: 1,
             full: true,
             cols: 80,

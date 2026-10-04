@@ -95,6 +95,35 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
 
+## Telling panes apart
+
+A pane is named by a UUID the server makes up when the pane is created. It
+names that pane and no other: not on another machine, and not after the server
+is restarted, when a number would be handed out again.
+
+The id is the same everywhere a pane shows up:
+
+- in the protocol, as `pane_id`;
+- in the process list: the pane process runs as `tilr-server pane --id <id>`,
+  followed by how the pane was started (`--cols` and `--rows` unless 80×24,
+  `--cwd`, the command), and the shell is its child;
+- inside the pane, as `$TILR_PANE`;
+- in `tilr-server ps`, which asks a running server for its panes:
+
+```
+$ tilr-server ps
+PANE                                      PID     SIZE  VIEWERS  CWD  COMMAND
+3b750286-ae31-4cc4-9edd-3f314fb00d57     8193    80x24        1  /home/dan  (shell)
+d88b738a-fb48-41a5-bd4c-2050fdf33538     8219   120x40        0  /tmp  htop
+```
+
+`PID` is the pane process. `--url` names a server listening elsewhere than
+`ws://127.0.0.1:7890`.
+
+A server has an id of its own too, in `HelloAck.server_id`: a UUID made the
+first time it runs on a machine and kept in `$XDG_STATE_HOME/tilr/server-id`
+(`~/.local/state/tilr`), so it is the same after a restart.
+
 ## Protocol
 
 Defined in [`crates/tilr-proto/proto/tilr.proto`](crates/tilr-proto/proto/tilr.proto).
@@ -179,6 +208,13 @@ The server picks up a new executable without ending any shell:
 The supervisor execs the new executable in place, keeping its pid, the
 listening socket and the pane processes, then has every pane process do the
 same. Shells, their screens, scrollback and scroll position carry over.
+
+A process is exec'd with the arguments it was started with, so it looks the
+same in `ps` before and after. What it hands to its successor goes into a file
+in the runtime directory that the successor finds by name: `server-<pid>.state`
+for the supervisor (an exec keeps the pid), `panes/<pane id>.state` for a pane.
+The successor removes the file as it reads it. The files are readable by the
+user only: a pane's holds its screen and the input not yet delivered.
 
 What to know:
 

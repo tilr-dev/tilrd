@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 
-async fn pane_with_history(server: &Server) -> (Client, u64) {
+async fn pane_with_history(server: &Server) -> (Client, PaneId) {
     let mut client = Client::connect(server).await;
     let pane_id = client.open_pane().await;
     client.print_lines(pane_id, 200).await;

@@ -7,26 +7,29 @@
 //! New code is picked up without losing the shell: asked to reload, the
 //! process execs the executable now on disk. The pty, the shell (still its
 //! child) and the pipes to the supervisor carry over as they are; the screen
-//! travels as a snapshot in an unlinked file.
+//! and the rest travel in a file named after the pane, which the new process
+//! finds by the id it is started with.
 
-use std::fs::File;
-use std::io::{Read, Seek, Write};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::str::FromStr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use tilr_proto::{ClientMessage, PaneExited, ServerMessage, client_message::Msg, server_message};
+use prost::Message;
+use tilr_proto::{
+    ClientMessage, PaneExited, PaneHandover, ServerMessage, client_message::Msg, server_message,
+};
 use tilr_screen::{GhosttyScreen, Screen};
 use tokio::io::Stdout;
 use tokio::io::unix::AsyncFd;
 use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use uuid::Uuid;
 
-use crate::{link, pty};
+use crate::{link, pty, reload};
 
 /// Minimum spacing between frames. Output arriving faster is coalesced.
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
@@ -34,65 +37,51 @@ const READ_BUF: usize = 64 * 1024;
 /// How long a shell gets to exit after SIGHUP before it is killed.
 const KILL_GRACE: Duration = Duration::from_secs(2);
 
+/// Size of a pane started without one.
+pub const DEFAULT_COLS: u16 = 80;
+pub const DEFAULT_ROWS: u16 = 24;
+
+/// How the pane process is started. A reload execs it with the same
+/// arguments, so they describe how the pane began: a pane taking over from
+/// another has its size from the state left for it.
 #[derive(clap::Args)]
 pub struct Args {
     #[arg(long)]
-    pub id: u64,
-    #[arg(long)]
+    pub id: Uuid,
+    #[arg(long, default_value_t = DEFAULT_COLS)]
     pub cols: u16,
-    #[arg(long)]
+    #[arg(long, default_value_t = DEFAULT_ROWS)]
     pub rows: u16,
     /// Working directory of the shell. Empty = this process's own.
     #[arg(long, default_value = "")]
     pub cwd: String,
-    /// Take over the pty and shell of the process that exec'd this one.
-    #[arg(long)]
-    pub resume: Option<Resume>,
     /// Command to run instead of the shell.
     #[arg(last = true)]
     pub command: Vec<String>,
 }
 
-/// Version of what a reloading pane process leaves its successor: the fields
-/// of [`Resume`] and the state file. Raise it with any change an older or
-/// newer pane process would misread.
-pub const STATE_FORMAT: u32 = 1;
+/// Version of what a reloading pane process leaves its successor
+/// ([`PaneHandover`]). Raise it with any change an older or newer pane
+/// process would misread.
+pub const STATE_FORMAT: u32 = 2;
 
-/// What a reloading pane process hands to its successor, as
-/// `master:state:shell_pid:seq:scrolled_back:format` on the command line. The
-/// last two fields may be missing: older versions do not send them.
-#[derive(Clone, Debug)]
-pub struct Resume {
-    /// Descriptor of the pty master.
-    master: RawFd,
-    /// Descriptor of the state file: u32 LE length and bytes of the input
-    /// not yet written to the pty, then the screen snapshot.
-    state: RawFd,
-    shell_pid: u32,
-    seq: u64,
-    /// Rows the viewport was scrolled back into history.
-    scrolled_back: u32,
+/// The state the pane process that exec'd this one left for it. `None` if
+/// this process starts a pane of its own.
+fn take_handover(pane_id: &Uuid) -> Result<Option<PaneHandover>> {
+    reload::take_file(&reload::pane_state_path(pane_id))?
+        .map(|bytes| decode_handover(&bytes))
+        .transpose()
 }
 
-impl FromStr for Resume {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        let mut fields = s.split(':');
-        let mut next = || fields.next().context("expected master:state:shell_pid:seq");
-        let resume = Self {
-            master: next()?.parse()?,
-            state: next()?.parse()?,
-            shell_pid: next()?.parse()?,
-            seq: next()?.parse()?,
-            scrolled_back: fields.next().map_or(Ok(0), str::parse)?,
-        };
-        let format: u32 = fields.next().map_or(Ok(0), str::parse)?;
-        if !crate::reload::format_matches(format, STATE_FORMAT) {
-            bail!("state is in format {format}, this pane process reads {STATE_FORMAT}");
-        }
-        Ok(resume)
+fn decode_handover(bytes: &[u8]) -> Result<PaneHandover> {
+    let handover = PaneHandover::decode(bytes).context("decode state")?;
+    if !reload::format_matches(handover.format, STATE_FORMAT) {
+        bail!(
+            "state is in format {}, this pane process reads {STATE_FORMAT}",
+            handover.format
+        );
     }
+    Ok(handover)
 }
 
 enum FromSupervisor {
@@ -162,7 +151,10 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 struct Pane {
-    id: u64,
+    /// As it goes into every frame.
+    id: String,
+    /// Where a reload leaves the state for the process that takes over.
+    state_path: PathBuf,
     pty: AsyncFd<OwnedFd>,
     screen: GhosttyScreen,
     to_supervisor: Stdout,
@@ -180,34 +172,32 @@ struct Pane {
 async fn serve(args: Args) -> Result<()> {
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
-    let (master, shell, screen, seq) = if let Some(resume) = args.resume {
+    let id = args.id.to_string();
+    let (master, shell, screen, seq) = if let Some(handover) = take_handover(&args.id)? {
         crate::fail::point("pane-resume")?;
-        crate::fail::point(&format!("pane-resume:{}", args.id))?;
-        // SAFETY: the process that exec'd this one left both descriptors
-        // open for it and nothing else here owns them.
-        let (master, state) = unsafe {
-            (
-                OwnedFd::from_raw_fd(resume.master),
-                File::from_raw_fd(resume.state),
-            )
-        };
+        crate::fail::point(&format!("pane-resume:{id}"))?;
+        // SAFETY: the process that exec'd this one left the descriptor open
+        // for it and nothing else here owns it.
+        let master = unsafe { OwnedFd::from_raw_fd(handover.master) };
         pty::set_cloexec(master.as_raw_fd(), true)?;
-        let snapshot = read_state(state, &mut pending_input).context("read resume state")?;
-        let mut screen = GhosttyScreen::restore(args.cols, args.rows, &snapshot)?;
+        pending_input = handover.pending_input;
+        let size = |cells: u32| cells.clamp(1, u32::from(u16::MAX)) as u16;
+        let mut screen =
+            GhosttyScreen::restore(size(handover.cols), size(handover.rows), &handover.snapshot)?;
         // Whoever was reading history keeps their place.
-        if resume.scrolled_back > 0 {
-            screen.scroll(-(resume.scrolled_back.min(i32::MAX as u32) as i32));
+        if handover.scrolled_back > 0 {
+            screen.scroll(-(handover.scrolled_back.min(i32::MAX as u32) as i32));
         }
-        tracing::info!(pane = args.id, "resumed after reload");
+        tracing::info!(pane = id, "resumed after reload");
         (
             master,
-            pty::Process::Inherited(resume.shell_pid),
+            pty::Process::Inherited(handover.shell_pid),
             screen,
-            resume.seq,
+            handover.seq,
         )
     } else {
         let pty::Spawned { master, child } =
-            match pty::spawn_shell(&args.command, &args.cwd, args.cols, args.rows) {
+            match pty::spawn_shell(&id, &args.command, &args.cwd, args.cols, args.rows) {
                 Ok(spawned) => spawned,
                 Err(err) => {
                     let packet = tilr_proto::encode(&tilr_proto::Error {
@@ -230,7 +220,8 @@ async fn serve(args: Args) -> Result<()> {
     read_supervisor(packet_tx.clone());
 
     let mut pane = Pane {
-        id: args.id,
+        id,
+        state_path: reload::pane_state_path(&args.id),
         pty: AsyncFd::new(master).context("register pty")?,
         screen,
         to_supervisor,
@@ -307,7 +298,7 @@ async fn serve(args: Args) -> Result<()> {
         }
     };
     let packet = tilr_proto::encode(&PaneExited {
-        pane_id: pane.id,
+        pane_id: pane.id.clone(),
         exit_code,
     });
     link::write_tagged(&mut pane.to_supervisor, link::kind::EXITED, &packet)
@@ -369,33 +360,36 @@ impl Pane {
             return err;
         }
         let exe = crate::exe();
-        let state = match write_state(self.id, &self.pending_input, snapshot) {
-            Ok(state) => state,
-            Err(err) => return anyhow::Error::new(err).context("write resume state"),
-        };
         let master = self.pty.get_ref().as_raw_fd();
-        // Both descriptors must survive the exec; the state file's is simply
-        // dropped if it fails.
-        let inheritable = pty::set_cloexec(master, false)
-            .and_then(|()| pty::set_cloexec(state.as_raw_fd(), false));
-        if let Err(err) = inheritable {
-            return anyhow::Error::new(err).context("make descriptors inheritable");
+        let handover = PaneHandover {
+            format: STATE_FORMAT,
+            master,
+            shell_pid,
+            seq: self.seq,
+            scrolled_back,
+            cols: u32::from(cols),
+            rows: u32::from(rows),
+            pending_input: self.pending_input.clone(),
+            snapshot: snapshot.to_vec(),
+        };
+        let state = &self.state_path;
+        if let Err(err) = reload::write_file(state, &handover.encode_to_vec()) {
+            return err.context("write resume state");
         }
-        let resume = format!(
-            "{master}:{}:{shell_pid}:{}:{scrolled_back}:{STATE_FORMAT}",
-            state.as_raw_fd(),
-            self.seq
-        );
-        tracing::info!(pane = self.id, exe = %exe.display(), "reloading");
-        let err = std::process::Command::new(exe)
-            .arg("pane")
-            .args(["--id", &self.id.to_string()])
-            .args(["--cols", &cols.to_string()])
-            .args(["--rows", &rows.to_string()])
-            .args(["--resume", &resume])
-            .exec();
+        // The pty must survive the exec.
+        let err = match pty::set_cloexec(master, false) {
+            Ok(()) => {
+                tracing::info!(pane = self.id, exe = %exe.display(), "reloading");
+                let err = std::process::Command::new(exe)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+                anyhow::Error::new(err).context(format!("exec {}", exe.display()))
+            }
+            Err(err) => anyhow::Error::new(err).context("make the pty inheritable"),
+        };
         let _ = pty::set_cloexec(master, true);
-        anyhow::Error::new(err).context(format!("exec {}", exe.display()))
+        let _ = std::fs::remove_file(state);
+        err
     }
 
     fn on_message(&mut self, msg: ClientMessage) -> Result<()> {
@@ -472,7 +466,7 @@ impl Pane {
             return Ok(());
         };
         self.seq += 1;
-        frame.pane_id = self.id;
+        frame.pane_id.clone_from(&self.id);
         frame.seq = self.seq;
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::Frame(frame)));
         link::write_tagged(&mut self.to_supervisor, link::kind::RELAY, &packet)
@@ -481,61 +475,33 @@ impl Pane {
     }
 }
 
-/// Put what the successor needs into a file only reachable through the
-/// returned handle.
-fn write_state(pane_id: u64, pending_input: &[u8], snapshot: &[u8]) -> std::io::Result<File> {
-    let path =
-        std::env::temp_dir().join(format!("tilr-pane-{pane_id}-{}.state", std::process::id()));
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
-    std::fs::remove_file(&path)?;
-    file.write_all(&(pending_input.len() as u32).to_le_bytes())?;
-    file.write_all(pending_input)?;
-    file.write_all(snapshot)?;
-    file.rewind()?;
-    Ok(file)
-}
-
-/// Read back what [`write_state`] wrote: the pending input goes to
-/// `pending_input`, the snapshot is returned.
-fn read_state(mut state: File, pending_input: &mut Vec<u8>) -> std::io::Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    state.read_exact(&mut len)?;
-    pending_input.resize(u32::from_le_bytes(len) as usize, 0);
-    state.read_exact(pending_input)?;
-    let mut snapshot = Vec::new();
-    state.read_to_end(&mut snapshot)?;
-    Ok(snapshot)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn resume_in_the_current_format_is_read() {
-        let resume: Resume = format!("3:4:500:9:12:{STATE_FORMAT}").parse().unwrap();
-        assert_eq!((resume.master, resume.state), (3, 4));
-        assert_eq!((resume.shell_pid, resume.seq), (500, 9));
-        assert_eq!(resume.scrolled_back, 12);
+    fn handover(format: u32) -> Vec<u8> {
+        PaneHandover {
+            format,
+            shell_pid: 500,
+            ..Default::default()
+        }
+        .encode_to_vec()
     }
 
     #[test]
-    fn resume_from_before_formats_were_recorded_is_read() {
-        let resume: Resume = "3:4:500:9:12".parse().unwrap();
-        assert_eq!(resume.scrolled_back, 12);
-        let resume: Resume = "3:4:500:9".parse().unwrap();
-        assert_eq!(resume.scrolled_back, 0);
+    fn state_in_the_current_format_is_read() {
+        let handover = decode_handover(&handover(STATE_FORMAT)).unwrap();
+        assert_eq!(handover.shell_pid, 500);
     }
 
     #[test]
-    fn resume_in_another_format_is_refused() {
-        let err = format!("3:4:500:9:12:{}", STATE_FORMAT + 1)
-            .parse::<Resume>()
-            .unwrap_err();
-        assert!(err.to_string().contains("format 2"), "{err}");
+    fn state_in_another_format_is_refused() {
+        for format in [0, STATE_FORMAT - 1, STATE_FORMAT + 1] {
+            let err = decode_handover(&handover(format)).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("format {format}")),
+                "{err}"
+            );
+        }
     }
 }

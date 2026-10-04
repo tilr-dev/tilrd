@@ -6,12 +6,12 @@ use common::*;
 
 /// What must hold after any reload: the shell in `pane_id` is the same one,
 /// with its state and what it printed, and the server works as before.
-async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: u64) {
+async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: PaneId) {
     assert!(server.is_running());
     client.hello().await;
     let panes = client.list_panes().await;
     assert_eq!(panes.len(), 1);
-    assert_eq!(panes[0].pane_id, pane_id);
+    assert_eq!(panes[0].pane_id, pane_id.to_string());
     assert_eq!((panes[0].cols, panes[0].rows), (100, 30));
 
     client.subscribe(pane_id).await;
@@ -33,9 +33,9 @@ async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: 
         pid_line(std::fs::read_to_string(server.dir.join("pid")).unwrap())
     );
 
-    // New panes get ids after the old ones, and the clipboard still works.
+    // New panes open as before, and the clipboard still works.
     let new_pane = client.open_pane().await;
-    assert!(new_pane > pane_id);
+    assert_ne!(new_pane, pane_id);
     client.put_clipboard(1, "image/png", &image(500)).await;
     assert!(client.clipboard_ack().await.ok);
     let check = script(server, "check.sh", CLAUDE_CHECK_IMAGE);
@@ -44,7 +44,7 @@ async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: 
 }
 
 /// Open a pane and leave marks in its shell for [`assert_pane_survived`].
-async fn pane_with_marks(server: &Server, client: &mut Client) -> u64 {
+async fn pane_with_marks(server: &Server, client: &mut Client) -> PaneId {
     let pane_id = client.open_pane().await;
     let pid_file = server.dir.join("pid");
     client
@@ -154,7 +154,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let formats = Command::new(&exe).arg("state-formats").output().unwrap();
     assert_eq!(
         String::from_utf8(formats.stdout).unwrap(),
-        "supervisor-state 1\npane-state 1\n"
+        "supervisor-state 2\npane-state 2\n"
     );
 
     // A version that runs fine but keeps its state differently, first for
@@ -162,12 +162,12 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     // it is left and lose the shells.
     for (formats, refusal) in [
         (
-            "supervisor-state 2\npane-state 1",
-            "reads supervisor-state format 2, this server writes 1",
+            "supervisor-state 1\npane-state 2",
+            "reads supervisor-state format 1, this server writes 2",
         ),
         (
-            "supervisor-state 1\npane-state 2",
-            "reads pane-state format 2, this server writes 1",
+            "supervisor-state 2\npane-state 1",
+            "reads pane-state format 1, this server writes 2",
         ),
     ] {
         let staged = dir.join("tilr-server.new");
@@ -198,6 +198,37 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
 }
 
 #[tokio::test]
+async fn a_reload_shows_in_no_command_line_and_leaves_no_file_behind() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    let pane_pid = client.list_panes().await[0].pid;
+    let before = (process_args(server.child.id()), process_args(pane_pid));
+    assert!(before.1.contains(&format!("pane --id {pane_id} ")));
+
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(server.logged("resumed after reload with 1 pane(s)"));
+
+    // Same processes, looking the same.
+    assert_eq!(client.list_panes().await[0].pid, pane_pid);
+    let after = (process_args(server.child.id()), process_args(pane_pid));
+    assert_eq!(after, before);
+    // What they handed over was taken and removed.
+    let runtime = server.dir.join("runtime");
+    let left: Vec<_> = [runtime.clone(), runtime.join("panes")]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".state"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[tokio::test]
 async fn a_reload_with_no_panes_open_works() {
     let mut server = Server::start(&[]);
     let client = Client::connect(&server).await;
@@ -205,7 +236,6 @@ async fn a_reload_with_no_panes_open_works() {
     assert!(server.is_running());
     assert!(client.list_panes().await.is_empty());
     let pane_id = client.open_pane().await;
-    assert_eq!(pane_id, 1);
     assert_eq!(client.run(pane_id, "true").await, 0);
 }
 
@@ -231,7 +261,11 @@ async fn every_pane_keeps_its_own_shell_across_a_reload() {
         client.type_line(pane_id, "echo \"name=$NAME\"").await;
         client.wait_row(&format!("name={name}")).await;
         assert_eq!(shell_pid(&server, &mut client, pane_id).await, pid);
-        client.send(Msg::Unsubscribe(Unsubscribe { pane_id })).await;
+        client
+            .send(Msg::Unsubscribe(Unsubscribe {
+                pane_id: pane_id.to_string(),
+            }))
+            .await;
     }
 }
 
@@ -433,10 +467,14 @@ async fn a_pane_that_cannot_hand_over_carries_on_in_the_code_it_has() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on() {
-    let (mut server, _) = failing_server("pane-resume:1=panic");
+    let (mut server, _) = failing_server("");
     let mut client = Client::connect(&server).await;
     let lost = client.open_pane().await;
-    assert_eq!(lost, 1);
+    std::fs::write(
+        server.dir.join("failpoints"),
+        format!("pane-resume:{lost}=panic"),
+    )
+    .unwrap();
     let lost_shell = shell_pid(&server, &mut client, lost).await;
     let kept = client.open_pane().await;
     assert_eq!(client.run(kept, "KEPT=yes").await, 0);
@@ -450,7 +488,7 @@ async fn a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on() {
     assert!(server.is_running());
     let panes = client.list_panes().await;
     assert_eq!(panes.len(), 1);
-    assert_eq!(panes[0].pane_id, kept);
+    assert_eq!(panes[0].pane_id, kept.to_string());
     client.subscribe(kept).await;
     assert_eq!(client.run(kept, "test \"$KEPT\" = yes").await, 0);
     assert_eq!(shell_pid(&server, &mut client, kept).await, kept_shell);

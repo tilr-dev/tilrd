@@ -35,8 +35,10 @@ use tokio::time::{Interval, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use uuid::Uuid;
 
-use crate::{clipboard, link, pty, reload};
+use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
+use crate::{clipboard, identity, link, pty, reload};
 
 /// Packets queued for one client before it is considered stuck and dropped.
 const CLIENT_QUEUE: usize = 1024;
@@ -56,7 +58,8 @@ const FEATURE_CLIPBOARD: &str = "clipboard";
 const FEATURE_PING: &str = "ping";
 
 type ClientId = u64;
-type PaneId = u64;
+/// Made up when the pane is created; on the wire in its text form.
+type PaneId = Uuid;
 
 enum Event {
     ClientConnected {
@@ -158,8 +161,6 @@ pub struct Options {
     /// Drop a client nothing was heard from for this long, pings included.
     /// `None` keeps silent clients forever.
     pub client_timeout: Option<Duration>,
-    /// Descriptor of the state file of the supervisor this one replaces.
-    pub resume: Option<RawFd>,
 }
 
 pub fn run(options: Options) -> Result<()> {
@@ -167,7 +168,8 @@ pub fn run(options: Options) -> Result<()> {
         .enable_all()
         .build()?
         .block_on(async move {
-            let state = options.resume.map(reload::read_state).transpose()?;
+            let state = reload::take_state()?;
+            reload::sweep_stale();
             if state.is_some() {
                 crate::fail::point("supervisor-resume")?;
             }
@@ -212,7 +214,7 @@ pub fn run(options: Options) -> Result<()> {
                 clients: HashMap::new(),
                 panes: HashMap::new(),
                 starting: HashMap::new(),
-                next_pane_id: 1,
+                server_id: identity::server_id(),
                 clipboard,
                 pane_env,
             };
@@ -423,7 +425,7 @@ struct Supervisor {
     clients: HashMap<ClientId, Client>,
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
-    next_pane_id: PaneId,
+    server_id: Uuid,
     /// `None` when the clipboard is turned off.
     clipboard: Option<clipboard::Receiver>,
     /// Environment added to every pane process, and so to its shell.
@@ -486,10 +488,12 @@ impl Supervisor {
     /// Adopt the panes of the supervisor this one replaced, and have their
     /// processes pick up the new executable too.
     fn resume(&mut self, state: SupervisorState) {
-        self.next_pane_id = state.next_pane_id.max(1);
         for pane in state.panes {
             let info = pane.info.unwrap_or_default();
-            let pane_id = info.pane_id;
+            let Ok(pane_id) = info.pane_id.parse::<PaneId>() else {
+                tracing::error!(pane = info.pane_id, "pane lost in reload: bad id");
+                continue;
+            };
             // SAFETY: the supervisor that exec'd this process left both
             // descriptors open for it and nothing else here owns them.
             let (to_pane, from_pane) = unsafe {
@@ -509,7 +513,7 @@ impl Supervisor {
             let (to_pane, from_pane) = match pipes {
                 Ok(pipes) => pipes,
                 Err(err) => {
-                    tracing::error!(pane = pane_id, "pane lost in reload: {err}");
+                    tracing::error!(pane = %pane_id, "pane lost in reload: {err}");
                     continue;
                 }
             };
@@ -592,7 +596,7 @@ impl Supervisor {
             match writer {
                 Ok(Ok(Some(to_pane))) => handed_over.push((pane_id, to_pane, reader)),
                 _ => {
-                    tracing::error!(pane = pane_id, "pane process is stuck, closing it");
+                    tracing::error!(pane = %pane_id, "pane process is stuck, closing it");
                     pane.link.writer.abort();
                     // SAFETY: kill has no memory-safety preconditions.
                     unsafe {
@@ -629,7 +633,6 @@ impl Supervisor {
         let mut inherited = vec![listener];
         let state = SupervisorState {
             listener,
-            next_pane_id: self.next_pane_id,
             format: reload::STATE_FORMAT,
             panes: panes
                 .iter()
@@ -648,9 +651,8 @@ impl Supervisor {
         };
         let file = match reload::write_state(&state) {
             Ok(file) => file,
-            Err(err) => return anyhow::Error::new(err).context("write state file"),
+            Err(err) => return err.context("write state file"),
         };
-        inherited.push(file.as_raw_fd());
 
         // These descriptors must survive the exec.
         let set_inheritable = |inheritable: bool| {
@@ -658,18 +660,19 @@ impl Supervisor {
                 .iter()
                 .try_for_each(|&fd| pty::set_cloexec(fd, !inheritable))
         };
-        if let Err(err) = set_inheritable(true) {
-            let _ = set_inheritable(false);
-            return anyhow::Error::new(err).context("make descriptors inheritable");
-        }
         let exe = crate::exe();
-        let err = std::process::Command::new(exe)
-            .args(reload::own_args())
-            .arg("--resume")
-            .arg(file.as_raw_fd().to_string())
-            .exec();
+        let err = match set_inheritable(true) {
+            Ok(()) => {
+                let err = std::process::Command::new(exe)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+                anyhow::Error::new(err).context(format!("exec {}", exe.display()))
+            }
+            Err(err) => anyhow::Error::new(err).context("make descriptors inheritable"),
+        };
         let _ = set_inheritable(false);
-        anyhow::Error::new(err).context(format!("exec {}", exe.display()))
+        let _ = std::fs::remove_file(file);
+        err
     }
 
     fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes) {
@@ -720,6 +723,7 @@ impl Supervisor {
                             .map(str::to_owned)
                             .collect(),
                         clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
+                        server_id: self.server_id.to_string(),
                     }),
                 );
             }
@@ -733,10 +737,10 @@ impl Supervisor {
                 self.send(client_id, server_message::Msg::PaneList(reply));
             }
             // The pane process hangs up its shell and exits with it.
-            Msg::ClosePane(close) => self.forward(client_id, close.pane_id, packet),
-            Msg::Subscribe(Subscribe { pane_id }) => {
-                let Some(pane) = self.panes.get_mut(&pane_id) else {
-                    return self.send_no_pane(client_id, pane_id);
+            Msg::ClosePane(close) => self.forward(client_id, &close.pane_id, packet),
+            Msg::Subscribe(Subscribe { pane_id: named }) => {
+                let Some((pane_id, pane)) = self.pane_mut(&named) else {
+                    return self.send_no_pane(client_id, &named);
                 };
                 pane.subscribers.insert(client_id);
                 // The pane answers with a full frame.
@@ -747,28 +751,28 @@ impl Supervisor {
                 self.broadcast_pane_list();
             }
             Msg::Unsubscribe(unsubscribe) => {
-                if let Some(pane) = self.panes.get_mut(&unsubscribe.pane_id) {
+                if let Some((pane_id, pane)) = self.pane_mut(&unsubscribe.pane_id) {
                     pane.subscribers.remove(&client_id);
-                }
-                if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.subscriptions.remove(&unsubscribe.pane_id);
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.subscriptions.remove(&pane_id);
+                    }
                 }
                 self.broadcast_pane_list();
             }
             Msg::Resize(resize) => {
-                let Some(pane) = self.panes.get_mut(&resize.pane_id) else {
-                    return self.send_no_pane(client_id, resize.pane_id);
+                let Some((_, pane)) = self.pane_mut(&resize.pane_id) else {
+                    return self.send_no_pane(client_id, &resize.pane_id);
                 };
                 pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
                 pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
                 let _ = pane.to_pane.send(packet);
                 self.broadcast_pane_list();
             }
-            Msg::Key(input) => self.forward(client_id, input.pane_id, packet),
-            Msg::Mouse(input) => self.forward(client_id, input.pane_id, packet),
-            Msg::Paste(input) => self.forward(client_id, input.pane_id, packet),
-            Msg::Raw(input) => self.forward(client_id, input.pane_id, packet),
-            Msg::Scroll(input) => self.forward(client_id, input.pane_id, packet),
+            Msg::Key(input) => self.forward(client_id, &input.pane_id, packet),
+            Msg::Mouse(input) => self.forward(client_id, &input.pane_id, packet),
+            Msg::Paste(input) => self.forward(client_id, &input.pane_id, packet),
+            Msg::Raw(input) => self.forward(client_id, &input.pane_id, packet),
+            Msg::Scroll(input) => self.forward(client_id, &input.pane_id, packet),
             Msg::ClipboardPut(put) => self.on_clipboard_put(client_id, put),
             Msg::Ping(ping) => {
                 self.send(
@@ -801,13 +805,19 @@ impl Supervisor {
         }
     }
 
+    /// The pane a client named, with its id.
+    fn pane_mut(&mut self, named: &str) -> Option<(PaneId, &mut Pane)> {
+        let pane_id = named.parse().ok()?;
+        Some((pane_id, self.panes.get_mut(&pane_id)?))
+    }
+
     /// Pass a client packet to the pane process as-is.
-    fn forward(&mut self, client_id: ClientId, pane_id: PaneId, packet: Bytes) {
-        match self.panes.get(&pane_id) {
-            Some(pane) => {
+    fn forward(&mut self, client_id: ClientId, named: &str, packet: Bytes) {
+        match self.pane_mut(named) {
+            Some((_, pane)) => {
                 let _ = pane.to_pane.send(packet);
             }
-            None => self.send_no_pane(client_id, pane_id),
+            None => self.send_no_pane(client_id, named),
         }
     }
 
@@ -816,7 +826,7 @@ impl Supervisor {
     fn create_pane(&mut self, client_id: ClientId, create: &CreatePane) -> Result<()> {
         let cols = create.cols.clamp(1, u32::from(u16::MAX)) as u16;
         let rows = create.rows.clamp(1, u32::from(u16::MAX)) as u16;
-        let pane_id = self.next_pane_id;
+        let pane_id = PaneId::new_v4();
         let cwd = start_dir(&create.cwd);
         let (pid, to_pane, link) = start_pane_process(
             pane_id,
@@ -827,7 +837,6 @@ impl Supervisor {
             &self.pane_env,
             self.events.clone(),
         )?;
-        self.next_pane_id += 1;
 
         let pane = Pane {
             command: create.command.clone(),
@@ -864,7 +873,7 @@ impl Supervisor {
             return;
         };
         tracing::info!(
-            pane = pane_id,
+            pane = %pane_id,
             cols = pane.cols,
             rows = pane.rows,
             "pane created"
@@ -916,16 +925,19 @@ impl Supervisor {
         }
         let exit_code = exit_code.unwrap_or_else(|| {
             tracing::error!(
-                pane = pane_id,
+                pane = %pane_id,
                 "pane process died, taking its shell with it"
             );
             -1
         });
 
         self.panes.remove(&pane_id);
-        tracing::info!(pane = pane_id, exit_code, "pane exited");
+        tracing::info!(pane = %pane_id, exit_code, "pane exited");
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneExited(
-            PaneExited { pane_id, exit_code },
+            PaneExited {
+                pane_id: pane_id.to_string(),
+                exit_code,
+            },
         )));
         for client in self.clients.values_mut() {
             client.subscriptions.remove(&pane_id);
@@ -954,7 +966,8 @@ impl Supervisor {
 
     fn pane_list(&self, request_id: u64) -> PaneList {
         let mut panes: Vec<PaneInfo> = self.panes.iter().map(|(&id, pane)| pane.info(id)).collect();
-        panes.sort_by_key(|pane| pane.pane_id);
+        // Oldest first; the id only settles panes made in the same millisecond.
+        panes.sort_by(|a, b| (a.created_at_ms, &a.pane_id).cmp(&(b.created_at_ms, &b.pane_id)));
         PaneList { panes, request_id }
     }
 
@@ -1004,15 +1017,15 @@ impl Supervisor {
         self.drop_client(client_id);
     }
 
-    fn send_no_pane(&mut self, client_id: ClientId, pane_id: PaneId) {
-        self.send_error(client_id, &format!("no such pane: {pane_id}"));
+    fn send_no_pane(&mut self, client_id: ClientId, named: &str) {
+        self.send_error(client_id, &format!("no such pane: {named}"));
     }
 }
 
 impl Pane {
     fn info(&self, pane_id: PaneId) -> PaneInfo {
         PaneInfo {
-            pane_id,
+            pane_id: pane_id.to_string(),
             cols: u32::from(self.cols),
             rows: u32::from(self.rows),
             command: self.command.clone(),
@@ -1020,6 +1033,7 @@ impl Pane {
             cwd: self.cwd.clone(),
             viewers: self.subscribers.len() as u32,
             created_at_ms: self.created_at_ms,
+            pid: self.pid,
         }
     }
 }
@@ -1049,16 +1063,22 @@ fn start_pane_process(
     events: mpsc::UnboundedSender<Event>,
 ) -> Result<(u32, mpsc::UnboundedSender<Bytes>, Link)> {
     let mut cmd = Command::new(crate::exe());
-    cmd.arg("pane")
-        .args(["--id", &pane_id.to_string()])
-        .args(["--cols", &cols.to_string()])
-        .args(["--rows", &rows.to_string()]);
+    // What `ps` shows of a pane for as long as it lives: a reload execs the
+    // pane process with these same arguments.
+    cmd.arg("pane").args(["--id", &pane_id.to_string()]);
+    if cols != DEFAULT_COLS {
+        cmd.args(["--cols", &cols.to_string()]);
+    }
+    if rows != DEFAULT_ROWS {
+        cmd.args(["--rows", &rows.to_string()]);
+    }
     if !cwd.is_empty() {
         cmd.args(["--cwd", cwd]);
     }
-    cmd.arg("--")
-        .args(&create.command)
-        .envs(env.iter().map(|(name, value)| (name, value)))
+    if !create.command.is_empty() {
+        cmd.arg("--").args(&create.command);
+    }
+    cmd.envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .kill_on_drop(true);

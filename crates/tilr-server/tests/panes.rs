@@ -29,14 +29,14 @@ async fn a_pane_runs_commands_and_reports_how_its_shell_exited() {
 
     let panes = client.list_panes().await;
     assert_eq!(panes.len(), 1);
-    assert_eq!(panes[0].pane_id, pane_id);
+    assert_eq!(panes[0].pane_id, pane_id.to_string());
     assert_eq!(panes[0].viewers, 1);
     assert_eq!((panes[0].cols, panes[0].rows), (100, 30));
 
     client.type_line(pane_id, "exit 3").await;
     let exit_code = client
         .wait_for(|msg| match msg {
-            server_message::Msg::PaneExited(exited) if exited.pane_id == pane_id => {
+            server_message::Msg::PaneExited(exited) if exited.pane_id == pane_id.to_string() => {
                 Some(exited.exit_code)
             }
             _ => None,
@@ -75,10 +75,16 @@ async fn closing_a_pane_ends_its_shell() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
-    client.send(Msg::ClosePane(ClosePane { pane_id })).await;
+    client
+        .send(Msg::ClosePane(ClosePane {
+            pane_id: pane_id.to_string(),
+        }))
+        .await;
     client
         .wait_for(|msg| match msg {
-            server_message::Msg::PaneExited(exited) if exited.pane_id == pane_id => Some(()),
+            server_message::Msg::PaneExited(exited) if exited.pane_id == pane_id.to_string() => {
+                Some(())
+            }
             _ => None,
         })
         .await;
@@ -136,10 +142,101 @@ async fn a_malformed_packet_gets_an_error_and_the_connection_stays() {
 async fn asking_for_a_pane_that_does_not_exist_gets_an_error() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
-    client.subscribe(999).await;
-    assert_eq!(client.error().await, "no such pane: 999");
-    client.type_line(999, "echo").await;
-    assert_eq!(client.error().await, "no such pane: 999");
+    let nobody = PaneId::new_v4();
+    client.subscribe(nobody).await;
+    assert_eq!(client.error().await, format!("no such pane: {nobody}"));
+    client.type_line(nobody, "echo").await;
+    assert_eq!(client.error().await, format!("no such pane: {nobody}"));
+    // A name that is no id at all is no pane either.
+    client
+        .send(Msg::Subscribe(Subscribe {
+            pane_id: "1".into(),
+        }))
+        .await;
+    assert_eq!(client.error().await, "no such pane: 1");
+}
+
+#[tokio::test]
+async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane_with(80, 24, "").await;
+    let other = client.open_pane_with(100, 30, "").await;
+    assert_ne!(pane_id, other);
+
+    // What runs in a pane can ask which pane it is in.
+    client.subscribe(pane_id).await;
+    let check = format!("test \"$TILR_PANE\" = {pane_id}");
+    assert_eq!(client.run(pane_id, &check).await, 0);
+
+    // The pane process says which pane it is, and its size only where that
+    // is not the usual one.
+    let home = server.dir.display();
+    let panes = client.list_panes().await;
+    let args = |pane: &PaneInfo| {
+        process_args(pane.pid)
+            .split_once(" pane ")
+            .unwrap()
+            .1
+            .to_owned()
+    };
+    assert_eq!(panes[0].pane_id, pane_id.to_string());
+    assert_eq!(
+        args(&panes[0]),
+        format!("--id {pane_id} --cwd {home} -- /bin/sh")
+    );
+    assert_eq!(
+        args(&panes[1]),
+        format!("--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh")
+    );
+}
+
+#[tokio::test]
+async fn ps_lists_the_panes_of_a_running_server() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = client.list_panes().await[0].pid;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
+        .args(["ps", "--url", &server.addr])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let listed = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = listed.lines().collect();
+    assert_eq!(lines.len(), 2, "{listed}");
+    let fields: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(fields[0], pane_id.to_string());
+    assert_eq!(fields[1], pid.to_string());
+    assert_eq!(fields[2], "100x30");
+    assert!(lines[1].ends_with("/bin/sh"), "{listed}");
+}
+
+#[tokio::test]
+async fn a_server_keeps_its_id_when_it_restarts() {
+    let mut server = Server::start(&[]);
+    let server_id = Client::connect_silent(&server)
+        .await
+        .hello()
+        .await
+        .server_id;
+    assert!(server_id.parse::<uuid::Uuid>().is_ok(), "{server_id}");
+
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
+    let again = Server::start_in(
+        server.dir.clone(),
+        Path::new(env!("CARGO_BIN_EXE_tilr-server")),
+        &[],
+    );
+    let ack = Client::connect_silent(&again).await.hello().await;
+    assert_eq!(ack.server_id, server_id);
+
+    // Another machine, which here is another directory, is another server.
+    let other = Server::start(&[]);
+    let ack = Client::connect_silent(&other).await.hello().await;
+    assert_ne!(ack.server_id, server_id);
 }
 
 #[tokio::test]
@@ -195,7 +292,11 @@ async fn a_client_that_stops_watching_gets_no_more_frames() {
     let pane_id = client.open_pane().await;
     assert_eq!(client.run(pane_id, "true").await, 0);
 
-    client.send(Msg::Unsubscribe(Unsubscribe { pane_id })).await;
+    client
+        .send(Msg::Unsubscribe(Unsubscribe {
+            pane_id: pane_id.to_string(),
+        }))
+        .await;
     assert_eq!(client.list_panes().await[0].viewers, 0);
     client.frame = None;
     client.type_line(pane_id, "echo more output").await;
@@ -211,7 +312,7 @@ async fn resizing_a_pane_resizes_the_terminal_the_shell_sees() {
     let pane_id = client.open_pane().await;
     client
         .send(Msg::Resize(Resize {
-            pane_id,
+            pane_id: pane_id.to_string(),
             cols: 50,
             rows: 10,
         }))
