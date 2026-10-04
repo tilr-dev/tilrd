@@ -43,7 +43,7 @@
 - [ ] `cfg(unix)` или внятная ошибка компиляции на Windows.
 - [x] Интеграционные тесты сервера по сценариям (`crates/tilr-server/tests/use_cases.rs`): панель, буфер обмена, перезагрузка.
 - [ ] Юнит-тесты `pty` и кодирования ввода в `pane`.
-- [ ] `cargo fmt` (12 диффов).
+- [x] `cargo fmt`.
 - [ ] Проверить, свободно ли имя `tilr` на crates.io.
 - [ ] Сайт документации: Astro + Starlight (`npm create astro@latest -- --template starlight`), по образцу herdr.dev/docs.
 

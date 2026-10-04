@@ -153,7 +153,12 @@ async fn serve(args: Args) -> Result<()> {
         let snapshot = read_state(state, &mut pending_input).context("read resume state")?;
         let screen = GhosttyScreen::restore(args.cols, args.rows, &snapshot)?;
         tracing::info!(pane = args.id, "resumed after reload");
-        (master, pty::Process::Inherited(resume.shell_pid), screen, resume.seq)
+        (
+            master,
+            pty::Process::Inherited(resume.shell_pid),
+            screen,
+            resume.seq,
+        )
     } else {
         let pty::Spawned { master, child } =
             match pty::spawn_shell(&args.command, &args.cwd, args.cols, args.rows) {
@@ -416,7 +421,8 @@ impl Pane {
 /// Put what the successor needs into a file only reachable through the
 /// returned handle.
 fn write_state(pane_id: u64, pending_input: &[u8], snapshot: &[u8]) -> std::io::Result<File> {
-    let path = std::env::temp_dir().join(format!("tilr-pane-{pane_id}-{}.state", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("tilr-pane-{pane_id}-{}.state", std::process::id()));
     let mut file = File::options()
         .read(true)
         .write(true)

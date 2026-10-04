@@ -230,7 +230,9 @@ fn set_up_clipboard(
     let store = clipboard::Store::create(dir.clone())?;
 
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs: Vec<_> = std::env::split_paths(&path).filter(|dir| *dir != shims).collect();
+    let mut dirs: Vec<_> = std::env::split_paths(&path)
+        .filter(|dir| *dir != shims)
+        .collect();
     dirs.insert(0, shims);
     let path = std::env::join_paths(dirs).context("build PATH for the panes")?;
     let env = vec![
@@ -617,7 +619,8 @@ impl Supervisor {
         };
         match msg {
             Msg::Hello(_) => {
-                let clipboard_max_bytes = self.clipboard.as_ref().map(clipboard::Receiver::max_bytes);
+                let clipboard_max_bytes =
+                    self.clipboard.as_ref().map(clipboard::Receiver::max_bytes);
                 self.send(
                     client_id,
                     server_message::Msg::HelloAck(HelloAck {
@@ -693,7 +696,11 @@ impl Supervisor {
         };
         if let Some(ack) = ack {
             if !ack.ok {
-                tracing::warn!(client = client_id, "clipboard upload refused: {}", ack.error);
+                tracing::warn!(
+                    client = client_id,
+                    "clipboard upload refused: {}",
+                    ack.error
+                );
             }
             self.send(client_id, server_message::Msg::ClipboardAck(ack));
         }
@@ -715,8 +722,14 @@ impl Supervisor {
         let cols = create.cols.clamp(1, u32::from(u16::MAX)) as u16;
         let rows = create.rows.clamp(1, u32::from(u16::MAX)) as u16;
         let pane_id = self.next_pane_id;
-        let (pid, to_pane, link) =
-            start_pane_process(pane_id, create, cols, rows, &self.pane_env, self.events.clone())?;
+        let (pid, to_pane, link) = start_pane_process(
+            pane_id,
+            create,
+            cols,
+            rows,
+            &self.pane_env,
+            self.events.clone(),
+        )?;
         self.next_pane_id += 1;
 
         let pane = Pane {
@@ -759,7 +772,12 @@ impl Supervisor {
         else {
             return;
         };
-        tracing::info!(pane = pane_id, cols = pane.cols, rows = pane.rows, "pane created");
+        tracing::info!(
+            pane = pane_id,
+            cols = pane.cols,
+            rows = pane.rows,
+            "pane created"
+        );
         let info = pane.info(pane_id);
         self.panes.insert(pane_id, pane);
         self.send(
@@ -806,7 +824,10 @@ impl Supervisor {
             return;
         }
         let exit_code = exit_code.unwrap_or_else(|| {
-            tracing::error!(pane = pane_id, "pane process died, taking its shell with it");
+            tracing::error!(
+                pane = pane_id,
+                "pane process died, taking its shell with it"
+            );
             -1
         });
 
@@ -841,11 +862,7 @@ impl Supervisor {
     }
 
     fn pane_list(&self, request_id: u64) -> PaneList {
-        let mut panes: Vec<PaneInfo> = self
-            .panes
-            .iter()
-            .map(|(&id, pane)| pane.info(id))
-            .collect();
+        let mut panes: Vec<PaneInfo> = self.panes.iter().map(|(&id, pane)| pane.info(id)).collect();
         panes.sort_by_key(|pane| pane.pane_id);
         PaneList { panes, request_id }
     }
@@ -938,10 +955,10 @@ fn start_pane_process(
     // handed to the next supervisor as bare descriptors.
     let to_pane = child.stdin.take().context("pane process stdin")?;
     let from_pane = child.stdout.take().context("pane process stdout")?;
-    let to_pane = pipe::Sender::from_owned_fd(to_pane.into_owned_fd()?)
-        .context("pane process stdin")?;
-    let from_pane = pipe::Receiver::from_owned_fd(from_pane.into_owned_fd()?)
-        .context("pane process stdout")?;
+    let to_pane =
+        pipe::Sender::from_owned_fd(to_pane.into_owned_fd()?).context("pane process stdin")?;
+    let from_pane =
+        pipe::Receiver::from_owned_fd(from_pane.into_owned_fd()?).context("pane process stdout")?;
 
     let detached = Detached {
         process: pty::Process::Spawned(child),

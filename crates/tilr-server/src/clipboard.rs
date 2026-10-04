@@ -128,7 +128,9 @@ impl Store {
     /// mix. `ttl` of `None` keeps it until replaced.
     pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<()> {
         let expires = ttl.map_or(0, |ttl| unix_now() + ttl.as_secs().max(1));
-        let tmp = self.dir.join(format!("{CONTENT_FILE}.{}", std::process::id()));
+        let tmp = self
+            .dir
+            .join(format!("{CONTENT_FILE}.{}", std::process::id()));
         let written = (|| {
             let mut file = fs::File::create(&tmp)?;
             writeln!(file, "{mime}\n{expires}")?;
@@ -364,8 +366,10 @@ enum Request {
 
 fn is_text_target(target: &str) -> bool {
     let target = target.to_ascii_lowercase();
-    matches!(target.as_str(), "string" | "utf8_string" | "text" | "compound_text")
-        || target.starts_with("text/")
+    matches!(
+        target.as_str(),
+        "string" | "utf8_string" | "text" | "compound_text"
+    ) || target.starts_with("text/")
 }
 
 fn get(target: Option<&str>) -> Request {
@@ -432,7 +436,13 @@ fn parse_wl_paste(args: &[String]) -> Request {
 }
 
 fn same_mime(a: &str, b: &str) -> bool {
-    let essence = |mime: &str| mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let essence = |mime: &str| {
+        mime.split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+    };
     essence(a) == essence(b)
 }
 
@@ -467,7 +477,10 @@ fn answer(tool: &str, request: &Request, content: &Content) -> Result<Vec<u8>, S
 /// over to the real tool when the clipboard is empty or the request is not
 /// one it serves.
 pub fn shim(tool: &str, exe: &Path, args: Vec<OsString>) -> ExitCode {
-    let text_args: Option<Vec<String>> = args.iter().map(|arg| arg.to_str().map(str::to_owned)).collect();
+    let text_args: Option<Vec<String>> = args
+        .iter()
+        .map(|arg| arg.to_str().map(str::to_owned))
+        .collect();
     let request = match (&text_args, tool) {
         (Some(args), "xclip") => parse_xclip(args),
         (Some(args), _) => parse_wl_paste(args),
@@ -566,21 +579,36 @@ mod tests {
     #[test]
     fn xclip_requests() {
         // The commands Claude Code runs.
-        assert_eq!(parse_xclip(&args("-selection clipboard -t TARGETS -o")), Request::Types);
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -t TARGETS -o")),
+            Request::Types
+        );
         assert_eq!(
             parse_xclip(&args("-selection clipboard -t image/png -o")),
             Request::Get(Some("image/png".into()))
         );
-        assert_eq!(parse_xclip(&args("-selection clipboard -t text/plain -o")), Request::Get(None));
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -t text/plain -o")),
+            Request::Get(None)
+        );
         // Abbreviations and the default target.
         assert_eq!(parse_xclip(&args("-sel c -o")), Request::Get(None));
-        assert_eq!(parse_xclip(&args("-o -sel clip -target UTF8_STRING")), Request::Get(None));
+        assert_eq!(
+            parse_xclip(&args("-o -sel clip -target UTF8_STRING")),
+            Request::Get(None)
+        );
         // Not ours: copying, the primary selection, a file argument.
         assert_eq!(parse_xclip(&args("-selection clipboard")), Request::Other);
-        assert_eq!(parse_xclip(&args("-selection clipboard -i")), Request::Other);
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -i")),
+            Request::Other
+        );
         assert_eq!(parse_xclip(&args("-o")), Request::Other);
         assert_eq!(parse_xclip(&args("-selection primary -o")), Request::Other);
-        assert_eq!(parse_xclip(&args("-selection clipboard -o file.txt")), Request::Other);
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -o file.txt")),
+            Request::Other
+        );
     }
 
     #[test]
@@ -608,8 +636,14 @@ mod tests {
             mime: "image/png".into(),
             data: vec![1, 2, 3],
         };
-        assert_eq!(answer("xclip", &Request::Types, &image).unwrap(), b"TARGETS\nimage/png\n");
-        assert_eq!(answer("wl-paste", &Request::Types, &image).unwrap(), b"image/png\n");
+        assert_eq!(
+            answer("xclip", &Request::Types, &image).unwrap(),
+            b"TARGETS\nimage/png\n"
+        );
+        assert_eq!(
+            answer("wl-paste", &Request::Types, &image).unwrap(),
+            b"image/png\n"
+        );
         assert_eq!(
             answer("xclip", &Request::Get(Some("image/png".into())), &image).unwrap(),
             [1, 2, 3]
@@ -625,7 +659,10 @@ mod tests {
             mime: "text/plain;charset=utf-8".into(),
             data: b"hello".to_vec(),
         };
-        assert_eq!(answer("xclip", &Request::Get(None), &text).unwrap(), b"hello");
+        assert_eq!(
+            answer("xclip", &Request::Get(None), &text).unwrap(),
+            b"hello"
+        );
         assert!(answer("xclip", &Request::Get(Some("image/png".into())), &text).is_err());
     }
 
@@ -646,7 +683,9 @@ mod tests {
         store.clear();
         assert_eq!(store.read(), None);
 
-        store.publish("text/plain", b"old", Some(Duration::from_secs(60))).unwrap();
+        store
+            .publish("text/plain", b"old", Some(Duration::from_secs(60)))
+            .unwrap();
         assert!(store.read().is_some());
         // Rewrite the expiry into the past.
         fs::write(store.file(), b"text/plain\n1\nold").unwrap();
@@ -656,7 +695,10 @@ mod tests {
     #[test]
     fn transfer_in_chunks_publishes_on_the_last() {
         let mut receiver = receiver("chunks", 100);
-        assert_eq!(receiver.on_chunk(1, chunk(7, "image/png", 5, b"ab", false)), None);
+        assert_eq!(
+            receiver.on_chunk(1, chunk(7, "image/png", 5, b"ab", false)),
+            None
+        );
         assert_eq!(receiver.store.read(), None);
         assert_eq!(receiver.on_chunk(1, chunk(7, "", 0, b"cd", false)), None);
         let ack = receiver.on_chunk(1, chunk(7, "", 0, b"e", true)).unwrap();
@@ -679,19 +721,28 @@ mod tests {
         assert_eq!(receiver.on_chunk(1, chunk(1, "", 0, b"cd", true)), None);
         assert_eq!(receiver.store.read(), None);
         // The client can start over.
-        let ack = receiver.on_chunk(1, chunk(2, "image/png", 2, b"ok", true)).unwrap();
+        let ack = receiver
+            .on_chunk(1, chunk(2, "image/png", 2, b"ok", true))
+            .unwrap();
         assert!(ack.ok);
     }
 
     #[test]
     fn transfer_that_lies_about_its_size_is_refused() {
         let mut receiver = receiver("lying", 100);
-        assert_eq!(receiver.on_chunk(1, chunk(1, "image/png", 3, b"ab", false)), None);
-        let ack = receiver.on_chunk(1, chunk(1, "", 0, b"cdef", false)).unwrap();
+        assert_eq!(
+            receiver.on_chunk(1, chunk(1, "image/png", 3, b"ab", false)),
+            None
+        );
+        let ack = receiver
+            .on_chunk(1, chunk(1, "", 0, b"cdef", false))
+            .unwrap();
         assert!(!ack.ok);
         assert_eq!(receiver.store.read(), None);
 
-        let ack = receiver.on_chunk(1, chunk(2, "image/png", 9, b"ab", true)).unwrap();
+        let ack = receiver
+            .on_chunk(1, chunk(2, "image/png", 9, b"ab", true))
+            .unwrap();
         assert!(!ack.ok);
         assert!(ack.error.contains("2 of 9"), "{}", ack.error);
         assert_eq!(receiver.store.read(), None);
@@ -700,9 +751,24 @@ mod tests {
     #[test]
     fn transfer_without_a_type_is_refused() {
         let mut receiver = receiver("untyped", 100);
-        assert!(!receiver.on_chunk(1, chunk(1, "", 2, b"ab", true)).unwrap().ok);
-        assert!(!receiver.on_chunk(1, chunk(2, "image/png\nx", 2, b"ab", true)).unwrap().ok);
-        assert!(!receiver.on_chunk(1, chunk(3, "image/png", 0, b"", true)).unwrap().ok);
+        assert!(
+            !receiver
+                .on_chunk(1, chunk(1, "", 2, b"ab", true))
+                .unwrap()
+                .ok
+        );
+        assert!(
+            !receiver
+                .on_chunk(1, chunk(2, "image/png\nx", 2, b"ab", true))
+                .unwrap()
+                .ok
+        );
+        assert!(
+            !receiver
+                .on_chunk(1, chunk(3, "image/png", 0, b"", true))
+                .unwrap()
+                .ok
+        );
     }
 
     #[test]

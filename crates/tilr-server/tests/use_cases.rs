@@ -77,14 +77,18 @@ impl Server {
         let mut addr = None;
         for line in lines.by_ref() {
             let line = line.unwrap();
-            let found = line.split("listening on ").nth(1).map(|addr| addr.trim().to_owned());
+            let found = line
+                .split("listening on ")
+                .nth(1)
+                .map(|addr| addr.trim().to_owned());
             log.lock().unwrap().push(line);
             if found.is_some() {
                 addr = found;
                 break;
             }
         }
-        let addr = addr.unwrap_or_else(|| panic!("server did not start: {:?}", log.lock().unwrap()));
+        let addr =
+            addr.unwrap_or_else(|| panic!("server did not start: {:?}", log.lock().unwrap()));
         // Keep draining the log so the server never blocks on it.
         let sink = Arc::clone(&log);
         std::thread::spawn(move || {
@@ -101,7 +105,11 @@ impl Server {
     }
 
     fn logged(&self, needle: &str) -> bool {
-        self.log.lock().unwrap().iter().any(|line| line.contains(needle))
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains(needle))
     }
 
     fn signal(&self, signal: &str) {
@@ -122,7 +130,10 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
         if std::thread::panicking() {
-            eprintln!("--- server log ---\n{}", self.log.lock().unwrap().join("\n"));
+            eprintln!(
+                "--- server log ---\n{}",
+                self.log.lock().unwrap().join("\n")
+            );
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -186,7 +197,9 @@ impl Client {
                 .expect("timed out waiting for the server");
             match message {
                 Some(Ok(Message::Binary(packet))) => {
-                    let msg = tilr_proto::decode::<ServerMessage>(&packet).expect("decode").msg;
+                    let msg = tilr_proto::decode::<ServerMessage>(&packet)
+                        .expect("decode")
+                        .msg;
                     match &msg {
                         Some(server_message::Msg::Frame(frame)) => self.screen.apply(frame),
                         Some(server_message::Msg::ClipboardAck(ack)) => {
@@ -229,9 +242,12 @@ impl Client {
     }
 
     async fn list_panes(&mut self) -> Vec<PaneInfo> {
-        self.send(Msg::ListPanes(ListPanes { request_id: 77 })).await;
+        self.send(Msg::ListPanes(ListPanes { request_id: 77 }))
+            .await;
         self.wait_for(|msg| match msg {
-            server_message::Msg::PaneList(list) if list.request_id == 77 => Some(list.panes.clone()),
+            server_message::Msg::PaneList(list) if list.request_id == 77 => {
+                Some(list.panes.clone())
+            }
             _ => None,
         })
         .await
@@ -278,7 +294,11 @@ impl Client {
     async fn wait_screen(&mut self, text: &str) {
         while !self.screen.text().contains(text) {
             let msg = self.next().await;
-            assert!(msg.is_some(), "connection closed; screen:\n{}", self.screen.text());
+            assert!(
+                msg.is_some(),
+                "connection closed; screen:\n{}",
+                self.screen.text()
+            );
         }
     }
 
@@ -287,7 +307,8 @@ impl Client {
     async fn run(&mut self, pane_id: u64, command: &str) -> i32 {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        self.type_line(pane_id, &format!("{command}; echo \"<st\"\"atus{n}:$?>\"")).await;
+        self.type_line(pane_id, &format!("{command}; echo \"<st\"\"atus{n}:$?>\""))
+            .await;
         let marker = format!("<status{n}:");
         self.wait_screen(&marker).await;
         loop {
@@ -378,7 +399,9 @@ async fn a_pane_runs_commands_and_reports_how_its_shell_exited() {
     assert!(client.list_panes().await.is_empty());
 
     let pane_id = client.open_pane().await;
-    client.type_line(pane_id, "echo \"sum is $((6 * 7))\"").await;
+    client
+        .type_line(pane_id, "echo \"sum is $((6 * 7))\"")
+        .await;
     client.wait_screen("sum is 42").await;
 
     let panes = client.list_panes().await;
@@ -422,7 +445,9 @@ async fn a_message_type_the_server_does_not_know_is_ignored() {
     // Flag byte, then field 99 of ClientMessage holding an empty message.
     let unknown = Bytes::from_static(&[0, 0x9a, 0x06, 0x00]);
     client.ws.send(Message::Binary(unknown)).await.unwrap();
-    client.send(Msg::ListPanes(ListPanes { request_id: 1 })).await;
+    client
+        .send(Msg::ListPanes(ListPanes { request_id: 1 }))
+        .await;
     // The very next message answers the request: no error came before it.
     assert!(matches!(
         client.next().await,
@@ -467,7 +492,10 @@ async fn a_pasted_image_reaches_a_program_that_reads_the_clipboard() {
     assert_eq!(std::fs::read(&pasted).unwrap(), data);
 
     // An image is not text: a program asking for text gets nothing.
-    assert_ne!(client.run(pane_id, "xclip -selection clipboard -o").await, 0);
+    assert_ne!(
+        client.run(pane_id, "xclip -selection clipboard -o").await,
+        0
+    );
 }
 
 #[tokio::test]
@@ -475,7 +503,9 @@ async fn the_clipboard_is_shared_by_all_panes_and_replaced_by_the_next_paste() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
     let first = client.open_pane().await;
-    client.put_clipboard(1, "text/plain", b"from the first paste").await;
+    client
+        .put_clipboard(1, "text/plain", b"from the first paste")
+        .await;
     assert!(client.clipboard_ack().await.ok);
 
     // A pane opened later, watched by another client, sees the same content.
@@ -531,7 +561,11 @@ async fn an_upload_over_the_limit_is_refused_and_leaves_no_stale_content() {
         client
             .send(Msg::ClipboardPut(ClipboardPut {
                 transfer_id: 4,
-                mime: if last { String::new() } else { "image/png".into() },
+                mime: if last {
+                    String::new()
+                } else {
+                    "image/png".into()
+                },
                 total_size: if last { 0 } else { 100 },
                 data: Bytes::from(image(80)),
                 last,
@@ -552,7 +586,9 @@ async fn the_clipboard_can_be_turned_off() {
     assert!(ack.features.is_empty());
     assert_eq!(ack.clipboard_max_bytes, 0);
 
-    client.put_clipboard(1, "image/png", &image(CHUNK + 1)).await;
+    client
+        .put_clipboard(1, "image/png", &image(CHUNK + 1))
+        .await;
     let ack = client.clipboard_ack().await;
     assert!(!ack.ok);
     assert!(ack.error.contains("turned off"), "{}", ack.error);
@@ -604,10 +640,20 @@ async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: 
     // The screen from before the reload is still there.
     client.wait_screen("before the reload").await;
     // A variable set before the reload is still set: same shell process.
-    client.type_line(pane_id, "echo \"kept=$KEPT pid=$$\"").await;
+    client
+        .type_line(pane_id, "echo \"kept=$KEPT pid=$$\"")
+        .await;
     client.wait_screen("kept=yes pid=").await;
-    let pid_line = |text: String| text.lines().rev().find(|line| line.contains("pid=")).map(str::to_owned);
-    assert_eq!(pid_line(client.screen.text()), pid_line(std::fs::read_to_string(server.dir.join("pid")).unwrap()));
+    let pid_line = |text: String| {
+        text.lines()
+            .rev()
+            .find(|line| line.contains("pid="))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        pid_line(client.screen.text()),
+        pid_line(std::fs::read_to_string(server.dir.join("pid")).unwrap())
+    );
 
     // New panes get ids after the old ones, and the clipboard still works.
     let new_pane = client.open_pane().await;
@@ -626,7 +672,10 @@ async fn pane_with_marks(server: &Server, client: &mut Client) -> u64 {
     client
         .type_line(
             pane_id,
-            &format!("KEPT=yes; echo 'before the reload'; echo \"kept=$KEPT pid=$$\" > '{}'", pid_file.display()),
+            &format!(
+                "KEPT=yes; echo 'before the reload'; echo \"kept=$KEPT pid=$$\" > '{}'",
+                pid_file.display()
+            ),
         )
         .await;
     client.wait_screen("before the reload").await;

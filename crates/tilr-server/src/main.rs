@@ -15,7 +15,11 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "tilr-server", version, about = "Terminal server: ptys behind a WebSocket")]
+#[command(
+    name = "tilr-server",
+    version,
+    about = "Terminal server: ptys behind a WebSocket"
+)]
 struct Cli {
     /// Address the WebSocket server listens on. There is no authentication
     /// yet, so keep this on loopback.
@@ -80,7 +84,9 @@ fn main() -> anyhow::Result<ExitCode> {
         return Ok(clipboard::shim(tool, exe, args.collect()));
     }
 
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
 
     let cli = Cli::parse();
     match cli.command {

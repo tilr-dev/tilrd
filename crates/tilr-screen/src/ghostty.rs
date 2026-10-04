@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RowIterator};
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen as ActiveScreen};
-use libghostty_vt::style::{Style as VtStyle, StyleColor, Underline as VtUnderline};
 use libghostty_vt::selection::Selection;
+use libghostty_vt::style::{Style as VtStyle, StyleColor, Underline as VtUnderline};
 use libghostty_vt::terminal::{Mode, ModeKind, Point, PointCoordinate, ScrollViewport};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions, key, mouse, paste};
 use tilr_proto::{
@@ -188,7 +188,9 @@ impl Screen for GhosttyScreen {
                             cell.graphemes_buf(&mut buf)?;
                             runs.push_char(buf[0], style, wide);
                         }
-                        _ => runs.push_cluster(cell.graphemes()?.into_iter().collect(), style, wide),
+                        _ => {
+                            runs.push_cluster(cell.graphemes()?.into_iter().collect(), style, wide)
+                        }
                     }
                 }
                 changed.push(Row {
@@ -333,7 +335,11 @@ impl Screen for GhosttyScreen {
         for &mode in SNAPSHOT_MODES {
             let on = self.term.mode(mode)?;
             if on != defaults.mode(mode)? {
-                let private = if mode.kind() == ModeKind::Dec { "?" } else { "" };
+                let private = if mode.kind() == ModeKind::Dec {
+                    "?"
+                } else {
+                    ""
+                };
                 let set = if on { 'h' } else { 'l' };
                 modes.extend(format!("\x1b[{private}{}{set}", mode.value()).bytes());
             }
@@ -377,13 +383,25 @@ impl Screen for GhosttyScreen {
         let history = self.term.scrollback_rows()?;
         if history > 0 {
             let end = (last.x, history as u32 - 1);
-            out.extend(format_range(&self.term, Point::History, (0, 0), end, false)?);
+            out.extend(format_range(
+                &self.term,
+                Point::History,
+                (0, 0),
+                end,
+                false,
+            )?);
             // Push the history off the screen before the screen is drawn.
             out.extend(b"\x1b[0m");
             out.extend(b"\r\n".repeat(usize::from(rows)));
         }
         out.extend(b"\x1b[H");
-        out.extend(format_range(&self.term, Point::Active, (0, 0), (last.x, last.y), false)?);
+        out.extend(format_range(
+            &self.term,
+            Point::Active,
+            (0, 0),
+            (last.x, last.y),
+            false,
+        )?);
         out.extend(b"\x1b[0m");
         out.extend(cursor_position(&self.term)?);
         if let Some((mode, content)) = alternate {
@@ -471,7 +489,10 @@ fn format_range(
     end: (u16, u32),
     state: bool,
 ) -> Result<Vec<u8>> {
-    let start = term.grid_ref(point(PointCoordinate { x: start.0, y: start.1 }))?;
+    let start = term.grid_ref(point(PointCoordinate {
+        x: start.0,
+        y: start.1,
+    }))?;
     let end = term.grid_ref(point(PointCoordinate { x: end.0, y: end.1 }))?;
     let selection = Selection::new(start, end, false);
     let options = FormatterOptions::new()
@@ -660,9 +681,9 @@ fn color_to_proto(color: StyleColor) -> Option<Color> {
     let value = match color {
         StyleColor::None => return None,
         StyleColor::Palette(index) => color::Value::Palette(u32::from(index.0)),
-        StyleColor::Rgb(rgb) => color::Value::Rgb(
-            u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b),
-        ),
+        StyleColor::Rgb(rgb) => {
+            color::Value::Rgb(u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b))
+        }
     };
     Some(Color { value: Some(value) })
 }
@@ -826,10 +847,7 @@ mod tests {
         assert_eq!((runs[0].style, runs[2].style), (0, 0));
         let style = &frame.styles[runs[1].style as usize - 1];
         assert_eq!(style.attrs, attrs::BOLD);
-        assert_eq!(
-            style.fg.unwrap().value,
-            Some(color::Value::Palette(1))
-        );
+        assert_eq!(style.fg.unwrap().value, Some(color::Value::Palette(1)));
     }
 
     #[test]
@@ -866,7 +884,10 @@ mod tests {
         assert!(screen.take_status().is_none());
         screen.feed(b"\x1b]2;vim\x07\x1b]7;file://host/tmp/a%20b\x07");
         let status = screen.take_status().unwrap();
-        assert_eq!((status.title.as_str(), status.cwd.as_str()), ("vim", "/tmp/a b"));
+        assert_eq!(
+            (status.title.as_str(), status.cwd.as_str()),
+            ("vim", "/tmp/a b")
+        );
         assert!(screen.take_status().is_none());
     }
 
@@ -899,16 +920,19 @@ mod tests {
         let mut screen = screen();
         let none = NamedKey::Unspecified;
         assert_eq!(encoded(&mut screen, key(none, 'a', 0, "a")), b"a");
+        assert_eq!(encoded(&mut screen, key(none, 'a', mods::SHIFT, "A")), b"A");
         assert_eq!(
-            encoded(&mut screen, key(none, 'a', mods::SHIFT, "A")),
-            b"A"
+            encoded(&mut screen, key(none, 'c', mods::CTRL, "")),
+            b"\x03"
         );
-        assert_eq!(encoded(&mut screen, key(none, 'c', mods::CTRL, "")), b"\x03");
         assert_eq!(
             encoded(&mut screen, key(none, 'a', mods::ALT, "a")),
             b"\x1ba"
         );
-        assert_eq!(encoded(&mut screen, key(NamedKey::Enter, '\0', 0, "")), b"\r");
+        assert_eq!(
+            encoded(&mut screen, key(NamedKey::Enter, '\0', 0, "")),
+            b"\r"
+        );
         assert_eq!(
             encoded(&mut screen, key(NamedKey::Up, '\0', 0, "")),
             b"\x1b[A"
@@ -938,9 +962,15 @@ mod tests {
             out.extend_from_slice(b"12345");
             screen.encode_mouse(&click, &mut out).unwrap();
             screen
-                .encode_key(&key(NamedKey::F5, '\0', mods::CTRL | mods::SHIFT, ""), &mut out)
+                .encode_key(
+                    &key(NamedKey::F5, '\0', mods::CTRL | mods::SHIFT, ""),
+                    &mut out,
+                )
                 .unwrap();
-            assert!(out.starts_with(b"12345\x1b[<0;3;2M\x1b["), "spare={spare}: {out:?}");
+            assert!(
+                out.starts_with(b"12345\x1b[<0;3;2M\x1b["),
+                "spare={spare}: {out:?}"
+            );
         }
     }
 
@@ -997,7 +1027,13 @@ mod tests {
         screen.scroll(-100);
         let top = screen.frame(true).unwrap().unwrap();
         screen.scroll_to_bottom();
-        (rows(&bottom), rows(&top), bottom.cursor, bottom.mouse_tracking, bottom.alt_screen)
+        (
+            rows(&bottom),
+            rows(&top),
+            bottom.cursor,
+            bottom.mouse_tracking,
+            bottom.alt_screen,
+        )
     }
 
     /// Snapshot and restore a screen fed with `bytes`, checking that nothing
@@ -1010,7 +1046,12 @@ mod tests {
 
         let snapshot = original.snapshot().unwrap();
         let mut restored = GhosttyScreen::restore(20, 4, &snapshot).unwrap();
-        assert_eq!(view(&mut restored), before, "snapshot: {:?}", String::from_utf8_lossy(&snapshot));
+        assert_eq!(
+            view(&mut restored),
+            before,
+            "snapshot: {:?}",
+            String::from_utf8_lossy(&snapshot)
+        );
         assert_eq!(restored.term.scrollback_rows().unwrap(), history);
         restored
     }
@@ -1039,9 +1080,8 @@ mod tests {
 
     #[test]
     fn snapshot_keeps_both_screens() {
-        let mut restored = round_trip(
-            b"one\r\ntwo\r\n$ app\r\n\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[2;3Halt",
-        );
+        let mut restored =
+            round_trip(b"one\r\ntwo\r\n$ app\r\n\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[2;3Halt");
         // The application leaves: the primary screen and its cursor are back.
         restored.feed(b"\x1b[?1000l\x1b[?25h\x1b[?1049l");
         let frame = restored.frame(true).unwrap().unwrap();
@@ -1059,6 +1099,9 @@ mod tests {
         assert!(restored.term.mode(Mode::DECCKM).unwrap());
         assert_eq!(restored.term.kitty_keyboard_flags().unwrap().bits(), 5);
         let cursor = restored.frame(true).unwrap().unwrap().cursor.unwrap();
-        assert_eq!((cursor.shape, cursor.blinking), (CursorShape::Underline as i32, false));
+        assert_eq!(
+            (cursor.shape, cursor.blinking),
+            (CursorShape::Underline as i32, false)
+        );
     }
 }
