@@ -12,6 +12,34 @@ pub struct Spawned {
     pub child: Child,
 }
 
+/// A child process: started by this process, or inherited through a reload,
+/// in which case it is a child all the same but tokio does not know it.
+pub enum Process {
+    Spawned(Child),
+    Inherited(u32),
+}
+
+impl Process {
+    pub fn pid(&self) -> Option<u32> {
+        match self {
+            Self::Spawned(child) => child.id(),
+            Self::Inherited(pid) => Some(*pid),
+        }
+    }
+
+    /// Wait for the process to exit. `None` if its exit code cannot be had.
+    pub async fn wait(&mut self) -> Option<i32> {
+        match self {
+            Self::Spawned(child) => child.wait().await.ok()?.code(),
+            Self::Inherited(pid) => {
+                let pid = *pid;
+                let code = tokio::task::spawn_blocking(move || wait_pid(pid)).await;
+                code.ok()?.ok()
+            }
+        }
+    }
+}
+
 /// Open a pty and start `command` (or the login shell) on its slave side as a
 /// session leader.
 pub fn spawn_shell(command: &[String], cwd: &str, cols: u16, rows: u16) -> Result<Spawned> {

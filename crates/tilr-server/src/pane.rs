@@ -22,7 +22,6 @@ use tilr_proto::{ClientMessage, PaneExited, ServerMessage, client_message::Msg, 
 use tilr_screen::{GhosttyScreen, Screen};
 use tokio::io::Stdout;
 use tokio::io::unix::AsyncFd;
-use tokio::process::Child;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -81,34 +80,6 @@ impl FromStr for Resume {
     }
 }
 
-/// The shell: started by this process, or inherited through a reload, in
-/// which case it is a child all the same but tokio does not know it.
-enum Shell {
-    Spawned(Child),
-    Inherited(u32),
-}
-
-impl Shell {
-    fn pid(&self) -> Option<u32> {
-        match self {
-            Self::Spawned(child) => child.id(),
-            Self::Inherited(pid) => Some(*pid),
-        }
-    }
-
-    /// Wait for the shell to exit. `None` if its exit code cannot be had.
-    async fn wait(&mut self) -> Option<i32> {
-        match self {
-            Self::Spawned(child) => child.wait().await.ok()?.code(),
-            Self::Inherited(pid) => {
-                let pid = *pid;
-                let code = tokio::task::spawn_blocking(move || pty::wait_pid(pid)).await;
-                code.ok()?.ok()
-            }
-        }
-    }
-}
-
 enum FromSupervisor {
     Packet(Bytes),
     Reload,
@@ -155,7 +126,7 @@ struct Pane {
     pty: AsyncFd<OwnedFd>,
     screen: GhosttyScreen,
     to_supervisor: Stdout,
-    shell: Shell,
+    shell: pty::Process,
     /// When to kill a shell that was asked to close and has not exited.
     kill_at: Option<Instant>,
     /// Input waiting for the pty to accept it.
@@ -182,7 +153,7 @@ async fn serve(args: Args) -> Result<()> {
         let snapshot = read_state(state, &mut pending_input).context("read resume state")?;
         let screen = GhosttyScreen::restore(args.cols, args.rows, &snapshot)?;
         tracing::info!(pane = args.id, "resumed after reload");
-        (master, Shell::Inherited(resume.shell_pid), screen, resume.seq)
+        (master, pty::Process::Inherited(resume.shell_pid), screen, resume.seq)
     } else {
         let pty::Spawned { master, child } =
             match pty::spawn_shell(&args.command, &args.cwd, args.cols, args.rows) {
@@ -201,7 +172,7 @@ async fn serve(args: Args) -> Result<()> {
             .await
             .context("report start to supervisor")?;
         let screen = GhosttyScreen::new(args.cols, args.rows)?;
-        (master, Shell::Spawned(child), screen, 0)
+        (master, pty::Process::Spawned(child), screen, 0)
     };
 
     let (packet_tx, mut packets) = mpsc::channel(256);
@@ -333,10 +304,7 @@ impl Pane {
         let Some(shell_pid) = self.shell.pid() else {
             return anyhow::anyhow!("the shell has already exited");
         };
-        let exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(err) => return anyhow::Error::new(err).context("locate own executable"),
-        };
+        let exe = crate::exe();
         let state = match write_state(self.id, &self.pending_input, snapshot) {
             Ok(state) => state,
             Err(err) => return anyhow::Error::new(err).context("write resume state"),
@@ -351,7 +319,7 @@ impl Pane {
         }
         let resume = format!("{master}:{}:{shell_pid}:{}", state.as_raw_fd(), self.seq);
         tracing::info!(pane = self.id, exe = %exe.display(), "reloading");
-        let err = std::process::Command::new(&exe)
+        let err = std::process::Command::new(exe)
             .arg("pane")
             .args(["--id", &self.id.to_string()])
             .args(["--cols", &cols.to_string()])

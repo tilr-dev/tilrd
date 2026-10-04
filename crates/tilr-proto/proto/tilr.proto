@@ -2,6 +2,10 @@ syntax = "proto3";
 
 package tilr.v1;
 
+// Both sides ignore messages they do not know, so new message types can be
+// added without breaking older peers. What a peer supports is announced in
+// Hello / HelloAck `features`.
+
 // ---------------------------------------------------------------------------
 // Client -> server
 // ---------------------------------------------------------------------------
@@ -20,12 +24,15 @@ message ClientMessage {
     Paste paste = 10;
     RawInput raw = 11;
     Scroll scroll = 12;
+    ClipboardPut clipboard_put = 13;
   }
 }
 
 message Hello {
   uint32 protocol_version = 1;
   string client_name = 2;
+  // Optional capabilities the client supports.
+  repeated string features = 3;
 }
 
 message CreatePane {
@@ -157,6 +164,27 @@ message Scroll {
   bool to_bottom = 3;
 }
 
+// Replace the server's clipboard, the one programs in every pane read
+// through the `xclip` and `wl-paste` the server puts on their PATH. Requires
+// the "clipboard" feature.
+//
+// Content goes up in chunks sharing one `transfer_id`. The first chunk empties
+// the clipboard; the content becomes readable once the chunk with `last`
+// arrived, and ClipboardAck follows. Messages sent after the last chunk (the
+// paste keystroke, say) are handled after it, so a client need not wait for
+// the ack.
+message ClipboardPut {
+  // Chosen by the client, distinct from its previous transfer.
+  uint64 transfer_id = 1;
+  // MIME type of the content, e.g. "image/png". First chunk only.
+  string mime = 2;
+  // Size of the whole content in bytes. First chunk only. The server refuses
+  // more than HelloAck.clipboard_max_bytes.
+  uint64 total_size = 3;
+  bytes data = 4;
+  bool last = 5;
+}
+
 // ---------------------------------------------------------------------------
 // Server -> client
 // ---------------------------------------------------------------------------
@@ -169,12 +197,18 @@ message ServerMessage {
     PaneExited pane_exited = 4;
     Frame frame = 5;
     Error error = 6;
+    ClipboardAck clipboard_ack = 7;
   }
 }
 
 message HelloAck {
   uint32 protocol_version = 1;
   string server_version = 2;
+  // Optional capabilities the server supports:
+  //   "clipboard" - ClipboardPut
+  repeated string features = 3;
+  // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
+  uint64 clipboard_max_bytes = 4;
 }
 
 message PaneInfo {
@@ -212,6 +246,16 @@ message PaneExited {
 
 message Error {
   string message = 1;
+}
+
+// Outcome of a ClipboardPut transfer: sent once, after the last chunk or as
+// soon as the transfer is refused. The rest of a refused transfer is ignored
+// and the clipboard stays empty.
+message ClipboardAck {
+  uint64 transfer_id = 1;
+  bool ok = 2;
+  // Why the transfer was refused; meant to be shown to the user.
+  string error = 3;
 }
 
 // Absent Color = terminal default.
@@ -300,4 +344,25 @@ message Frame {
 message PaneStatus {
   string title = 1;
   string cwd = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Internal: supervisor -> the supervisor that replaces it on reload
+// ---------------------------------------------------------------------------
+
+message SupervisorState {
+  // Descriptor of the listening socket.
+  int32 listener = 1;
+  uint64 next_pane_id = 2;
+  repeated PaneState panes = 3;
+}
+
+message PaneState {
+  PaneInfo info = 1;
+  uint32 pid = 2;
+  // Descriptors of the pipes to the pane process's stdin and from its stdout.
+  int32 to_pane = 3;
+  int32 from_pane = 4;
+  // Bytes already read from `from_pane` that do not yet make a whole packet.
+  bytes unparsed = 5;
 }

@@ -4,7 +4,7 @@
 //! An empty packet from the supervisor is not a message: it asks the pane
 //! process to replace itself with the executable currently on disk.
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const MAX_PACKET: usize = 64 << 20;
@@ -27,6 +27,27 @@ pub async fn read_packet<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Resul
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body).await?;
     Ok(Some(Bytes::from(body)))
+}
+
+/// Take one whole packet off the front of `buf`, if it holds one. For a
+/// reader that must be able to stop between packets: unlike [`read_packet`],
+/// what was read of an unfinished packet stays in `buf`.
+pub fn take_packet(buf: &mut BytesMut) -> std::io::Result<Option<Bytes>> {
+    let Some(len) = buf.first_chunk::<4>() else {
+        return Ok(None);
+    };
+    let len = u32::from_le_bytes(*len) as usize;
+    if len > MAX_PACKET {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("packet of {len} bytes exceeds limit"),
+        ));
+    }
+    if buf.len() < 4 + len {
+        return Ok(None);
+    }
+    buf.advance(4);
+    Ok(Some(buf.split_to(len).freeze()))
 }
 
 /// First byte of every packet a pane process sends to the supervisor.
@@ -66,4 +87,35 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
         .await?;
     writer.write_all(packet).await?;
     writer.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_packet_waits_for_the_whole_packet() {
+        let mut wire = Vec::new();
+        for packet in [&b"one"[..], b"", b"three"] {
+            wire.extend_from_slice(&(packet.len() as u32).to_le_bytes());
+            wire.extend_from_slice(packet);
+        }
+        // Feed the stream a byte at a time: packets come out whole, in order.
+        let mut buf = BytesMut::new();
+        let mut packets = Vec::new();
+        for byte in wire {
+            buf.extend_from_slice(&[byte]);
+            while let Some(packet) = take_packet(&mut buf).unwrap() {
+                packets.push(packet);
+            }
+        }
+        assert_eq!(packets, [&b"one"[..], b"", b"three"]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn take_packet_rejects_an_oversized_length() {
+        let mut buf = BytesMut::from(&u32::MAX.to_le_bytes()[..]);
+        assert!(take_packet(&mut buf).is_err());
+    }
 }
