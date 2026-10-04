@@ -60,6 +60,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--no-clipboard` | | Turn the shared clipboard off |
 | `--clipboard-max SIZE` | `20MB` | Largest clipboard upload (`512K`, `20MB`, `1G`) |
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
+| `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
 
 ## Protocol
@@ -70,6 +71,21 @@ followed by a protobuf `ClientMessage` or `ServerMessage`.
 
 The protocol grows by adding message types. Both sides ignore messages they do
 not know, and say what they support in `Hello.features` / `HelloAck.features`.
+
+A connection starts with `Hello`, which carries the protocol version of the
+client. A server that speaks another version, or is sent anything else first,
+answers with an `Error` and closes the connection. `HelloAck` carries the
+version of the server.
+
+The server sends a WebSocket ping every third of `--client-timeout`. Browsers
+and WebSocket libraries answer on their own. A client that stays silent for
+the whole timeout has dropped off the network without closing the connection:
+the server drops it, and its panes stop counting it as a viewer.
+
+A page in a browser cannot see those pings, so for the other direction there
+is `Ping` (feature `"ping"`): the server answers `Pong` with the same nonce at
+once. A client that pings regularly and gets no answer in time knows the
+server is out of reach, and reconnects.
 
 ## Pasting images: the shared clipboard
 
@@ -90,7 +106,7 @@ The server gives that machine a clipboard the client can fill:
 
 So the program pastes as it would on a desktop. Verified against the commands
 Claude Code 2.1.289 runs on Linux; they are spelled out in
-`crates/tilr-server/tests/use_cases.rs`.
+`crates/tilr-server/tests/common/mod.rs`.
 
 Rules:
 
@@ -129,7 +145,7 @@ The server picks up a new executable without ending any shell:
 
 The supervisor execs the new executable in place, keeping its pid, the
 listening socket and the pane processes, then has every pane process do the
-same. Shells, their screens and scrollback carry over.
+same. Shells, their screens, scrollback and scroll position carry over.
 
 What to know:
 
@@ -138,8 +154,10 @@ What to know:
 - Install a new version by writing it next to the old one and renaming it into
   place (`install`, `mv`). The server reloads from the path it was started
   from; a version switch done by repointing a symlink is not noticed.
-- Before reloading, the server runs the new file with `--version`. If that
-  fails, it logs `not reloading` and carries on with the code it has.
+- Before reloading, the server asks the new file which versions of the reload
+  state it reads (`tilr-server state-formats`). If it does not run, or reads
+  another version than the server writes, the server logs `not reloading` and
+  carries on with the code it has. Such an upgrade needs a restart.
 - A pane process that cannot take its queued input within 5 seconds is closed
   rather than carried over.
 
@@ -149,7 +167,7 @@ What to know:
 cargo test --workspace
 ```
 
-`crates/tilr-server/tests/use_cases.rs` starts the real server and drives it
-as a client would: running commands in a pane, pasting an image and reading it
-back with the commands Claude Code uses, the size limit, expiry, and reloads
-by signal and by replacing the executable.
+The tests in `crates/tilr-server/tests/` start the real server and drive it as
+a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
+connecting, reconnecting, scrolling, reloading, the clipboard — and what is
+not covered yet.

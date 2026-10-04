@@ -22,7 +22,7 @@ use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use tilr_proto::{
     ClientMessage, ClipboardAck, ClipboardPut, CreatePane, Error as ProtoError, HelloAck,
-    PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState, PaneStatus,
+    PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState, PaneStatus, Pong,
     ServerMessage, Subscribe, SupervisorState, client_message::Msg, server_message,
 };
 use tokio::io::AsyncReadExt;
@@ -31,6 +31,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
+use tokio::time::{Interval, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
@@ -46,8 +47,13 @@ const DETACH_TIMEOUT: Duration = Duration::from_secs(5);
 /// A reload asked for while a pane is starting is tried again this much
 /// later.
 const RELOAD_RETRY: Duration = Duration::from_millis(200);
+/// Pings sent to a client within the time it may stay silent, so that one
+/// lost ping does not cost the connection.
+const PINGS_PER_TIMEOUT: u32 = 3;
 /// Feature name for the shared clipboard, see `HelloAck.features`.
 const FEATURE_CLIPBOARD: &str = "clipboard";
+/// Feature name for `Ping`, see `HelloAck.features`.
+const FEATURE_PING: &str = "ping";
 
 type ClientId = u64;
 type PaneId = u64;
@@ -95,6 +101,9 @@ enum Event {
 struct Client {
     tx: mpsc::Sender<Bytes>,
     subscriptions: HashSet<PaneId>,
+    /// Said `Hello` with the protocol version this server speaks. Nothing
+    /// else is taken from the client before that.
+    greeted: bool,
 }
 
 struct Pane {
@@ -146,6 +155,9 @@ pub struct Options {
     pub clipboard: Option<clipboard::Limits>,
     /// Reload when the executable on disk changes.
     pub auto_reload: bool,
+    /// Drop a client nothing was heard from for this long, pings included.
+    /// `None` keeps silent clients forever.
+    pub client_timeout: Option<Duration>,
     /// Descriptor of the state file of the supervisor this one replaces.
     pub resume: Option<RawFd>,
 }
@@ -169,6 +181,7 @@ pub fn run(options: Options) -> Result<()> {
             tokio::spawn(accept_loop(
                 Arc::clone(&listener),
                 options.allow_origins.into(),
+                options.client_timeout,
                 events_tx.clone(),
             ));
             tokio::spawn(shutdown_signal(events_tx.clone()));
@@ -267,6 +280,7 @@ async fn reload_signal(events: mpsc::UnboundedSender<Event>) {
 async fn accept_loop(
     listener: Arc<TcpListener>,
     allow_origins: Arc<[String]>,
+    client_timeout: Option<Duration>,
     events: mpsc::UnboundedSender<Event>,
 ) {
     let mut next_id: ClientId = 1;
@@ -280,6 +294,7 @@ async fn accept_loop(
                     stream,
                     addr,
                     Arc::clone(&allow_origins),
+                    client_timeout,
                     events.clone(),
                 ));
             }
@@ -296,6 +311,7 @@ async fn serve_client(
     stream: TcpStream,
     addr: SocketAddr,
     allow_origins: Arc<[String]>,
+    client_timeout: Option<Duration>,
     events: mpsc::UnboundedSender<Event>,
 ) {
     // Keystrokes and small diffs must not wait for Nagle.
@@ -334,17 +350,45 @@ async fn serve_client(
         return;
     }
 
+    // A network that drops out without closing the connection leaves it open
+    // for hours. Pings make a client that is still there answer, so one that
+    // stays silent is known to be gone.
+    let mut ping = client_timeout.map(|timeout| {
+        let mut ping = tokio::time::interval(timeout / PINGS_PER_TIMEOUT);
+        ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        ping
+    });
     // Ends when the supervisor drops the client's sender.
     let writer = tokio::spawn(async move {
-        while let Some(packet) = rx.recv().await {
-            if sink.send(Message::Binary(packet)).await.is_err() {
+        loop {
+            let message = tokio::select! {
+                packet = rx.recv() => match packet {
+                    Some(packet) => Message::Binary(packet),
+                    None => break,
+                },
+                () = tick(&mut ping) => Message::Ping(Bytes::new()),
+            };
+            if sink.send(message).await.is_err() {
                 break;
             }
         }
         let _ = sink.close().await;
     });
 
-    while let Some(Ok(message)) = source.next().await {
+    loop {
+        let message = match client_timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, source.next()).await {
+                Ok(message) => message,
+                Err(_) => {
+                    tracing::warn!(client = id, "client went silent, dropping");
+                    break;
+                }
+            },
+            None => source.next().await,
+        };
+        let Some(Ok(message)) = message else {
+            break;
+        };
         match message {
             Message::Binary(packet) => {
                 if events.send(Event::ClientPacket { id, packet }).is_err() {
@@ -358,6 +402,16 @@ async fn serve_client(
     let _ = events.send(Event::ClientGone { id });
     writer.abort();
     tracing::info!(client = id, "client disconnected");
+}
+
+/// The next tick of `interval`; never, without one.
+async fn tick(interval: &mut Option<Interval>) {
+    match interval {
+        Some(interval) => {
+            interval.tick().await;
+        }
+        None => std::future::pending().await,
+    }
 }
 
 struct Supervisor {
@@ -399,6 +453,7 @@ impl Supervisor {
                     Client {
                         tx,
                         subscriptions: HashSet::new(),
+                        greeted: false,
                     },
                 );
             }
@@ -569,6 +624,7 @@ impl Supervisor {
         let state = SupervisorState {
             listener,
             next_pane_id: self.next_pane_id,
+            format: reload::STATE_FORMAT,
             panes: panes
                 .iter()
                 .filter_map(|(pane_id, to_pane, reader)| {
@@ -611,14 +667,39 @@ impl Supervisor {
     }
 
     fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes) {
+        // A client the supervisor has dropped may still have packets on the
+        // way. Acting on them would subscribe a client nobody will ever
+        // remove again.
+        let Some(greeted) = self.clients.get(&client_id).map(|client| client.greeted) else {
+            return;
+        };
         let msg = match tilr_proto::decode::<ClientMessage>(&packet) {
             Ok(ClientMessage { msg: Some(msg) }) => msg,
             // A message type this server does not know; see tilr.proto.
             Ok(_) => return,
             Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
         };
+        // A client speaking another version of the protocol would be
+        // misunderstood in ways nobody notices; it is turned away instead.
+        match &msg {
+            Msg::Hello(hello) if hello.protocol_version != PROTOCOL_VERSION => {
+                return self.refuse(
+                    client_id,
+                    &format!(
+                        "unsupported protocol version {}: this server speaks {PROTOCOL_VERSION}",
+                        hello.protocol_version
+                    ),
+                );
+            }
+            Msg::Hello(_) => {}
+            _ if !greeted => return self.refuse(client_id, "expected Hello first"),
+            _ => {}
+        }
         match msg {
             Msg::Hello(_) => {
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.greeted = true;
+                }
                 let clipboard_max_bytes =
                     self.clipboard.as_ref().map(clipboard::Receiver::max_bytes);
                 self.send(
@@ -627,8 +708,10 @@ impl Supervisor {
                         protocol_version: PROTOCOL_VERSION,
                         server_version: env!("CARGO_PKG_VERSION").into(),
                         features: clipboard_max_bytes
-                            .map(|_| FEATURE_CLIPBOARD.to_owned())
+                            .map(|_| FEATURE_CLIPBOARD)
                             .into_iter()
+                            .chain([FEATURE_PING])
+                            .map(str::to_owned)
                             .collect(),
                         clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
                     }),
@@ -681,6 +764,12 @@ impl Supervisor {
             Msg::Raw(input) => self.forward(client_id, input.pane_id, packet),
             Msg::Scroll(input) => self.forward(client_id, input.pane_id, packet),
             Msg::ClipboardPut(put) => self.on_clipboard_put(client_id, put),
+            Msg::Ping(ping) => {
+                self.send(
+                    client_id,
+                    server_message::Msg::Pong(Pong { nonce: ping.nonce }),
+                );
+            }
         }
     }
 
@@ -902,6 +991,14 @@ impl Supervisor {
                 message: message.to_owned(),
             }),
         );
+    }
+
+    /// Tell the client why and close its connection.
+    fn refuse(&mut self, client_id: ClientId, reason: &str) {
+        tracing::warn!(client = client_id, "refusing client: {reason}");
+        self.send_error(client_id, reason);
+        // The writer sends what is queued, then closes.
+        self.drop_client(client_id);
     }
 
     fn send_no_pane(&mut self, client_id: ClientId, pane_id: PaneId) {

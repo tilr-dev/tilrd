@@ -16,12 +16,13 @@ use std::os::unix::process::CommandExt;
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use tilr_proto::{ClientMessage, PaneExited, ServerMessage, client_message::Msg, server_message};
 use tilr_screen::{GhosttyScreen, Screen};
 use tokio::io::Stdout;
 use tokio::io::unix::AsyncFd;
+use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -52,9 +53,15 @@ pub struct Args {
     pub command: Vec<String>,
 }
 
+/// Version of what a reloading pane process leaves its successor: the fields
+/// of [`Resume`] and the state file. Raise it with any change an older or
+/// newer pane process would misread.
+pub const STATE_FORMAT: u32 = 1;
+
 /// What a reloading pane process hands to its successor, as
-/// `master:state:shell_pid:seq` on the command line.
-#[derive(Clone)]
+/// `master:state:shell_pid:seq:scrolled_back:format` on the command line. The
+/// last two fields may be missing: older versions do not send them.
+#[derive(Clone, Debug)]
 pub struct Resume {
     /// Descriptor of the pty master.
     master: RawFd,
@@ -63,6 +70,8 @@ pub struct Resume {
     state: RawFd,
     shell_pid: u32,
     seq: u64,
+    /// Rows the viewport was scrolled back into history.
+    scrolled_back: u32,
 }
 
 impl FromStr for Resume {
@@ -71,12 +80,18 @@ impl FromStr for Resume {
     fn from_str(s: &str) -> Result<Self> {
         let mut fields = s.split(':');
         let mut next = || fields.next().context("expected master:state:shell_pid:seq");
-        Ok(Self {
+        let resume = Self {
             master: next()?.parse()?,
             state: next()?.parse()?,
             shell_pid: next()?.parse()?,
             seq: next()?.parse()?,
-        })
+            scrolled_back: fields.next().map_or(Ok(0), str::parse)?,
+        };
+        let format: u32 = fields.next().map_or(Ok(0), str::parse)?;
+        if !crate::reload::format_matches(format, STATE_FORMAT) {
+            bail!("state is in format {format}, this pane process reads {STATE_FORMAT}");
+        }
+        Ok(resume)
     }
 }
 
@@ -95,7 +110,14 @@ enum FromSupervisor {
 /// for the process that takes over.
 fn read_supervisor(tx: mpsc::Sender<FromSupervisor>) {
     tokio::spawn(async move {
-        let mut from_supervisor = tokio::io::stdin();
+        let mut from_supervisor = match supervisor_pipe() {
+            Ok(pipe) => pipe,
+            Err(err) => {
+                tracing::error!("cannot read from the supervisor: {err}");
+                let _ = tx.send(FromSupervisor::Closed).await;
+                return;
+            }
+        };
         loop {
             let (message, last) = match link::read_packet(&mut from_supervisor).await {
                 Ok(Some(packet)) if packet.is_empty() => (FromSupervisor::Reload, true),
@@ -107,6 +129,24 @@ fn read_supervisor(tx: mpsc::Sender<FromSupervisor>) {
             }
         }
     });
+}
+
+/// The pipe from the supervisor (descriptor 0), read without a buffer.
+///
+/// The standard input handle would read ahead, and what it had read past a
+/// reload request would be lost to the process that takes over. The reader
+/// works on a duplicate, so that dropping it leaves descriptor 0 open for
+/// that process.
+fn supervisor_pipe() -> std::io::Result<pipe::Receiver> {
+    // SAFETY: dup has no memory-safety preconditions.
+    let fd = unsafe { libc::dup(0) };
+    if fd == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: dup returned a fresh descriptor that we now own.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    pty::set_cloexec(fd.as_raw_fd(), true)?;
+    pipe::Receiver::from_owned_fd(fd)
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -151,7 +191,11 @@ async fn serve(args: Args) -> Result<()> {
         };
         pty::set_cloexec(master.as_raw_fd(), true)?;
         let snapshot = read_state(state, &mut pending_input).context("read resume state")?;
-        let screen = GhosttyScreen::restore(args.cols, args.rows, &snapshot)?;
+        let mut screen = GhosttyScreen::restore(args.cols, args.rows, &snapshot)?;
+        // Whoever was reading history keeps their place.
+        if resume.scrolled_back > 0 {
+            screen.scroll(-(resume.scrolled_back.min(i32::MAX as u32) as i32));
+        }
         tracing::info!(pane = args.id, "resumed after reload");
         (
             master,
@@ -287,6 +331,7 @@ impl Pane {
     /// still in working order.
     fn reload(&mut self) -> anyhow::Error {
         let (cols, rows) = self.screen.size();
+        let scrolled_back = self.screen.scrolled_back();
         let snapshot = match GhosttyScreen::new(cols, rows) {
             Ok(blank) => std::mem::replace(&mut self.screen, blank).snapshot(),
             Err(err) => return err,
@@ -297,15 +342,24 @@ impl Pane {
             Ok(snapshot) => snapshot,
             Err(err) => return err.context("snapshot screen (its contents are lost)"),
         };
-        let err = self.exec_successor(cols, rows, &snapshot);
+        let err = self.exec_successor(cols, rows, &snapshot, scrolled_back);
         match GhosttyScreen::restore(cols, rows, &snapshot) {
-            Ok(screen) => self.screen = screen,
+            Ok(mut screen) => {
+                screen.scroll(-(scrolled_back.min(i32::MAX as u32) as i32));
+                self.screen = screen;
+            }
             Err(restore) => tracing::error!(pane = self.id, "screen lost: {restore:#}"),
         }
         err
     }
 
-    fn exec_successor(&self, cols: u16, rows: u16, snapshot: &[u8]) -> anyhow::Error {
+    fn exec_successor(
+        &self,
+        cols: u16,
+        rows: u16,
+        snapshot: &[u8],
+        scrolled_back: u32,
+    ) -> anyhow::Error {
         let Some(shell_pid) = self.shell.pid() else {
             return anyhow::anyhow!("the shell has already exited");
         };
@@ -322,7 +376,11 @@ impl Pane {
         if let Err(err) = inheritable {
             return anyhow::Error::new(err).context("make descriptors inheritable");
         }
-        let resume = format!("{master}:{}:{shell_pid}:{}", state.as_raw_fd(), self.seq);
+        let resume = format!(
+            "{master}:{}:{shell_pid}:{}:{scrolled_back}:{STATE_FORMAT}",
+            state.as_raw_fd(),
+            self.seq
+        );
         tracing::info!(pane = self.id, exe = %exe.display(), "reloading");
         let err = std::process::Command::new(exe)
             .arg("pane")
@@ -446,4 +504,33 @@ fn read_state(mut state: File, pending_input: &mut Vec<u8>) -> std::io::Result<V
     let mut snapshot = Vec::new();
     state.read_to_end(&mut snapshot)?;
     Ok(snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_in_the_current_format_is_read() {
+        let resume: Resume = format!("3:4:500:9:12:{STATE_FORMAT}").parse().unwrap();
+        assert_eq!((resume.master, resume.state), (3, 4));
+        assert_eq!((resume.shell_pid, resume.seq), (500, 9));
+        assert_eq!(resume.scrolled_back, 12);
+    }
+
+    #[test]
+    fn resume_from_before_formats_were_recorded_is_read() {
+        let resume: Resume = "3:4:500:9:12".parse().unwrap();
+        assert_eq!(resume.scrolled_back, 12);
+        let resume: Resume = "3:4:500:9".parse().unwrap();
+        assert_eq!(resume.scrolled_back, 0);
+    }
+
+    #[test]
+    fn resume_in_another_format_is_refused() {
+        let err = format!("3:4:500:9:12:{}", STATE_FORMAT + 1)
+            .parse::<Resume>()
+            .unwrap_err();
+        assert!(err.to_string().contains("format 2"), "{err}");
+    }
 }

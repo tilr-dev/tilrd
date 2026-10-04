@@ -7,6 +7,11 @@
 //! about the panes travels in an unlinked file. The new supervisor then asks
 //! every pane process to reload too.
 //!
+//! The state files have a format version. A supervisor asks the executable on
+//! disk which versions it reads before handing over to it: once it has
+//! exec'd there is no way back, and a successor that misreads the state
+//! would lose every shell.
+//!
 //! Client connections do not survive: clients reconnect and find their panes
 //! as they left them.
 
@@ -53,21 +58,67 @@ pub async fn watch_executable(exe: &Path, mut changed: impl FnMut() -> bool) {
     }
 }
 
-/// Make sure the executable on disk runs at all before betting every pane on
-/// it.
+/// Version of what a supervisor leaves its successor ([`SupervisorState`]).
+/// Raise it with any change an older or newer supervisor would misread.
+pub const STATE_FORMAT: u32 = 1;
+
+/// What `tilr-server state-formats` prints: the versions of the state files
+/// this executable reads, one `name version` per line.
+pub fn formats() -> String {
+    format!(
+        "{SUPERVISOR_STATE} {STATE_FORMAT}\n{PANE_STATE} {}\n",
+        crate::pane::STATE_FORMAT
+    )
+}
+
+const SUPERVISOR_STATE: &str = "supervisor-state";
+const PANE_STATE: &str = "pane-state";
+
+/// Whether state written as version `written` can be read as version
+/// `read`. Version 0 is state from before versions were recorded, which has
+/// the layout of version 1.
+pub fn format_matches(written: u32, read: u32) -> bool {
+    written.max(1) == read
+}
+
+/// Check what another executable printed for `state-formats` against the
+/// state this one writes.
+fn check_formats(printed: &str) -> Result<()> {
+    for (name, written) in [
+        (SUPERVISOR_STATE, STATE_FORMAT),
+        (PANE_STATE, crate::pane::STATE_FORMAT),
+    ] {
+        let read: u32 = printed
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .with_context(|| format!("it does not say which {name} format it reads"))?
+            .trim()
+            .parse()
+            .with_context(|| format!("{name} format"))?;
+        if !format_matches(written, read) {
+            bail!("it reads {name} format {read}, this server writes {written}");
+        }
+    }
+    Ok(())
+}
+
+/// Make sure the executable on disk runs and reads the state this server
+/// would leave it, before betting every pane on it.
 pub async fn check_executable(exe: &Path) -> Result<()> {
-    let status = tokio::process::Command::new(exe)
-        .arg("--version")
+    let output = tokio::process::Command::new(exe)
+        .arg("state-formats")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
-        .status();
-    match tokio::time::timeout(CHECK_TIMEOUT, status).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
-        Ok(Ok(status)) => bail!("{} --version: {status}", exe.display()),
+        .output();
+    match tokio::time::timeout(CHECK_TIMEOUT, output).await {
+        Ok(Ok(output)) if output.status.success() => {
+            check_formats(&String::from_utf8_lossy(&output.stdout))
+                .with_context(|| format!("{} cannot take over", exe.display()))
+        }
+        Ok(Ok(output)) => bail!("{} state-formats: {}", exe.display(), output.status),
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
-        Err(_) => bail!("{} --version did not finish", exe.display()),
+        Err(_) => bail!("{} state-formats did not finish", exe.display()),
     }
 }
 
@@ -93,7 +144,18 @@ pub fn read_state(fd: RawFd) -> Result<SupervisorState> {
     let mut file = unsafe { File::from_raw_fd(fd) };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).context("read state file")?;
-    SupervisorState::decode(bytes.as_slice()).context("decode state")
+    decode_state(&bytes)
+}
+
+fn decode_state(bytes: &[u8]) -> Result<SupervisorState> {
+    let state = SupervisorState::decode(bytes).context("decode state")?;
+    if !format_matches(state.format, STATE_FORMAT) {
+        bail!(
+            "state is in format {}, this server reads {STATE_FORMAT}",
+            state.format
+        );
+    }
+    Ok(state)
 }
 
 /// The arguments this process was started with, minus a `--resume` of its
@@ -109,4 +171,59 @@ pub fn own_args() -> Vec<OsString> {
         }
     }
     kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_executable_reading_the_same_formats_can_take_over() {
+        assert!(check_formats(&formats()).is_ok());
+    }
+
+    #[test]
+    fn an_executable_reading_another_format_cannot_take_over() {
+        let pane = crate::pane::STATE_FORMAT;
+        let newer = format!("supervisor-state {}\npane-state {pane}\n", STATE_FORMAT + 1);
+        let err = check_formats(&newer).unwrap_err().to_string();
+        assert!(err.contains("supervisor-state format 2"), "{err}");
+
+        let newer = format!("supervisor-state {STATE_FORMAT}\npane-state {}\n", pane + 1);
+        let err = check_formats(&newer).unwrap_err().to_string();
+        assert!(err.contains("pane-state format 2"), "{err}");
+    }
+
+    #[test]
+    fn an_executable_that_names_no_formats_cannot_take_over() {
+        assert!(check_formats("").is_err());
+        assert!(check_formats("tilr-server 0.1.0\n").is_err());
+        assert!(check_formats("supervisor-state 1\n").is_err());
+        assert!(check_formats("supervisor-state one\npane-state 1\n").is_err());
+    }
+
+    fn state(format: u32) -> Vec<u8> {
+        SupervisorState {
+            next_pane_id: 7,
+            format,
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn state_in_the_current_format_is_read() {
+        assert_eq!(decode_state(&state(STATE_FORMAT)).unwrap().next_pane_id, 7);
+    }
+
+    #[test]
+    fn state_written_before_formats_were_recorded_is_read() {
+        assert_eq!(decode_state(&state(0)).unwrap().next_pane_id, 7);
+    }
+
+    #[test]
+    fn state_in_another_format_is_refused() {
+        let err = decode_state(&state(STATE_FORMAT + 1)).unwrap_err();
+        assert!(err.to_string().contains("format 2"), "{err}");
+    }
 }

@@ -27,6 +27,9 @@ pub trait Screen {
 
     fn scroll_to_bottom(&mut self);
 
+    /// How many rows the viewport is above the live screen; 0 at the bottom.
+    fn scrolled_back(&self) -> u32;
+
     /// Build the next frame. With `full` every row is included; otherwise only
     /// rows changed since the previous call, and `None` if nothing changed.
     /// `pane_id` and `seq` are left for the caller to fill in.

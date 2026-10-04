@@ -123,6 +123,14 @@ impl Screen for GhosttyScreen {
         self.term.scroll_viewport(ScrollViewport::Bottom);
     }
 
+    fn scrolled_back(&self) -> u32 {
+        self.term.scrollbar().map_or(0, |bar| {
+            bar.total
+                .saturating_sub(bar.offset + bar.len)
+                .min(u64::from(u32::MAX)) as u32
+        })
+    }
+
     fn frame(&mut self, full: bool) -> Result<Option<Frame>> {
         let modes = (
             self.term.is_mouse_tracking()?,
@@ -910,9 +918,14 @@ mod tests {
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(row_text(&frame, 0), "line4");
         assert!(!frame.cursor.unwrap().visible);
+        assert_eq!(screen.scrolled_back(), 3);
         screen.scroll_to_bottom();
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(row_text(&frame, 0), "line7");
+        assert_eq!(screen.scrolled_back(), 0);
+        // Scrolling stops at the first line of history.
+        screen.scroll(-1000);
+        assert_eq!(screen.scrolled_back(), 7);
     }
 
     #[test]

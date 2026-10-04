@@ -21,7 +21,8 @@ if [ "$#" -eq 0 ]; then
 fi
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi
-exec docker run --rm $tty ${platform:+--platform "$platform"} \
+# --init: a proper pid 1 that reaps orphaned processes, as on a real system.
+exec docker run --rm --init $tty ${platform:+--platform "$platform"} \
     -v "$PWD":/src \
     -v "tilr-linux-target$suffix":/target \
     -v "tilr-linux-cargo$suffix":/usr/local/cargo/registry \

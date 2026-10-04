@@ -99,7 +99,8 @@ pub struct Content {
 }
 
 /// The clipboard on disk: one file holding the MIME type, the time the
-/// content expires and the content itself, replaced as a whole.
+/// content expires (Unix milliseconds, 0 = never) and the content itself,
+/// replaced as a whole.
 pub struct Store {
     dir: PathBuf,
 }
@@ -127,7 +128,7 @@ impl Store {
     /// Replace the content. Readers see the old content or the new, never a
     /// mix. `ttl` of `None` keeps it until replaced.
     pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<()> {
-        let expires = ttl.map_or(0, |ttl| unix_now() + ttl.as_secs().max(1));
+        let expires = ttl.map_or(0, |ttl| unix_now_ms() + ttl.as_millis() as u64);
         let tmp = self
             .dir
             .join(format!("{CONTENT_FILE}.{}", std::process::id()));
@@ -150,17 +151,18 @@ impl Store {
         let mime = std::str::from_utf8(parts.next()?).ok()?.to_owned();
         let expires: u64 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
         let data = parts.next()?.to_vec();
-        if expires != 0 && unix_now() >= expires {
+        if expires != 0 && unix_now_ms() >= expires {
             return None;
         }
         Some(Content { mime, data })
     }
 }
 
-fn unix_now() -> u64 {
+/// Milliseconds since the Unix epoch.
+fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 // ---------------------------------------------------------------------------

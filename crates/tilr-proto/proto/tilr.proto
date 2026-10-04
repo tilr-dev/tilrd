@@ -25,10 +25,15 @@ message ClientMessage {
     RawInput raw = 11;
     Scroll scroll = 12;
     ClipboardPut clipboard_put = 13;
+    Ping ping = 14;
   }
 }
 
+// Must be the first message on a connection. The server answers HelloAck, or,
+// if it does not speak `protocol_version`, an Error and closes the
+// connection. Anything sent before Hello gets the same refusal.
 message Hello {
+  // The PROTOCOL_VERSION the client was built against.
   uint32 protocol_version = 1;
   string client_name = 2;
   // Optional capabilities the client supports.
@@ -185,6 +190,18 @@ message ClipboardPut {
   bool last = 5;
 }
 
+// Ask whether the server is still there; it answers Pong at once. Requires
+// the "ping" feature.
+//
+// A network that drops out without closing the connection leaves a client
+// waiting forever. A client that pings and hears nothing back for a while
+// knows to reconnect. (The server checks on its clients with WebSocket pings,
+// which a browser answers by itself but does not let a page send.)
+message Ping {
+  // Echoed back in the Pong.
+  uint64 nonce = 1;
+}
+
 // ---------------------------------------------------------------------------
 // Server -> client
 // ---------------------------------------------------------------------------
@@ -198,6 +215,7 @@ message ServerMessage {
     Frame frame = 5;
     Error error = 6;
     ClipboardAck clipboard_ack = 7;
+    Pong pong = 8;
   }
 }
 
@@ -206,6 +224,7 @@ message HelloAck {
   string server_version = 2;
   // Optional capabilities the server supports:
   //   "clipboard" - ClipboardPut
+  //   "ping" - Ping
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;
@@ -256,6 +275,10 @@ message ClipboardAck {
   bool ok = 2;
   // Why the transfer was refused; meant to be shown to the user.
   string error = 3;
+}
+
+message Pong {
+  uint64 nonce = 1;
 }
 
 // Absent Color = terminal default.
@@ -355,6 +378,10 @@ message SupervisorState {
   int32 listener = 1;
   uint64 next_pane_id = 2;
   repeated PaneState panes = 3;
+  // Version of this message's layout and meaning. A supervisor only hands
+  // over to an executable that reads the version it writes. 0 = written
+  // before versions were recorded, same as 1.
+  uint32 format = 4;
 }
 
 message PaneState {

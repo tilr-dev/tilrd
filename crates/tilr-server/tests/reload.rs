@@ -1,0 +1,370 @@
+//! Use cases: picking up a new executable without closing any shell.
+
+mod common;
+
+use common::*;
+
+/// What must hold after any reload: the shell in `pane_id` is the same one,
+/// with its state and what it printed, and the server works as before.
+async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: u64) {
+    assert!(server.is_running());
+    client.hello().await;
+    let panes = client.list_panes().await;
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0].pane_id, pane_id);
+    assert_eq!((panes[0].cols, panes[0].rows), (100, 30));
+
+    client.subscribe(pane_id).await;
+    // The screen from before the reload is still there.
+    client.wait_screen("before the reload").await;
+    // A variable set before the reload is still set: same shell process.
+    client
+        .type_line(pane_id, "echo \"kept=$KEPT pid=$$\"")
+        .await;
+    client.wait_screen("kept=yes pid=").await;
+    let pid_line = |text: String| {
+        text.lines()
+            .rev()
+            .find(|line| line.contains("pid="))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        pid_line(client.screen.text()),
+        pid_line(std::fs::read_to_string(server.dir.join("pid")).unwrap())
+    );
+
+    // New panes get ids after the old ones, and the clipboard still works.
+    let new_pane = client.open_pane().await;
+    assert!(new_pane > pane_id);
+    client.put_clipboard(1, "image/png", &image(500)).await;
+    assert!(client.clipboard_ack().await.ok);
+    let check = script(server, "check.sh", CLAUDE_CHECK_IMAGE);
+    assert_eq!(client.run(new_pane, &check).await, 0);
+    assert!(server.logged("resumed after reload with 1 pane(s)"));
+}
+
+/// Open a pane and leave marks in its shell for [`assert_pane_survived`].
+async fn pane_with_marks(server: &Server, client: &mut Client) -> u64 {
+    let pane_id = client.open_pane().await;
+    let pid_file = server.dir.join("pid");
+    client
+        .type_line(
+            pane_id,
+            &format!(
+                "KEPT=yes; echo 'before the reload'; echo \"kept=$KEPT pid=$$\" > '{}'",
+                pid_file.display()
+            ),
+        )
+        .await;
+    client.wait_screen("before the reload").await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    pane_id
+}
+
+#[tokio::test]
+async fn panes_survive_a_reload_asked_for_with_a_signal() {
+    let mut server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+
+    server.signal("-USR1");
+    let client = reconnect(&server, client).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[tokio::test]
+async fn panes_survive_the_executable_being_replaced_on_disk() {
+    // Run a copy of the server, then install a "new version" over it the
+    // way an upgrade does: write next to it, rename into place.
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilr-server");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+
+    let staged = dir.join("tilr-server.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &staged).unwrap();
+    std::fs::rename(&staged, &exe).unwrap();
+
+    // Nobody tells the server: it notices on its own.
+    let client = reconnect(&server, client).await;
+    assert!(server.logged("executable changed on disk"));
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[tokio::test]
+async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilr-server");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let server = Server::start_in(dir.clone(), &exe, &["--no-auto-reload"]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+
+    let staged = dir.join("tilr-server.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &staged).unwrap();
+    std::fs::rename(&staged, &exe).unwrap();
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    // Still the same connection, still the same server.
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(!server.logged("reloading"));
+}
+
+#[tokio::test]
+async fn a_broken_executable_is_not_reloaded_into() {
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilr-server");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+
+    // An upgrade gone wrong: the new file does not run.
+    let staged = dir.join("tilr-server.new");
+    std::fs::write(&staged, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut mode = std::fs::metadata(&staged).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    std::fs::set_permissions(&staged, mode).unwrap();
+    std::fs::rename(&staged, &exe).unwrap();
+
+    for _ in 0..100 {
+        if server.logged("not reloading") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(server.logged("not reloading"));
+    // The server carries on with the code it has.
+    assert!(server.is_running());
+    assert_eq!(client.run(pane_id, "true").await, 0);
+}
+
+#[tokio::test]
+async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilr-server");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+
+    // The formats the running server writes, as it reports them itself.
+    let formats = Command::new(&exe).arg("state-formats").output().unwrap();
+    assert_eq!(
+        String::from_utf8(formats.stdout).unwrap(),
+        "supervisor-state 1\npane-state 1\n"
+    );
+
+    // A version that runs fine but keeps its state differently, first for
+    // the supervisor, then for the panes. Taking over, it would misread what
+    // it is left and lose the shells.
+    for (formats, refusal) in [
+        (
+            "supervisor-state 2\npane-state 1",
+            "reads supervisor-state format 2, this server writes 1",
+        ),
+        (
+            "supervisor-state 1\npane-state 2",
+            "reads pane-state format 2, this server writes 1",
+        ),
+    ] {
+        let staged = dir.join("tilr-server.new");
+        std::fs::write(&staged, format!("#!/bin/sh\necho '{formats}'\n")).unwrap();
+        let mut mode = std::fs::metadata(&staged).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+        std::fs::set_permissions(&staged, mode).unwrap();
+        std::fs::rename(&staged, &exe).unwrap();
+
+        for _ in 0..100 {
+            if server.logged(refusal) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(server.logged(refusal));
+        // Same server, same connection, same shell.
+        assert!(server.is_running());
+        assert_eq!(client.run(pane_id, "true").await, 0);
+    }
+
+    // A version that reads this server's state is then reloaded into.
+    let staged = dir.join("tilr-server.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &staged).unwrap();
+    std::fs::rename(&staged, &exe).unwrap();
+    let client = reconnect(&server, client).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[tokio::test]
+async fn a_reload_with_no_panes_open_works() {
+    let mut server = Server::start(&[]);
+    let client = Client::connect(&server).await;
+    let mut client = reload(&server, client).await;
+    assert!(server.is_running());
+    assert!(client.list_panes().await.is_empty());
+    let pane_id = client.open_pane().await;
+    assert_eq!(pane_id, 1);
+    assert_eq!(client.run(pane_id, "true").await, 0);
+}
+
+#[tokio::test]
+async fn every_pane_keeps_its_own_shell_across_a_reload() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let mut panes = Vec::new();
+    for name in ["one", "two", "three"] {
+        let pane_id = client.open_pane().await;
+        assert_eq!(client.run(pane_id, &format!("NAME={name}")).await, 0);
+        panes.push((
+            pane_id,
+            name,
+            shell_pid(&server, &mut client, pane_id).await,
+        ));
+    }
+
+    let mut client = reload(&server, client).await;
+    assert_eq!(client.list_panes().await.len(), 3);
+    for (pane_id, name, pid) in panes {
+        client.subscribe(pane_id).await;
+        client.type_line(pane_id, "echo \"name=$NAME\"").await;
+        client.wait_row(&format!("name={name}")).await;
+        assert_eq!(shell_pid(&server, &mut client, pane_id).await, pid);
+        client.send(Msg::Unsubscribe(Unsubscribe { pane_id })).await;
+    }
+}
+
+#[tokio::test]
+async fn output_printed_during_a_reload_is_not_lost() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    // Tall enough to show every line at once.
+    let pane_id = client.open_pane_with(100, 60, "").await;
+    client
+        .type_line(
+            pane_id,
+            "i=1; while [ $i -le 40 ]; do echo \"tick-$i\"; i=$((i+1)); sleep 0.1; done",
+        )
+        .await;
+    client.wait_row("tick-5").await;
+
+    // The loop keeps printing while the supervisor and the pane process are
+    // being replaced.
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    client.wait_row("tick-40").await;
+    for tick in 1..=40 {
+        let row = format!("tick-{tick}");
+        assert!(
+            client.screen.has_row(&row),
+            "missing {row}:\n{}",
+            client.screen.text()
+        );
+    }
+}
+
+#[tokio::test]
+async fn input_typed_just_before_a_reload_reaches_the_shell() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+
+    let out = server.dir.join("typed");
+    client
+        .type_line(pane_id, &format!("echo once >> '{}'", out.display()))
+        .await;
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    // Delivered, and not twice.
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "once\n");
+}
+
+#[tokio::test]
+async fn a_server_can_reload_again_and_again() {
+    let mut server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    assert_eq!(client.run(pane_id, "COUNT=0").await, 0);
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    for round in 1..=3 {
+        client = reload(&server, client).await;
+        client.subscribe(pane_id).await;
+        assert_eq!(client.run(pane_id, "COUNT=$((COUNT+1))").await, 0);
+        client.type_line(pane_id, "echo \"count=$COUNT\"").await;
+        client.wait_row(&format!("count={round}")).await;
+        assert_eq!(shell_pid(&server, &mut client, pane_id).await, pid);
+    }
+    assert!(server.is_running());
+}
+
+#[tokio::test]
+async fn a_shell_that_exits_after_a_reload_still_reports_its_exit_code() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    client.type_line(pane_id, "exit 4").await;
+    assert_eq!(client.pane_exit_code(pane_id).await, 4);
+    assert!(client.list_panes().await.is_empty());
+}
+
+#[tokio::test]
+async fn the_title_and_directory_of_a_pane_are_kept_across_a_reload() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let cwd = server.dir.display().to_string();
+    let pane_id = client.open_pane_with(100, 30, &cwd).await;
+    client
+        .type_line(pane_id, "printf '\\033]2;my title\\007'")
+        .await;
+    let before = loop {
+        let panes = client.pushed_pane_list().await;
+        if panes[0].title == "my title" {
+            break panes[0].clone();
+        }
+    };
+    assert_eq!(before.cwd, cwd);
+
+    let mut client = reload(&server, client).await;
+    let after = client.list_panes().await.remove(0);
+    assert_eq!(after.title, "my title");
+    assert_eq!(after.cwd, cwd);
+    assert_eq!(after.created_at_ms, before.created_at_ms);
+    assert_eq!(after.command, before.command);
+}
+
+#[tokio::test]
+async fn stopping_the_server_ends_the_shells() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+    assert!(process_alive(pid));
+
+    server.signal("-TERM");
+    eventually("the shell exits", || !process_alive(pid)).await;
+}
+
+#[tokio::test]
+async fn stopping_the_server_after_a_reload_ends_the_shells() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(process_alive(pid));
+
+    server.signal("-TERM");
+    eventually("the shell exits", || !process_alive(pid)).await;
+}

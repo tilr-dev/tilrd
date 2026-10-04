@@ -47,6 +47,11 @@ struct Cli {
     #[arg(long, default_value_t = 300)]
     clipboard_ttl: u64,
 
+    /// Seconds a client may stay silent before it is dropped. The server
+    /// pings its clients, so only one that is gone stays silent. 0 = never.
+    #[arg(long, default_value_t = 30)]
+    client_timeout: u64,
+
     /// Do not reload when the executable on disk changes. SIGUSR1 still does.
     #[arg(long)]
     no_auto_reload: bool,
@@ -65,6 +70,10 @@ enum Command {
     /// Internal: per-pane process started by the supervisor.
     #[command(hide = true)]
     Pane(pane::Args),
+    /// Internal: print the versions of the reload state this executable
+    /// reads. A running server asks before reloading into it.
+    #[command(hide = true)]
+    StateFormats,
 }
 
 /// Path this process was started from. Asked once at startup: on Linux the
@@ -91,6 +100,7 @@ fn main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Pane(args)) => pane::run(args)?,
+        Some(Command::StateFormats) => print!("{}", reload::formats()),
         None => supervisor::run(supervisor::Options {
             listen: cli.listen,
             allow_origins: cli.allow_origins,
@@ -99,6 +109,8 @@ fn main() -> anyhow::Result<ExitCode> {
                 ttl: (cli.clipboard_ttl > 0).then(|| Duration::from_secs(cli.clipboard_ttl)),
             }),
             auto_reload: !cli.no_auto_reload,
+            client_timeout: (cli.client_timeout > 0)
+                .then(|| Duration::from_secs(cli.client_timeout)),
             resume: cli.resume,
         })?,
     }
