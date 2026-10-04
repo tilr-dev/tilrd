@@ -1,3 +1,4 @@
 /target
-# Local build workarounds (see README, "Building on macOS").
+/dist
+# Local build workarounds (see README, "Building").
 /.cargo/
