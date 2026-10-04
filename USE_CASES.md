@@ -56,6 +56,14 @@
 | История переживает перезагрузку сервера | `history_survives_a_reload` |
 | Прокрученный вид остаётся прокрученным после перезагрузки | `a_scrolled_view_stays_scrolled_through_a_reload` |
 
+## Обновление с CDN — `tests/update.rs`
+
+| Сценарий | Тест |
+|---|---|
+| `tilr-server update` ставит последний релиз для своей платформы; работающий сервер сам перезагружается, шелл цел | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
+| Последний релиз уже стоит — ничего не скачивается, файл не тронут | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
+| Скачанное не сходится с контрольной суммой, не запускается или релиза для платформы нет — ничего не установлено, мусора рядом нет | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
+
 ## Обновление без потери шеллов — `tests/reload.rs`
 
 | Сценарий | Тест |

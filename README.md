@@ -19,6 +19,36 @@ One supervisor process accepts clients and routes packets. Each pane is its
 own process, a child of the supervisor, which owns the pty, the shell and the
 screen model.
 
+## Installing and updating
+
+Releases are built for Linux on aarch64 (glibc 2.36 or newer). There is no
+installer yet: download the binary and start it.
+
+```sh
+version=$(curl -fsSL https://cdn.tilr.dev/releases/linux-aarch64/latest)
+curl -fsSLo tilr-server "https://cdn.tilr.dev/releases/$version/tilr-server-linux-aarch64"
+chmod +x tilr-server
+./tilr-server
+```
+
+To update, in any shell on that machine:
+
+```sh
+tilr-server update
+```
+
+It asks the CDN which version is ready for its platform, downloads it, checks
+it against its checksum and that it runs, and puts it in place of the
+executable. A running server then [reloads itself](#reloading-without-closing-shells)
+and keeps every shell. `--cdn URL` (or `TILR_CDN`) names another place to
+fetch releases from.
+
+`tilr-server --version` prints what a build is: the package version, the
+commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)`.
+
+`scripts/release.sh --publish` builds a release and uploads it; the layout of
+releases on the CDN is described there.
+
 ## Building
 
 Needs Rust 1.88+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network
