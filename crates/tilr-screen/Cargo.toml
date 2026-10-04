@@ -1,0 +1,10 @@
+[package]
+name = "tilr-screen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tilr-proto.workspace = true
+anyhow.workspace = true
+libghostty-vt = { version = "=0.2.2", default-features = false }
