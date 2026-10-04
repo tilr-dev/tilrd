@@ -181,6 +181,8 @@ async fn serve(args: Args) -> Result<()> {
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
     let (master, shell, screen, seq) = if let Some(resume) = args.resume {
+        crate::fail::point("pane-resume")?;
+        crate::fail::point(&format!("pane-resume:{}", args.id))?;
         // SAFETY: the process that exec'd this one left both descriptors
         // open for it and nothing else here owns them.
         let (master, state) = unsafe {
@@ -363,6 +365,9 @@ impl Pane {
         let Some(shell_pid) = self.shell.pid() else {
             return anyhow::anyhow!("the shell has already exited");
         };
+        if let Err(err) = crate::fail::point("pane-reload-before-exec") {
+            return err;
+        }
         let exe = crate::exe();
         let state = match write_state(self.id, &self.pending_input, snapshot) {
             Ok(state) => state,

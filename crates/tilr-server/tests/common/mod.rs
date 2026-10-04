@@ -59,8 +59,15 @@ impl Server {
     }
 
     pub fn start_in(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
+        Self::start_failing(dir, exe, args, "")
+    }
+
+    /// Start a server in which things go wrong where `failpoints` says, see
+    /// `src/fail.rs`. It hands them on to what it reloads into.
+    pub fn start_failing(dir: PathBuf, exe: &Path, args: &[&str], failpoints: &str) -> Self {
         let mut command = Command::new(exe);
         command
+            .env("TILR_FAILPOINTS", failpoints)
             .args(["--listen", "127.0.0.1:0"])
             .args(args)
             .env("TILR_RUNTIME_DIR", dir.join("runtime"))

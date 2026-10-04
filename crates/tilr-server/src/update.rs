@@ -10,9 +10,13 @@
 //!
 //! The download is renamed over this executable. A server running from it
 //! notices and reloads, keeping its shells; nothing is restarted here.
+//!
+//! Until that rename nothing has changed: an update that fails, or is killed,
+//! leaves the executable as it was. One update runs at a time.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -52,6 +56,24 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
         .next()
         .context("the checksum file is empty")?
         .to_ascii_lowercase();
+
+    // One update at a time: a second one waits here, then finds the release
+    // installed. The lock is on the directory and goes with this process.
+    let dir = exe.parent().context("executable path")?;
+    let lock = File::open(dir).with_context(|| format!("open {}", dir.display()))?;
+    // SAFETY: flock has no memory-safety preconditions.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(std::io::Error::last_os_error())
+            .context("lock the directory of the executable");
+    }
+    let mut staged_name = exe.file_name().context("executable path")?.to_owned();
+    staged_name.push(".new.");
+    remove_leftovers(dir, &staged_name.to_string_lossy());
+    if fs::read(exe).is_ok_and(|installed| sha256(&installed) == expected) {
+        println!("tilr-server {latest} ({PLATFORM}) is already installed");
+        return Ok(());
+    }
+
     println!("downloading tilr-server {latest} ({PLATFORM})");
     let binary = ureq::get(&url)
         .call()
@@ -63,19 +85,14 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
                 .read_to_vec()
         })
         .with_context(|| format!("download {url}"))?;
-    let actual: String = Sha256::digest(&binary)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
     ensure!(
-        actual == expected,
+        sha256(&binary) == expected,
         "the download does not match its checksum, nothing was installed"
     );
 
     // Next to the executable, so that the rename stays on one filesystem.
-    let mut name = exe.file_name().context("executable path")?.to_owned();
-    name.push(format!(".new.{}", std::process::id()));
-    let staged = Staged(exe.with_file_name(name));
+    staged_name.push(std::process::id().to_string());
+    let staged = Staged(exe.with_file_name(staged_name));
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -92,11 +109,29 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
     if !runs {
         bail!("tilr-server {latest} does not run on this system, nothing was installed");
     }
+    crate::fail::point("update-before-rename")?;
     fs::rename(&staged.0, exe).with_context(|| format!("replace {}", exe.display()))?;
 
     println!("updated {VERSION} -> {latest}: {}", exe.display());
     println!("a running server reloads itself and keeps its shells");
     Ok(())
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Remove downloads left by updates that were killed before their rename.
+/// Called with the lock held, so none of them is in use.
+fn remove_leftovers(dir: &Path, prefix: &str) {
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_name().to_string_lossy().starts_with(prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn fetch_text(url: &str) -> Result<String> {

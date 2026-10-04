@@ -368,3 +368,157 @@ async fn stopping_the_server_after_a_reload_ends_the_shells() {
     server.signal("-TERM");
     eventually("the shell exits", || !process_alive(pid)).await;
 }
+
+// What follows makes a reload go wrong at a chosen place, see `src/fail.rs`.
+
+/// A copy of the server in a directory of its own, where things go wrong as
+/// `failpoints` says.
+#[cfg(feature = "failpoints")]
+fn failing_server(failpoints: &str) -> (Server, PathBuf) {
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilr-server");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    (Server::start_failing(dir, &exe, &[], failpoints), exe)
+}
+
+/// Install a "new version" over the executable: another file that runs the
+/// same.
+#[cfg(feature = "failpoints")]
+fn replace(exe: &Path) {
+    let staged = exe.with_extension("new");
+    let mut bytes = std::fs::read(exe).unwrap();
+    bytes.push(0);
+    std::fs::write(&staged, bytes).unwrap();
+    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&staged, mode).unwrap();
+    std::fs::rename(&staged, exe).unwrap();
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_reload_that_fails_before_the_handover_leaves_everything_as_it_was() {
+    let (mut server, _) = failing_server("reload-before-exec=error");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    server.signal("-USR1");
+    eventually("the reload fails", || server.logged("reload failed")).await;
+
+    // Not even the connection was dropped: the same client carries on.
+    assert!(server.is_running());
+    assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
+    assert_eq!(shell_pid(&server, &mut client, pane_id).await, pid);
+    // And a new pane opens as before.
+    let other = client.open_pane().await;
+    assert_eq!(client.run(other, "true").await, 0);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_pane_that_cannot_hand_over_carries_on_in_the_code_it_has() {
+    let (mut server, _) = failing_server("pane-reload-before-exec=error");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+
+    // The supervisor reloads; the pane process stays the one it was.
+    let client = reload(&server, client).await;
+    eventually("the pane fails to reload", || {
+        server.logged("reload failed")
+    })
+    .await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on() {
+    let (mut server, _) = failing_server("pane-resume:1=panic");
+    let mut client = Client::connect(&server).await;
+    let lost = client.open_pane().await;
+    assert_eq!(lost, 1);
+    let lost_shell = shell_pid(&server, &mut client, lost).await;
+    let kept = client.open_pane().await;
+    assert_eq!(client.run(kept, "KEPT=yes").await, 0);
+    let kept_shell = shell_pid(&server, &mut client, kept).await;
+
+    let mut client = reload(&server, client).await;
+    eventually("the crashed pane is given up", || {
+        server.logged("pane process died")
+    })
+    .await;
+    assert!(server.is_running());
+    let panes = client.list_panes().await;
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0].pane_id, kept);
+    client.subscribe(kept).await;
+    assert_eq!(client.run(kept, "test \"$KEPT\" = yes").await, 0);
+    assert_eq!(shell_pid(&server, &mut client, kept).await, kept_shell);
+    // The shell of the lost pane does not linger without a pane.
+    eventually("the shell of the lost pane exits", || {
+        !process_alive(lost_shell)
+    })
+    .await;
+}
+
+/// The limit of reloading in place: once the new version has taken over
+/// there is no old one to go back to. What the server checks beforehand
+/// (`a_broken_executable_is_not_reloaded_into` and the test after it) is all
+/// that stands between a version that crashes on taking over and the shells.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_version_that_crashes_taking_over_ends_the_server_and_its_shells() {
+    for failure in ["panic", "error"] {
+        let (mut server, _) = failing_server(&format!("supervisor-resume={failure}"));
+        let mut client = Client::connect(&server).await;
+        let pane_id = client.open_pane().await;
+        let pid = shell_pid(&server, &mut client, pane_id).await;
+
+        server.signal("-USR1");
+        eventually("the server ends", || !server.is_running()).await;
+        // No shell is left running where nobody can reach it.
+        eventually("the shell exits", || !process_alive(pid)).await;
+    }
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind() {
+    let (mut server, _) = failing_server("reload-before-exec=kill");
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    server.signal("-USR1");
+    eventually("the server ends", || !server.is_running()).await;
+    eventually("the shell exits", || !process_alive(pid)).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn an_executable_replaced_again_during_a_reload_costs_no_shell() {
+    // The reload takes a second and a half, so the second replacement lands
+    // in the middle of it.
+    let (mut server, exe) = failing_server("reload-before-exec=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+
+    replace(&exe);
+    // The server first runs the new file to ask what it reads, which takes
+    // macOS seconds for a file it has not seen before.
+    let started = tokio::time::Instant::now();
+    while !server.logged("reloading") {
+        assert!(started.elapsed() < TIMEOUT, "the reload did not start");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    replace(&exe);
+
+    let client = reconnect(&server, client).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+    // Whatever the server makes of the second file, it stays up with its
+    // panes.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let mut client = Client::connect(&server).await;
+    assert_eq!(client.list_panes().await.len(), 2);
+    assert!(!server.logged("pane process died"));
+}

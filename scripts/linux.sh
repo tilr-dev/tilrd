@@ -2,7 +2,7 @@
 # Run a command in the Linux build environment, with the source tree mounted.
 # Without arguments, runs the whole test suite.
 #
-#   scripts/linux.sh                          # cargo test --workspace
+#   scripts/linux.sh                          # the whole test suite
 #   scripts/linux.sh cargo build --release    # binary lands in the tilr-linux-target volume
 #   scripts/linux.sh bash                     # a shell in the container
 #
@@ -17,7 +17,7 @@ suffix=$(printf '%s' "$platform" | tr -c 'a-z0-9' '-')
 docker build ${platform:+--platform "$platform"} -t "$image$suffix" -f scripts/linux.Dockerfile scripts
 
 if [ "$#" -eq 0 ]; then
-    set -- cargo test --workspace
+    set -- cargo test --workspace --features tilr-server/failpoints
 fi
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi

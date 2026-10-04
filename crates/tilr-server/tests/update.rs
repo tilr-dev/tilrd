@@ -8,8 +8,16 @@ use std::net::TcpListener;
 use common::*;
 use sha2::{Digest, Sha256};
 
+/// `<file>.<extension>`, next to `file`.
+fn twin(file: &Path, extension: &str) -> PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(format!(".{extension}"));
+    name.into()
+}
+
 /// A CDN in a directory: serves the files under `root` on a loopback port.
-/// Returns the base URL.
+/// A file that has a twin named `<file>.cut` breaks off halfway. Returns the
+/// base URL.
 fn serve_files(root: PathBuf) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -23,7 +31,17 @@ fn serve_files(root: PathBuf) -> String {
             }
             let request = String::from_utf8_lossy(&request);
             let path = request.split(' ').nth(1).unwrap_or("/");
-            let _ = match std::fs::read(root.join(path.trim_start_matches('/'))) {
+            let file = root.join(path.trim_start_matches('/'));
+            let cut = twin(&file, "cut").exists();
+            let _ = match std::fs::read(file) {
+                Ok(body) if cut => stream.write_all(
+                    &[
+                        format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len())
+                            .as_bytes(),
+                        &body[..body.len() / 2],
+                    ]
+                    .concat(),
+                ),
                 Ok(body) => stream
                     .write_all(
                         format!(
@@ -86,10 +104,26 @@ fn installed() -> (PathBuf, PathBuf) {
 }
 
 fn update(exe: &Path, cdn: &str) -> std::process::Output {
+    update_failing(exe, cdn, "").wait_with_output().unwrap()
+}
+
+/// Start an update in which things go wrong where `failpoints` says, see
+/// `src/fail.rs`.
+fn update_failing(exe: &Path, cdn: &str, failpoints: &str) -> Child {
     Command::new(exe)
         .args(["update", "--cdn", cdn])
-        .output()
+        .env("TILR_FAILPOINTS", failpoints)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap()
+}
+
+/// This build with a byte more: another file, which runs the same.
+fn new_version(exe: &Path) -> Vec<u8> {
+    let mut release = std::fs::read(exe).unwrap();
+    release.push(0);
+    release
 }
 
 fn files_in(dir: &Path) -> Vec<String> {
@@ -105,10 +139,7 @@ fn files_in(dir: &Path) -> Vec<String> {
 async fn update_installs_the_latest_release_and_the_running_server_keeps_its_shells() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
-    // The "new version" is this build with a byte more: another file, which
-    // runs the same.
-    let mut release = std::fs::read(&exe).unwrap();
-    release.push(0);
+    let release = new_version(&exe);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &release, &release);
     let cdn = serve_files(cdn);
@@ -182,5 +213,131 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
 
     // The installed executable is untouched, and nothing is left next to it.
     assert_eq!(std::fs::read(&exe).unwrap(), original);
+    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+}
+
+#[tokio::test]
+async fn update_installs_nothing_when_the_cdn_misbehaves() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let original = std::fs::read(&exe).unwrap();
+    let release = new_version(&exe);
+    let cdn = dir.join("cdn");
+    let url = serve_files(cdn.clone());
+    let latest = cdn.join("releases").join(&platform).join("latest");
+    let binary = cdn
+        .join("releases/9.9.9-test")
+        .join(format!("tilr-server-{platform}"));
+
+    // The download breaks off halfway.
+    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    std::fs::write(twin(&binary, "cut"), "").unwrap();
+    let output = update(&exe, &url);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("download"));
+
+    // The release is named before its files are there.
+    std::fs::remove_file(&binary).unwrap();
+    assert!(!update(&exe, &url).status.success());
+    std::fs::remove_file(twin(&binary, "sha256")).unwrap();
+    assert!(!update(&exe, &url).status.success());
+
+    // What answers is not the CDN: a login page, say.
+    std::fs::write(&latest, "<html><body>Sign in</body></html>").unwrap();
+    let output = update(&exe, &url);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a version"));
+
+    // Nobody answers at all.
+    assert!(!update(&exe, "http://127.0.0.1:9").status.success());
+
+    assert_eq!(std::fs::read(&exe).unwrap(), original);
+    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+}
+
+#[tokio::test]
+async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    // Nothing is closed to root, which the tests are in a container.
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let scratch = Server::scratch_dir();
+    let dir = scratch.join("bin");
+    std::fs::create_dir(&dir).unwrap();
+    let exe = dir.join("tilr-server");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let (_, platform) = version_and_platform();
+    let original = std::fs::read(&exe).unwrap();
+    let release = new_version(&exe);
+    let cdn = scratch.join("cdn");
+    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    let url = serve_files(cdn);
+
+    std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o555)).unwrap();
+    let output = update(&exe, &url);
+    std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o755)).unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("write"));
+    assert_eq!(std::fs::read(&exe).unwrap(), original);
+    assert_eq!(files_in(&dir), ["tilr-server"]);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let original = std::fs::read(&exe).unwrap();
+    let release = new_version(&exe);
+    let cdn = dir.join("cdn");
+    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    let url = serve_files(cdn);
+
+    // Killed with the download on disk, a moment before it is renamed.
+    let killed = update_failing(&exe, &url, "update-before-rename=kill")
+        .wait_with_output()
+        .unwrap();
+    assert!(!killed.status.success());
+    assert_eq!(std::fs::read(&exe).unwrap(), original);
+    assert_eq!(files_in(&dir).len(), 3, "the download is left behind");
+
+    let output = update(&exe, &url);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(std::fs::read(&exe).unwrap(), release);
+    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn two_updates_at_once_install_the_release_once() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let release = new_version(&exe);
+    let cdn = dir.join("cdn");
+    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    let url = serve_files(cdn);
+
+    // The first is slow to swap, so the second arrives while it is at work.
+    let first = update_failing(&exe, &url, "update-before-rename=sleep:1500");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let second = update_failing(&exe, &url, "");
+    let outputs = [first, second].map(|update| update.wait_with_output().unwrap());
+
+    let said = |text: &str| {
+        outputs
+            .iter()
+            .filter(|output| String::from_utf8_lossy(&output.stdout).contains(text))
+            .count()
+    };
+    assert!(
+        outputs.iter().all(|output| output.status.success()),
+        "{outputs:?}"
+    );
+    assert_eq!(said("-> 9.9.9-test"), 1, "{outputs:?}");
+    assert_eq!(said("is already installed"), 1, "{outputs:?}");
+    assert_eq!(std::fs::read(&exe).unwrap(), release);
     assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
 }

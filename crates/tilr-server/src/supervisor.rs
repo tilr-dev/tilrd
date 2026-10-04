@@ -168,6 +168,9 @@ pub fn run(options: Options) -> Result<()> {
         .build()?
         .block_on(async move {
             let state = options.resume.map(reload::read_state).transpose()?;
+            if state.is_some() {
+                crate::fail::point("supervisor-resume")?;
+            }
             let listener = match &state {
                 Some(state) => inherit_listener(state.listener).context("take over listener")?,
                 None => TcpListener::bind(options.listen)
@@ -602,7 +605,10 @@ impl Supervisor {
             }
         }
 
-        let err = self.exec_successor(&handed_over);
+        let err = match crate::fail::point("reload-before-exec") {
+            Ok(()) => self.exec_successor(&handed_over),
+            Err(err) => err,
+        };
         tracing::error!("reload failed: {err:#}");
         // Carry on as before.
         for (pane_id, to_pane, reader) in handed_over {

@@ -1,4 +1,5 @@
 mod clipboard;
+mod fail;
 mod link;
 mod pane;
 mod pty;

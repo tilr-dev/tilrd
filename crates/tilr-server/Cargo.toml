@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Fault injection for the tests, see src/fail.rs.
+failpoints = []
+
 [dependencies]
 tilr-proto.workspace = true
 tilr-screen.workspace = true

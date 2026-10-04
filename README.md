@@ -47,7 +47,9 @@ fetch releases from.
 commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)`.
 
 `scripts/release.sh --publish` builds a release and uploads it; the layout of
-releases on the CDN is described there.
+releases on the CDN is described there. `scripts/update-test.sh HOST VERSION`
+checks an update on a real machine: it installs an older release there, opens
+panes and updates them to the latest one.
 
 ## Building
 
@@ -72,7 +74,7 @@ SDKROOT = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
 with the toolchain installed and the source mounted:
 
 ```sh
-scripts/linux.sh                  # cargo test --workspace
+scripts/linux.sh                  # the test suite
 scripts/linux-build.sh            # release binary into dist/
 TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
 ```
@@ -195,10 +197,15 @@ What to know:
 ## Tests
 
 ```sh
-cargo test --workspace
+cargo test --workspace --features tilr-server/failpoints
 ```
 
 The tests in `crates/tilr-server/tests/` start the real server and drive it as
 a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
-connecting, reconnecting, scrolling, reloading, the clipboard — and what is
-not covered yet.
+connecting, reconnecting, scrolling, reloading, updating, the clipboard — and
+what is not covered yet.
+
+The `failpoints` feature compiles in the places where a test can make an
+update or a reload go wrong halfway: fail a step, crash or kill the process
+there (`crates/tilr-server/src/fail.rs`). Without it those tests are left out
+and the rest runs. A release is built without it.
