@@ -23,6 +23,7 @@ tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi
 # --init: a proper pid 1 that reaps orphaned processes, as on a real system.
 exec docker run --rm --init $tty ${platform:+--platform "$platform"} \
+    -e TILR_BUILD_COMMIT \
     -v "$PWD":/src \
     -v "tilr-linux-target$suffix":/target \
     -v "tilr-linux-cargo$suffix":/usr/local/cargo/registry \

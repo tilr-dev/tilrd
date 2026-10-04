@@ -4,6 +4,7 @@ mod pane;
 mod pty;
 mod reload;
 mod supervisor;
+mod update;
 
 use std::net::SocketAddr;
 use std::os::fd::RawFd;
@@ -14,10 +15,15 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+/// The build: package version and commit, e.g. `0.1.0-26449dd`.
+pub const VERSION: &str = env!("TILR_VERSION");
+/// What the build runs on, as releases name it, e.g. `linux-aarch64`.
+pub const PLATFORM: &str = env!("TILR_PLATFORM");
+
 #[derive(Parser)]
 #[command(
     name = "tilr-server",
-    version,
+    version = concat!(env!("TILR_VERSION"), " (", env!("TILR_PLATFORM"), ")"),
     about = "Terminal server: ptys behind a WebSocket"
 )]
 struct Cli {
@@ -74,6 +80,13 @@ enum Command {
     /// reads. A running server asks before reloading into it.
     #[command(hide = true)]
     StateFormats,
+    /// Replace this executable with the latest release. A running server
+    /// reloads itself and keeps its shells.
+    Update {
+        /// Where releases are fetched from.
+        #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
+        cdn: String,
+    },
 }
 
 /// Path this process was started from. Asked once at startup: on Linux the
@@ -101,6 +114,7 @@ fn main() -> anyhow::Result<ExitCode> {
     match cli.command {
         Some(Command::Pane(args)) => pane::run(args)?,
         Some(Command::StateFormats) => print!("{}", reload::formats()),
+        Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
         None => supervisor::run(supervisor::Options {
             listen: cli.listen,
             allow_origins: cli.allow_origins,

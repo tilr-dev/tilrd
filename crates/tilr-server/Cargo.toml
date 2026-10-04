@@ -9,11 +9,13 @@ tilr-proto.workspace = true
 tilr-screen.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 libc = "0.2"
 prost.workspace = true
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "process", "signal", "time"] }
 tokio-tungstenite = "0.28"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+ureq = "3"

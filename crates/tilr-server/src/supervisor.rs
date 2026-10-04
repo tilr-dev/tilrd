@@ -706,7 +706,7 @@ impl Supervisor {
                     client_id,
                     server_message::Msg::HelloAck(HelloAck {
                         protocol_version: PROTOCOL_VERSION,
-                        server_version: env!("CARGO_PKG_VERSION").into(),
+                        server_version: crate::VERSION.into(),
                         features: clipboard_max_bytes
                             .map(|_| FEATURE_CLIPBOARD)
                             .into_iter()
