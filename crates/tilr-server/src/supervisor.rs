@@ -811,9 +811,11 @@ impl Supervisor {
         let cols = create.cols.clamp(1, u32::from(u16::MAX)) as u16;
         let rows = create.rows.clamp(1, u32::from(u16::MAX)) as u16;
         let pane_id = self.next_pane_id;
+        let cwd = start_dir(&create.cwd);
         let (pid, to_pane, link) = start_pane_process(
             pane_id,
             create,
+            &cwd,
             cols,
             rows,
             &self.pane_env,
@@ -824,13 +826,7 @@ impl Supervisor {
         let pane = Pane {
             command: create.command.clone(),
             title: String::new(),
-            cwd: if create.cwd.is_empty() {
-                std::env::current_dir()
-                    .map(|dir| dir.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            } else {
-                create.cwd.clone()
-            },
+            cwd,
             created_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64),
@@ -957,7 +953,8 @@ impl Supervisor {
     }
 
     /// Tell every client what panes exist now, so pickers and tab bars stay
-    /// current without polling.
+    /// current without polling. A client that has not said hello yet is left
+    /// out: the first thing it hears is the answer to its hello.
     fn broadcast_pane_list(&mut self) {
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneList(
             self.pane_list(0),
@@ -965,7 +962,7 @@ impl Supervisor {
         let stuck: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, client)| client.tx.try_send(packet.clone()).is_err())
+            .filter(|(_, client)| client.greeted && client.tx.try_send(packet.clone()).is_err())
             .map(|(&id, _)| id)
             .collect();
         for client_id in stuck {
@@ -1021,12 +1018,25 @@ impl Pane {
     }
 }
 
+/// The directory a new pane starts in: the one the client asked for, or the
+/// home directory when it asked for none or for one that is not on this
+/// machine (a client on another computer may send a path of its own).
+fn start_dir(requested: &str) -> String {
+    if !requested.is_empty() && std::path::Path::new(requested).is_dir() {
+        return requested.to_owned();
+    }
+    std::env::home_dir()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Start the pane process, which opens the pty and runs the shell, and wire
 /// it to the event loop over its stdin and stdout. Returns its pid, the
 /// sender for packets going to it, and the tasks behind both directions.
 fn start_pane_process(
     pane_id: PaneId,
     create: &CreatePane,
+    cwd: &str,
     cols: u16,
     rows: u16,
     env: &[(OsString, OsString)],
@@ -1037,8 +1047,8 @@ fn start_pane_process(
         .args(["--id", &pane_id.to_string()])
         .args(["--cols", &cols.to_string()])
         .args(["--rows", &rows.to_string()]);
-    if !create.cwd.is_empty() {
-        cmd.args(["--cwd", &create.cwd]);
+    if !cwd.is_empty() {
+        cmd.args(["--cwd", cwd]);
     }
     cmd.arg("--")
         .args(&create.command)

@@ -14,9 +14,11 @@
 |---|---|
 | Клиент здоровается, сервер сообщает версию, возможности и лимит буфера | `hello_announces_the_clipboard_and_its_limit` |
 | Клиент с другой версией протокола (новее, старее, без версии) получает ошибку с обеими версиями, соединение закрывается | `a_client_built_for_another_protocol_version_is_turned_away` |
+| Первое, что получает клиент, — ответ на его `Hello`: списки панелей до этого ему не шлются, после — как всем | `the_first_thing_a_client_hears_is_the_answer_to_its_hello` |
 | Клиент, не начавший с `Hello`, получает ошибку и отключается; его ввод до шелла не доходит | `a_client_that_skips_hello_is_turned_away` |
 | Страница в браузере подключается только с разрешённого адреса; программы без `Origin` проходят | `a_browser_page_connects_only_from_an_allowed_origin` |
 | Команда в панели выполняется, виден её вывод; код выхода шелла доходит до клиента | `a_pane_runs_commands_and_reports_how_its_shell_exited` |
+| Панель открывается в домашнем каталоге, если клиент не назвал каталог или назвал несуществующий на сервере; в названном — если он есть | `a_pane_starts_in_the_home_directory_unless_given_one_that_exists` |
 | Закрытие панели завершает шелл | `closing_a_pane_ends_its_shell` |
 | Два клиента смотрят одну панель и оба печатают в неё | `two_clients_watch_and_type_into_the_same_pane` |
 | Клиент ушёл — панель живёт, остальным приходит обновлённый список | `a_client_that_leaves_does_not_take_the_pane_with_it` |

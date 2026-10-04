@@ -64,6 +64,7 @@ impl Server {
             .args(["--listen", "127.0.0.1:0"])
             .args(args)
             .env("TILR_RUNTIME_DIR", dir.join("runtime"))
+            .env("HOME", &dir)
             .env("PATH", "/usr/bin:/bin")
             .env("SHELL", "/bin/sh")
             .env("PS1", "$ ")

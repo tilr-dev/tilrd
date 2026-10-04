@@ -45,6 +45,8 @@ message CreatePane {
   uint32 rows = 2;
   // Empty = the user's login shell.
   repeated string command = 3;
+  // Directory to start in. Empty, or not a directory on the server's machine
+  // = the home directory.
   string cwd = 4;
   // Echoed back in PaneCreated so the client can match the reply.
   uint64 request_id = 5;

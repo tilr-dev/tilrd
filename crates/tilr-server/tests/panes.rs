@@ -47,6 +47,30 @@ async fn a_pane_runs_commands_and_reports_how_its_shell_exited() {
 }
 
 #[tokio::test]
+async fn a_pane_starts_in_the_home_directory_unless_given_one_that_exists() {
+    let server = Server::start(&[]);
+    let home = server.dir.display().to_string();
+    let given = server.dir.join("given");
+    std::fs::create_dir(&given).unwrap();
+    std::fs::write(server.dir.join("in-home"), "").unwrap();
+    std::fs::write(given.join("in-given"), "").unwrap();
+    let mut client = Client::connect(&server).await;
+
+    // No directory, and one from another machine: the home directory.
+    for cwd in ["", "/no/such/directory"] {
+        let pane_id = client.open_pane_with(100, 30, cwd).await;
+        assert_eq!(client.run(pane_id, "test -f in-home").await, 0);
+        let panes = client.list_panes().await;
+        assert_eq!(panes.last().unwrap().cwd, home);
+    }
+
+    let given = given.display().to_string();
+    let pane_id = client.open_pane_with(100, 30, &given).await;
+    assert_eq!(client.run(pane_id, "test -f in-given").await, 0);
+    assert_eq!(client.list_panes().await.last().unwrap().cwd, given);
+}
+
+#[tokio::test]
 async fn closing_a_pane_ends_its_shell() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
@@ -240,6 +264,31 @@ async fn a_client_built_for_another_protocol_version_is_turned_away() {
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     assert_eq!(client.run(pane_id, "true").await, 0);
+}
+
+#[tokio::test]
+async fn the_first_thing_a_client_hears_is_the_answer_to_its_hello() {
+    let server = Server::start(&[]);
+    let mut late = Client::connect_silent(&server).await;
+
+    // Panes come and go while the client has not said hello yet.
+    let mut other = Client::connect(&server).await;
+    let pane_id = other.open_pane().await;
+    other
+        .type_line(pane_id, "printf '\\033]2;new title\\007'")
+        .await;
+    while other.pushed_pane_list().await[0].title != "new title" {}
+
+    late.hello_as(PROTOCOL_VERSION).await;
+    let first = late.next().await;
+    assert!(
+        matches!(first, Some(server_message::Msg::HelloAck(_))),
+        "got {first:?} before the hello ack"
+    );
+
+    // From then on it is told about the panes like everyone else.
+    other.type_line(pane_id, "exit").await;
+    assert!(late.pushed_pane_list().await.is_empty());
 }
 
 #[tokio::test]

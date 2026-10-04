@@ -75,7 +75,8 @@ not know, and say what they support in `Hello.features` / `HelloAck.features`.
 A connection starts with `Hello`, which carries the protocol version of the
 client. A server that speaks another version, or is sent anything else first,
 answers with an `Error` and closes the connection. `HelloAck` carries the
-version of the server.
+version of the server, and is the first message the client gets: nothing else
+is sent to it before.
 
 The server sends a WebSocket ping every third of `--client-timeout`. Browsers
 and WebSocket libraries answer on their own. A client that stays silent for
