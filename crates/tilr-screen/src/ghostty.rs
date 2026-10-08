@@ -48,6 +48,7 @@ pub struct GhosttyScreen {
     last_cursor: Option<Cursor>,
     last_modes: Option<(bool, bool)>,
     last_placements: Vec<Placement>,
+    last_viewport_top: u32,
     /// Every image in view, encoded once per (id, generation); dropped when
     /// it leaves the view.
     images: HashMap<(u32, u64), Image>,
@@ -95,6 +96,7 @@ impl GhosttyScreen {
             last_cursor: None,
             last_modes: None,
             last_placements: Vec::new(),
+            last_viewport_top: 0,
             images: HashMap::new(),
             placeholders: Vec::new(),
             size: (cols, rows),
@@ -367,17 +369,23 @@ impl Screen for GhosttyScreen {
         snapshot.set_dirty(Dirty::Clean)?;
 
         let (placements, new_images) = self.placements_in_view()?;
+        let viewport_top = self
+            .term
+            .scrollbar()
+            .map_or(0, |bar| bar.offset.min(u64::from(u32::MAX)) as u32);
         let placements_changed = full || placements != self.last_placements;
         let unchanged = changed.is_empty()
             && title.is_none()
             && self.last_cursor.as_ref() == Some(&cursor)
             && self.last_modes == Some(modes)
-            && !placements_changed;
+            && !placements_changed
+            && viewport_top == self.last_viewport_top;
         if unchanged && !full {
             return Ok(None);
         }
         self.last_cursor = Some(cursor);
         self.last_modes = Some(modes);
+        self.last_viewport_top = viewport_top;
         // A full frame goes to a subscriber that may know none of the images.
         let images = if full {
             self.images.values().cloned().collect()
@@ -409,6 +417,7 @@ impl Screen for GhosttyScreen {
             images,
             cell_width_px: self.cell.0,
             cell_height_px: self.cell.1,
+            viewport_top,
         }))
     }
 
@@ -1733,10 +1742,12 @@ mod tests {
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(row_text(&frame, 0), "line4");
         assert!(!frame.cursor.unwrap().visible);
+        assert_eq!(frame.viewport_top, 4);
         assert_eq!(screen.scrolled_back(), 3);
         screen.scroll_to_bottom();
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(row_text(&frame, 0), "line7");
+        assert_eq!(frame.viewport_top, 7);
         assert_eq!(screen.scrolled_back(), 0);
         // Scrolling stops at the first line of history.
         screen.scroll(-1000);

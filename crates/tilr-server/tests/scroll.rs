@@ -21,8 +21,11 @@ async fn scrolling_back_shows_history_and_scrolling_forward_returns() {
     let server = Server::start(&[]);
     let (mut client, pane_id) = pane_with_history(&server).await;
 
+    let at_bottom = client.frame.as_ref().unwrap().viewport_top;
     client.scroll(pane_id, -50).await;
     client.wait_row("line-140").await;
+    // The frame says where the view is: 50 rows further up the history.
+    assert_eq!(client.frame.as_ref().unwrap().viewport_top, at_bottom - 50);
     assert!(!client.screen.has_row("line-200"));
     // The screen is a window on consecutive lines.
     assert!(client.screen.has_row("line-139"));
@@ -31,6 +34,7 @@ async fn scrolling_back_shows_history_and_scrolling_forward_returns() {
     client.scroll(pane_id, 50).await;
     client.wait_row("line-200").await;
     assert!(!client.screen.has_row("line-140"));
+    assert_eq!(client.frame.as_ref().unwrap().viewport_top, at_bottom);
 }
 
 #[tokio::test]

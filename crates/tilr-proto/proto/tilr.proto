@@ -390,6 +390,11 @@ message Frame {
   // The cell the placements are measured in (the last Resize's, or 10x20).
   uint32 cell_width_px = 15;
   uint32 cell_height_px = 16;
+  // Rows of history above the viewport's first row: 0 when the pane has no history,
+  // growing by one per line that scrolls off while the view is at the live bottom, fixed
+  // while the view is scrolled back (new output does not move it). A client that keeps
+  // something at a row of the screen (a selection) moves it by the change between frames.
+  uint32 viewport_top = 17;
 }
 // One image shown on the screen, as cells of the viewport.
 message Placement {
