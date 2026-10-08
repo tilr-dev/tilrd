@@ -20,10 +20,12 @@ use tilr_proto::{
 use crate::Screen;
 
 const MAX_SCROLLBACK: usize = 10_000;
-/// Nominal cell size in pixels. Clients draw in cells, but pixel-based
-/// protocols (size reports, SGR-pixel mouse) still need a consistent answer.
-const CELL_WIDTH_PX: u32 = 10;
-const CELL_HEIGHT_PX: u32 = 20;
+/// The cell in pixels until a client says what its own is: image placements
+/// are measured in it, and pixel-based protocols (size reports, SGR-pixel
+/// mouse) need a consistent answer.
+pub const DEFAULT_CELL_PX: (u32, u32) = (10, 20);
+/// Kitty's unicode placeholder: a cell showing part of a virtual placement.
+const PLACEHOLDER: char = '\u{10EEEE}';
 /// Bytes of decoded image data a screen may hold (Kitty's default).
 const KITTY_STORAGE_LIMIT: u64 = 320 * 1024 * 1024;
 
@@ -49,7 +51,11 @@ pub struct GhosttyScreen {
     /// Every image in view, encoded once per (id, generation); dropped when
     /// it leaves the view.
     images: HashMap<(u32, u64), Image>,
+    /// The runs of unicode placeholder cells on each row of the screen,
+    /// kept up to date for the rows that change.
+    placeholders: Vec<Vec<PlaceholderRun>>,
     size: (u16, u16),
+    cell: (u32, u32),
 }
 
 impl GhosttyScreen {
@@ -90,14 +96,19 @@ impl GhosttyScreen {
             last_modes: None,
             last_placements: Vec::new(),
             images: HashMap::new(),
+            placeholders: Vec::new(),
             size: (cols, rows),
+            cell: DEFAULT_CELL_PX,
         })
     }
 
     /// Rebuild a screen from what [`Screen::snapshot`] returned for a screen
     /// of the same size.
-    pub fn restore(cols: u16, rows: u16, snapshot: &[u8]) -> Result<Self> {
+    pub fn restore(cols: u16, rows: u16, cell: (u32, u32), snapshot: &[u8]) -> Result<Self> {
         let mut screen = Self::new(cols, rows)?;
+        if cell != DEFAULT_CELL_PX {
+            screen.resize(cols, rows, cell)?;
+        }
         screen.feed(snapshot);
         // Nobody is waiting for answers to anything in a snapshot.
         screen.take_replies();
@@ -112,12 +123,21 @@ impl GhosttyScreen {
         let mut placements = Vec::new();
         let mut new_images = Vec::new();
         let mut in_view = std::collections::HashSet::new();
+        let mut virtuals = Vec::new();
         let mut iteration = self.placements.update(&graphics)?;
         while let Some(placement) = iteration.next() {
-            if placement.is_virtual()? {
-                continue; // Unicode placeholders: not drawn by clients yet.
-            }
             let image_id = placement.image_id()?;
+            if placement.is_virtual()? {
+                // Shown through placeholder cells, found below.
+                virtuals.push(VirtualPlacement {
+                    image_id,
+                    placement_id: placement.placement_id()?,
+                    columns: placement.columns()?,
+                    rows: placement.rows()?,
+                    z: placement.z()?,
+                });
+                continue;
+            }
             let Some(image) = graphics.image(image_id) else {
                 continue;
             };
@@ -125,20 +145,9 @@ impl GhosttyScreen {
             if !info.viewport_visible {
                 continue;
             }
-            let key = (image_id, image.generation()?);
-            if let Entry::Vacant(entry) = self.images.entry(key) {
-                let Some(png) = encode_png(&image)? else {
-                    continue;
-                };
-                let encoded = Image {
-                    id: key.0,
-                    generation: key.1,
-                    width: image.width()?,
-                    height: image.height()?,
-                    png: png.into(),
-                };
-                new_images.push(entry.insert(encoded).clone());
-            }
+            let Some(key) = encode_cached(&mut self.images, &image, &mut new_images)? else {
+                continue;
+            };
             in_view.insert(key);
             placements.push(Placement {
                 image_id,
@@ -158,6 +167,56 @@ impl GhosttyScreen {
                 pixel_height: info.pixel_height,
             });
         }
+        for (y, runs) in self.placeholders.iter().enumerate() {
+            for run in runs {
+                let Some(virt) = virtuals.iter().find(|v| {
+                    v.image_id == run.image_id
+                        && (run.placement_id == 0 || v.placement_id == run.placement_id)
+                }) else {
+                    continue;
+                };
+                let Some(image) = graphics.image(run.image_id) else {
+                    continue;
+                };
+                let (width, height) = (image.width()?, image.height()?);
+                let grid = (
+                    if virt.columns > 0 {
+                        virt.columns
+                    } else {
+                        width.div_ceil(self.cell.0)
+                    },
+                    if virt.rows > 0 {
+                        virt.rows
+                    } else {
+                        height.div_ceil(self.cell.1)
+                    },
+                );
+                let Some(part) = placeholder_geometry(run, grid, (width, height), self.cell) else {
+                    continue;
+                };
+                let Some(key) = encode_cached(&mut self.images, &image, &mut new_images)? else {
+                    continue;
+                };
+                in_view.insert(key);
+                placements.push(Placement {
+                    image_id: run.image_id,
+                    image_generation: key.1,
+                    col: run.x as i32,
+                    row: y as i32,
+                    cols: run.width,
+                    rows: 1,
+                    source_x: part.source.0,
+                    source_y: part.source.1,
+                    source_width: part.source.2,
+                    source_height: part.source.3,
+                    x_offset: part.offset.0,
+                    y_offset: part.offset.1,
+                    z: virt.z,
+                    pixel_width: part.size.0,
+                    pixel_height: part.size.1,
+                });
+            }
+        }
         self.images.retain(|key, _| in_view.contains(key));
         Ok((placements, new_images))
     }
@@ -172,16 +231,23 @@ impl Screen for GhosttyScreen {
         std::mem::take(&mut *self.replies.borrow_mut())
     }
 
-    fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+    fn resize(&mut self, cols: u16, rows: u16, cell: (u32, u32)) -> Result<()> {
+        let cell = (cell.0.max(1), cell.1.max(1));
         self.term
-            .resize(cols, rows, CELL_WIDTH_PX, CELL_HEIGHT_PX)
+            .resize(cols, rows, cell.0, cell.1)
             .context("resize terminal")?;
         self.size = (cols, rows);
+        self.cell = cell;
+        self.placeholders.clear();
         Ok(())
     }
 
     fn size(&self) -> (u16, u16) {
         self.size
+    }
+
+    fn cell_px(&self) -> (u32, u32) {
+        self.cell
     }
 
     fn scroll(&mut self, delta: i32) {
@@ -229,11 +295,15 @@ impl Screen for GhosttyScreen {
 
         let mut styles = StyleTable::default();
         let mut changed = Vec::new();
+        self.placeholders
+            .resize_with(usize::from(self.size.1), Vec::new);
         let mut row_iter = self.rows.update(&snapshot)?;
         let mut y = 0u32;
         while let Some(row) = row_iter.next() {
             if all_rows || row.dirty()? {
                 let mut runs = RunBuilder::default();
+                let mut placeholders = PlaceholderRuns::default();
+                let mut column = 0u32;
                 let mut cell_iter = self.cells.update(row)?;
                 while let Some(cell) = cell_iter.next() {
                     let raw = cell.raw_cell()?;
@@ -242,7 +312,10 @@ impl Screen for GhosttyScreen {
                         CellWide::Wide => true,
                         _ => false,
                     };
-                    let mut style = if raw.has_styling()? {
+                    let x = column;
+                    column += if wide { 2 } else { 1 };
+                    let styled = raw.has_styling()?;
+                    let mut style = if styled {
                         style_to_proto(cell.style()?)
                     } else {
                         Style::default()
@@ -259,17 +332,29 @@ impl Screen for GhosttyScreen {
                         _ => {}
                     }
                     let style = styles.index(style);
-                    match cell.graphemes_len()? {
-                        0 => runs.push_char(' ', style, wide),
-                        1 => {
-                            let mut buf = ['\0'; 1];
-                            cell.graphemes_buf(&mut buf)?;
-                            runs.push_char(buf[0], style, wide);
-                        }
-                        _ => {
-                            runs.push_cluster(cell.graphemes()?.into_iter().collect(), style, wide)
-                        }
+                    let len = cell.graphemes_len()?;
+                    let mut buf = ['\0'; 1];
+                    if len == 1 {
+                        cell.graphemes_buf(&mut buf)?;
                     }
+                    if len > 0 && (len > 1 || buf[0] == PLACEHOLDER) {
+                        let cps = cell.graphemes()?;
+                        if cps[0] == PLACEHOLDER {
+                            // Part of an image: a blank cell for the client, the
+                            // image's row and column from the diacritics.
+                            let vt_style = if styled { Some(cell.style()?) } else { None };
+                            placeholders.push(x, &cps, vt_style);
+                            runs.push_char(' ', style, wide);
+                        } else {
+                            runs.push_cluster(cps.into_iter().collect(), style, wide);
+                        }
+                        continue;
+                    }
+                    placeholders.end();
+                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide);
+                }
+                if let Some(slot) = self.placeholders.get_mut(y as usize) {
+                    *slot = placeholders.finish();
                 }
                 changed.push(Row {
                     y,
@@ -322,6 +407,8 @@ impl Screen for GhosttyScreen {
                 Vec::new()
             },
             images,
+            cell_width_px: self.cell.0,
+            cell_height_px: self.cell.1,
         }))
     }
 
@@ -389,16 +476,16 @@ impl Screen for GhosttyScreen {
             .set_mods(map_mods(input.mods))
             .set_position(mouse::Position {
                 // Aim at the middle of the cell.
-                x: (input.x * CELL_WIDTH_PX + CELL_WIDTH_PX / 2) as f32,
-                y: (input.y * CELL_HEIGHT_PX + CELL_HEIGHT_PX / 2) as f32,
+                x: (input.x * self.cell.0 + self.cell.0 / 2) as f32,
+                y: (input.y * self.cell.1 + self.cell.1 / 2) as f32,
             });
         self.mouse_encoder
             .set_options_from_terminal(&self.term)
             .set_size(mouse::EncoderSize {
-                screen_width: u32::from(cols) * CELL_WIDTH_PX,
-                screen_height: u32::from(rows) * CELL_HEIGHT_PX,
-                cell_width: CELL_WIDTH_PX,
-                cell_height: CELL_HEIGHT_PX,
+                screen_width: u32::from(cols) * self.cell.0,
+                screen_height: u32::from(rows) * self.cell.1,
+                cell_width: self.cell.0,
+                cell_height: self.cell.1,
                 padding_top: 0,
                 padding_bottom: 0,
                 padding_right: 0,
@@ -567,7 +654,7 @@ fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> Result<Terminal<
         max_scrollback,
     })
     .context("create terminal")?;
-    term.resize(cols, rows, CELL_WIDTH_PX, CELL_HEIGHT_PX)?;
+    term.resize(cols, rows, DEFAULT_CELL_PX.0, DEFAULT_CELL_PX.1)?;
     // Keep multi-codepoint graphemes (ZWJ emoji, flags) in one cell. A full
     // reset (RIS) turns this back off; fixing that needs a patched
     // libghostty-vt.
@@ -577,6 +664,252 @@ fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> Result<Terminal<
     graphics::set_png_decoder(Some(Box::new(PngDecoder)))?;
     term.set_kitty_image_storage_limit(KITTY_STORAGE_LIMIT)?;
     Ok(term)
+}
+
+/// A virtual placement in the storage: what the placeholder cells of its
+/// image show a part of.
+struct VirtualPlacement {
+    image_id: u32,
+    placement_id: u32,
+    columns: u32,
+    rows: u32,
+    z: i32,
+}
+
+/// A run of placeholder cells on one row: `width` cells from column `x`,
+/// showing image row `row` from image column `col` on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlaceholderRun {
+    x: u32,
+    image_id: u32,
+    placement_id: u32,
+    row: u32,
+    col: u32,
+    width: u32,
+}
+
+/// One placeholder cell as written: what its diacritics and colors say,
+/// with what they leave out (a cell may continue the run before it).
+struct PlaceholderCell {
+    x: u32,
+    id_low: u32,
+    id_high: Option<u32>,
+    placement_id: u32,
+    row: Option<u32>,
+    col: Option<u32>,
+}
+
+/// Builds the runs of a row, cell by cell, as Kitty joins them: a cell with
+/// no row and column, or with the ones that follow, continues the run.
+#[derive(Default)]
+struct PlaceholderRuns {
+    runs: Vec<PlaceholderRun>,
+    current: Option<(PlaceholderRun, Option<u32>)>,
+}
+
+impl PlaceholderRuns {
+    fn push(&mut self, x: u32, cps: &[char], style: Option<VtStyle>) {
+        let cell = PlaceholderCell {
+            x,
+            id_low: style.map_or(0, |s| color_id(s.fg_color)),
+            id_high: cps.get(3).and_then(|&cp| diacritic_index(cp)),
+            placement_id: style.map_or(0, |s| color_id(s.underline_color)),
+            row: cps.get(1).and_then(|&cp| diacritic_index(cp)),
+            col: cps.get(2).and_then(|&cp| diacritic_index(cp)),
+        };
+        if let Some((run, high)) = &mut self.current {
+            let continues = run.image_id & 0xff_ffff == cell.id_low
+                && run.placement_id == cell.placement_id
+                && cell.row.is_none_or(|row| row == run.row)
+                && cell.col.is_none_or(|col| col == run.col + run.width)
+                && (cell.id_high.is_none() || cell.id_high == *high);
+            if continues {
+                run.width += 1;
+                return;
+            }
+        }
+        self.end();
+        self.current = Some((
+            PlaceholderRun {
+                x: cell.x,
+                image_id: cell.id_low | (cell.id_high.unwrap_or(0) << 24),
+                placement_id: cell.placement_id,
+                row: cell.row.unwrap_or(0),
+                col: cell.col.unwrap_or(0),
+                width: 1,
+            },
+            cell.id_high,
+        ));
+    }
+
+    fn end(&mut self) {
+        if let Some((run, _)) = self.current.take() {
+            self.runs.push(run);
+        }
+    }
+
+    fn finish(mut self) -> Vec<PlaceholderRun> {
+        self.end();
+        self.runs
+    }
+}
+
+/// The 24 bits of a color as Kitty reads an image id out of it.
+fn color_id(color: StyleColor) -> u32 {
+    match color {
+        StyleColor::None => 0,
+        StyleColor::Palette(index) => u32::from(index.0),
+        StyleColor::Rgb(rgb) => u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b),
+    }
+}
+
+/// The row or column a placeholder diacritic stands for.
+fn diacritic_index(cp: char) -> Option<u32> {
+    DIACRITICS
+        .binary_search(&(cp as u32))
+        .ok()
+        .map(|i| i as u32)
+}
+
+/// What a placeholder run shows: the source rectangle of the image, the size
+/// to draw it at and its offset in the run's first cell. The image is fitted
+/// into the virtual placement's grid keeping its aspect ratio, centered, and
+/// the run takes its share of that; the math is Ghostty's. None when the run
+/// falls on the padding around the image.
+fn placeholder_geometry(
+    run: &PlaceholderRun,
+    grid: (u32, u32),
+    image: (u32, u32),
+    cell: (u32, u32),
+) -> Option<PlaceholderPart> {
+    let (img_w, img_h) = (f64::from(image.0), f64::from(image.1));
+    let grid_px = (
+        f64::from(grid.0) * f64::from(cell.0),
+        f64::from(grid.1) * f64::from(cell.1),
+    );
+    // Fit the image into the grid: the scale, and the padding that centers it.
+    let (scale, pad_x, pad_y) = if img_w * grid_px.1 > img_h * grid_px.0 {
+        let scale = grid_px.0 / img_w.max(1.0);
+        (scale, 0.0, (grid_px.1 - img_h * scale) / 2.0)
+    } else {
+        let scale = grid_px.1 / img_h.max(1.0);
+        (scale, (grid_px.0 - img_w * scale) / 2.0, 0.0)
+    };
+    // The padded image, in image pixels.
+    let (pad_x, pad_y) = (pad_x / scale, pad_y / scale);
+    let (padded_w, padded_h) = (img_w + pad_x * 2.0, img_h + pad_y * 2.0);
+    // The run's share of the padded image.
+    let mut src_x = padded_w * (f64::from(run.col) / f64::from(grid.0));
+    let mut src_y = padded_h * (f64::from(run.row) / f64::from(grid.1));
+    let mut src_w = padded_w * (f64::from(run.width) / f64::from(grid.0));
+    let mut src_h = padded_h / f64::from(grid.1);
+    let mut dest_w = f64::from(run.width) * f64::from(cell.0);
+    let mut dest_h = f64::from(cell.1);
+    let (mut off_x, mut off_y) = (0.0, 0.0);
+    // Take the padding out of the share, as the image has none.
+    if src_y < pad_y {
+        let pad = pad_y - src_y;
+        src_h -= pad;
+        off_y = pad;
+        dest_h -= pad * scale;
+        src_y = 0.0;
+        if src_h > img_h {
+            src_h = img_h;
+            dest_h = img_h * scale;
+        }
+    } else if src_y + src_h > padded_h - pad_y {
+        src_y -= pad_y;
+        src_h = padded_h - pad_y - src_y - pad_y;
+        dest_h = src_h * scale;
+    } else {
+        src_y -= pad_y;
+    }
+    if src_x < pad_x {
+        let pad = pad_x - src_x;
+        src_w -= pad;
+        off_x = pad;
+        dest_w -= pad * scale;
+        src_x = 0.0;
+        if src_w > img_w {
+            src_w = img_w;
+            dest_w = img_w * scale;
+        }
+    } else if src_x + src_w > padded_w - pad_x {
+        src_x -= pad_x;
+        src_w = padded_w - pad_x - src_x - pad_x;
+        dest_w = src_w * scale;
+    } else {
+        src_x -= pad_x;
+    }
+    if src_w <= 0.0 || src_h <= 0.0 {
+        return None;
+    }
+    let px = |v: f64| v.round().max(0.0) as u32;
+    Some(PlaceholderPart {
+        source: (px(src_x), px(src_y), px(src_w), px(src_h)),
+        size: (px(dest_w), px(dest_h)),
+        offset: (px(off_x * scale), px(off_y * scale)),
+    })
+}
+
+struct PlaceholderPart {
+    source: (u32, u32, u32, u32),
+    size: (u32, u32),
+    offset: (u32, u32),
+}
+
+/// The diacritics Kitty numbers rows and columns of placeholder cells with:
+/// the index is the value. Sorted, from Kitty's rowcolumn-diacritics.txt.
+const DIACRITICS: [u32; 297] = [
+    0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F, 0x0346, 0x034A, 0x034B, 0x034C,
+    0x0350, 0x0351, 0x0352, 0x0357, 0x035B, 0x0363, 0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369,
+    0x036A, 0x036B, 0x036C, 0x036D, 0x036E, 0x036F, 0x0483, 0x0484, 0x0485, 0x0486, 0x0487, 0x0592,
+    0x0593, 0x0594, 0x0595, 0x0597, 0x0598, 0x0599, 0x059C, 0x059D, 0x059E, 0x059F, 0x05A0, 0x05A1,
+    0x05A8, 0x05A9, 0x05AB, 0x05AC, 0x05AF, 0x05C4, 0x0610, 0x0611, 0x0612, 0x0613, 0x0614, 0x0615,
+    0x0616, 0x0617, 0x0657, 0x0658, 0x0659, 0x065A, 0x065B, 0x065D, 0x065E, 0x06D6, 0x06D7, 0x06D8,
+    0x06D9, 0x06DA, 0x06DB, 0x06DC, 0x06DF, 0x06E0, 0x06E1, 0x06E2, 0x06E4, 0x06E7, 0x06E8, 0x06EB,
+    0x06EC, 0x0730, 0x0732, 0x0733, 0x0735, 0x0736, 0x073A, 0x073D, 0x073F, 0x0740, 0x0741, 0x0743,
+    0x0745, 0x0747, 0x0749, 0x074A, 0x07EB, 0x07EC, 0x07ED, 0x07EE, 0x07EF, 0x07F0, 0x07F1, 0x07F3,
+    0x0816, 0x0817, 0x0818, 0x0819, 0x081B, 0x081C, 0x081D, 0x081E, 0x081F, 0x0820, 0x0821, 0x0822,
+    0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082A, 0x082B, 0x082C, 0x082D, 0x0951, 0x0953, 0x0954,
+    0x0F82, 0x0F83, 0x0F86, 0x0F87, 0x135D, 0x135E, 0x135F, 0x17DD, 0x193A, 0x1A17, 0x1A75, 0x1A76,
+    0x1A77, 0x1A78, 0x1A79, 0x1A7A, 0x1A7B, 0x1A7C, 0x1B6B, 0x1B6D, 0x1B6E, 0x1B6F, 0x1B70, 0x1B71,
+    0x1B72, 0x1B73, 0x1CD0, 0x1CD1, 0x1CD2, 0x1CDA, 0x1CDB, 0x1CE0, 0x1DC0, 0x1DC1, 0x1DC3, 0x1DC4,
+    0x1DC5, 0x1DC6, 0x1DC7, 0x1DC8, 0x1DC9, 0x1DCB, 0x1DCC, 0x1DD1, 0x1DD2, 0x1DD3, 0x1DD4, 0x1DD5,
+    0x1DD6, 0x1DD7, 0x1DD8, 0x1DD9, 0x1DDA, 0x1DDB, 0x1DDC, 0x1DDD, 0x1DDE, 0x1DDF, 0x1DE0, 0x1DE1,
+    0x1DE2, 0x1DE3, 0x1DE4, 0x1DE5, 0x1DE6, 0x1DFE, 0x20D0, 0x20D1, 0x20D4, 0x20D5, 0x20D6, 0x20D7,
+    0x20DB, 0x20DC, 0x20E1, 0x20E7, 0x20E9, 0x20F0, 0x2CEF, 0x2CF0, 0x2CF1, 0x2DE0, 0x2DE1, 0x2DE2,
+    0x2DE3, 0x2DE4, 0x2DE5, 0x2DE6, 0x2DE7, 0x2DE8, 0x2DE9, 0x2DEA, 0x2DEB, 0x2DEC, 0x2DED, 0x2DEE,
+    0x2DEF, 0x2DF0, 0x2DF1, 0x2DF2, 0x2DF3, 0x2DF4, 0x2DF5, 0x2DF6, 0x2DF7, 0x2DF8, 0x2DF9, 0x2DFA,
+    0x2DFB, 0x2DFC, 0x2DFD, 0x2DFE, 0x2DFF, 0xA66F, 0xA67C, 0xA67D, 0xA6F0, 0xA6F1, 0xA8E0, 0xA8E1,
+    0xA8E2, 0xA8E3, 0xA8E4, 0xA8E5, 0xA8E6, 0xA8E7, 0xA8E8, 0xA8E9, 0xA8EA, 0xA8EB, 0xA8EC, 0xA8ED,
+    0xA8EE, 0xA8EF, 0xA8F0, 0xA8F1, 0xAAB0, 0xAAB2, 0xAAB3, 0xAAB7, 0xAAB8, 0xAABE, 0xAABF, 0xAAC1,
+    0xFE20, 0xFE21, 0xFE22, 0xFE23, 0xFE24, 0xFE25, 0xFE26, 0x10A0F, 0x10A38, 0x1D185, 0x1D186,
+    0x1D187, 0x1D188, 0x1D189, 0x1D1AA, 0x1D1AB, 0x1D1AC, 0x1D1AD, 0x1D242, 0x1D243, 0x1D244,
+];
+
+/// The image under `key` encoded once: a new one goes to `new_images` too.
+/// None for an image the encoder does not take.
+fn encode_cached(
+    images: &mut HashMap<(u32, u64), Image>,
+    image: &graphics::Image<'_>,
+    new_images: &mut Vec<Image>,
+) -> Result<Option<(u32, u64)>> {
+    let key = (image.id()?, image.generation()?);
+    if let Entry::Vacant(entry) = images.entry(key) {
+        let Some(png) = encode_png(image)? else {
+            return Ok(None);
+        };
+        let encoded = Image {
+            id: key.0,
+            generation: key.1,
+            width: image.width()?,
+            height: image.height()?,
+            png: png.into(),
+        };
+        new_images.push(entry.insert(encoded).clone());
+    }
+    Ok(Some(key))
 }
 
 /// An image from the Kitty graphics storage as PNG, or None for a kind the
@@ -637,9 +970,10 @@ impl graphics::DecodePng for PngDecoder {
 }
 
 /// The Kitty graphics on the active screen as the commands that put them
-/// there: each image transmitted once (`a=t`, its id kept), then every
-/// placement of it at its cell (`a=p`, the cursor left alone). A placement
-/// whose top is scrolled into the history cannot be put back and is left out.
+/// there: each image transmitted once (`a=t`, its id kept, as PNG), then
+/// every placement of it at its cell (`a=p`, the cursor left alone), or as
+/// the virtual placement its placeholder cells refer to. A placement whose
+/// top is scrolled into the history cannot be put back and is left out.
 fn kitty_images(
     term: &Terminal<'_, '_>,
     iterator: &mut graphics::PlacementIterator<'_>,
@@ -651,35 +985,29 @@ fn kitty_images(
     let mut transmitted = std::collections::HashSet::new();
     let mut placements = iterator.update(&graphics)?;
     while let Some(placement) = placements.next() {
-        if placement.is_virtual()? {
-            continue;
-        }
         let id = placement.image_id()?;
         let Some(image) = graphics.image(id) else {
             continue;
         };
-        let Some(position) = placement.viewport_pos(&image, term)? else {
-            continue;
+        let position = if placement.is_virtual()? {
+            None
+        } else {
+            match placement.viewport_pos(&image, term)? {
+                Some(position) if position.row >= 0 && position.col >= 0 => Some(position),
+                _ => continue,
+            }
         };
-        if position.row < 0 || position.col < 0 {
-            continue;
-        }
         if transmitted.insert(id) {
-            let Some((format, pixels)) = transmit_pixels(&image)? else {
+            let Some(png) = encode_png(&image)? else {
                 continue;
             };
-            let encoded = base64(&pixels);
+            let encoded = base64(&png);
             let mut chunks = encoded.as_bytes().chunks(4096).peekable();
             let mut first = true;
             while let Some(chunk) = chunks.next() {
                 let more = u8::from(chunks.peek().is_some());
                 if first {
-                    write!(
-                        out,
-                        "\x1b_Ga=t,q=2,i={id},f={format},s={},v={},m={more};",
-                        image.width()?,
-                        image.height()?
-                    )?;
+                    write!(out, "\x1b_Ga=t,q=2,i={id},f=100,m={more};")?;
                     first = false;
                 } else {
                     write!(out, "\x1b_Gm={more};")?;
@@ -688,12 +1016,15 @@ fn kitty_images(
                 out.push_str("\x1b\\");
             }
         }
-        write!(
-            out,
-            "\x1b[{};{}H\x1b_Ga=p,q=2,C=1,i={id}",
-            position.row + 1,
-            position.col + 1
-        )?;
+        match position {
+            Some(position) => write!(
+                out,
+                "\x1b[{};{}H\x1b_Ga=p,q=2,C=1,i={id}",
+                position.row + 1,
+                position.col + 1
+            )?,
+            None => write!(out, "\x1b_Ga=p,q=2,U=1,i={id}")?,
+        }
         for (key, value) in [
             ("p", placement.placement_id()?),
             ("c", placement.columns()?),
@@ -716,27 +1047,6 @@ fn kitty_images(
         out.push_str(";\x1b\\");
     }
     Ok(out.into_bytes())
-}
-
-/// An image's pixels as Kitty takes them (`f=24` RGB or `f=32` RGBA): gray
-/// is widened, which the protocol has no format for.
-fn transmit_pixels(image: &graphics::Image<'_>) -> Result<Option<(u32, Vec<u8>)>> {
-    if image.compression()? != graphics::Compression::None {
-        return Ok(None);
-    }
-    let data = image.data()?;
-    Ok(Some(match image.format()? {
-        graphics::ImageFormat::Rgb => (24, data.to_vec()),
-        graphics::ImageFormat::Rgba => (32, data.to_vec()),
-        graphics::ImageFormat::Gray => (24, data.iter().flat_map(|&g| [g, g, g]).collect()),
-        graphics::ImageFormat::GrayAlpha => (
-            32,
-            data.chunks(2)
-                .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
-                .collect(),
-        ),
-        _ => return Ok(None),
-    }))
 }
 
 fn base64(data: &[u8]) -> String {
@@ -1188,6 +1498,114 @@ mod tests {
         assert!(frame.changed.is_empty());
     }
 
+    /// `count` placeholder cells of image 7 on the current row, for image row `row`,
+    /// columns from 0: the row and column in diacritics, the id in the foreground color.
+    fn placeholders(row: usize, count: usize) -> Vec<u8> {
+        let mut out = String::from("\x1b[38;5;7m");
+        for &col in &DIACRITICS[..count] {
+            out.push(PLACEHOLDER);
+            out.push(char::from_u32(DIACRITICS[row]).unwrap());
+            out.push(char::from_u32(col).unwrap());
+        }
+        out.push_str("\x1b[0m");
+        out.into_bytes()
+    }
+
+    #[test]
+    fn placeholder_cells_show_their_part_of_a_virtual_placement() {
+        let mut screen = screen();
+        // A 20x4 image in a virtual placement of 10x2 cells (100x40 px): fitted
+        // by width, scale 5, 10 px of padding above and below.
+        screen.feed(&kitty_image(",U=1"));
+        screen.feed(&placeholders(0, 10));
+        screen.feed(b"\r\n");
+        screen.feed(&placeholders(1, 10));
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(
+            row_text(&frame, 0).trim(),
+            "",
+            "placeholder cells are blank"
+        );
+        assert_eq!(frame.placements.len(), 2);
+        let top = &frame.placements[0];
+        assert_eq!((top.col, top.row, top.cols, top.rows), (0, 0, 10, 1));
+        assert_eq!(
+            (
+                top.source_x,
+                top.source_y,
+                top.source_width,
+                top.source_height
+            ),
+            (0, 0, 20, 2)
+        );
+        assert_eq!(
+            (
+                top.pixel_width,
+                top.pixel_height,
+                top.x_offset,
+                top.y_offset
+            ),
+            (100, 10, 0, 10)
+        );
+        let bottom = &frame.placements[1];
+        assert_eq!((bottom.col, bottom.row, bottom.cols), (0, 1, 10));
+        assert_eq!(
+            (bottom.source_y, bottom.source_height, bottom.y_offset),
+            (2, 2, 0)
+        );
+        assert_eq!(frame.images.len(), 1);
+
+        // Cells without diacritics continue the run before them; a gap ends it.
+        screen.feed("\x1b[3;1H\x1b[38;5;7m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE} \u{10EEEE}\u{0305}\u{030D}\x1b[0m".as_bytes());
+        let frame = screen.frame(false).unwrap().unwrap();
+        let third: Vec<_> = frame.placements.iter().filter(|p| p.row == 2).collect();
+        assert_eq!(third.len(), 2);
+        assert_eq!((third[0].col, third[0].cols), (0, 2));
+        assert_eq!((third[1].col, third[1].cols), (3, 1));
+
+        // The placeholders overwritten: their placements go.
+        screen.feed(b"\x1b[2;1H\x1b[K");
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert!(frame.placements_changed);
+        assert!(frame.placements.iter().all(|p| p.row != 1));
+    }
+
+    #[test]
+    fn placements_are_measured_in_the_client_cell() {
+        let mut screen = screen();
+        screen.resize(20, 4, (8, 16)).unwrap();
+        screen.feed(&kitty_image(""));
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!((frame.cell_width_px, frame.cell_height_px), (8, 16));
+        let placement = &frame.placements[0];
+        assert_eq!((placement.cols, placement.rows), (10, 2));
+        assert_eq!((placement.pixel_width, placement.pixel_height), (80, 32));
+        // Restored with that cell, the same.
+        let snapshot = screen.snapshot().unwrap();
+        let mut restored = GhosttyScreen::restore(20, 4, (8, 16), &snapshot).unwrap();
+        let frame = restored.frame(true).unwrap().unwrap();
+        assert_eq!(
+            (frame.cell_width_px, frame.placements[0].pixel_width),
+            (8, 80)
+        );
+    }
+
+    #[test]
+    fn snapshot_keeps_virtual_placements() {
+        let mut bytes = kitty_image(",U=1");
+        bytes.extend(placeholders(0, 10));
+        bytes.extend(b"\r\n");
+        bytes.extend(placeholders(1, 10));
+        let mut restored = round_trip(&bytes);
+        let frame = restored.frame(true).unwrap().unwrap();
+        assert_eq!(frame.placements.len(), 2);
+        assert_eq!(
+            (frame.placements[0].cols, frame.placements[0].pixel_height),
+            (10, 10)
+        );
+        assert_eq!(frame.images.len(), 1);
+    }
+
     #[test]
     fn an_image_sent_again_gets_a_new_generation() {
         let mut screen = screen();
@@ -1455,7 +1873,7 @@ mod tests {
         let history = original.term.scrollback_rows().unwrap();
 
         let snapshot = original.snapshot().unwrap();
-        let mut restored = GhosttyScreen::restore(20, 4, &snapshot).unwrap();
+        let mut restored = GhosttyScreen::restore(20, 4, DEFAULT_CELL_PX, &snapshot).unwrap();
         assert_eq!(
             view(&mut restored),
             before,

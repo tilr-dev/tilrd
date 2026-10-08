@@ -83,6 +83,10 @@ message Resize {
   string pane_id = 1;
   uint32 cols = 2;
   uint32 rows = 3;
+  // The client's cell in pixels: image placements are measured in it, and programs that ask
+  // for the screen size in pixels get it. 0 = keep what the pane has (10x20 to begin with).
+  uint32 cell_width_px = 4;
+  uint32 cell_height_px = 5;
 }
 
 enum KeyAction {
@@ -383,6 +387,9 @@ message Frame {
   // The images the placements use: each sent once per (id, generation) to this pane's
   // subscribers, and all of those in view again on a full frame.
   repeated Image images = 14;
+  // The cell the placements are measured in (the last Resize's, or 10x20).
+  uint32 cell_width_px = 15;
+  uint32 cell_height_px = 16;
 }
 // One image shown on the screen, as cells of the viewport.
 message Placement {
@@ -398,13 +405,14 @@ message Placement {
   uint32 source_y = 8;
   uint32 source_width = 9;
   uint32 source_height = 10;
-  // Offset of the top-left within its cell, in the server's nominal 10x20 cell pixels.
+  // Offset of the top-left within its cell, in pixels of the frame's cell.
   uint32 x_offset = 11;
   uint32 y_offset = 12;
   // Stacking: negative is under the text, zero and up above it.
   int32 z = 13;
-  // The size to draw at, in the server's nominal 10x20 cell pixels: pixel_width / 10 columns by
-  // pixel_height / 20 rows, from the top-left cell; `cols` and `rows` are that rounded up.
+  // The size to draw at, in pixels of the frame's cell (pixel_width / cell_width_px columns by
+  // pixel_height / cell_height_px rows from the top-left cell plus the offset); `cols` and
+  // `rows` are the cells it covers.
   uint32 pixel_width = 14;
   uint32 pixel_height = 15;
 }
@@ -474,4 +482,7 @@ message PaneHandover {
   bytes pending_input = 8;
   // The screen, as the screen model saves it.
   bytes snapshot = 9;
+  // The cell in pixels the pane was last resized to (0 = the default).
+  uint32 cell_width_px = 10;
+  uint32 cell_height_px = 11;
 }

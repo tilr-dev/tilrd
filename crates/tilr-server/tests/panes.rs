@@ -315,6 +315,8 @@ async fn resizing_a_pane_resizes_the_terminal_the_shell_sees() {
             pane_id: pane_id.to_string(),
             cols: 50,
             rows: 10,
+            cell_width_px: 0,
+            cell_height_px: 0,
         }))
         .await;
     // A resize redraws the whole screen at the new size.

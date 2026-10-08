@@ -182,8 +182,17 @@ async fn serve(args: Args) -> Result<()> {
         pty::set_cloexec(master.as_raw_fd(), true)?;
         pending_input = handover.pending_input;
         let size = |cells: u32| cells.clamp(1, u32::from(u16::MAX)) as u16;
-        let mut screen =
-            GhosttyScreen::restore(size(handover.cols), size(handover.rows), &handover.snapshot)?;
+        let cell = if handover.cell_width_px > 0 && handover.cell_height_px > 0 {
+            (handover.cell_width_px, handover.cell_height_px)
+        } else {
+            tilr_screen::DEFAULT_CELL_PX
+        };
+        let mut screen = GhosttyScreen::restore(
+            size(handover.cols),
+            size(handover.rows),
+            cell,
+            &handover.snapshot,
+        )?;
         // Whoever was reading history keeps their place.
         if handover.scrolled_back > 0 {
             screen.scroll(-(handover.scrolled_back.min(i32::MAX as u32) as i32));
@@ -324,6 +333,7 @@ impl Pane {
     /// still in working order.
     fn reload(&mut self) -> anyhow::Error {
         let (cols, rows) = self.screen.size();
+        let cell = self.screen.cell_px();
         let scrolled_back = self.screen.scrolled_back();
         let snapshot = match GhosttyScreen::new(cols, rows) {
             Ok(blank) => std::mem::replace(&mut self.screen, blank).snapshot(),
@@ -335,8 +345,8 @@ impl Pane {
             Ok(snapshot) => snapshot,
             Err(err) => return err.context("snapshot screen (its contents are lost)"),
         };
-        let err = self.exec_successor(cols, rows, &snapshot, scrolled_back);
-        match GhosttyScreen::restore(cols, rows, &snapshot) {
+        let err = self.exec_successor(cols, rows, cell, &snapshot, scrolled_back);
+        match GhosttyScreen::restore(cols, rows, cell, &snapshot) {
             Ok(mut screen) => {
                 screen.scroll(-(scrolled_back.min(i32::MAX as u32) as i32));
                 self.screen = screen;
@@ -350,6 +360,7 @@ impl Pane {
         &self,
         cols: u16,
         rows: u16,
+        cell: (u32, u32),
         snapshot: &[u8],
         scrolled_back: u32,
     ) -> anyhow::Error {
@@ -371,6 +382,8 @@ impl Pane {
             rows: u32::from(rows),
             pending_input: self.pending_input.clone(),
             snapshot: snapshot.to_vec(),
+            cell_width_px: cell.0,
+            cell_height_px: cell.1,
         };
         let state = &self.state_path;
         if let Err(err) = reload::write_file(state, &handover.encode_to_vec()) {
@@ -405,10 +418,15 @@ impl Pane {
             Some(Msg::Resize(resize)) => {
                 let cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
                 let rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
-                if (cols, rows) != self.screen.size() {
+                let cell = if resize.cell_width_px > 0 && resize.cell_height_px > 0 {
+                    (resize.cell_width_px, resize.cell_height_px)
+                } else {
+                    self.screen.cell_px()
+                };
+                if (cols, rows) != self.screen.size() || cell != self.screen.cell_px() {
                     pty::set_window_size(self.pty.get_ref().as_fd(), cols, rows)
                         .context("set pty size")?;
-                    self.screen.resize(cols, rows)?;
+                    self.screen.resize(cols, rows, cell)?;
                     self.want_full = true;
                     self.dirty = true;
                 }

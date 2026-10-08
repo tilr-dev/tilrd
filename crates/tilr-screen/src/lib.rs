@@ -8,7 +8,7 @@ mod ghostty;
 use anyhow::Result;
 use tilr_proto::{Frame, KeyInput, MouseInput, PaneStatus};
 
-pub use ghostty::GhosttyScreen;
+pub use ghostty::{DEFAULT_CELL_PX, GhosttyScreen};
 
 pub trait Screen {
     /// Feed bytes read from the pty.
@@ -18,9 +18,14 @@ pub trait Screen {
     /// such as device attributes or cursor position reports).
     fn take_replies(&mut self) -> Vec<u8>;
 
-    fn resize(&mut self, cols: u16, rows: u16) -> Result<()>;
+    /// Resize to `cols` x `rows` cells of `cell` pixels each (the cell is what
+    /// image placements are measured in and what pixel size reports say).
+    fn resize(&mut self, cols: u16, rows: u16, cell: (u32, u32)) -> Result<()>;
 
     fn size(&self) -> (u16, u16);
+
+    /// The cell in pixels of the last resize, or the default.
+    fn cell_px(&self) -> (u32, u32);
 
     /// Move the viewport by `delta` rows; negative scrolls into history.
     fn scroll(&mut self, delta: i32);
