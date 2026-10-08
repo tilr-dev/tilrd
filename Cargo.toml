@@ -19,3 +19,9 @@ zstd = "0.13"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# libghostty-vt-sys builds Ghostty with zig in Debug mode whenever cargo's DEBUG is set, and
+# Debug turns on page integrity checks on every scrolled line (~1.5 ms each: a full-screen
+# `ls` takes a second). No debuginfo for that one crate makes it ReleaseFast in dev builds too.
+[profile.dev.package.libghostty-vt-sys]
+debug = false
