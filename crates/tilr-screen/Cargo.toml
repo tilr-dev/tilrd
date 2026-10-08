@@ -7,4 +7,6 @@ license.workspace = true
 [dependencies]
 tilr-proto.workspace = true
 anyhow.workspace = true
-libghostty-vt = { version = "=0.2.2", default-features = false }
+# kitty-graphics: image storage and placements; png: its PNG decoder, and our encoder for the frame.
+libghostty-vt = { version = "=0.2.2", default-features = false, features = ["kitty-graphics", "png"] }
+png = "0.18"

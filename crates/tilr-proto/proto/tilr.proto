@@ -38,6 +38,10 @@ message Hello {
   string client_name = 2;
   // Optional capabilities the client supports.
   repeated string features = 3;
+  // The server's access token (`tilr-server token`). A server that asks for
+  // one answers a Hello without it, or with another, with an Error and
+  // closes the connection.
+  string token = 4;
 }
 
 // Panes are named by `pane_id`: a UUID in its usual text form
@@ -371,6 +375,47 @@ message Frame {
   // The application in the pane wants mouse events.
   bool mouse_tracking = 10;
   bool alt_screen = 11;
+  // Kitty graphics. Set when the placements in view changed (an image shown or deleted, a
+  // scroll, a resize) and on every full frame; `placements` is then the complete list, and
+  // unset means the last list still holds.
+  bool placements_changed = 12;
+  repeated Placement placements = 13;
+  // The images the placements use: each sent once per (id, generation) to this pane's
+  // subscribers, and all of those in view again on a full frame.
+  repeated Image images = 14;
+}
+// One image shown on the screen, as cells of the viewport.
+message Placement {
+  uint32 image_id = 1;
+  uint64 image_generation = 2;
+  // The top-left cell; the row is negative when the top is scrolled out of view.
+  int32 col = 3;
+  int32 row = 4;
+  uint32 cols = 5;
+  uint32 rows = 6;
+  // The part of the image shown, in image pixels (the whole image unless the program cropped).
+  uint32 source_x = 7;
+  uint32 source_y = 8;
+  uint32 source_width = 9;
+  uint32 source_height = 10;
+  // Offset of the top-left within its cell, in the server's nominal 10x20 cell pixels.
+  uint32 x_offset = 11;
+  uint32 y_offset = 12;
+  // Stacking: negative is under the text, zero and up above it.
+  int32 z = 13;
+  // The size to draw at, in the server's nominal 10x20 cell pixels: pixel_width / 10 columns by
+  // pixel_height / 20 rows, from the top-left cell; `cols` and `rows` are that rounded up.
+  uint32 pixel_width = 14;
+  uint32 pixel_height = 15;
+}
+// An image a program sent over the Kitty graphics protocol, re-encoded as PNG.
+message Image {
+  uint32 id = 1;
+  // Changes when the program sends the image again under the same id.
+  uint64 generation = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  bytes png = 5;
 }
 
 // ---------------------------------------------------------------------------

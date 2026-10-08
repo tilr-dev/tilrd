@@ -1,9 +1,11 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+use libghostty_vt::kitty::graphics;
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RowIterator};
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen as ActiveScreen};
 use libghostty_vt::selection::Selection;
@@ -11,8 +13,8 @@ use libghostty_vt::style::{Style as VtStyle, StyleColor, Underline as VtUnderlin
 use libghostty_vt::terminal::{Mode, ModeKind, Point, PointCoordinate, ScrollViewport};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions, key, mouse, paste};
 use tilr_proto::{
-    Color, Cursor, CursorShape, Frame, KeyAction, KeyInput, MouseAction, MouseButton, MouseInput,
-    NamedKey, PaneStatus, Row, Run, Style, Underline, attrs, color, mods,
+    Color, Cursor, CursorShape, Frame, Image, KeyAction, KeyInput, MouseAction, MouseButton,
+    MouseInput, NamedKey, PaneStatus, Placement, Row, Run, Style, Underline, attrs, color, mods,
 };
 
 use crate::Screen;
@@ -22,12 +24,15 @@ const MAX_SCROLLBACK: usize = 10_000;
 /// protocols (size reports, SGR-pixel mouse) still need a consistent answer.
 const CELL_WIDTH_PX: u32 = 10;
 const CELL_HEIGHT_PX: u32 = 20;
+/// Bytes of decoded image data a screen may hold (Kitty's default).
+const KITTY_STORAGE_LIMIT: u64 = 320 * 1024 * 1024;
 
 pub struct GhosttyScreen {
     // Field order matters: iterators and render state are dropped before the
     // terminal they were filled from.
     cells: CellIterator<'static>,
     rows: RowIterator<'static>,
+    placements: graphics::PlacementIterator<'static>,
     render: RenderState<'static>,
     key_encoder: key::Encoder<'static>,
     key_event: key::Event<'static>,
@@ -40,6 +45,10 @@ pub struct GhosttyScreen {
     status_changed: Rc<Cell<bool>>,
     last_cursor: Option<Cursor>,
     last_modes: Option<(bool, bool)>,
+    last_placements: Vec<Placement>,
+    /// Every image in view, encoded once per (id, generation); dropped when
+    /// it leaves the view.
+    images: HashMap<(u32, u64), Image>,
     size: (u16, u16),
 }
 
@@ -67,6 +76,7 @@ impl GhosttyScreen {
         Ok(Self {
             cells: CellIterator::new()?,
             rows: RowIterator::new()?,
+            placements: graphics::PlacementIterator::new()?,
             render: RenderState::new()?,
             key_encoder: key::Encoder::new()?,
             key_event: key::Event::new()?,
@@ -78,6 +88,8 @@ impl GhosttyScreen {
             status_changed,
             last_cursor: None,
             last_modes: None,
+            last_placements: Vec::new(),
+            images: HashMap::new(),
             size: (cols, rows),
         })
     }
@@ -90,6 +102,64 @@ impl GhosttyScreen {
         // Nobody is waiting for answers to anything in a snapshot.
         screen.take_replies();
         Ok(screen)
+    }
+
+    /// The Kitty graphics placements in the viewport, and the images among
+    /// them that were not encoded before (`self.images` is brought up to
+    /// date: what left the view is dropped).
+    fn placements_in_view(&mut self) -> Result<(Vec<Placement>, Vec<Image>)> {
+        let graphics = self.term.kitty_graphics()?;
+        let mut placements = Vec::new();
+        let mut new_images = Vec::new();
+        let mut in_view = std::collections::HashSet::new();
+        let mut iteration = self.placements.update(&graphics)?;
+        while let Some(placement) = iteration.next() {
+            if placement.is_virtual()? {
+                continue; // Unicode placeholders: not drawn by clients yet.
+            }
+            let image_id = placement.image_id()?;
+            let Some(image) = graphics.image(image_id) else {
+                continue;
+            };
+            let info = placement.placement_render_info(&image, &self.term)?;
+            if !info.viewport_visible {
+                continue;
+            }
+            let key = (image_id, image.generation()?);
+            if let Entry::Vacant(entry) = self.images.entry(key) {
+                let Some(png) = encode_png(&image)? else {
+                    continue;
+                };
+                let encoded = Image {
+                    id: key.0,
+                    generation: key.1,
+                    width: image.width()?,
+                    height: image.height()?,
+                    png: png.into(),
+                };
+                new_images.push(entry.insert(encoded).clone());
+            }
+            in_view.insert(key);
+            placements.push(Placement {
+                image_id,
+                image_generation: key.1,
+                col: info.viewport_col,
+                row: info.viewport_row,
+                cols: info.grid_cols,
+                rows: info.grid_rows,
+                source_x: info.source_x,
+                source_y: info.source_y,
+                source_width: info.source_width,
+                source_height: info.source_height,
+                x_offset: placement.x_offset()?,
+                y_offset: placement.y_offset()?,
+                z: placement.z()?,
+                pixel_width: info.pixel_width,
+                pixel_height: info.pixel_height,
+            });
+        }
+        self.images.retain(|key, _| in_view.contains(key));
+        Ok((placements, new_images))
     }
 }
 
@@ -211,15 +281,27 @@ impl Screen for GhosttyScreen {
         }
         snapshot.set_dirty(Dirty::Clean)?;
 
+        let (placements, new_images) = self.placements_in_view()?;
+        let placements_changed = full || placements != self.last_placements;
         let unchanged = changed.is_empty()
             && title.is_none()
             && self.last_cursor.as_ref() == Some(&cursor)
-            && self.last_modes == Some(modes);
+            && self.last_modes == Some(modes)
+            && !placements_changed;
         if unchanged && !full {
             return Ok(None);
         }
         self.last_cursor = Some(cursor);
         self.last_modes = Some(modes);
+        // A full frame goes to a subscriber that may know none of the images.
+        let images = if full {
+            self.images.values().cloned().collect()
+        } else {
+            new_images
+        };
+        if placements_changed {
+            self.last_placements.clone_from(&placements);
+        }
 
         Ok(Some(Frame {
             pane_id: String::new(),
@@ -233,6 +315,13 @@ impl Screen for GhosttyScreen {
             title,
             mouse_tracking: modes.0,
             alt_screen: modes.1,
+            placements_changed,
+            placements: if placements_changed {
+                placements
+            } else {
+                Vec::new()
+            },
+            images,
         }))
     }
 
@@ -335,6 +424,9 @@ impl Screen for GhosttyScreen {
             x: cols - 1,
             y: u32::from(rows) - 1,
         };
+        // Image placements are read in viewport coordinates: the viewport is
+        // the screen from here on (the scroll position is not kept anyway).
+        self.term.scroll_viewport(ScrollViewport::Bottom);
 
         // Everything about the active screen is read before the alternate
         // screen is left below.
@@ -373,7 +465,9 @@ impl Screen for GhosttyScreen {
         let state = format_range(&self.term, Point::Active, (0, 0), (0, 0), true)?;
 
         let alternate = if self.term.active_screen()? == ActiveScreen::Alternate {
-            let content = format_range(&self.term, Point::Active, (0, 0), (last.x, last.y), false)?;
+            let mut content =
+                format_range(&self.term, Point::Active, (0, 0), (last.x, last.y), false)?;
+            content.extend(kitty_images(&self.term, &mut self.placements)?);
             let mode = [Mode::ALT_SCREEN_SAVE, Mode::ALT_SCREEN]
                 .into_iter()
                 .find(|&mode| self.term.mode(mode).unwrap_or(false))
@@ -411,6 +505,7 @@ impl Screen for GhosttyScreen {
             false,
         )?);
         out.extend(b"\x1b[0m");
+        out.extend(kitty_images(&self.term, &mut self.placements)?);
         out.extend(cursor_position(&self.term)?);
         if let Some((mode, content)) = alternate {
             out.extend(format!("\x1b[?{mode}h\x1b[H").bytes());
@@ -477,7 +572,190 @@ fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> Result<Terminal<
     // reset (RIS) turns this back off; fixing that needs a patched
     // libghostty-vt.
     term.set_mode(Mode::GRAPHEME_CLUSTER, true)?;
+    // Kitty graphics: images are kept (and placed) by libghostty once the
+    // storage has a limit; PNG needs a decoder, installed per thread.
+    graphics::set_png_decoder(Some(Box::new(PngDecoder)))?;
+    term.set_kitty_image_storage_limit(KITTY_STORAGE_LIMIT)?;
     Ok(term)
+}
+
+/// An image from the Kitty graphics storage as PNG, or None for a kind the
+/// encoder does not take (libghostty keeps what it decoded, so compressed
+/// data does not reach here).
+fn encode_png(image: &graphics::Image<'_>) -> Result<Option<Vec<u8>>> {
+    let color = match image.format()? {
+        graphics::ImageFormat::Rgb => png::ColorType::Rgb,
+        graphics::ImageFormat::Rgba => png::ColorType::Rgba,
+        graphics::ImageFormat::Gray => png::ColorType::Grayscale,
+        graphics::ImageFormat::GrayAlpha => png::ColorType::GrayscaleAlpha,
+        _ => return Ok(None),
+    };
+    if image.compression()? != graphics::Compression::None {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, image.width()?, image.height()?);
+    encoder.set_color(color);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer = encoder.write_header().context("png header")?;
+    writer
+        .write_image_data(image.data()?)
+        .context("png image data")?;
+    writer.finish().context("png finish")?;
+    Ok(Some(out))
+}
+
+/// Decodes the PNGs programs send over the Kitty graphics protocol into
+/// RGBA8 for libghostty. (The crate's own `RustPngDecoder` has no constructor
+/// in 0.2.2, and reads into an empty buffer.)
+struct PngDecoder;
+
+impl graphics::DecodePng for PngDecoder {
+    fn decode_png<'alloc>(
+        &mut self,
+        alloc: &'alloc libghostty_vt::alloc::Allocator<'_>,
+        data: &[u8],
+    ) -> Option<graphics::DecodedImage<'alloc>> {
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+        decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
+        let mut reader = decoder.read_info().ok()?;
+        let mut buf = vec![0u8; reader.output_buffer_size()?];
+        let info = reader.next_frame(&mut buf).ok()?;
+        if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+            return None;
+        }
+        let mut bytes =
+            libghostty_vt::alloc::Bytes::new_with_alloc(alloc, info.buffer_size()).ok()?;
+        bytes.copy_from_slice(&buf[..info.buffer_size()]);
+        Some(graphics::DecodedImage {
+            width: info.width,
+            height: info.height,
+            data: bytes,
+        })
+    }
+}
+
+/// The Kitty graphics on the active screen as the commands that put them
+/// there: each image transmitted once (`a=t`, its id kept), then every
+/// placement of it at its cell (`a=p`, the cursor left alone). A placement
+/// whose top is scrolled into the history cannot be put back and is left out.
+fn kitty_images(
+    term: &Terminal<'_, '_>,
+    iterator: &mut graphics::PlacementIterator<'_>,
+) -> Result<Vec<u8>> {
+    use std::fmt::Write;
+
+    let graphics = term.kitty_graphics()?;
+    let mut out = String::new();
+    let mut transmitted = std::collections::HashSet::new();
+    let mut placements = iterator.update(&graphics)?;
+    while let Some(placement) = placements.next() {
+        if placement.is_virtual()? {
+            continue;
+        }
+        let id = placement.image_id()?;
+        let Some(image) = graphics.image(id) else {
+            continue;
+        };
+        let Some(position) = placement.viewport_pos(&image, term)? else {
+            continue;
+        };
+        if position.row < 0 || position.col < 0 {
+            continue;
+        }
+        if transmitted.insert(id) {
+            let Some((format, pixels)) = transmit_pixels(&image)? else {
+                continue;
+            };
+            let encoded = base64(&pixels);
+            let mut chunks = encoded.as_bytes().chunks(4096).peekable();
+            let mut first = true;
+            while let Some(chunk) = chunks.next() {
+                let more = u8::from(chunks.peek().is_some());
+                if first {
+                    write!(
+                        out,
+                        "\x1b_Ga=t,q=2,i={id},f={format},s={},v={},m={more};",
+                        image.width()?,
+                        image.height()?
+                    )?;
+                    first = false;
+                } else {
+                    write!(out, "\x1b_Gm={more};")?;
+                }
+                out.push_str(std::str::from_utf8(chunk)?);
+                out.push_str("\x1b\\");
+            }
+        }
+        write!(
+            out,
+            "\x1b[{};{}H\x1b_Ga=p,q=2,C=1,i={id}",
+            position.row + 1,
+            position.col + 1
+        )?;
+        for (key, value) in [
+            ("p", placement.placement_id()?),
+            ("c", placement.columns()?),
+            ("r", placement.rows()?),
+            ("x", placement.source_x()?),
+            ("y", placement.source_y()?),
+            ("w", placement.source_width()?),
+            ("h", placement.source_height()?),
+            ("X", placement.x_offset()?),
+            ("Y", placement.y_offset()?),
+        ] {
+            if value != 0 {
+                write!(out, ",{key}={value}")?;
+            }
+        }
+        let z = placement.z()?;
+        if z != 0 {
+            write!(out, ",z={z}")?;
+        }
+        out.push_str(";\x1b\\");
+    }
+    Ok(out.into_bytes())
+}
+
+/// An image's pixels as Kitty takes them (`f=24` RGB or `f=32` RGBA): gray
+/// is widened, which the protocol has no format for.
+fn transmit_pixels(image: &graphics::Image<'_>) -> Result<Option<(u32, Vec<u8>)>> {
+    if image.compression()? != graphics::Compression::None {
+        return Ok(None);
+    }
+    let data = image.data()?;
+    Ok(Some(match image.format()? {
+        graphics::ImageFormat::Rgb => (24, data.to_vec()),
+        graphics::ImageFormat::Rgba => (32, data.to_vec()),
+        graphics::ImageFormat::Gray => (24, data.iter().flat_map(|&g| [g, g, g]).collect()),
+        graphics::ImageFormat::GrayAlpha => (
+            32,
+            data.chunks(2)
+                .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
+                .collect(),
+        ),
+        _ => return Ok(None),
+    }))
+}
+
+fn base64(data: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// The sequence that moves the cursor to where it is in `term`.
@@ -807,6 +1085,125 @@ mod tests {
         out
     }
 
+    /// A 20x4 RGB image (f=24), red left half, blue right, placed over 10 columns and 2 rows.
+    fn kitty_image(extra: &str) -> Vec<u8> {
+        use std::fmt::Write;
+        let mut pixels = Vec::new();
+        for _y in 0..4 {
+            for x in 0..20 {
+                pixels.extend_from_slice(if x < 10 { &[255, 0, 0] } else { &[0, 0, 255] });
+            }
+        }
+        let mut out = String::new();
+        write!(
+            out,
+            "\x1b_Ga=T,f=24,s=20,v=4,c=10,r=2,i=7,q=2{extra};{}\x1b\\",
+            base64(&pixels)
+        )
+        .unwrap();
+        out.into_bytes()
+    }
+
+    fn png_size(png: &[u8]) -> (u32, u32) {
+        let reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        (reader.info().width, reader.info().height)
+    }
+
+    #[test]
+    fn kitty_image_comes_as_a_placement_and_a_png() {
+        let mut screen = screen();
+        screen.feed(b"ab");
+        screen.feed(&kitty_image(""));
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert!(frame.placements_changed);
+        assert_eq!(frame.placements.len(), 1);
+        let placement = &frame.placements[0];
+        assert_eq!(
+            (placement.col, placement.row, placement.cols, placement.rows),
+            (2, 0, 10, 2)
+        );
+        assert_eq!(placement.image_id, 7);
+        assert_eq!((placement.source_width, placement.source_height), (20, 4));
+        assert_eq!((placement.pixel_width, placement.pixel_height), (100, 40));
+        assert_eq!(frame.images.len(), 1);
+        let image = &frame.images[0];
+        assert_eq!(
+            (image.id, image.generation),
+            (7, placement.image_generation)
+        );
+        assert_eq!((image.width, image.height), (20, 4));
+        assert_eq!(png_size(&image.png), (20, 4));
+        // The cursor went past the image, as Kitty says.
+        let cursor = frame.cursor.unwrap();
+        assert_eq!((cursor.x, cursor.y), (12, 1));
+    }
+
+    #[test]
+    fn placements_and_images_are_sent_only_when_they_change() {
+        let mut screen = screen();
+        screen.feed(&kitty_image(""));
+        screen.frame(true).unwrap();
+        assert!(screen.frame(false).unwrap().is_none());
+
+        // Text under the image: the rows come, the placements do not.
+        screen.feed(b"\x1b[4;1Hx");
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert!(!frame.placements_changed);
+        assert!(frame.placements.is_empty());
+        assert!(frame.images.is_empty());
+
+        // Scrolled by one: the placement's top is out of view, the image is known already.
+        screen.feed(b"\r\n");
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert!(frame.placements_changed);
+        assert_eq!(frame.placements[0].row, -1);
+        assert!(frame.images.is_empty());
+
+        // A full frame (a new subscriber) carries the image again.
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(frame.images.len(), 1);
+        assert_eq!(frame.placements.len(), 1);
+
+        // Scrolled out: no placements, the image is forgotten until it is in view again.
+        screen.feed(b"\r\n");
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert!(frame.placements_changed);
+        assert!(frame.placements.is_empty());
+        assert!(screen.frame(true).unwrap().unwrap().images.is_empty());
+        screen.scroll(-1);
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert_eq!(frame.placements[0].row, -1);
+        assert_eq!(frame.images.len(), 1);
+
+        // Deleted: a frame with no placements, and nothing else in it.
+        screen.scroll_to_bottom();
+        screen.scroll(-1);
+        screen.frame(false).unwrap();
+        screen.feed(b"\x1b_Ga=d,d=A,q=2\x1b\\");
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert!(frame.placements_changed);
+        assert!(frame.placements.is_empty());
+        assert!(frame.changed.is_empty());
+    }
+
+    #[test]
+    fn an_image_sent_again_gets_a_new_generation() {
+        let mut screen = screen();
+        screen.feed(&kitty_image(""));
+        let first = screen.frame(true).unwrap().unwrap();
+        screen.feed(b"\x1b[H");
+        screen.feed(&kitty_image(""));
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert_eq!(frame.images.len(), 1);
+        assert!(frame.images[0].generation > first.images[0].generation);
+        assert_eq!(
+            frame.placements[0].image_generation,
+            frame.images[0].generation
+        );
+    }
+
     #[test]
     fn full_frame_has_every_row_and_trims_blanks() {
         let mut screen = screen();
@@ -1102,6 +1499,62 @@ mod tests {
         assert_eq!(row_text(&frame, 2), "$ app");
         let cursor = frame.cursor.unwrap();
         assert_eq!((cursor.x, cursor.y, cursor.visible), (0, 3, true));
+    }
+
+    #[test]
+    fn snapshot_keeps_images_on_both_screens() {
+        let mut bytes = b"ab".to_vec();
+        bytes.extend(kitty_image(",z=-1,X=3"));
+        bytes.extend(b"\x1b[?1049h\x1b[2;2H");
+        bytes.extend(kitty_image(",i=8,p=2"));
+        let mut restored = round_trip(&bytes);
+        let frame = restored.frame(true).unwrap().unwrap();
+        assert!(frame.alt_screen);
+        assert_eq!(frame.placements.len(), 1);
+        assert_eq!(frame.placements[0].image_id, 8);
+        assert_eq!((frame.placements[0].col, frame.placements[0].row), (1, 1));
+        assert_eq!(frame.images.len(), 1);
+        assert_eq!(png_size(&frame.images[0].png), (20, 4));
+
+        restored.feed(b"\x1b[?1049l");
+        let frame = restored.frame(true).unwrap().unwrap();
+        assert!(!frame.alt_screen);
+        let placement = &frame.placements[0];
+        assert_eq!(
+            (placement.image_id, placement.col, placement.row),
+            (7, 2, 0)
+        );
+        assert_eq!(
+            (
+                placement.cols,
+                placement.rows,
+                placement.z,
+                placement.x_offset
+            ),
+            (10, 2, -1, 3)
+        );
+        assert_eq!(row_text(&frame, 0), "ab");
+    }
+
+    #[test]
+    fn snapshot_leaves_out_an_image_scrolled_into_the_history() {
+        let mut bytes = b"ab".to_vec();
+        bytes.extend(kitty_image(""));
+        // Text on every row (the formatter drops blank history rows); the
+        // image's top ends up one row up in the history.
+        bytes.extend(b"c\r\nd\r\ne\r\nf\r\ng");
+        let mut restored = round_trip(&bytes);
+        let frame = restored.frame(true).unwrap().unwrap();
+        assert!(frame.placements.is_empty());
+        restored.scroll(-1);
+        assert!(
+            restored
+                .frame(false)
+                .unwrap()
+                .unwrap()
+                .placements
+                .is_empty()
+        );
     }
 
     #[test]
