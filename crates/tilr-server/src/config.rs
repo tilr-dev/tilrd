@@ -7,7 +7,7 @@
 //! ```toml
 //! # Browser origins allowed to connect (clients that send no Origin header
 //! are always allowed). Replaces the built-in list, as --allow-origin does.
-//! allow_origins = ["tilr://app", "http://127.0.0.1:7891"]
+//! allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -20,9 +20,11 @@ const CONFIG_DIR_ENV: &str = "TILR_CONFIG_DIR";
 const FILE: &str = "server.toml";
 
 /// Browser origins allowed when neither the file nor the command line says:
-/// the Tilr app's page and the web client's.
+/// the Tilr app's page (`tilr://app`), its terminal app (`tilr://tilr`), and
+/// the web client's dev origins.
 pub const DEFAULT_ORIGINS: &[&str] = &[
     "tilr://app",
+    "tilr://tilr",
     "http://127.0.0.1:7891",
     "http://localhost:7891",
 ];
@@ -87,8 +89,8 @@ mod tests {
 
     #[test]
     fn the_file_sets_the_origins_and_the_command_line_wins() {
-        let config: Config = toml::from_str("allow_origins = [\"tilr://tilr\"]").unwrap();
-        assert_eq!(allow_origins(vec![], &config), vec!["tilr://tilr"]);
+        let config: Config = toml::from_str("allow_origins = [\"tilr://my-notes\"]").unwrap();
+        assert_eq!(allow_origins(vec![], &config), vec!["tilr://my-notes"]);
         assert_eq!(
             allow_origins(vec!["http://x".into()], &config),
             vec!["http://x"]

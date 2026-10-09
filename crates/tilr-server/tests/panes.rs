@@ -135,7 +135,7 @@ async fn the_configuration_file_names_the_allowed_origins() {
         std::fs::write(dir.join("config/server.toml"), text).unwrap();
         dir
     };
-    let file = "allow_origins = [\"tilr://tilr\", \"http://app.test\"]\n";
+    let file = "allow_origins = [\"tilr://my-notes\", \"http://app.test\"]\n";
 
     let server = Server::start_in(configured(file), exe, &[]);
     assert!(
@@ -143,7 +143,7 @@ async fn the_configuration_file_names_the_allowed_origins() {
             .await
             .is_err_and(|err| err.contains("403"))
     );
-    let mut page = Client::connect_from(&server, "tilr://tilr").await.unwrap();
+    let mut page = Client::connect_from(&server, "tilr://my-notes").await.unwrap();
     assert_eq!(page.hello().await.protocol_version, PROTOCOL_VERSION);
     assert!(server.logged("configuration read"));
 
@@ -153,7 +153,7 @@ async fn the_configuration_file_names_the_allowed_origins() {
         &["--allow-origin", "http://cli.test"],
     );
     assert!(
-        Client::connect_from(&server, "tilr://tilr")
+        Client::connect_from(&server, "tilr://my-notes")
             .await
             .is_err_and(|err| err.contains("403"))
     );

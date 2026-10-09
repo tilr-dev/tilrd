@@ -38,8 +38,8 @@ struct Cli {
 
     /// Browser origins allowed to connect. Clients that send no Origin header
     /// (anything that is not a browser) are always allowed. Given, replaces
-    /// the configuration file's list; neither: tilr://app, http://127.0.0.1:7891,
-    /// http://localhost:7891.
+    /// the configuration file's list; neither: tilr://app, tilr://tilr,
+    /// http://127.0.0.1:7891, http://localhost:7891.
     #[arg(long = "allow-origin")]
     allow_origins: Vec<String>,
 

@@ -87,7 +87,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | Flag | Default | Meaning |
 |---|---|---|
 | `--listen ADDR` | `127.0.0.1:7890` | WebSocket address |
-| `--allow-origin ORIGIN` | the configuration file's list, else `tilr://app` (the Tilr app's page) and the web client's | Browser origins allowed to connect; repeatable |
+| `--allow-origin ORIGIN` | the configuration file's list, else `tilr://app` (the Tilr app's page), `tilr://tilr` (its terminal app) and the web client's | Browser origins allowed to connect; repeatable |
 | `--config PATH` | `~/.config/tilr/server.toml` (`$XDG_CONFIG_HOME/tilr/server.toml`), if there | The [configuration file](#the-configuration-file) |
 | `--no-auth` | | Do not ask clients for the [access token](#who-may-connect) |
 | `--cloudflared PATH` | `cloudflared` | The `cloudflared` to run for a [tunnel](#tilr-cloud) |
@@ -127,9 +127,10 @@ not know, stops it from starting.
 
 ```toml
 # Browser origins allowed to connect. The Tilr app serves each of its apps
-# from tilr://<name>/ (the name from its config.yml, lower-cased), so name
-# them here. Replaces the built-in list; --allow-origin replaces this one.
-allow_origins = ["tilr://app", "tilr://tilr", "http://127.0.0.1:7891", "http://localhost:7891"]
+# from tilr://<name>/ (the name from its config.yml, lower-cased); the built-in
+# list has tilr://app, tilr://tilr (the terminal) and the web client's, so add
+# your own apps here. Replaces the built-in list; --allow-origin replaces this one.
+allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
 ```
 
 ## tilr Cloud
