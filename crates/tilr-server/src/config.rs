@@ -8,6 +8,8 @@
 //! # Browser origins allowed to connect (clients that send no Origin header
 //! are always allowed). Replaces the built-in list, as --allow-origin does.
 //! allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
+//! # Serve the SOCKS proxy (see socks.rs), as --socks does.
+//! socks = true
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -34,6 +36,8 @@ pub const DEFAULT_ORIGINS: &[&str] = &[
 pub struct Config {
     /// Browser origins allowed to connect. Unset: the built-in list.
     pub allow_origins: Option<Vec<String>>,
+    /// Serve the SOCKS proxy. Unset: off.
+    pub socks: Option<bool>,
 }
 
 /// Where the file is looked for when `--config` is not given.
@@ -83,6 +87,12 @@ pub fn allow_origins(cli: Vec<String>, config: &Config) -> Vec<String> {
     }
 }
 
+/// Whether to serve the SOCKS proxy: `--socks` turns it on, else the file
+/// says, else it is off.
+pub fn socks(cli: bool, config: &Config) -> bool {
+    cli || config.socks.unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +106,14 @@ mod tests {
             vec!["http://x"]
         );
         assert_eq!(allow_origins(vec![], &Config::default()), DEFAULT_ORIGINS);
+    }
+
+    #[test]
+    fn the_socks_proxy_is_off_unless_asked_for() {
+        assert!(!socks(false, &Config::default()));
+        assert!(socks(true, &Config::default()));
+        let config: Config = toml::from_str("socks = true").unwrap();
+        assert!(socks(false, &config));
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod pane;
 mod ps;
 mod pty;
 mod reload;
+mod socks;
 mod supervisor;
 mod update;
 
@@ -76,6 +77,13 @@ struct Cli {
     /// pings its clients, so only one that is gone stays silent. 0 = never.
     #[arg(long, default_value_t = 30)]
     client_timeout: u64,
+
+    /// Serve a SOCKS5 proxy on the same port, so a browser elsewhere reaches
+    /// what listens on this machine: the WebSocket at /socks (through a
+    /// tunnel too) and raw SOCKS5 with the access token as the password.
+    /// Also `socks = true` in the configuration file.
+    #[arg(long)]
+    socks: bool,
 
     /// Do not reload when the executable on disk changes. SIGUSR1 still does.
     #[arg(long)]
@@ -185,6 +193,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 auto_reload: !cli.no_auto_reload,
                 client_timeout: (cli.client_timeout > 0)
                     .then(|| Duration::from_secs(cli.client_timeout)),
+                socks: config::socks(cli.socks, &config),
             })?
         }
     }

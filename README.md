@@ -96,6 +96,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
 | `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
+| `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
 
 ## Who may connect
 
@@ -131,6 +132,8 @@ not know, stops it from starting.
 # list has tilr://app, tilr://tilr (the terminal) and the web client's, so add
 # your own apps here. Replaces the built-in list; --allow-origin replaces this one.
 allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
+# Serve the SOCKS proxy, as --socks does. Off when unset.
+socks = true
 ```
 
 ## tilr Cloud
@@ -166,6 +169,49 @@ What Cloud can and cannot do:
 The link (`cloud.json`, next to the token) holds a token of the machine's own
 for Cloud; it is not the access token. `--url` or `TILR_CLOUD` names another
 Cloud than `https://cloud.tilr.dev`.
+
+## SOCKS proxy
+
+Off unless the server runs with `--socks` (or `socks = true` in the
+configuration file). Then the server is also a SOCKS5 proxy (RFC 1928) on its
+own port, so a browser on another machine opens what listens there, a dev
+server on `127.0.0.1:3000` say. CONNECT only; BIND and UDP ASSOCIATE get
+"command not supported".
+
+Names are resolved on the server ("remote DNS"). `localhost` and every name
+under it (`pb.localhost`, `anything.localhost`, RFC 6761) never go to DNS:
+they reach services bound on this machine's loopback, 127.0.0.1 first, then
+`[::1]`. A browser connects to `localhost` and `127.0.0.1` itself rather than
+through a proxy, so a page asks for `pb.localhost:3000` instead.
+
+Two ways in:
+
+- **`GET /socks`, a WebSocket**: the way through a [tunnel](#tilr-cloud), which
+  carries HTTP only. The handshake shows the access token: `Authorization:
+  Bearer <token>`, or `?token=<token>` for a page, which cannot set headers on
+  a WebSocket. A browser page must come from an allowed origin, as for the main
+  protocol. Without the token: 401; disallowed origin: 403; proxy off: 404.
+  After that, the client's binary messages are the SOCKS bytes it sends and
+  the server's are the ones it gets back, any sizes; SOCKS itself asks for no
+  authentication (a username and password, if offered, are taken unread). A
+  text message closes the WebSocket with 1003. A WebSocket cannot be half
+  closed: once the target is done sending, the server closes it with 1000.
+  The server pings it like the main protocol's clients (`--client-timeout`).
+- **Raw SOCKS5** on the same port, for `ssh -L 1080:127.0.0.1:7890` and the
+  like: a connection whose first byte is 5 is a SOCKS client, which must use
+  username/password authentication (RFC 1929) with the access token as the
+  password, any username. A server started with `--no-auth` asks for none.
+
+```sh
+ssh -L 1080:127.0.0.1:7890 my-server
+curl --socks5-hostname "x:$(ssh my-server tilr-server token)@127.0.0.1:1080" http://pb.localhost:3000
+```
+
+The token gives what it gives through the main protocol: everything this
+user can do on the machine, here any TCP connection from it. The raw mode
+listens wherever `--listen` does, 127.0.0.1 by default. Paths other than
+`/socks` are the main protocol, as before. Sessions end when the server
+reloads.
 
 ## Telling panes apart
 

@@ -39,7 +39,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use uuid::Uuid;
 
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
-use crate::{auth, clipboard, cloud, identity, link, pty, reload};
+use crate::{auth, clipboard, cloud, identity, link, pty, reload, socks};
 
 /// Packets queued for one client before it is considered stuck and dropped.
 const CLIENT_QUEUE: usize = 1024;
@@ -166,6 +166,17 @@ pub struct Options {
     /// Drop a client nothing was heard from for this long, pings included.
     /// `None` keeps silent clients forever.
     pub client_timeout: Option<Duration>,
+    /// Serve the SOCKS proxy, see [`crate::socks`].
+    pub socks: bool,
+}
+
+/// Who may come in through the listening port, and to what.
+struct Door {
+    allow_origins: Vec<String>,
+    /// The access token; `None` when the server runs without one.
+    token: Option<String>,
+    /// Whether the SOCKS proxy is served.
+    socks: bool,
 }
 
 pub fn run(options: Options) -> Result<()> {
@@ -194,6 +205,15 @@ pub fn run(options: Options) -> Result<()> {
                 tracing::warn!("no authentication: anyone who can reach this server gets a shell");
                 None
             };
+            if options.socks {
+                tracing::info!(
+                    "SOCKS proxy on: WebSocket {} and raw SOCKS5 on this port",
+                    socks::PATH
+                );
+            } else {
+                tracing::info!("SOCKS proxy off");
+            }
+
             let mut local = listener.local_addr()?;
             tracing::info!("listening on ws://{local}");
             if local.ip().is_unspecified() {
@@ -208,7 +228,11 @@ pub fn run(options: Options) -> Result<()> {
             let (events_tx, events_rx) = mpsc::unbounded_channel();
             tokio::spawn(accept_loop(
                 Arc::clone(&listener),
-                options.allow_origins.into(),
+                Arc::new(Door {
+                    allow_origins: options.allow_origins,
+                    token: token.clone(),
+                    socks: options.socks,
+                }),
                 options.client_timeout,
                 events_tx.clone(),
             ));
@@ -309,7 +333,7 @@ async fn reload_signal(events: mpsc::UnboundedSender<Event>) {
 
 async fn accept_loop(
     listener: Arc<TcpListener>,
-    allow_origins: Arc<[String]>,
+    door: Arc<Door>,
     client_timeout: Option<Duration>,
     events: mpsc::UnboundedSender<Event>,
 ) {
@@ -323,7 +347,7 @@ async fn accept_loop(
                     id,
                     stream,
                     addr,
-                    Arc::clone(&allow_origins),
+                    Arc::clone(&door),
                     client_timeout,
                     events.clone(),
                 ));
@@ -340,39 +364,86 @@ async fn serve_client(
     id: ClientId,
     stream: TcpStream,
     addr: SocketAddr,
-    allow_origins: Arc<[String]>,
+    door: Arc<Door>,
     client_timeout: Option<Duration>,
     events: mpsc::UnboundedSender<Event>,
 ) {
     // Keystrokes and small diffs must not wait for Nagle.
     let _ = stream.set_nodelay(true);
-    // A browser attaches the page's origin to every WebSocket handshake. With
-    // no other authentication, this check is what stops an arbitrary website
-    // from opening a shell on this machine.
+    // An HTTP request starts with a letter; a SOCKS5 client with its version.
+    let mut first = [0u8; 1];
+    if matches!(stream.peek(&mut first).await, Ok(1)) && first[0] == socks::VERSION {
+        if !door.socks {
+            tracing::debug!(%addr, "raw SOCKS connection while the proxy is off");
+            return;
+        }
+        let auth = match &door.token {
+            Some(token) => socks::Auth::Password {
+                token: token.clone(),
+            },
+            None => socks::Auth::None,
+        };
+        if let Err(err) = socks::serve(stream, auth, addr).await {
+            tracing::debug!(%addr, "SOCKS session: {err:#}");
+        }
+        return;
+    }
+
+    // What the handshake asked for; the callback tells.
+    let mut route = Route::Main;
     #[expect(
         clippy::result_large_err,
         reason = "the handshake callback signature is fixed by tungstenite"
     )]
-    let check_origin = |request: &Request, response: Response| match request
-        .headers()
-        .get("origin")
-        .map(|origin| origin.to_str().unwrap_or(""))
-    {
-        Some(origin) if !allow_origins.iter().any(|allowed| allowed == origin) => {
-            tracing::warn!(%addr, origin, "rejected connection from disallowed origin");
-            let mut forbidden = ErrorResponse::new(Some("origin not allowed".into()));
-            *forbidden.status_mut() = StatusCode::FORBIDDEN;
-            Err(forbidden)
+    let admit = |request: &Request, response: Response| {
+        let refuse = |status: StatusCode, why: &str| {
+            let mut refused = ErrorResponse::new(Some(why.into()));
+            *refused.status_mut() = status;
+            refused
+        };
+        let socks = request.uri().path() == socks::PATH;
+        if socks && !door.socks {
+            return Err(refuse(StatusCode::NOT_FOUND, "not found"));
         }
-        _ => Ok(response),
+        // A browser attaches the page's origin to every WebSocket handshake.
+        // With no other authentication, this check is what stops an
+        // arbitrary website from opening a shell on this machine.
+        if let Some(origin) = request.headers().get("origin") {
+            let origin = origin.to_str().unwrap_or("");
+            if !door.allow_origins.iter().any(|allowed| allowed == origin) {
+                tracing::warn!(%addr, origin, "rejected connection from disallowed origin");
+                return Err(refuse(StatusCode::FORBIDDEN, "origin not allowed"));
+            }
+        }
+        if socks {
+            // The main protocol asks for the token in `Hello`; SOCKS has no
+            // such message, so the handshake carries it.
+            if let Some(token) = &door.token
+                && !socks_token(request).is_some_and(|given| auth::matches(token, given))
+            {
+                tracing::warn!(%addr, "rejected SOCKS WebSocket without the access token");
+                let mut refused = refuse(StatusCode::UNAUTHORIZED, "access token required");
+                refused
+                    .headers_mut()
+                    .insert("www-authenticate", "Bearer".parse().expect("header value"));
+                return Err(refused);
+            }
+            route = Route::Socks;
+        }
+        Ok(response)
     };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, check_origin).await {
+    let ws = match tokio_tungstenite::accept_hdr_async(stream, admit).await {
         Ok(ws) => ws,
         Err(err) => {
             tracing::warn!(%addr, "websocket handshake failed: {err}");
             return;
         }
     };
+    if route == Route::Socks {
+        tracing::debug!(%addr, "SOCKS WebSocket connected");
+        socks::serve_websocket(ws, client_timeout, addr).await;
+        return;
+    }
     tracing::info!(client = id, %addr, "client connected");
     let (mut sink, mut source) = ws.split();
     let (tx, mut rx) = mpsc::channel::<Bytes>(CLIENT_QUEUE);
@@ -432,6 +503,33 @@ async fn serve_client(
     let _ = events.send(Event::ClientGone { id });
     writer.abort();
     tracing::info!(client = id, "client disconnected");
+}
+
+/// What a WebSocket on the listening port is for.
+#[derive(PartialEq)]
+enum Route {
+    /// The main protocol, whatever the path.
+    Main,
+    /// The SOCKS proxy, at [`socks::PATH`].
+    Socks,
+}
+
+/// The access token a SOCKS WebSocket handshake carries: `Authorization:
+/// Bearer <token>`, else `?token=<token>` (a page cannot set headers on a
+/// WebSocket).
+fn socks_token(request: &Request) -> Option<&str> {
+    let header = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    header.or_else(|| {
+        request
+            .uri()
+            .query()?
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("token="))
+    })
 }
 
 /// The next tick of `interval`; never, without one.

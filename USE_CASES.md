@@ -160,6 +160,23 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
 | Буфер выключается флагом | `the_clipboard_can_be_turned_off` |
 | Содержимое буфера истекает | `pasted_content_expires` |
 
+## SOCKS-прокси — `tests/socks.rs`
+
+| Сценарий | Тест |
+|---|---|
+| Страница по WebSocket `/socks` с токеном в `Authorization: Bearer` доходит до сервиса на loopback сервера (IPv4), туда и обратно, в том числе больше одного сообщения | `a_page_reaches_a_loopback_service_through_the_socks_websocket` |
+| Токен в `?token=`; имя `localhost` резолвится на сервере | `a_page_that_cannot_set_headers_gives_the_token_in_the_query` |
+| `pb.localhost`, `nonexistent.LocalHost` — loopback сервера, без DNS | `any_name_under_localhost_is_the_servers_loopback` |
+| Без токена или с чужим — 401; сервер с `--no-auth` токен не спрашивает | `the_socks_websocket_needs_the_access_token` |
+| Страница с чужого origin — 403, как у основного протокола | `the_socks_websocket_comes_only_from_an_allowed_origin` |
+| Без `--socks` прокси нет: `/socks` — 404, сырой SOCKS отключается, основной протокол как был | `the_proxy_is_off_unless_asked_for` |
+| `socks = true` в файле конфигурации включает прокси | `the_configuration_file_turns_the_proxy_on` |
+| Сырой SOCKS5 на том же порту: пароль — токен; чужой пароль — 0x01; без пароля — 0xFF | `a_raw_socks_client_gives_the_token_as_its_password` |
+| Сырой SOCKS5 сервера с `--no-auth` пароля не спрашивает | `a_raw_socks_client_of_a_server_without_authentication_needs_no_password` |
+| BIND — 0x07; закрытый порт — 0x05, затем WebSocket закрывается с 1000 | `only_connect_is_served_and_a_refusal_is_reported` |
+| Текстовое сообщение закрывает WebSocket с 1003 | `a_text_message_closes_the_socks_websocket` |
+| Несколько сессий идут параллельно, недоговорившая никого не держит, терминал работает | `socks_sessions_run_side_by_side_with_the_terminal` |
+
 ## Не покрыто
 
 - Клиент: поведение веб-клиента при обрыве (автопереподключение, возврат в ту же
