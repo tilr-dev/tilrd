@@ -1,4 +1,7 @@
+mod auth;
 mod clipboard;
+mod cloud;
+mod config;
 mod fail;
 mod identity;
 mod link;
@@ -29,18 +32,32 @@ pub const PLATFORM: &str = env!("TILR_PLATFORM");
     about = "Terminal server: ptys behind a WebSocket"
 )]
 struct Cli {
-    /// Address the WebSocket server listens on. There is no authentication
-    /// yet, so keep this on loopback.
+    /// Address the WebSocket server listens on.
     #[arg(long, default_value = "127.0.0.1:7890")]
     listen: SocketAddr,
 
     /// Browser origins allowed to connect. Clients that send no Origin header
-    /// (anything that is not a browser) are always allowed.
-    #[arg(
-        long = "allow-origin",
-        default_values = ["http://127.0.0.1:7891", "http://localhost:7891"]
-    )]
+    /// (anything that is not a browser) are always allowed. Given, replaces
+    /// the configuration file's list; neither: tilr://app, http://127.0.0.1:7891,
+    /// http://localhost:7891.
+    #[arg(long = "allow-origin")]
     allow_origins: Vec<String>,
+
+    /// The configuration file, see config.rs. Default:
+    /// $XDG_CONFIG_HOME/tilr/server.toml (~/.config/tilr/server.toml), which
+    /// may be missing; a file named here must exist.
+    #[arg(long, env = "TILR_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// Let anyone who can reach the server use it, without the access token.
+    /// A server started this way gets no tunnel from tilr Cloud.
+    #[arg(long)]
+    no_auth: bool,
+
+    /// The `cloudflared` that carries the tunnel of a server linked to tilr
+    /// Cloud.
+    #[arg(long, env = "TILR_CLOUDFLARED", default_value = "cloudflared")]
+    cloudflared: PathBuf,
 
     /// Do not offer the shared clipboard: clients cannot upload content, and
     /// the panes get no `xclip` and `wl-paste` of the server's.
@@ -84,6 +101,14 @@ enum Command {
         #[arg(long, default_value = "ws://127.0.0.1:7890")]
         url: String,
     },
+    /// Print the access token clients must present.
+    Token,
+    /// Link this machine to tilr Cloud, which lists it among your machines
+    /// and gives it a tunnel.
+    Cloud {
+        #[command(subcommand)]
+        command: CloudCommand,
+    },
     /// Replace this executable with the latest release. A running server
     /// reloads itself and keeps its shells.
     Update {
@@ -91,6 +116,24 @@ enum Command {
         #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
         cdn: String,
     },
+}
+
+#[derive(Subcommand)]
+enum CloudCommand {
+    /// Link this machine to your account: shows a code to confirm in a
+    /// browser.
+    Login {
+        /// Where tilr Cloud is.
+        #[arg(long, env = "TILR_CLOUD", default_value = cloud::DEFAULT_URL)]
+        url: String,
+        /// What to call this machine there. The host name, if not given.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Unlink this machine and remove its tunnel.
+    Logout,
+    /// Say whether this machine is linked.
+    Status,
 }
 
 /// Path this process was started from. Asked once at startup: on Linux the
@@ -119,18 +162,31 @@ fn main() -> anyhow::Result<ExitCode> {
         Some(Command::Pane(args)) => pane::run(args)?,
         Some(Command::StateFormats) => print!("{}", reload::formats()),
         Some(Command::Ps { url }) => ps::run(&url)?,
+        Some(Command::Token) => auth::print()?,
+        Some(Command::Cloud { command }) => match command {
+            CloudCommand::Login { url, name } => cloud::login(&url, name)?,
+            CloudCommand::Logout => cloud::logout()?,
+            CloudCommand::Status => cloud::status()?,
+        },
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
-        None => supervisor::run(supervisor::Options {
-            listen: cli.listen,
-            allow_origins: cli.allow_origins,
-            clipboard: (!cli.no_clipboard).then(|| clipboard::Limits {
-                max_bytes: cli.clipboard_max,
-                ttl: (cli.clipboard_ttl > 0).then(|| Duration::from_secs(cli.clipboard_ttl)),
-            }),
-            auto_reload: !cli.no_auto_reload,
-            client_timeout: (cli.client_timeout > 0)
-                .then(|| Duration::from_secs(cli.client_timeout)),
-        })?,
+        None => {
+            let config = config::load(cli.config.as_deref())?;
+            let allow_origins = config::allow_origins(cli.allow_origins, &config);
+            tracing::info!(origins = ?allow_origins, "browser origins allowed");
+            supervisor::run(supervisor::Options {
+                listen: cli.listen,
+                allow_origins,
+                clipboard: (!cli.no_clipboard).then(|| clipboard::Limits {
+                    max_bytes: cli.clipboard_max,
+                    ttl: (cli.clipboard_ttl > 0).then(|| Duration::from_secs(cli.clipboard_ttl)),
+                }),
+                auth: !cli.no_auth,
+                cloudflared: cli.cloudflared,
+                auto_reload: !cli.no_auto_reload,
+                client_timeout: (cli.client_timeout > 0)
+                    .then(|| Duration::from_secs(cli.client_timeout)),
+            })?
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

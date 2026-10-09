@@ -34,6 +34,28 @@
 | `tilr-server ps` показывает панели работающего сервера: id, pid, размер, команду | `ps_lists_the_panes_of_a_running_server` |
 | У сервера свой id, после перезапуска тот же; у другого сервера — другой | `a_server_keeps_its_id_when_it_restarts` |
 
+## Доступ — `tests/auth.rs`
+
+| Сценарий | Тест |
+|---|---|
+| Клиент без токена доступа или с чужим получает ошибку и отключается; с токеном — проходит | `a_client_needs_the_access_token` |
+| Токен лежит в файле, доступном только пользователю, переживает перезапуск; `tilr-server token` печатает его же | `the_token_is_kept_for_the_user_only_and_across_restarts` |
+| Сервер с `--no-auth` токен не спрашивает и предупреждает об этом в журнале | `a_server_started_without_authentication_asks_for_no_token` |
+
+## tilr Cloud — `tests/cloud.rs`
+
+Cloud в этих тестах играет сам тест, `cloudflared` — скрипт, который
+записывает, как его запустили. Сам Cloud проверяется своими тестами
+(`../cloud/test`).
+
+| Сценарий | Тест |
+|---|---|
+| Привязанный сервер подключается к Cloud со своим токеном; получив туннель, запускает `cloudflared`, направленный только на свой порт; туннель отозван — `cloudflared` остановлен, секрет удалён | `a_linked_server_gets_its_tunnel_from_cloud` |
+| Сервер с `--no-auth` от туннеля отказывается | `a_server_without_authentication_takes_no_tunnel` |
+| Описание туннеля, которое дописало бы конфиг `cloudflared` (другой сервис), отклоняется | `a_tunnel_that_would_lead_elsewhere_is_refused` |
+| При перезагрузке сервера старый `cloudflared` останавливается, преемник запускает свой | `a_reload_replaces_cloudflared_with_one_of_the_new_server` |
+| Сервер, привязанный на ходу, подключается сам; отвязанный — отключается | `a_server_linked_while_it_runs_connects_on_its_own` |
+
 ## Переподключение — `tests/reconnect.rs`
 
 | Сценарий | Тест |
@@ -157,4 +179,8 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
 - Клавиши и мышь: кодирование проверено юнит-тестами экрана, сквозных сценариев
   (Ctrl+C прерывает команду, мышь в приложении) нет.
 - Прокрутка при изменении размера панели.
-- Аутентификация: её пока нет.
+- tilr Cloud: `tilr-server cloud login` / `logout` проверены только руками
+  против локального Cloud (`wrangler dev`). Настоящий `cloudflared` и настоящий
+  туннель Cloudflare не проверялись ни разу.
+- `cloudflared`, оставшийся после аварийной смерти сервера (SIGKILL), никто не
+  убирает.

@@ -12,7 +12,7 @@ const STATE_DIR_ENV: &str = "TILR_STATE_DIR";
 const ID_FILE: &str = "server-id";
 
 /// Directory for what the server keeps between runs.
-fn state_dir() -> Option<PathBuf> {
+pub fn state_dir() -> Option<PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|dir| !dir.is_empty());
     if let Some(dir) = set(STATE_DIR_ENV) {
         return Some(PathBuf::from(dir));

@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -38,7 +39,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use uuid::Uuid;
 
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
-use crate::{clipboard, identity, link, pty, reload};
+use crate::{auth, clipboard, cloud, identity, link, pty, reload};
 
 /// Packets queued for one client before it is considered stuck and dropped.
 const CLIENT_QUEUE: usize = 1024;
@@ -154,6 +155,10 @@ struct Starting {
 pub struct Options {
     pub listen: SocketAddr,
     pub allow_origins: Vec<String>,
+    /// Ask every client for the access token.
+    pub auth: bool,
+    /// The `cloudflared` to run for a tunnel.
+    pub cloudflared: PathBuf,
     /// `None` turns the shared clipboard off.
     pub clipboard: Option<clipboard::Limits>,
     /// Reload when the executable on disk changes.
@@ -180,7 +185,25 @@ pub fn run(options: Options) -> Result<()> {
                     .with_context(|| format!("bind {}", options.listen))?,
             };
             let listener = Arc::new(listener);
-            tracing::info!("listening on ws://{}", listener.local_addr()?);
+            let token = if options.auth {
+                Some(
+                    auth::token()
+                        .context("the access token (start with --no-auth to do without)")?,
+                )
+            } else {
+                tracing::warn!("no authentication: anyone who can reach this server gets a shell");
+                None
+            };
+            let mut local = listener.local_addr()?;
+            tracing::info!("listening on ws://{local}");
+            if local.ip().is_unspecified() {
+                local.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+            }
+            let tunnel = cloud::spawn(cloud::Options {
+                auth: token.is_some(),
+                local,
+                cloudflared: options.cloudflared,
+            });
 
             let (events_tx, events_rx) = mpsc::unbounded_channel();
             tokio::spawn(accept_loop(
@@ -215,6 +238,8 @@ pub fn run(options: Options) -> Result<()> {
                 panes: HashMap::new(),
                 starting: HashMap::new(),
                 server_id: identity::server_id(),
+                token,
+                tunnel,
                 clipboard,
                 pane_env,
             };
@@ -426,6 +451,10 @@ struct Supervisor {
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
     server_id: Uuid,
+    /// What a client must present in `Hello`. `None`: nothing.
+    token: Option<String>,
+    /// The tunnel of a server linked to tilr Cloud.
+    tunnel: cloud::Tunnel,
     /// `None` when the clipboard is turned off.
     clipboard: Option<clipboard::Receiver>,
     /// Environment added to every pane process, and so to its shell.
@@ -609,6 +638,8 @@ impl Supervisor {
             }
         }
 
+        // It is not carried over: the successor starts its own.
+        self.tunnel.stop();
         let err = match crate::fail::point("reload-before-exec") {
             Ok(()) => self.exec_successor(&handed_over),
             Err(err) => err,
@@ -700,7 +731,15 @@ impl Supervisor {
                     ),
                 );
             }
-            Msg::Hello(_) => {}
+            Msg::Hello(hello) => match &self.token {
+                Some(_) if hello.token.is_empty() => {
+                    return self.refuse(client_id, "this server asks for its access token");
+                }
+                Some(token) if !auth::matches(token, &hello.token) => {
+                    return self.refuse(client_id, "wrong access token");
+                }
+                _ => {}
+            },
             _ if !greeted => return self.refuse(client_id, "expected Hello first"),
             _ => {}
         }

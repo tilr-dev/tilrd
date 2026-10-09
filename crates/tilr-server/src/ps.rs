@@ -34,6 +34,8 @@ async fn list_panes(url: &str) -> Result<Vec<PaneInfo>> {
             protocol_version: PROTOCOL_VERSION,
             client_name: "tilr-server ps".into(),
             features: Vec::new(),
+            // The server on this machine is this user's: its token is at hand.
+            token: crate::auth::stored_token().unwrap_or_default(),
         }),
         Msg::ListPanes(ListPanes { request_id: 1 }),
     ] {

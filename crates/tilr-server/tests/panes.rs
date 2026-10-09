@@ -125,6 +125,63 @@ async fn a_browser_page_connects_only_from_an_allowed_origin() {
 }
 
 #[tokio::test]
+async fn the_configuration_file_names_the_allowed_origins() {
+    // ~/.config/tilr/server.toml (here: the scratch directory's) sets the
+    // list; --allow-origin on the command line replaces it.
+    let exe = Path::new(env!("CARGO_BIN_EXE_tilr-server"));
+    let configured = |text: &str| {
+        let dir = Server::scratch_dir();
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(dir.join("config/server.toml"), text).unwrap();
+        dir
+    };
+    let file = "allow_origins = [\"tilr://tilr\", \"http://app.test\"]\n";
+
+    let server = Server::start_in(configured(file), exe, &[]);
+    assert!(
+        Client::connect_from(&server, "tilr://app")
+            .await
+            .is_err_and(|err| err.contains("403"))
+    );
+    let mut page = Client::connect_from(&server, "tilr://tilr").await.unwrap();
+    assert_eq!(page.hello().await.protocol_version, PROTOCOL_VERSION);
+    assert!(server.logged("configuration read"));
+
+    let server = Server::start_in(
+        configured(file),
+        exe,
+        &["--allow-origin", "http://cli.test"],
+    );
+    assert!(
+        Client::connect_from(&server, "tilr://tilr")
+            .await
+            .is_err_and(|err| err.contains("403"))
+    );
+    assert!(
+        Client::connect_from(&server, "http://cli.test")
+            .await
+            .is_ok()
+    );
+
+    // A file that does not parse (or names a key the server does not know)
+    // stops the server from starting, and says where the file is.
+    let dir = configured("allow_origin = []\n");
+    let output = std::process::Command::new(exe)
+        .args(["--listen", "127.0.0.1:0"])
+        .env("TILR_CONFIG_DIR", dir.join("config"))
+        .env("TILR_STATE_DIR", dir.join("state"))
+        .env("HOME", &dir)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("server.toml") && stderr.contains("allow_origin"),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
 async fn a_malformed_packet_gets_an_error_and_the_connection_stays() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
@@ -200,6 +257,8 @@ async fn ps_lists_the_panes_of_a_running_server() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
         .args(["ps", "--url", &server.addr])
+        // Where the server keeps its access token.
+        .env("TILR_STATE_DIR", server.dir.join("state"))
         .output()
         .unwrap();
     assert!(output.status.success());

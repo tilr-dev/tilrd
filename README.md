@@ -4,8 +4,7 @@ A terminal server. It runs shells in panes on a machine and serves them to
 clients over a WebSocket: a client gets the screen as a grid of cells and sends
 keys back. Panes keep running when clients disconnect.
 
-Status: early. There is no authentication yet, so the server must stay on
-loopback (see [TODO.md](TODO.md)).
+Status: early (see [TODO.md](TODO.md)).
 
 ## Layout
 
@@ -88,12 +87,84 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | Flag | Default | Meaning |
 |---|---|---|
 | `--listen ADDR` | `127.0.0.1:7890` | WebSocket address |
-| `--allow-origin ORIGIN` | the web client's | Browser origins allowed to connect; repeatable |
+| `--allow-origin ORIGIN` | the configuration file's list, else `tilr://app` (the Tilr app's page) and the web client's | Browser origins allowed to connect; repeatable |
+| `--config PATH` | `~/.config/tilr/server.toml` (`$XDG_CONFIG_HOME/tilr/server.toml`), if there | The [configuration file](#the-configuration-file) |
+| `--no-auth` | | Do not ask clients for the [access token](#who-may-connect) |
+| `--cloudflared PATH` | `cloudflared` | The `cloudflared` to run for a [tunnel](#tilr-cloud) |
 | `--no-clipboard` | | Turn the shared clipboard off |
 | `--clipboard-max SIZE` | `20MB` | Largest clipboard upload (`512K`, `20MB`, `1G`) |
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
 | `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
+
+## Who may connect
+
+A client must send the server's access token in `Hello.token`. The server
+makes the token the first time it runs and keeps it in
+`$XDG_STATE_HOME/tilr/token` (`~/.local/state/tilr`), readable by the user
+only. To see it, on that machine:
+
+```sh
+tilr-server token
+```
+
+A client without the token, or with another, gets an `Error` and the
+connection is closed. `tilr-server ps` reads the token itself.
+
+`--no-auth` turns the check off: then anyone who can reach the port gets a
+shell. A page in a browser must, with or without the token, come from an
+allowed origin: `--allow-origin`, else the configuration file's list, else
+the built-in one.
+
+## The configuration file
+
+What a machine's operator sets once lives in `~/.config/tilr/server.toml`
+(`$XDG_CONFIG_HOME/tilr/server.toml`, or `--config PATH` / `TILR_CONFIG`),
+read when the server starts (a reload starts it again, so a change takes
+effect on the next `tilr-server update` or SIGUSR1). A missing file is an
+empty configuration; one that does not parse, or names a key the server does
+not know, stops it from starting.
+
+```toml
+# Browser origins allowed to connect. The Tilr app serves each of its apps
+# from tilr://<name>/ (the name from its config.yml, lower-cased), so name
+# them here. Replaces the built-in list; --allow-origin replaces this one.
+allow_origins = ["tilr://app", "tilr://tilr", "http://127.0.0.1:7891", "http://localhost:7891"]
+```
+
+## tilr Cloud
+
+Optional. Cloud lists the machines of a user, says which are online, and gives
+each a tunnel: a name on the internet that leads to the server's port, so a
+phone can reach a machine that accepts no incoming connections. What goes
+through the tunnel does not pass through Cloud.
+
+```sh
+tilr-server cloud login      # prints a link and a code to confirm in a browser
+tilr-server cloud status
+tilr-server cloud logout     # Cloud forgets the machine and removes its tunnel
+```
+
+A linked server keeps one outgoing connection to Cloud. When Cloud tells it
+to, it runs `cloudflared` (which must be installed) with a configuration it
+writes itself: the tunnel leads to the server's own port and nowhere else.
+A running server notices a login or a logout within a few seconds.
+
+What Cloud can and cannot do:
+
+- It can open and close the tunnel, and it sees whether the server is online,
+  its version and platform.
+- It cannot reach a pane: nothing it sends is passed on to one, and it never
+  sees the access token. A client that comes through the tunnel needs the
+  token like any other.
+- A server started with `--no-auth` takes no tunnel.
+- The tunnel is in Cloud's Cloudflare account, and TLS ends at Cloudflare:
+  whoever controls that account can read what goes through. End-to-end
+  encryption between client and server is not there yet.
+
+The link (`cloud.json`, next to the token) holds a token of the machine's own
+for Cloud; it is not the access token. `--url` or `TILR_CLOUD` names another
+Cloud than `https://cloud.tilr.dev`.
 
 ## Telling panes apart
 
@@ -134,7 +205,7 @@ The protocol grows by adding message types. Both sides ignore messages they do
 not know, and say what they support in `Hello.features` / `HelloAck.features`.
 
 A connection starts with `Hello`, which carries the protocol version of the
-client. A server that speaks another version, or is sent anything else first,
+client and the [access token](#who-may-connect). A server that speaks another version, or is sent anything else first,
 answers with an `Error` and closes the connection. `HelloAck` carries the
 version of the server, and is the first message the client gets: nothing else
 is sent to it before.

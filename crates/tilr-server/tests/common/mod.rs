@@ -76,6 +76,7 @@ impl Server {
             .args(args)
             .env("TILR_RUNTIME_DIR", dir.join("runtime"))
             .env("TILR_STATE_DIR", dir.join("state"))
+            .env("TILR_CONFIG_DIR", dir.join("config"))
             .env("TILR_FAILPOINTS_FILE", dir.join("failpoints"))
             .env("HOME", &dir)
             .env("PATH", "/usr/bin:/bin")
@@ -143,6 +144,14 @@ impl Server {
             .any(|line| line.contains(needle))
     }
 
+    /// The access token the server made for itself; empty if it runs
+    /// without one.
+    pub fn token(&self) -> String {
+        std::fs::read_to_string(self.dir.join("state/token"))
+            .map(|token| token.trim().to_owned())
+            .unwrap_or_default()
+    }
+
     pub fn signal(&self, signal: &str) {
         let status = Command::new("kill")
             .args([signal, &self.child.id().to_string()])
@@ -201,6 +210,8 @@ pub struct Client {
     pub frame: Option<Frame>,
     /// Clipboard acks seen while waiting for something else.
     pub acks: VecDeque<ClipboardAck>,
+    /// The server's access token, as `tilr-server token` prints it.
+    pub token: String,
 }
 
 impl Client {
@@ -226,6 +237,7 @@ impl Client {
             screen: Screen::default(),
             frame: None,
             acks: VecDeque::new(),
+            token: server.token(),
         })
     }
 
@@ -298,6 +310,7 @@ impl Client {
             protocol_version,
             client_name: "test".into(),
             features: vec!["clipboard".into()],
+            token: self.token.clone(),
         }))
         .await;
     }
@@ -483,6 +496,7 @@ impl Client {
                 screen: Screen::default(),
                 frame: None,
                 acks: VecDeque::new(),
+                token: server.token(),
             }),
             Err(err) => Err(err.to_string()),
         }
