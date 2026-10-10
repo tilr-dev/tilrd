@@ -87,6 +87,8 @@ impl Server {
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("ENV")
+            // Nor an SSH agent of the machine running the tests.
+            .env_remove("SSH_AUTH_SOCK")
             .stdin(Stdio::null())
             .stderr(Stdio::piped());
         // A copy of the executable made a moment ago can be "busy" on Linux
@@ -167,6 +169,21 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // Asked to stop, a server removes its sockets: the panes' agent
+        // sockets, under /tmp where the scratch directory's path is too long
+        // for a socket (macOS), are not found otherwise.
+        if self.is_running() {
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe {
+                libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+            }
+            for _ in 0..100 {
+                if !self.is_running() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         // A server killed outright leaves its host socket behind. Where the

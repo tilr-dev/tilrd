@@ -35,6 +35,8 @@ message ClientMessage {
     FsDelete fs_delete = 21;
     FsWatch fs_watch = 22;
     FsUnwatch fs_unwatch = 23;
+    StreamData stream_data = 24;
+    StreamClose stream_close = 25;
   }
 }
 
@@ -332,6 +334,36 @@ message FsUnwatch {
 }
 
 // ---------------------------------------------------------------------------
+// Streams: a byte stream a program on the server's machine opens towards the
+// client, the server carrying the bytes and nothing else. Opened by the
+// server (StreamOpen); StreamData and StreamClose go both ways.
+//
+// The one kind so far is "ssh-agent" (feature "agent"), forwarding as
+// `ssh -A` does: every pane has SSH_AUTH_SOCK pointing at a socket of the
+// server's, and a program that connects to it gets a stream to the client
+// that subscribed to the pane last among those with "agent" in their
+// Hello.features. The client connects the stream to the user's agent. With
+// no such client attached, the program's connection is closed at once, as
+// if there were no agent.
+// ---------------------------------------------------------------------------
+
+// Bytes of an open stream, in order; at most 64 KiB in one message. Data for
+// a stream the sender does not know, or that is not the client's, is
+// ignored.
+message StreamData {
+  uint64 stream_id = 1;
+  bytes data = 2;
+}
+
+// The stream is over: the program closed its connection (server -> client),
+// or the client is done with it (client -> server), after which the
+// program reads end of file. Not answered. A stream also ends with the
+// connection of its client.
+message StreamClose {
+  uint64 stream_id = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Server -> client
 // ---------------------------------------------------------------------------
 
@@ -351,6 +383,9 @@ message ServerMessage {
     FsAck fs_ack = 12;
     FsChanged fs_changed = 13;
     HostEvent host_event = 14;
+    StreamOpen stream_open = 15;
+    StreamData stream_data = 16;
+    StreamClose stream_close = 17;
   }
 }
 
@@ -363,6 +398,9 @@ message HelloAck {
   //   "files" - FsList, FsStat, FsRead, FsWrite, FsMkdir, FsRename, FsDelete,
   //             FsWatch, FsUnwatch
   //   "host-events" - HostEvent
+  //   "agent" - SSH agent forwarding: StreamOpen with kind "ssh-agent",
+  //             StreamData, StreamClose. Only towards a client that has
+  //             "agent" in its Hello.features.
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;
@@ -530,6 +568,17 @@ message HostEvent {
   string path = 4;
   // Anything else the program gave.
   repeated string args = 5;
+}
+
+// A program connected to the server for a stream to this client; see
+// "Streams" above. StreamData follows, both ways, until a StreamClose.
+message StreamOpen {
+  // Chosen by the server, never used again while it runs.
+  uint64 stream_id = 1;
+  // What the stream is: "ssh-agent", the SSH agent protocol.
+  string kind = 2;
+  // The pane whose socket the program connected to.
+  string pane_id = 3;
 }
 
 // Absent Color = terminal default.

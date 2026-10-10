@@ -1,3 +1,4 @@
+mod agent;
 mod auth;
 mod clipboard;
 mod cloud;
@@ -92,6 +93,12 @@ struct Cli {
     /// file, which says which directories are offered.
     #[arg(long)]
     no_files: bool,
+
+    /// Do not forward the SSH agent of the clients to the panes (no
+    /// SSH_AUTH_SOCK in them). Also `agent = false` in the configuration
+    /// file.
+    #[arg(long)]
+    no_agent: bool,
 
     /// Do not reload when the executable on disk changes. SIGUSR1 still does.
     #[arg(long)]
@@ -215,6 +222,7 @@ fn main() -> anyhow::Result<ExitCode> {
                     .then(|| Duration::from_secs(cli.client_timeout)),
                 socks: config::socks(cli.socks, &config),
                 files: config::files(cli.no_files, &config)?,
+                agent: config::agent(cli.no_agent, &config),
             })?
         }
     }

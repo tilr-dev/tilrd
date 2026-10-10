@@ -10,6 +10,8 @@
 //! allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
 //! # Serve the SOCKS proxy (see socks.rs), as --socks does.
 //! socks = true
+//! # SSH agent forwarding (see agent.rs); false does as --no-agent. Default on.
+//! agent = true
 //!
 //! # The files protocol (see files.rs).
 //! [files]
@@ -50,6 +52,8 @@ pub struct Config {
     pub allow_origins: Option<Vec<String>>,
     /// Serve the SOCKS proxy. Unset: off.
     pub socks: Option<bool>,
+    /// Forward the SSH agent of a client to the panes. Unset: on.
+    pub agent: Option<bool>,
     /// The files protocol.
     #[serde(default)]
     pub files: FilesConfig,
@@ -154,6 +158,12 @@ pub fn socks(cli: bool, config: &Config) -> bool {
     cli || config.socks.unwrap_or(false)
 }
 
+/// Whether to forward the SSH agent: `--no-agent` turns it off, else the
+/// file says, else it is on.
+pub fn agent(no_agent: bool, config: &Config) -> bool {
+    !no_agent && config.agent.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +185,16 @@ mod tests {
         assert!(socks(true, &Config::default()));
         let config: Config = toml::from_str("socks = true").unwrap();
         assert!(socks(false, &config));
+    }
+
+    #[test]
+    fn the_agent_is_forwarded_unless_turned_off() {
+        assert!(agent(false, &Config::default()));
+        assert!(!agent(true, &Config::default()));
+        let config: Config = toml::from_str("agent = false").unwrap();
+        assert!(!agent(false, &config));
+        let config: Config = toml::from_str("agent = true").unwrap();
+        assert!(!agent(true, &config));
     }
 
     #[test]

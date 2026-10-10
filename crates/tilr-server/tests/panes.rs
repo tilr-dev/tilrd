@@ -10,7 +10,10 @@ async fn hello_announces_the_clipboard_and_its_limit() {
     let mut client = Client::connect(&server).await;
     let ack = client.hello().await;
     assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
-    assert_eq!(ack.features, ["clipboard", "ping", "files", "host-events"]);
+    assert_eq!(
+        ack.features,
+        ["clipboard", "ping", "files", "host-events", "agent"]
+    );
     assert_eq!(ack.clipboard_max_bytes, 3 << 20);
 }
 
@@ -143,7 +146,9 @@ async fn the_configuration_file_names_the_allowed_origins() {
             .await
             .is_err_and(|err| err.contains("403"))
     );
-    let mut page = Client::connect_from(&server, "tilr://my-notes").await.unwrap();
+    let mut page = Client::connect_from(&server, "tilr://my-notes")
+        .await
+        .unwrap();
     assert_eq!(page.hello().await.protocol_version, PROTOCOL_VERSION);
     assert!(server.logged("configuration read"));
 

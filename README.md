@@ -97,6 +97,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
+| `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
 
 ## Who may connect
 
@@ -134,6 +135,9 @@ not know, stops it from starting.
 allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
 # Serve the SOCKS proxy, as --socks does. Off when unset.
 socks = true
+# Forward the SSH agent of the clients to the panes. On when unset;
+# false does what --no-agent does.
+agent = true
 ```
 
 ## tilr Cloud
@@ -212,6 +216,40 @@ user can do on the machine, here any TCP connection from it. The raw mode
 listens wherever `--listen` does, 127.0.0.1 by default. Paths other than
 `/socks` are the main protocol, as before. Sessions end when the server
 reloads.
+
+## SSH agent forwarding
+
+What `ssh -A` does, over the tilr protocol: `ssh`, `git` or `ssh-add` in a
+pane use the SSH agent of the user's computer, the client's side, and the
+keys never leave it. On unless the server runs with `--no-agent` (or
+`agent = false` in the configuration file).
+
+- Every pane gets a Unix socket of its own, `agent/<pane id>.sock` in the
+  runtime directory (`$XDG_RUNTIME_DIR/tilr`; on macOS `~/Library/Application
+  Support/tilr`; `/tmp/tilr-<uid>` where that path is too long for a socket),
+  and `SSH_AUTH_SOCK` pointing at it. The directory and the socket are the
+  user's only. A [reload](#reloading-without-closing-shells) makes the socket
+  again at the same path, so a shell's `SSH_AUTH_SOCK` stays good; the socket
+  goes when the pane does.
+- A client that can serve the agent says `"agent"` in `Hello.features`; the
+  server lists `"agent"` in `HelloAck.features` when forwarding is on.
+- A program that connects to the socket gets a stream to one client: of the
+  clients watching the pane that said `"agent"`, the one that subscribed
+  last. The client gets `StreamOpen` (kind `"ssh-agent"`, the pane's id); the
+  bytes go both ways as `StreamData` until either side sends `StreamClose`.
+  The server only carries them.
+- With no such client attached, the connection is closed at once: `ssh`
+  finds an agent with no keys and goes on to its other ways in. A client
+  that goes away takes its streams with it; so does a reload.
+- A client has at most 64 streams open; a program sending faster than the
+  client takes is held up, a client sending faster than the program reads
+  loses the stream.
+
+As with `ssh -A`: while a client with the feature watches a pane, every
+process of the user on the server's machine that finds a socket can use the
+agent, for as many signatures as it asks. The agent on the client's side
+asks for each signature if it is set up to (keys added with `ssh-add -c`,
+say); otherwise turn forwarding off on servers you do not trust.
 
 ## Telling panes apart
 
@@ -356,7 +394,7 @@ cargo test --workspace --features tilr-server/failpoints
 
 The tests in `crates/tilr-server/tests/` start the real server and drive it as
 a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
-connecting, reconnecting, scrolling, reloading, updating, the clipboard — and
+connecting, reconnecting, scrolling, reloading, updating, the clipboard, the SSH agent — and
 what is not covered yet.
 
 The `failpoints` feature compiles in the places where a test can make an

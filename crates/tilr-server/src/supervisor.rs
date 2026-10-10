@@ -40,7 +40,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use uuid::Uuid;
 
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
-use crate::{auth, clipboard, cloud, files, host, identity, link, pty, reload, socks};
+use crate::{agent, auth, clipboard, cloud, files, host, identity, link, pty, reload, socks};
 
 /// Packets queued for one client before it is considered stuck and dropped.
 const CLIENT_QUEUE: usize = 1024;
@@ -62,6 +62,8 @@ const FEATURE_PING: &str = "ping";
 const FEATURE_FILES: &str = "files";
 /// Feature name for `HostEvent`, see `HelloAck.features`.
 const FEATURE_HOST_EVENTS: &str = "host-events";
+/// Feature name for SSH agent forwarding, see `HelloAck.features`.
+const FEATURE_AGENT: &str = "agent";
 
 type ClientId = u64;
 /// Made up when the pane is created; on the wire in its text form.
@@ -103,6 +105,8 @@ enum Event {
     },
     /// The answer to a files request, worked out off the actor.
     Files(files::Output),
+    /// What the agent's tasks report, see [`crate::agent`].
+    Agent(agent::Output),
     /// A program in a pane asks the clients watching it for something, see
     /// [`crate::host`]. `reply` gets how many clients it went to.
     Host {
@@ -123,6 +127,8 @@ struct Client {
     greeted: bool,
     /// Announced "host-events" in `Hello.features`: it is sent `HostEvent`s.
     host_events: bool,
+    /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
+    agent: bool,
 }
 
 struct Pane {
@@ -185,6 +191,9 @@ pub struct Options {
     pub socks: bool,
     /// `None` turns the files protocol off, see [`crate::files`].
     pub files: Option<files::Settings>,
+    /// Forward the SSH agent of the clients to the panes, see
+    /// [`crate::agent`].
+    pub agent: bool,
 }
 
 /// Who may come in through the listening port, and to what.
@@ -288,6 +297,17 @@ pub fn run(options: Options) -> Result<()> {
             if files.is_none() {
                 tracing::info!("files off");
             }
+            let agent = options.agent.then(|| {
+                let events = events_tx.clone();
+                agent::Agent::new(Arc::new(move |output| {
+                    let _ = events.send(Event::Agent(output));
+                }))
+            });
+            if agent.is_some() {
+                tracing::info!(target: "tilr_server::agent", "SSH agent forwarding on");
+            } else {
+                tracing::info!(target: "tilr_server::agent", "SSH agent forwarding off");
+            }
 
             let mut supervisor = Supervisor {
                 events: events_tx,
@@ -302,6 +322,7 @@ pub fn run(options: Options) -> Result<()> {
                 pane_env,
                 files,
                 host_events: host_socket.is_some(),
+                agent,
             };
             if let Some(state) = state {
                 supervisor.resume(state);
@@ -652,6 +673,8 @@ struct Supervisor {
     /// Whether programs in the panes can reach the clients, see
     /// [`crate::host`].
     host_events: bool,
+    /// `None` when SSH agent forwarding is turned off.
+    agent: Option<agent::Agent>,
 }
 
 impl Supervisor {
@@ -670,6 +693,9 @@ impl Supervisor {
         // Returning closes the pipes to the pane processes, which makes them
         // exit; each shell is hung up when its pty closes.
         tracing::info!("shutting down, closing {} pane(s)", self.panes.len());
+        if let Some(agent) = &mut self.agent {
+            agent.remove_all();
+        }
     }
 
     fn on_event(&mut self, event: Event) {
@@ -682,6 +708,7 @@ impl Supervisor {
                         subscriptions: HashSet::new(),
                         greeted: false,
                         host_events: false,
+                        agent: false,
                     },
                 );
             }
@@ -704,6 +731,7 @@ impl Supervisor {
                 error,
             } => self.on_pane_link_closed(pane_id, exit_code, error),
             Event::Files(output) => self.on_files_output(output),
+            Event::Agent(output) => self.on_agent_output(output),
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
             }
@@ -749,6 +777,11 @@ impl Supervisor {
                 from_pane,
                 unparsed: BytesMut::from(pane.unparsed.as_slice()),
             };
+            // The shell has the socket's path from before; it is made again
+            // at the same place.
+            if let Some(agent) = &mut self.agent {
+                agent.listen(pane_id);
+            }
             let (sender, link) = attach(pane_id, to_pane, detached, self.events.clone());
             // An empty packet is the reload request.
             let _ = sender.send(Bytes::new());
@@ -946,6 +979,7 @@ impl Supervisor {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.greeted = true;
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
+                    client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
                 }
                 let clipboard_max_bytes =
                     self.clipboard.as_ref().map(clipboard::Receiver::max_bytes);
@@ -955,6 +989,7 @@ impl Supervisor {
                     (FEATURE_PING, true),
                     (FEATURE_FILES, fs_max_bytes.is_some()),
                     (FEATURE_HOST_EVENTS, self.host_events),
+                    (FEATURE_AGENT, self.agent.is_some()),
                 ];
                 self.send(
                     client_id,
@@ -993,6 +1028,9 @@ impl Supervisor {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.subscriptions.insert(pane_id);
                 }
+                if let Some(agent) = &mut self.agent {
+                    agent.subscribed(pane_id, client_id);
+                }
                 self.broadcast_pane_list();
             }
             Msg::Unsubscribe(unsubscribe) => {
@@ -1000,6 +1038,9 @@ impl Supervisor {
                     pane.subscribers.remove(&client_id);
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.subscriptions.remove(&pane_id);
+                    }
+                    if let Some(agent) = &mut self.agent {
+                        agent.unsubscribed(pane_id, client_id);
                     }
                 }
                 self.broadcast_pane_list();
@@ -1038,6 +1079,36 @@ impl Supervisor {
                 // Not offered, so not asked for by a client that listens.
                 None => tracing::debug!(client = client_id, "files request while files are off"),
             },
+            Msg::StreamData(data) => match &mut self.agent {
+                Some(agent) => {
+                    if let Some(reply) = agent.on_data(client_id, data) {
+                        self.send(client_id, reply);
+                    }
+                }
+                None => tracing::debug!(client = client_id, "stream data while the agent is off"),
+            },
+            Msg::StreamClose(close) => match &mut self.agent {
+                Some(agent) => agent.on_close(client_id, close),
+                None => tracing::debug!(client = client_id, "stream close while the agent is off"),
+            },
+        }
+    }
+
+    fn on_agent_output(&mut self, output: agent::Output) {
+        let Some(agent) = &mut self.agent else {
+            return;
+        };
+        match output {
+            agent::Output::Connected { pane_id, stream } => {
+                let clients = &self.clients;
+                agent.connected(pane_id, stream, |client_id| {
+                    clients
+                        .get(&client_id)
+                        .filter(|client| client.agent)
+                        .map(|client| client.tx.clone())
+                });
+            }
+            agent::Output::Ended { stream_id } => agent.ended(stream_id),
         }
     }
 
@@ -1148,15 +1219,21 @@ impl Supervisor {
         let rows = create.rows.clamp(1, u32::from(u16::MAX)) as u16;
         let pane_id = PaneId::new_v4();
         let cwd = start_dir(&create.cwd);
-        let (pid, to_pane, link) = start_pane_process(
-            pane_id,
-            create,
-            &cwd,
-            cols,
-            rows,
-            &self.pane_env,
-            self.events.clone(),
-        )?;
+        let mut env = self.pane_env.clone();
+        if let Some(path) = self.agent.as_mut().and_then(|agent| agent.listen(pane_id)) {
+            env.push((OsString::from(agent::SOCK_ENV), path.into_os_string()));
+        }
+        let started =
+            start_pane_process(pane_id, create, &cwd, cols, rows, &env, self.events.clone());
+        let (pid, to_pane, link) = match started {
+            Ok(started) => started,
+            Err(err) => {
+                if let Some(agent) = &mut self.agent {
+                    agent.close_pane(pane_id);
+                }
+                return Err(err);
+            }
+        };
 
         let pane = Pane {
             command: create.command.clone(),
@@ -1236,6 +1313,9 @@ impl Supervisor {
         exit_code: Option<i32>,
         error: Option<String>,
     ) {
+        if let Some(agent) = &mut self.agent {
+            agent.close_pane(pane_id);
+        }
         if let Some(starting) = self.starting.remove(&pane_id) {
             let reason = error.unwrap_or_else(|| "pane process died during startup".into());
             return self.send_error(starting.client_id, &format!("create pane: {reason}"));
@@ -1275,6 +1355,9 @@ impl Supervisor {
         }
         if let Some(files) = &mut self.files {
             files.drop_client(client_id);
+        }
+        if let Some(agent) = &mut self.agent {
+            agent.drop_client(client_id);
         }
         let had_subscriptions = !client.subscriptions.is_empty();
         for pane_id in client.subscriptions {

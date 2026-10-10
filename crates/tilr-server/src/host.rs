@@ -84,7 +84,12 @@ pub type Deliver =
 /// (`$XDG_RUNTIME_DIR/tilr`), on macOS `~/Library/Application Support/tilr`.
 /// A path too long for a socket falls back to `/tmp/tilr-<uid>`.
 pub fn socket_path(server_id: &str) -> PathBuf {
-    let name = format!("{server_id}.sock");
+    runtime_socket(Path::new(&format!("{server_id}.sock")))
+}
+
+/// Where a socket of the server's named `name` (relative, possibly with a
+/// directory) goes: as [`socket_path`]'s.
+pub fn runtime_socket(name: &Path) -> PathBuf {
     let explicit = std::env::var_os("TILR_RUNTIME_DIR").is_some_and(|dir| !dir.is_empty())
         || std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| !dir.is_empty());
     let dir = match std::env::home_dir() {
@@ -93,7 +98,7 @@ pub fn socket_path(server_id: &str) -> PathBuf {
         }
         _ => clipboard::runtime_dir(),
     };
-    let path = dir.join(&name);
+    let path = dir.join(name);
     if path.as_os_str().len() <= MAX_SOCKET_PATH {
         return path;
     }
