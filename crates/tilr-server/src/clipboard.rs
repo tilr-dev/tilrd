@@ -71,19 +71,27 @@ pub fn private_dir(dir: &Path) -> Result<()> {
         .with_context(|| format!("restrict {}", dir.display()))
 }
 
-/// Put `xclip` and `wl-paste` links to `exe` into the shim directory and
-/// return it.
-pub fn install_shims(runtime_dir: &Path, exe: &Path) -> Result<PathBuf> {
+/// Put links to `exe` named `names` into the shim directory and return it.
+/// Those of `all` not in `names`, left by an earlier run, are removed.
+pub fn install_shims(
+    runtime_dir: &Path,
+    exe: &Path,
+    names: &[&str],
+    all: &[&str],
+) -> Result<PathBuf> {
     private_dir(runtime_dir)?;
     let dir = shim_dir(runtime_dir);
     private_dir(&dir)?;
-    for name in SHIMS {
+    for name in all {
         let link = dir.join(name);
         match fs::remove_file(&link) {
             Err(err) if err.kind() != io::ErrorKind::NotFound => {
                 return Err(err).with_context(|| format!("replace {}", link.display()));
             }
             _ => {}
+        }
+        if !names.contains(name) {
+            continue;
         }
         std::os::unix::fs::symlink(exe, &link)
             .with_context(|| format!("link {}", link.display()))?;
@@ -496,7 +504,8 @@ pub fn shim(tool: &str, exe: &Path, args: Vec<OsString>) -> ExitCode {
         _ => Store::at(dir).read(),
     };
     let Some(content) = content else {
-        return real_tool(tool, exe, &args);
+        let missing = format!("the tilr clipboard is empty and no other {tool} is installed");
+        return exec_next(tool, exe, &args, &missing);
     };
     match answer(tool, &request, &content) {
         Ok(bytes) => {
@@ -514,8 +523,8 @@ pub fn shim(tool: &str, exe: &Path, args: Vec<OsString>) -> ExitCode {
 }
 
 /// Replace this process with the next `tool` on PATH that is not this
-/// executable.
-fn real_tool(tool: &str, exe: &Path, args: &[OsString]) -> ExitCode {
+/// executable; without one, say `missing`.
+pub fn exec_next(tool: &str, exe: &Path, args: &[OsString], missing: &str) -> ExitCode {
     let own = fs::canonicalize(exe).ok();
     let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
@@ -530,7 +539,7 @@ fn real_tool(tool: &str, exe: &Path, args: &[OsString]) -> ExitCode {
         eprintln!("{tool}: run {}: {err}", candidate.display());
         return ExitCode::FAILURE;
     }
-    eprintln!("{tool}: the tilr clipboard is empty and no other {tool} is installed");
+    eprintln!("{tool}: {missing}");
     ExitCode::FAILURE
 }
 

@@ -3,6 +3,8 @@ mod clipboard;
 mod cloud;
 mod config;
 mod fail;
+mod files;
+mod host;
 mod identity;
 mod link;
 mod pane;
@@ -85,6 +87,12 @@ struct Cli {
     #[arg(long)]
     socks: bool,
 
+    /// Do not offer the files of this machine to clients (no file browser,
+    /// no editing). Also `[files] enabled = false` in the configuration
+    /// file, which says which directories are offered.
+    #[arg(long)]
+    no_files: bool,
+
     /// Do not reload when the executable on disk changes. SIGUSR1 still does.
     #[arg(long)]
     no_auto_reload: bool,
@@ -124,6 +132,9 @@ enum Command {
         #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
         cdn: String,
     },
+    /// Run in a pane: ask the tilr client watching it to open something.
+    #[command(flatten)]
+    Host(host::Command),
 }
 
 #[derive(Subcommand)]
@@ -160,6 +171,14 @@ fn main() -> anyhow::Result<ExitCode> {
     if let Some(tool) = args.next().as_deref().and_then(clipboard::shim_name) {
         return Ok(clipboard::shim(tool, exe, args.collect()));
     }
+    // Started as `tilr` through the link the server puts on the PATH of its
+    // panes.
+    if std::env::args_os()
+        .next()
+        .is_some_and(|argv0| host::is_shim(&argv0))
+    {
+        return Ok(host::shim(exe, args.collect()));
+    }
 
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -177,6 +196,7 @@ fn main() -> anyhow::Result<ExitCode> {
             CloudCommand::Status => cloud::status()?,
         },
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
+        Some(Command::Host(command)) => return Ok(host::run(command)),
         None => {
             let config = config::load(cli.config.as_deref())?;
             let allow_origins = config::allow_origins(cli.allow_origins, &config);
@@ -194,6 +214,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 client_timeout: (cli.client_timeout > 0)
                     .then(|| Duration::from_secs(cli.client_timeout)),
                 socks: config::socks(cli.socks, &config),
+                files: config::files(cli.no_files, &config)?,
             })?
         }
     }

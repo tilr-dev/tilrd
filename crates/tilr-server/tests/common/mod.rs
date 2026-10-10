@@ -17,8 +17,8 @@ pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
 pub use tilr_proto::{
     ClientMessage, ClipboardAck, ClipboardPut, ClosePane, CreatePane, Frame, Hello, HelloAck,
-    KeyInput, ListPanes, PROTOCOL_VERSION, PaneInfo, Ping, RawInput, Resize, Scroll, ServerMessage,
-    Subscribe, Unsubscribe, client_message::Msg, server_message,
+    HostEvent, KeyInput, ListPanes, PROTOCOL_VERSION, PaneInfo, Ping, RawInput, Resize, Scroll,
+    ServerMessage, Subscribe, Unsubscribe, client_message::Msg, server_message,
 };
 pub use tokio::net::TcpStream;
 pub use tokio_tungstenite::tungstenite::Message;
@@ -169,6 +169,15 @@ impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // A server killed outright leaves its host socket behind. Where the
+        // scratch directory's path is too long for a socket (macOS), that
+        // is in /tmp.
+        if let Ok(id) = std::fs::read_to_string(self.dir.join("state/server-id")) {
+            // SAFETY: geteuid has no preconditions.
+            let uid = unsafe { libc::geteuid() };
+            let sock = format!("/tmp/tilr-{uid}/{}.sock", id.trim());
+            let _ = std::fs::remove_file(sock);
+        }
         if std::thread::panicking() {
             eprintln!(
                 "--- server log ---\n{}",
@@ -210,6 +219,8 @@ pub struct Client {
     pub frame: Option<Frame>,
     /// Clipboard acks seen while waiting for something else.
     pub acks: VecDeque<ClipboardAck>,
+    /// Host events seen while waiting for something else.
+    pub host_events: VecDeque<HostEvent>,
     /// The server's access token, as `tilr-server token` prints it.
     pub token: String,
 }
@@ -237,6 +248,7 @@ impl Client {
             screen: Screen::default(),
             frame: None,
             acks: VecDeque::new(),
+            host_events: VecDeque::new(),
             token: server.token(),
         })
     }
@@ -268,6 +280,9 @@ impl Client {
                         }
                         Some(server_message::Msg::ClipboardAck(ack)) => {
                             self.acks.push_back(ack.clone());
+                        }
+                        Some(server_message::Msg::HostEvent(event)) => {
+                            self.host_events.push_back(event.clone());
                         }
                         _ => {}
                     }
@@ -306,10 +321,16 @@ impl Client {
     /// Say hello as a client built for `protocol_version`, without waiting
     /// for the answer.
     pub async fn hello_as(&mut self, protocol_version: u32) {
+        self.hello_with(protocol_version, &["clipboard", "host-events"])
+            .await;
+    }
+
+    /// Say hello announcing `features`, without waiting for the answer.
+    pub async fn hello_with(&mut self, protocol_version: u32, features: &[&str]) {
         self.send(Msg::Hello(Hello {
             protocol_version,
             client_name: "test".into(),
-            features: vec!["clipboard".into()],
+            features: features.iter().map(|f| (*f).to_owned()).collect(),
             token: self.token.clone(),
         }))
         .await;
@@ -496,6 +517,7 @@ impl Client {
                 screen: Screen::default(),
                 frame: None,
                 acks: VecDeque::new(),
+                host_events: VecDeque::new(),
                 token: server.token(),
             }),
             Err(err) => Err(err.to_string()),

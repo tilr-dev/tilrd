@@ -132,7 +132,7 @@ async fn the_clipboard_can_be_turned_off() {
     let server = Server::start(&["--no-clipboard"]);
     let mut client = Client::connect(&server).await;
     let ack = client.hello().await;
-    assert_eq!(ack.features, ["ping"]);
+    assert_eq!(ack.features, ["ping", "files", "host-events"]);
     assert_eq!(ack.clipboard_max_bytes, 0);
 
     client
@@ -142,12 +142,16 @@ async fn the_clipboard_can_be_turned_off() {
     assert!(!ack.ok);
     assert!(ack.error.contains("turned off"), "{}", ack.error);
 
-    // The panes are left alone: no tools of the server's on their PATH.
+    // The panes are left alone: no clipboard tools of the server's on their
+    // PATH (only its `tilr`).
     let pane_id = client.open_pane().await;
     let out = server.dir.join("env.txt");
-    let print = format!("echo \"$PATH|$TILR_CLIPBOARD_DIR\" > '{}'", out.display());
+    let print = format!(
+        "echo \"$(command -v xclip wl-paste)|$TILR_CLIPBOARD_DIR\" > '{}'",
+        out.display()
+    );
     assert_eq!(client.run(pane_id, &print).await, 0);
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), "/usr/bin:/bin|\n");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "|\n");
 }
 
 #[tokio::test]

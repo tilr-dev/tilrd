@@ -23,14 +23,15 @@ use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use tilr_proto::{
     ClientMessage, ClipboardAck, ClipboardPut, CreatePane, Error as ProtoError, HelloAck,
-    PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState, PaneStatus, Pong,
-    ServerMessage, Subscribe, SupervisorState, client_message::Msg, server_message,
+    HostEvent, PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState,
+    PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, client_message::Msg,
+    server_message,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::Message;
@@ -39,7 +40,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use uuid::Uuid;
 
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
-use crate::{auth, clipboard, cloud, identity, link, pty, reload, socks};
+use crate::{auth, clipboard, cloud, files, host, identity, link, pty, reload, socks};
 
 /// Packets queued for one client before it is considered stuck and dropped.
 const CLIENT_QUEUE: usize = 1024;
@@ -57,6 +58,10 @@ const PINGS_PER_TIMEOUT: u32 = 3;
 const FEATURE_CLIPBOARD: &str = "clipboard";
 /// Feature name for `Ping`, see `HelloAck.features`.
 const FEATURE_PING: &str = "ping";
+/// Feature name for the files protocol, see `HelloAck.features`.
+const FEATURE_FILES: &str = "files";
+/// Feature name for `HostEvent`, see `HelloAck.features`.
+const FEATURE_HOST_EVENTS: &str = "host-events";
 
 type ClientId = u64;
 /// Made up when the pane is created; on the wire in its text form.
@@ -96,6 +101,14 @@ enum Event {
         exit_code: Option<i32>,
         error: Option<String>,
     },
+    /// The answer to a files request, worked out off the actor.
+    Files(files::Output),
+    /// A program in a pane asks the clients watching it for something, see
+    /// [`crate::host`]. `reply` gets how many clients it went to.
+    Host {
+        request: host::Request,
+        reply: oneshot::Sender<Result<usize, String>>,
+    },
     /// Replace the supervisor and every pane process with the executable on
     /// disk.
     Reload,
@@ -108,6 +121,8 @@ struct Client {
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
     greeted: bool,
+    /// Announced "host-events" in `Hello.features`: it is sent `HostEvent`s.
+    host_events: bool,
 }
 
 struct Pane {
@@ -168,6 +183,8 @@ pub struct Options {
     pub client_timeout: Option<Duration>,
     /// Serve the SOCKS proxy, see [`crate::socks`].
     pub socks: bool,
+    /// `None` turns the files protocol off, see [`crate::files`].
+    pub files: Option<files::Settings>,
 }
 
 /// Who may come in through the listening port, and to what.
@@ -246,14 +263,31 @@ pub fn run(options: Options) -> Result<()> {
                 }));
             }
 
-            let (clipboard, pane_env) = match options.clipboard.map(set_up_clipboard) {
-                Some(Ok((receiver, env))) => (Some(receiver), env),
-                Some(Err(err)) => {
-                    tracing::warn!("clipboard is off: {err:#}");
-                    (None, Vec::new())
-                }
-                None => (None, Vec::new()),
-            };
+            let server_id = identity::server_id();
+            let host_socket = set_up_host_socket(&server_id, events_tx.clone());
+            let (clipboard, mut pane_env) = set_up_shims(options.clipboard, host_socket.is_some());
+            if let Some(path) = &host_socket {
+                pane_env.push((
+                    OsString::from(host::SOCK_ENV),
+                    path.clone().into_os_string(),
+                ));
+                pane_env.push((
+                    OsString::from(host::SERVER_ENV),
+                    server_id.to_string().into(),
+                ));
+            }
+            let files = options.files.map(|settings| {
+                let events = events_tx.clone();
+                files::Files::new(
+                    settings,
+                    Arc::new(move |output| {
+                        let _ = events.send(Event::Files(output));
+                    }),
+                )
+            });
+            if files.is_none() {
+                tracing::info!("files off");
+            }
 
             let mut supervisor = Supervisor {
                 events: events_tx,
@@ -261,16 +295,22 @@ pub fn run(options: Options) -> Result<()> {
                 clients: HashMap::new(),
                 panes: HashMap::new(),
                 starting: HashMap::new(),
-                server_id: identity::server_id(),
+                server_id,
                 token,
                 tunnel,
                 clipboard,
                 pane_env,
+                files,
+                host_events: host_socket.is_some(),
             };
             if let Some(state) = state {
                 supervisor.resume(state);
             }
             supervisor.run(events_rx).await;
+            // A reload does not get here: the successor binds the socket anew.
+            if let Some(path) = host_socket {
+                host::remove(&path);
+            }
             Ok(())
         })
 }
@@ -285,28 +325,78 @@ fn inherit_listener(fd: RawFd) -> std::io::Result<TcpListener> {
     TcpListener::from_std(listener)
 }
 
-/// Prepare the clipboard store and the `xclip` / `wl-paste` links. Returns
-/// the receiver for uploads and the environment that points the panes at
-/// both.
-fn set_up_clipboard(
-    limits: clipboard::Limits,
-) -> Result<(clipboard::Receiver, Vec<(OsString, OsString)>)> {
-    let runtime_dir = clipboard::runtime_dir();
-    let shims = clipboard::install_shims(&runtime_dir, crate::exe())?;
-    let dir = clipboard::clipboard_dir(&runtime_dir);
-    let store = clipboard::Store::create(dir.clone())?;
+/// Listen for host events (see [`crate::host`]) and return the socket's
+/// path. `None`, with a warning, if that cannot be done: the server works on
+/// without them.
+fn set_up_host_socket(server_id: &Uuid, events: mpsc::UnboundedSender<Event>) -> Option<PathBuf> {
+    let path = host::socket_path(&server_id.to_string());
+    match host::bind(&path) {
+        Ok(listener) => {
+            tracing::info!(path = %path.display(), "host events on");
+            tokio::spawn(host::serve(
+                listener,
+                Box::new(move |request, reply| events.send(Event::Host { request, reply }).is_ok()),
+            ));
+            Some(path)
+        }
+        Err(err) => {
+            tracing::warn!("host events are off: {err:#}");
+            None
+        }
+    }
+}
 
+/// Put this executable on the PATH of the panes as the tools they get from
+/// the server: `xclip` and `wl-paste` for the clipboard, `tilr` for host
+/// events. Returns the clipboard's receiver for uploads, if it is on, and the
+/// environment for the panes.
+fn set_up_shims(
+    clipboard: Option<clipboard::Limits>,
+    host_events: bool,
+) -> (Option<clipboard::Receiver>, Vec<(OsString, OsString)>) {
+    let runtime_dir = clipboard::runtime_dir();
+    let mut env = Vec::new();
+    let receiver = clipboard.and_then(|limits| {
+        let dir = clipboard::clipboard_dir(&runtime_dir);
+        match clipboard::Store::create(dir.clone()) {
+            Ok(store) => {
+                env.push((OsString::from(clipboard::DIR_ENV), dir.into_os_string()));
+                Some(clipboard::Receiver::new(store, limits))
+            }
+            Err(err) => {
+                tracing::warn!("clipboard is off: {err:#}");
+                None
+            }
+        }
+    });
+    let mut names: Vec<&str> = Vec::new();
+    if receiver.is_some() {
+        names.extend(clipboard::SHIMS);
+    }
+    if host_events {
+        names.push(host::SHIM);
+    }
+    let all: Vec<&str> = clipboard::SHIMS.into_iter().chain([host::SHIM]).collect();
+    let shims = match clipboard::install_shims(&runtime_dir, crate::exe(), &names, &all) {
+        Ok(shims) => shims,
+        Err(err) => {
+            tracing::warn!("no tools for the panes (clipboard, tilr): {err:#}");
+            return (None, Vec::new());
+        }
+    };
+    if names.is_empty() {
+        return (receiver, env);
+    }
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs: Vec<_> = std::env::split_paths(&path)
         .filter(|dir| *dir != shims)
         .collect();
     dirs.insert(0, shims);
-    let path = std::env::join_paths(dirs).context("build PATH for the panes")?;
-    let env = vec![
-        (OsString::from("PATH"), path),
-        (OsString::from(clipboard::DIR_ENV), dir.into_os_string()),
-    ];
-    Ok((clipboard::Receiver::new(store, limits), env))
+    match std::env::join_paths(dirs) {
+        Ok(path) => env.insert(0, (OsString::from("PATH"), path)),
+        Err(err) => tracing::warn!("no tools for the panes (clipboard, tilr): PATH: {err}"),
+    }
+    (receiver, env)
 }
 
 async fn shutdown_signal(events: mpsc::UnboundedSender<Event>) {
@@ -557,6 +647,11 @@ struct Supervisor {
     clipboard: Option<clipboard::Receiver>,
     /// Environment added to every pane process, and so to its shell.
     pane_env: Vec<(OsString, OsString)>,
+    /// `None` when the files protocol is turned off.
+    files: Option<files::Files>,
+    /// Whether programs in the panes can reach the clients, see
+    /// [`crate::host`].
+    host_events: bool,
 }
 
 impl Supervisor {
@@ -586,6 +681,7 @@ impl Supervisor {
                         tx,
                         subscriptions: HashSet::new(),
                         greeted: false,
+                        host_events: false,
                     },
                 );
             }
@@ -607,6 +703,10 @@ impl Supervisor {
                 exit_code,
                 error,
             } => self.on_pane_link_closed(pane_id, exit_code, error),
+            Event::Files(output) => self.on_files_output(output),
+            Event::Host { request, reply } => {
+                let _ = reply.send(self.on_host_event(request));
+            }
             // Handled by the event loop.
             Event::Reload | Event::Shutdown => {}
         }
@@ -842,25 +942,33 @@ impl Supervisor {
             _ => {}
         }
         match msg {
-            Msg::Hello(_) => {
+            Msg::Hello(hello) => {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.greeted = true;
+                    client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                 }
                 let clipboard_max_bytes =
                     self.clipboard.as_ref().map(clipboard::Receiver::max_bytes);
+                let fs_max_bytes = self.files.as_ref().map(files::Files::max_bytes);
+                let features = [
+                    (FEATURE_CLIPBOARD, clipboard_max_bytes.is_some()),
+                    (FEATURE_PING, true),
+                    (FEATURE_FILES, fs_max_bytes.is_some()),
+                    (FEATURE_HOST_EVENTS, self.host_events),
+                ];
                 self.send(
                     client_id,
                     server_message::Msg::HelloAck(HelloAck {
                         protocol_version: PROTOCOL_VERSION,
                         server_version: crate::VERSION.into(),
-                        features: clipboard_max_bytes
-                            .map(|_| FEATURE_CLIPBOARD)
+                        features: features
                             .into_iter()
-                            .chain([FEATURE_PING])
-                            .map(str::to_owned)
+                            .filter(|(_, on)| *on)
+                            .map(|(name, _)| name.to_owned())
                             .collect(),
                         clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
                         server_id: self.server_id.to_string(),
+                        fs_max_bytes: fs_max_bytes.unwrap_or(0),
                     }),
                 );
             }
@@ -917,7 +1025,82 @@ impl Supervisor {
                     server_message::Msg::Pong(Pong { nonce: ping.nonce }),
                 );
             }
+            msg @ (Msg::FsList(_)
+            | Msg::FsStat(_)
+            | Msg::FsRead(_)
+            | Msg::FsWrite(_)
+            | Msg::FsMkdir(_)
+            | Msg::FsRename(_)
+            | Msg::FsDelete(_)
+            | Msg::FsWatch(_)
+            | Msg::FsUnwatch(_)) => match &mut self.files {
+                Some(files) => files.on_message(client_id, msg),
+                // Not offered, so not asked for by a client that listens.
+                None => tracing::debug!(client = client_id, "files request while files are off"),
+            },
         }
+    }
+
+    fn on_files_output(&mut self, output: files::Output) {
+        match output {
+            files::Output::Send(client_id, msg) => self.send(client_id, msg),
+            files::Output::Watching {
+                client,
+                request_id,
+                path,
+                watch,
+            } => {
+                // A client that left meanwhile: the watch is dropped here.
+                if !self.clients.contains_key(&client) {
+                    return;
+                }
+                if let Some(files) = &mut self.files {
+                    let ack = files.add_watch(client, request_id, path, watch);
+                    self.send(client, ack);
+                }
+            }
+        }
+    }
+
+    /// Pass a program's request on to the clients watching its pane that
+    /// announced "host-events" in their Hello. Returns how many those are.
+    fn on_host_event(&mut self, request: host::Request) -> Result<usize, String> {
+        let Some((pane_id, pane)) = self.pane_mut(&request.pane_id) else {
+            return Err(format!("no such pane: {}", request.pane_id));
+        };
+        let subscribers: Vec<ClientId> = pane.subscribers.iter().copied().collect();
+        let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::HostEvent(
+            HostEvent {
+                pane_id: pane_id.to_string(),
+                name: request.name,
+                kind: request.kind,
+                path: request.path,
+                args: request.args,
+            },
+        )));
+        let mut delivered = 0;
+        let mut stuck = Vec::new();
+        for client_id in subscribers {
+            let Some(client) = self.clients.get(&client_id) else {
+                continue;
+            };
+            if !client.host_events {
+                continue;
+            }
+            if client.tx.try_send(packet.clone()).is_ok() {
+                delivered += 1;
+            } else {
+                stuck.push(client_id);
+            }
+        }
+        for client_id in stuck {
+            self.drop_client(client_id);
+        }
+        if delivered == 0 {
+            return Err("no tilr client attached".into());
+        }
+        tracing::info!(pane = %pane_id, clients = delivered, "host event delivered");
+        Ok(delivered)
     }
 
     fn on_clipboard_put(&mut self, client_id: ClientId, put: ClipboardPut) {
@@ -1089,6 +1272,9 @@ impl Supervisor {
         };
         if let Some(clipboard) = &mut self.clipboard {
             clipboard.drop_client(client_id);
+        }
+        if let Some(files) = &mut self.files {
+            files.drop_client(client_id);
         }
         let had_subscriptions = !client.subscriptions.is_empty();
         for pane_id in client.subscriptions {

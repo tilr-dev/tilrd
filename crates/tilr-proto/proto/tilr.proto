@@ -26,6 +26,15 @@ message ClientMessage {
     Scroll scroll = 12;
     ClipboardPut clipboard_put = 13;
     Ping ping = 14;
+    FsList fs_list = 15;
+    FsStat fs_stat = 16;
+    FsRead fs_read = 17;
+    FsWrite fs_write = 18;
+    FsMkdir fs_mkdir = 19;
+    FsRename fs_rename = 20;
+    FsDelete fs_delete = 21;
+    FsWatch fs_watch = 22;
+    FsUnwatch fs_unwatch = 23;
   }
 }
 
@@ -218,6 +227,111 @@ message Ping {
 }
 
 // ---------------------------------------------------------------------------
+// Files: the server machine's file system, for a file browser and an editor.
+// Requires the "files" feature.
+//
+// Every request carries a `request_id` the client chooses, echoed back in the
+// answer (FsEntries, FsInfo, FsData, FsAck). An answer whose `error` is set
+// tells why the request failed, meant to be shown to the user; the general
+// Error message is not used, so the client knows which request it is about.
+//
+// Paths are absolute on the server's machine; "~" and "~/..." are the home
+// directory of the user the server runs as. The server only goes inside the
+// directories it is configured with (`[files] roots`, the home directory by
+// default): a path that leads elsewhere, through ".." or a symbolic link,
+// gets an error. A server that is read-only (`[files] readonly`) answers
+// FsWrite, FsMkdir, FsRename and FsDelete with an error.
+// ---------------------------------------------------------------------------
+
+// What is in a directory. Answered with FsEntries.
+message FsList {
+  uint64 request_id = 1;
+  string path = 2;
+}
+
+// One entry, not followed if it is a symbolic link. Answered with FsInfo.
+message FsStat {
+  uint64 request_id = 1;
+  string path = 2;
+}
+
+// The content of a file, or a part of it. Answered with FsData chunks.
+message FsRead {
+  uint64 request_id = 1;
+  string path = 2;
+  // Where to start, in bytes.
+  uint64 offset = 3;
+  // How much to read; 0 = to the end. A read of more than
+  // HelloAck.fs_max_bytes is refused: a larger file is read in parts.
+  uint64 length = 4;
+}
+
+// Replace the content of a file. Answered with one FsAck, after the last
+// chunk or as soon as the write is refused; the rest of a refused write is
+// ignored.
+//
+// Content goes up in chunks sharing one `transfer_id`, as ClipboardPut's.
+// The file changes only once the chunk with `last` arrived and everything
+// announced was received: the server writes a temporary file next to it and
+// renames it over, so a reader never sees half of it, and a write that breaks
+// off leaves the file as it was. A symbolic link is written through.
+message FsWrite {
+  // The same on every chunk of the transfer.
+  uint64 request_id = 1;
+  // Chosen by the client, distinct from its other transfers in progress.
+  uint64 transfer_id = 2;
+  // First chunk only, as are `total_size`, `create` and `truncate`.
+  string path = 3;
+  // Size of the whole content in bytes. The server refuses more than
+  // HelloAck.fs_max_bytes.
+  uint64 total_size = 4;
+  // The file may be missing and is created (mode 0666 less the umask).
+  bool create = 5;
+  // The file may exist and its content is replaced. `create` without
+  // `truncate` makes a new file only; `truncate` without `create` replaces
+  // the content of one that exists. Neither: refused.
+  bool truncate = 6;
+  bytes data = 7;
+  bool last = 8;
+}
+
+// Make a directory; its parent must exist. Answered with FsAck.
+message FsMkdir {
+  uint64 request_id = 1;
+  string path = 2;
+}
+
+// Move or rename an entry; `to` must not exist. Answered with FsAck.
+message FsRename {
+  uint64 request_id = 1;
+  string from = 2;
+  string to = 3;
+}
+
+// Remove a file, a symbolic link (not what it points to) or a directory.
+// Answered with FsAck.
+message FsDelete {
+  uint64 request_id = 1;
+  string path = 2;
+  // A directory goes with everything in it. Without: only an empty one.
+  bool recursive = 3;
+}
+
+// Hear about changes to the entries of a directory (not of its
+// subdirectories): FsChanged is pushed for each, until FsUnwatch or the end
+// of the connection. Answered with FsAck once the server is watching.
+message FsWatch {
+  uint64 request_id = 1;
+  string path = 2;
+}
+
+// Stop watching a directory, named as in its FsWatch. Answered with FsAck.
+message FsUnwatch {
+  uint64 request_id = 1;
+  string path = 2;
+}
+
+// ---------------------------------------------------------------------------
 // Server -> client
 // ---------------------------------------------------------------------------
 
@@ -231,6 +345,12 @@ message ServerMessage {
     Error error = 6;
     ClipboardAck clipboard_ack = 7;
     Pong pong = 8;
+    FsEntries fs_entries = 9;
+    FsInfo fs_info = 10;
+    FsData fs_data = 11;
+    FsAck fs_ack = 12;
+    FsChanged fs_changed = 13;
+    HostEvent host_event = 14;
   }
 }
 
@@ -240,12 +360,18 @@ message HelloAck {
   // Optional capabilities the server supports:
   //   "clipboard" - ClipboardPut
   //   "ping" - Ping
+  //   "files" - FsList, FsStat, FsRead, FsWrite, FsMkdir, FsRename, FsDelete,
+  //             FsWatch, FsUnwatch
+  //   "host-events" - HostEvent
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;
   // UUID of this server: made when it first ran on the machine, the same after
   // a restart.
   string server_id = 5;
+  // Largest content one FsRead returns or one FsWrite takes. 0 without the
+  // "files" feature.
+  uint64 fs_max_bytes = 6;
 }
 
 message PaneInfo {
@@ -300,6 +426,110 @@ message ClipboardAck {
 
 message Pong {
   uint64 nonce = 1;
+}
+
+// --- Files: answers to the Fs* requests, see "Files" above. ---
+
+enum FileKind {
+  FILE_KIND_FILE = 0;
+  FILE_KIND_DIR = 1;
+  FILE_KIND_LINK = 2;
+  // A socket, a pipe, a device; or, as a link's `target`, nothing: the link
+  // is broken.
+  FILE_KIND_OTHER = 3;
+}
+
+message FsEntry {
+  // The last component of the path.
+  string name = 1;
+  FileKind kind = 2;
+  // In bytes; a link's own.
+  uint64 size = 3;
+  // Last modification, Unix time in milliseconds.
+  uint64 mtime_ms = 4;
+  // Permission bits, e.g. 0o644.
+  uint32 mode = 5;
+  // What the entry is, links followed: for anything but a link, its own kind
+  // again; for a link, what it points to: a file, a directory, or
+  // FILE_KIND_OTHER (a broken link, or anything else). A link is listed as a
+  // link; a request naming it follows it.
+  FileKind target = 6;
+}
+
+message FsEntries {
+  uint64 request_id = 1;
+  // The directory, as an absolute path without links ("~" becomes the home
+  // directory): what to show as its location.
+  string path = 2;
+  // Sorted by name.
+  repeated FsEntry entries = 3;
+  string error = 4;
+}
+
+message FsInfo {
+  uint64 request_id = 1;
+  // As in FsEntries: absolute, the directories on the way without links.
+  string path = 2;
+  FsEntry entry = 3;
+  string error = 4;
+}
+
+// Part of a file, in answer to FsRead. Chunks come in order, the last one
+// with `last`. A read that fails ends with a chunk that has `last` and
+// `error`, and what came before it is void.
+message FsData {
+  uint64 request_id = 1;
+  // Bytes the whole answer carries.
+  uint64 total_size = 2;
+  bytes data = 3;
+  bool last = 4;
+  string error = 5;
+  // Size of the file.
+  uint64 file_size = 6;
+}
+
+// Outcome of FsWrite, FsMkdir, FsRename, FsDelete, FsWatch, FsUnwatch.
+message FsAck {
+  uint64 request_id = 1;
+  // Empty = done.
+  string error = 2;
+}
+
+enum FsChange {
+  FS_CHANGE_CREATE = 0;
+  FS_CHANGE_MODIFY = 1;
+  FS_CHANGE_REMOVE = 2;
+}
+
+// Pushed while a directory is watched, a short while after the change (a
+// burst of changes to one entry comes as one).
+message FsChanged {
+  // Always 0: nobody asked.
+  uint64 request_id = 1;
+  // The directory, as named in FsWatch.
+  string watch = 2;
+  // What changed: an entry of the directory, absolute and without links, or
+  // the directory itself (removed, say).
+  string path = 3;
+  FsChange kind = 4;
+}
+
+// Something a program in a pane asks the client to do: `tilr edit <file>`
+// asks to open a file. Sent to every client subscribed to the pane that has
+// "host-events" in its Hello.features; with none, the program is told no
+// client is attached. The server only carries it; what to do is up to the
+// client. Requires the "host-events" feature (HelloAck.features).
+message HostEvent {
+  // The pane the program runs in.
+  string pane_id = 1;
+  // What is asked: "open".
+  string name = 2;
+  // What it is about: "file" (`path` is an absolute path on the server's
+  // machine), "url" (`path` is the URL), or another kind the program names.
+  string kind = 3;
+  string path = 4;
+  // Anything else the program gave.
+  repeated string args = 5;
 }
 
 // Absent Color = terminal default.

@@ -10,7 +10,7 @@ async fn hello_announces_the_clipboard_and_its_limit() {
     let mut client = Client::connect(&server).await;
     let ack = client.hello().await;
     assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
-    assert_eq!(ack.features, ["clipboard", "ping"]);
+    assert_eq!(ack.features, ["clipboard", "ping", "files", "host-events"]);
     assert_eq!(ack.clipboard_max_bytes, 3 << 20);
 }
 

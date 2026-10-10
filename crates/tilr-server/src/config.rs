@@ -10,6 +10,18 @@
 //! allow_origins = ["tilr://app", "tilr://tilr", "tilr://my-notes"]
 //! # Serve the SOCKS proxy (see socks.rs), as --socks does.
 //! socks = true
+//!
+//! # The files protocol (see files.rs).
+//! [files]
+//! # Off: clients cannot see or touch files, as --no-files does. Default on.
+//! enabled = true
+//! # The directories clients may go into. Default: the home directory.
+//! roots = ["~", "/srv/www"]
+//! # Clients may look but not change anything. Default off.
+//! readonly = false
+//! # Largest file content one read returns or one write takes: bytes, or a
+//! # size like "64MB". Default 64MB.
+//! max_bytes = "64MB"
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -38,6 +50,55 @@ pub struct Config {
     pub allow_origins: Option<Vec<String>>,
     /// Serve the SOCKS proxy. Unset: off.
     pub socks: Option<bool>,
+    /// The files protocol.
+    #[serde(default)]
+    pub files: FilesConfig,
+}
+
+/// `[files]`: what clients may do with the files of this machine.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FilesConfig {
+    /// Unset: on.
+    pub enabled: Option<bool>,
+    /// Unset: the home directory.
+    pub roots: Option<Vec<String>>,
+    /// Unset: off.
+    pub readonly: Option<bool>,
+    /// Unset: [`DEFAULT_FILES_MAX`].
+    pub max_bytes: Option<Size>,
+}
+
+/// A size in bytes, written as a number or as text like "64MB".
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Size {
+    Bytes(u64),
+    Text(String),
+}
+
+/// Largest file content one read returns or one write takes, unless the
+/// file says.
+pub const DEFAULT_FILES_MAX: u64 = 64 << 20;
+
+/// What the files protocol is allowed, from the file and `--no-files`.
+/// `None`: off.
+pub fn files(no_files: bool, config: &Config) -> Result<Option<crate::files::Settings>> {
+    let files = &config.files;
+    if no_files || files.enabled == Some(false) {
+        return Ok(None);
+    }
+    let max_bytes = match &files.max_bytes {
+        None => DEFAULT_FILES_MAX,
+        Some(Size::Bytes(bytes)) => *bytes,
+        Some(Size::Text(text)) => crate::clipboard::parse_size(text)
+            .map_err(|err| anyhow::anyhow!("[files] max_bytes: {err}"))?,
+    };
+    Ok(Some(crate::files::Settings {
+        roots: files.roots.clone().unwrap_or_else(|| vec!["~".into()]),
+        readonly: files.readonly.unwrap_or(false),
+        max_bytes,
+    }))
 }
 
 /// Where the file is looked for when `--config` is not given.
@@ -119,5 +180,33 @@ mod tests {
     #[test]
     fn an_unknown_key_is_an_error() {
         assert!(toml::from_str::<Config>("allow_origin = []").is_err());
+        assert!(toml::from_str::<Config>("[files]\nroot = []").is_err());
+    }
+
+    #[test]
+    fn files_are_on_for_the_home_directory_unless_said_otherwise() {
+        let files = files(false, &Config::default()).unwrap().unwrap();
+        assert_eq!(files.roots, ["~"]);
+        assert!(!files.readonly);
+        assert_eq!(files.max_bytes, DEFAULT_FILES_MAX);
+        assert!(super::files(true, &Config::default()).unwrap().is_none());
+
+        let config: Config =
+            toml::from_str("[files]\nroots = [\"/srv\"]\nreadonly = true\nmax_bytes = \"1MB\"")
+                .unwrap();
+        let files = super::files(false, &config).unwrap().unwrap();
+        assert_eq!(files.roots, ["/srv"]);
+        assert!(files.readonly);
+        assert_eq!(files.max_bytes, 1 << 20);
+        let config: Config = toml::from_str("[files]\nmax_bytes = 1000").unwrap();
+        assert_eq!(
+            super::files(false, &config).unwrap().unwrap().max_bytes,
+            1000
+        );
+
+        let config: Config = toml::from_str("[files]\nenabled = false").unwrap();
+        assert!(super::files(false, &config).unwrap().is_none());
+        let config: Config = toml::from_str("[files]\nmax_bytes = \"lots\"").unwrap();
+        assert!(super::files(false, &config).is_err());
     }
 }
