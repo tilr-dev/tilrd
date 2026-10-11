@@ -43,8 +43,88 @@ impl Process {
 /// Name of the variable that tells what runs in a pane which pane it is in.
 pub const PANE_ENV: &str = "TILR_PANE";
 
-/// Open a pty and start `command` (or the login shell) on its slave side as a
-/// session leader.
+/// Variables a launchd job hands its children that mean nothing to a shell.
+const LAUNCHD_ENV: [&str; 2] = ["XPC_SERVICE_NAME", "XPC_FLAGS"];
+
+/// The user this process runs as, from the password database.
+#[derive(Debug, Default)]
+struct User {
+    name: Option<String>,
+    home: Option<String>,
+    shell: Option<String>,
+}
+
+impl User {
+    fn current() -> Self {
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let mut buf = vec![0u8; 4096];
+        loop {
+            // SAFETY: an all-zero passwd is a valid out-value.
+            let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+            let mut found: *mut libc::passwd = std::ptr::null_mut();
+            // SAFETY: the out-pointers are valid and `buf` outlives the
+            // strings `pwd` points into, which are copied before it goes.
+            let rc = unsafe {
+                libc::getpwuid_r(
+                    uid,
+                    &mut pwd,
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    &mut found,
+                )
+            };
+            if rc == libc::ERANGE && buf.len() < 1 << 20 {
+                buf.resize(buf.len() * 2, 0);
+                continue;
+            }
+            if rc != 0 || found.is_null() {
+                return Self::default();
+            }
+            let field = |ptr: *const libc::c_char| {
+                if ptr.is_null() {
+                    return None;
+                }
+                // SAFETY: a non-null passwd field is a NUL-terminated string in `buf`.
+                let text = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
+                (!text.is_empty()).then(|| text.into_owned())
+            };
+            return Self {
+                name: field(pwd.pw_name),
+                home: field(pwd.pw_dir),
+                shell: field(pwd.pw_shell),
+            };
+        }
+    }
+}
+
+/// The user's login shell: the password database's, else `$SHELL`, else
+/// `/bin/sh`.
+fn login_shell(user: &User) -> String {
+    user.shell
+        .clone()
+        .or_else(|| {
+            std::env::var("SHELL")
+                .ok()
+                .filter(|shell| !shell.is_empty())
+        })
+        .unwrap_or_else(|| "/bin/sh".into())
+}
+
+/// The name a login shell is started under: its own with a `-` in front,
+/// which every Unix shell takes to mean "read the login profile".
+fn login_arg0(shell: &str) -> String {
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| shell.to_owned());
+    format!("-{name}")
+}
+
+/// Open a pty and start `command` on its slave side as a session leader;
+/// with no command, the user's login shell as a login shell, so that it reads
+/// the user's profile whatever environment the server itself was started in
+/// (a launchd agent gets the bare system PATH).
 pub fn spawn_shell(
     pane_id: &str,
     command: &[String],
@@ -54,17 +134,37 @@ pub fn spawn_shell(
 ) -> Result<Spawned> {
     let (master, slave) = open_pty(cols, rows).context("openpty")?;
 
-    let shell;
-    let (program, args) = match command.split_first() {
-        Some((program, args)) => (program.as_str(), args),
+    let user = User::current();
+    let shell = login_shell(&user);
+    let mut cmd = match command.split_first() {
+        Some((program, args)) => {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd
+        }
         None => {
-            shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            (shell.as_str(), &[][..])
+            let mut cmd = Command::new(&shell);
+            cmd.arg0(login_arg0(&shell));
+            cmd
         }
     };
+    let program = command.first().unwrap_or(&shell).clone();
 
-    let mut cmd = Command::new(program);
-    cmd.args(args)
+    for (name, value) in [
+        ("HOME", &user.home),
+        ("USER", &user.name),
+        ("LOGNAME", &user.name),
+    ] {
+        if std::env::var_os(name).is_none_or(|value| value.is_empty())
+            && let Some(value) = value
+        {
+            cmd.env(name, value);
+        }
+    }
+    for name in LAUNCHD_ENV {
+        cmd.env_remove(name);
+    }
+    cmd.env("SHELL", &shell)
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
         .env(PANE_ENV, pane_id)
@@ -201,5 +301,28 @@ pub fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
         Err(io::Error::last_os_error())
     } else {
         Ok(n as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_login_shell_is_started_under_its_name_with_a_dash() {
+        assert_eq!(login_arg0("/bin/zsh"), "-zsh");
+        assert_eq!(login_arg0("/opt/homebrew/bin/fish"), "-fish");
+        assert_eq!(login_arg0("sh"), "-sh");
+    }
+
+    #[test]
+    fn the_login_shell_comes_from_the_password_database_first() {
+        let user = User {
+            shell: Some("/bin/zsh".into()),
+            ..User::default()
+        };
+        assert_eq!(login_shell(&user), "/bin/zsh");
+        // This process's user has an entry, with a home at least.
+        assert!(User::current().home.is_some());
     }
 }

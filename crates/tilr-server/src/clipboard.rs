@@ -27,6 +27,11 @@ use tilr_proto::{ClipboardAck, ClipboardPut};
 pub const SHIMS: [&str; 2] = ["xclip", "wl-paste"];
 /// Tells the shims where the clipboard is. Set for every pane.
 pub const DIR_ENV: &str = "TILR_CLIPBOARD_DIR";
+/// The directory of the tools the server puts first on the PATH of every pane
+/// (`xclip`, `wl-paste`, `tilr`). A pane runs a login shell, whose profile
+/// may set PATH from scratch (Debian's /etc/profile, a `PATH=...` without
+/// `$PATH` in ~/.profile); `PATH="$TILR_SHIMS:$PATH"` there brings them back.
+pub const SHIMS_ENV: &str = "TILR_SHIMS";
 /// Overrides where the server keeps its per-user files.
 const RUNTIME_DIR_ENV: &str = "TILR_RUNTIME_DIR";
 

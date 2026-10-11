@@ -408,6 +408,10 @@ fn set_up_shims(
     if names.is_empty() {
         return (receiver, env);
     }
+    env.push((
+        OsString::from(clipboard::SHIMS_ENV),
+        shims.clone().into_os_string(),
+    ));
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs: Vec<_> = std::env::split_paths(&path)
         .filter(|dir| *dir != shims)

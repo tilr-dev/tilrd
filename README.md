@@ -18,6 +18,14 @@ One supervisor process accepts clients and routes packets. Each pane is its
 own process, a child of the supervisor, which owns the pty, the shell and the
 screen model.
 
+A pane opened without a command runs the user's login shell (the password
+database's, else `$SHELL`, else `/bin/sh`) as a login shell, `argv[0]` = `-zsh`
+and the like, so it reads the user's profile whatever environment the server
+was started in (a launchd agent gets the bare system `PATH`). The pane gets
+`SHELL`, `HOME`, `USER`, `LOGNAME`, `TERM=xterm-256color`, `COLORTERM`,
+`TILR_PANE`; launchd's `XPC_SERVICE_NAME` / `XPC_FLAGS` are dropped. A pane
+with a command runs it as given, without a shell.
+
 ## Installing and updating
 
 **macOS application distribution.** The Mac app bundles a pinned bootstrap
@@ -327,8 +335,12 @@ The server gives that machine a clipboard the client can fill:
    to the pane.
 2. The server stores the content, one clipboard for all panes.
 3. The program in the pane runs `xclip` or `wl-paste`. The server has put its
-   own versions of both first on the pane's `PATH`; they answer from the
-   stored content.
+   own versions of both first on the `PATH` the pane starts with; they answer
+   from the stored content. The login profile keeps them when it adds to
+   `PATH` (macOS `path_helper` puts the system directories in front and keeps
+   the rest; `export PATH="...:$PATH"`); a profile that sets `PATH` from
+   scratch (Debian's `/etc/profile`) drops them, and
+   `PATH="$TILR_SHIMS:$PATH"` at the end of it brings them back.
 
 So the program pastes as it would on a desktop. Verified against the commands
 Claude Code 2.1.289 runs on Linux; they are spelled out in

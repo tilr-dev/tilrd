@@ -50,6 +50,65 @@ async fn a_pane_runs_commands_and_reports_how_its_shell_exited() {
 }
 
 #[tokio::test]
+async fn a_pane_without_a_command_runs_the_users_login_shell() {
+    let server = Server::start(&[]);
+    // Startup files of the scratch home, so that zsh does not offer its
+    // new-user setup.
+    for name in [".zshrc", ".zprofile"] {
+        std::fs::write(server.dir.join(name), "").unwrap();
+    }
+    let mut client = Client::connect(&server).await;
+    client.hello().await;
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 100,
+            rows: 30,
+            command: Vec::new(),
+            cwd: String::new(),
+            request_id: 6,
+        }))
+        .await;
+    let pane_id: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) if created.request_id == 6 => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            server_message::Msg::Error(error) => panic!("create pane: {}", error.message),
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane_id).await;
+
+    // A login shell: started as `-zsh`, `-bash`, `-sh`, and told which shell
+    // it is and whose.
+    let check = "case \"$0\" in \"-${SHELL##*/}\") true;; *) false;; esac";
+    assert_eq!(
+        client.run(pane_id, check).await,
+        0,
+        "{}",
+        client.screen.text()
+    );
+    let home = server.dir.display();
+    let check = format!(
+        "test -x \"$SHELL\" && test \"$HOME\" = '{home}' && test -n \"$USER\" && test \"$LOGNAME\" = \"$USER\""
+    );
+    assert_eq!(
+        client.run(pane_id, &check).await,
+        0,
+        "{}",
+        client.screen.text()
+    );
+    // The server's tools are still on its PATH after the login profile.
+    let check = "test -n \"$TILR_SHIMS\" && case \":$PATH:\" in *\":$TILR_SHIMS:\"*) true;; *) false;; esac";
+    assert_eq!(
+        client.run(pane_id, check).await,
+        0,
+        "{}",
+        client.screen.text()
+    );
+}
+
+#[tokio::test]
 async fn a_pane_starts_in_the_home_directory_unless_given_one_that_exists() {
     let server = Server::start(&[]);
     let home = server.dir.display().to_string();
