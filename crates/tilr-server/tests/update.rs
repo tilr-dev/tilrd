@@ -103,6 +103,16 @@ fn installed() -> (PathBuf, PathBuf) {
     (dir, exe)
 }
 
+#[test]
+fn app_managed_server_never_contacts_the_standalone_update_feed() {
+    let (dir, exe) = installed();
+    std::fs::write(dir.join("app-managed.json"), "{}").unwrap();
+    let result = update(&exe, "http://127.0.0.1:1");
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("managed by Tilr.app"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn update(exe: &Path, cdn: &str) -> std::process::Output {
     update_failing(exe, cdn, "").wait_with_output().unwrap()
 }

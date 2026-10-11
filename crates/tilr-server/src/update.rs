@@ -32,6 +32,10 @@ pub const DEFAULT_CDN: &str = "https://cdn.tilr.dev";
 const MAX_BINARY: u64 = 256 << 20;
 
 pub fn run(cdn: &str, exe: &Path) -> Result<()> {
+    ensure!(
+        !exe.with_file_name("app-managed.json").exists(),
+        "this server is managed by Tilr.app; use Tilr > Check for Server Updates for the independent signed server channel"
+    );
     let cdn = cdn.trim_end_matches('/');
     let latest = fetch_text(&format!("{cdn}/releases/{PLATFORM}/latest"))
         .with_context(|| format!("find the latest release for {PLATFORM} at {cdn}"))?;

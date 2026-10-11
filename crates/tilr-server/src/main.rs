@@ -123,6 +123,9 @@ enum Command {
         /// Where the server listens.
         #[arg(long, default_value = "ws://127.0.0.1:7890")]
         url: String,
+        /// Internal health check: print the connected server's version.
+        #[arg(long, hide = true)]
+        server_version: bool,
     },
     /// Print the access token clients must present.
     Token,
@@ -195,7 +198,10 @@ fn main() -> anyhow::Result<ExitCode> {
     match cli.command {
         Some(Command::Pane(args)) => pane::run(args)?,
         Some(Command::StateFormats) => print!("{}", reload::formats()),
-        Some(Command::Ps { url }) => ps::run(&url)?,
+        Some(Command::Ps {
+            url,
+            server_version,
+        }) => ps::run(&url, server_version)?,
         Some(Command::Token) => auth::print()?,
         Some(Command::Cloud { command }) => match command {
             CloudCommand::Login { url, name } => cloud::login(&url, name)?,

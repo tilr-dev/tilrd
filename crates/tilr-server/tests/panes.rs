@@ -275,6 +275,17 @@ async fn ps_lists_the_panes_of_a_running_server() {
     assert_eq!(fields[1], pid.to_string());
     assert_eq!(fields[2], "100x30");
     assert!(lines[1].ends_with("/bin/sh"), "{listed}");
+
+    let version = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
+        .args(["ps", "--url", &server.addr, "--server-version"])
+        .env("TILR_STATE_DIR", server.dir.join("state"))
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap().trim(),
+        env!("TILR_VERSION")
+    );
 }
 
 #[tokio::test]

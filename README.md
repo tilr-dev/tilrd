@@ -20,6 +20,14 @@ screen model.
 
 ## Installing and updating
 
+**macOS application distribution.** The Mac app bundles a pinned bootstrap
+`tilr-server`, without the JavaScript `tilr` CLI. It installs a user LaunchAgent,
+then updates the managed server through its own signed server feed, separately
+from the application's Sparkle updates. A newer compatible server survives app
+upgrades with older bundled copies. Use **Tilr > Check for Server Updates** for
+this managed copy; separate installations retain their own updater.
+See [Mac release and lifecycle details](../apps/mac/PRODUCTION.md).
+
 Releases are built for Linux on aarch64 (glibc 2.36 or newer). There is no
 installer yet: download the binary and start it.
 

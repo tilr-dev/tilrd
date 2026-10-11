@@ -5,10 +5,12 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TILR_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=TILR_BUILD_VERSION");
     // Written to on every commit and checkout.
     println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
 
-    let package = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let package = std::env::var("TILR_BUILD_VERSION")
+        .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").unwrap());
     // A build that cannot ask git (a container that does not own the source
     // tree) is told the commit; one that knows no commit says so.
     let commit = std::env::var("TILR_BUILD_COMMIT")
