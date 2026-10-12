@@ -212,6 +212,28 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
 | Два клиента с `agent`: поток получает подписавшийся последним (клиент без `agent` не в счёт); он отписался — получает первый | `the_client_that_subscribed_last_serves_the_agent` |
 | Перезагрузка: открытый поток кончается, сокет на том же пути снова принимает и ведёт к переподключившемуся клиенту | `the_panes_socket_works_after_a_reload` |
 
+## Метрики — `tests/metrics.rs`
+
+Задержку ввода клиент меряет сам, без синхронизации часов: помечает ввод
+`ClientMessage.seq` = `HelloAck.seq_base` + n и ждёт кадр, где
+`Frame.last_input_seq` — этот номер (последний зачтённый ввод, от любого
+клиента); в кадре `Frame.timing` — время внутри процесса панели. Счётчики
+сервера — `GET /metrics`.
+
+| Сценарий | Тест |
+|---|---|
+| До ввода `last_input_seq` = 0; кадры после ввода с `seq` несут его, `timing` есть всегда, `build_us` > 0, кадр с выводом — `output_bytes` и `reads`; ввод без `seq` номер не сбивает; `Scroll` с `seq`, ничего не сдвинувший, получает свой кадр; клиент, нумерующий с 1 без `seq_base`, работает | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
+| Ввод, ничего не изменивший на экране (клик без отслеживания мыши, пустой `RawInput`), — кадр без строк с его `seq`, тем же курсором, размером и режимами; ввод без `seq` кадра не даёт | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
+| Переподключение (перезагрузка страницы): новый `seq_base` больше старого; полный кадр несёт номер старого соединения, не свой; ввод нового — его номер | `a_client_that_reconnects_tells_its_input_from_before` |
+| Два клиента на одной панели: у каждого свой `seq_base`, оба видят номера обоих по порядку | `two_clients_on_one_pane_each_see_their_own_input` |
+| `Scroll` зачитывается сразу, хотя ввод с клавиатуры ещё ждёт pty (1 МиБ в pty без читателя) | `a_scroll_is_credited_while_key_input_waits_for_the_pty` |
+| Перезагрузка сервера: `last_input_seq` и ввод, ждущий pty, переживают её, ввод зачитывается после, `input_us` — с приёма до перезагрузки; номера соединений продолжаются | `the_last_input_and_input_still_waiting_survive_a_reload` |
+| `/metrics` без токена, с чужим (в `?token=` и в `Authorization`) — 401; чужой origin — 403; с токеном любым из двух способов — 200, `text/plain; version=0.0.4`; основной протокол на том же порту как был | `metrics_ask_for_the_access_token` |
+| Сервер с `--no-auth` токена для `/metrics` не спрашивает у `Host` localhost, `127.0.0.1`, `[::1]` (с портом и без) и `Sec-Fetch-Site` не cross-site | `metrics_need_no_token_on_a_server_without_one` |
+| Без токена: `Sec-Fetch-Site: cross-site`, чужой `Host` (DNS rebinding) или без `Host` — 403; с токеном решает токен | `without_a_token_metrics_are_for_this_machine_only` |
+| Запрос, пришедший кусками (строка запроса и пустая строка разорваны) | `a_metrics_request_may_come_in_pieces` |
+| После ввода и кадров: счётчики кадров, байтов и ввода панели, гистограммы маршрута и лага цикла, CPU и память супервизора и процесса панели | `metrics_count_frames_input_and_routing` |
+
 ## Не покрыто
 
 - Клиент: поведение веб-клиента при обрыве (автопереподключение, возврат в ту же

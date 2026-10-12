@@ -101,7 +101,20 @@ pub fn decode<M: Message + Default>(packet: &[u8]) -> Result<M, DecodeError> {
 
 impl From<client_message::Msg> for ClientMessage {
     fn from(msg: client_message::Msg) -> Self {
-        Self { msg: Some(msg) }
+        Self {
+            msg: Some(msg),
+            seq: 0,
+        }
+    }
+}
+
+impl ClientMessage {
+    /// The message named by `seq`, see [`ClientMessage::seq`].
+    pub fn with_seq(msg: client_message::Msg, seq: u64) -> Self {
+        Self {
+            msg: Some(msg),
+            seq,
+        }
     }
 }
 
@@ -153,6 +166,50 @@ mod tests {
         assert_eq!(packet[0], FLAG_ZSTD);
         assert!(packet.len() < msg.encoded_len());
         assert_eq!(decode::<ServerMessage>(&packet).unwrap(), msg);
+    }
+
+    #[test]
+    fn input_seq_and_frame_timing_round_trip() {
+        let input = ClientMessage::with_seq(
+            client_message::Msg::Raw(RawInput {
+                pane_id: "7".into(),
+                data: Bytes::from_static(b"ls\n"),
+            }),
+            42,
+        );
+        let decoded = decode::<ClientMessage>(&encode(&input)).unwrap();
+        assert_eq!(decoded.seq, 42);
+        assert_eq!(decoded, input);
+
+        let timing = FrameTiming {
+            wait_us: 1,
+            parse_us: 2,
+            build_us: 3,
+            encode_us: 4,
+            output_bytes: 5,
+            reads: 6,
+            input_us: u32::MAX,
+        };
+        let mut msg = frame(40);
+        if let Some(server_message::Msg::Frame(frame)) = &mut msg.msg {
+            frame.last_input_seq = 42;
+            frame.timing = Some(timing);
+        }
+        let decoded = decode::<ServerMessage>(&encode(&msg)).unwrap();
+        let Some(server_message::Msg::Frame(frame)) = &decoded.msg else {
+            panic!("not a frame: {decoded:?}");
+        };
+        assert_eq!(frame.last_input_seq, 42);
+        assert_eq!(frame.timing, Some(timing));
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn a_message_without_seq_reads_as_zero() {
+        let packet = encode(&ClientMessage::from(client_message::Msg::Ping(Ping {
+            nonce: 1,
+        })));
+        assert_eq!(decode::<ClientMessage>(&packet).unwrap().seq, 0);
     }
 
     #[test]

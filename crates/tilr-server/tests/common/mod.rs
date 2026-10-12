@@ -87,8 +87,10 @@ impl Server {
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("ENV")
-            // Nor an SSH agent of the machine running the tests.
+            // Nor an SSH agent of the machine running the tests, nor the
+            // clipboard of a Tilr pane the tests may run in.
             .env_remove("SSH_AUTH_SOCK")
+            .env_remove("TILR_CLIPBOARD_DIR")
             .stdin(Stdio::null())
             .stderr(Stdio::piped());
         // A copy of the executable made a moment ago can be "busy" on Linux

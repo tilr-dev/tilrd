@@ -8,6 +8,7 @@ mod files;
 mod host;
 mod identity;
 mod link;
+mod metrics;
 mod pane;
 mod ps;
 mod pty;

@@ -418,7 +418,26 @@ impl Screen for GhosttyScreen {
             cell_width_px: self.cell.0,
             cell_height_px: self.cell.1,
             viewport_top,
+            // Filled in by the pane process, which knows what led to the frame.
+            last_input_seq: 0,
+            timing: None,
         }))
+    }
+
+    fn unchanged_frame(&self) -> Option<Frame> {
+        let cursor = self.last_cursor?;
+        let (mouse_tracking, alt_screen) = self.last_modes?;
+        Some(Frame {
+            cols: u32::from(self.size.0),
+            rows: u32::from(self.size.1),
+            cursor: Some(cursor),
+            mouse_tracking,
+            alt_screen,
+            cell_width_px: self.cell.0,
+            cell_height_px: self.cell.1,
+            viewport_top: self.last_viewport_top,
+            ..Frame::default()
+        })
     }
 
     fn take_status(&mut self) -> Option<PaneStatus> {

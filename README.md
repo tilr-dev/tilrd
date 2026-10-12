@@ -321,6 +321,100 @@ is `Ping` (feature `"ping"`): the server answers `Pong` with the same nonce at
 once. A client that pings regularly and gets no answer in time knows the
 server is out of reach, and reconnects.
 
+### Measuring input latency
+
+The terminal pipeline can be measured end to end without synchronising
+clocks. A client names an input message by `ClientMessage.seq` (outside the
+`oneof`) on `KeyInput`, `MouseInput`, `Paste`, `RawInput`, `Scroll` or
+`Resize`: `HelloAck.seq_base + n`, with `n` counting 1, 2, 3, ... on the
+connection. `seq_base` is the connection's own (its number in the high 32
+bits; numbers go on across a reload of the server), so a seq says which
+connection's input it was, `seq_base <= seq < seq_base + 2^32`, even with
+several clients on a pane or after a page reload.
+
+Every `Frame` carries `last_input_seq`: the seq of the input the pane
+credited last before it built the frame, from whichever client; 0 until there
+is one. Key, mouse, paste and raw input is credited once the pty has taken its
+last byte, in the order it came; `Scroll` and `Resize` when applied, which is
+at once, so they may overtake key input still waiting for the pty. It is the
+latest, not the highest: another client's input moves it, down as well. Every
+credited input gets a frame. When it changed nothing on the screen (a click
+the program ignores, a scroll that moves nothing, input not echoed), that
+frame has no rows: `full` false, no `changed`, `styles`, `title` or
+`images`, `placements_changed` false, and `cols`, `rows`, `cursor`,
+`mouse_tracking`, `alt_screen`, the cell size and `viewport_top` as before, so
+applying it changes nothing. Inputs credited between two frames show only the
+last of them; a client takes a frame carrying a later seq of its own as the
+echo of the earlier ones too.
+
+The time from sending input `n` to the first frame carrying its seq (or a
+later one of the same connection) is the latency the user sees, measured on
+the client's clock alone. The frame that shows the echo usually comes a frame
+or two later; `FrameTiming.output_bytes` tells which frames carry output.
+Input without a seq makes no frame of its own. The fields are optional: a
+server that does not know `seq` ignores it and sends `seq_base` 0, a client
+that sends none gets 0. A client that ignores `seq_base` and numbers from 1
+still gets its numbers echoed, but cannot tell them from another
+connection's.
+
+Every frame also carries `timing` (`FrameTiming`), the pane process's own
+account, in microseconds:
+
+| Field | What |
+|---|---|
+| `wait_us` | First pty output since the previous frame to the start of this frame's build: coalescing (frames are at least 8 ms apart) and scheduling. 0 for a frame no output caused. Output that changed nothing on the screen makes no frame and is counted in the next one, however much later |
+| `parse_us` | Feeding the output into the screen model, summed |
+| `build_us` | Building the frame from the screen model (diffing rows) |
+| `encode_us` | Protobuf encoding and zstd compression of the pane's *previous* frame: a frame cannot hold its own |
+| `output_bytes`, `reads` | Pty output since the previous frame, and the reads that brought it |
+| `input_us` | For a new `last_input_seq`: the pane process receiving the input to the pty write that took its last byte returning (`Scroll`, `Resize`: to it being applied). 0 when no new input. Input still waiting for the pty when the server reloads keeps its time |
+
+The supervisor's part (routing between client and pane) is in
+[`/metrics`](#metrics).
+
+## Metrics
+
+`GET /metrics` on the server's port answers a plain HTTP request (not a
+WebSocket) with the server's counters in the Prometheus text format
+(`Content-Type: text/plain; version=0.0.4`). A request whose line starts with
+`GET /metrics` followed by a space or `?` is taken for one, so `/metrics` and
+`/metrics?...` are no longer paths a WebSocket can be opened on.
+
+It asks for the access token as [`/socks`](#socks-proxy) does:
+`Authorization: Bearer <token>`, or `?token=<token>`. Without it: 401; from a
+browser page of a disallowed origin (`Origin`): 403. A server without a token
+(`--no-auth`) asks for none, but answers only this machine: the `Host` header
+must be loopback (`localhost`, `127.0.0.1` or `[::1]`, with or without a
+port) or the address the server listens on (not `0.0.0.0`), and a request
+with `Sec-Fetch-Site: cross-site` (a page of another site) is refused; 403
+otherwise. A response not read within 5 s is dropped.
+
+```sh
+curl -H "Authorization: Bearer $(tilr-server token)" http://127.0.0.1:7890/metrics
+```
+
+| Metric | Type | What |
+|---|---|---|
+| `tilr_server_info{version,server_id}` | gauge | Always 1 |
+| `tilr_server_clients` | gauge | Connected clients |
+| `tilr_server_panes` | gauge | Running panes |
+| `tilr_pane_frames_total{pane}` | counter | Frames the pane produced |
+| `tilr_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
+| `tilr_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
+| `tilr_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
+| `tilr_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilr_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
+| `tilr_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
+| `tilr_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |
+| `tilr_process_cpu_seconds_total{role,pid,pane}` | counter | User and system CPU time of the supervisor (`role="supervisor"`, no `pane`) and of each pane process (`role="pane"`) |
+| `tilr_process_memory_bytes{role,pid,pane}` | gauge | Their memory: resident set on Linux, physical footprint on macOS |
+
+The histograms have buckets from 50 µs to 100 ms (0.00005, 0.0001, 0.00025,
+0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, +Inf). The pane counters
+start from zero when the supervisor does, a reload included. CPU and memory
+are read when scraped. The pane process (the shell is its child) is what is
+measured, not the programs in the pane.
+
 ## Pasting images: the shared clipboard
 
 A program in a pane cannot reach the clipboard of the user's computer. When it
@@ -414,7 +508,7 @@ cargo test --workspace --features tilr-server/failpoints
 
 The tests in `crates/tilr-server/tests/` start the real server and drive it as
 a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
-connecting, reconnecting, scrolling, reloading, updating, the clipboard, the SSH agent — and
+connecting, reconnecting, scrolling, reloading, updating, the clipboard, the SSH agent, metrics — and
 what is not covered yet.
 
 The `failpoints` feature compiles in the places where a test can make an

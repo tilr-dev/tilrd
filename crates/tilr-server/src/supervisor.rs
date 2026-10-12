@@ -16,7 +16,8 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
@@ -39,6 +40,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use uuid::Uuid;
 
+use crate::metrics::{self, Outgoing, ToClient};
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
 use crate::{agent, auth, clipboard, cloud, files, host, identity, link, pty, reload, socks};
 
@@ -64,19 +66,28 @@ const FEATURE_FILES: &str = "files";
 const FEATURE_HOST_EVENTS: &str = "host-events";
 /// Feature name for SSH agent forwarding, see `HelloAck.features`.
 const FEATURE_AGENT: &str = "agent";
+/// How often the event loop's lag is measured (`tilr_supervisor_loop_lag_seconds`).
+const LAG_TICK: Duration = Duration::from_secs(1);
+/// How long a scrape of `/metrics` waits for the event loop.
+const METRICS_TIMEOUT: Duration = Duration::from_secs(5);
 
 type ClientId = u64;
 /// Made up when the pane is created; on the wire in its text form.
 type PaneId = Uuid;
+/// A packet for a pane process; with a client's input, when the supervisor
+/// read it from the client (`tilr_route_input_seconds`).
+type ToPane = (Bytes, Option<Instant>);
 
 enum Event {
     ClientConnected {
         id: ClientId,
-        tx: mpsc::Sender<Bytes>,
+        tx: ToClient,
     },
     ClientPacket {
         id: ClientId,
         packet: Bytes,
+        /// When the connection's task read it.
+        received: Instant,
     },
     ClientGone {
         id: ClientId,
@@ -89,6 +100,8 @@ enum Event {
     PaneOutput {
         pane_id: PaneId,
         packet: Bytes,
+        /// When the pane's reader took it off the pipe.
+        read_at: Instant,
     },
     /// Title or working directory changed inside the pane.
     PaneStatus {
@@ -113,6 +126,13 @@ enum Event {
         request: host::Request,
         reply: oneshot::Sender<Result<usize, String>>,
     },
+    /// The once-a-second tick that measures how late events are handled;
+    /// it was due at this instant.
+    Tick(Instant),
+    /// A scrape of `/metrics` asks for the counters.
+    Metrics {
+        reply: oneshot::Sender<metrics::Snapshot>,
+    },
     /// Replace the supervisor and every pane process with the executable on
     /// disk.
     Reload,
@@ -120,7 +140,7 @@ enum Event {
 }
 
 struct Client {
-    tx: mpsc::Sender<Bytes>,
+    tx: ToClient,
     subscriptions: HashSet<PaneId>,
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
@@ -140,8 +160,10 @@ struct Pane {
     rows: u16,
     subscribers: HashSet<ClientId>,
     pid: u32,
-    to_pane: mpsc::UnboundedSender<Bytes>,
+    to_pane: mpsc::UnboundedSender<ToPane>,
     link: Link,
+    /// What `/metrics` reports for the pane.
+    counters: metrics::PaneCounters,
 }
 
 /// The tasks moving packets to and from one pane process.
@@ -199,6 +221,9 @@ pub struct Options {
 /// Who may come in through the listening port, and to what.
 struct Door {
     allow_origins: Vec<String>,
+    /// The host the server was told to listen on, as a `Host` header may
+    /// name it.
+    listen_host: String,
     /// The access token; `None` when the server runs without one.
     token: Option<String>,
     /// Whether the SOCKS proxy is served.
@@ -252,16 +277,33 @@ pub fn run(options: Options) -> Result<()> {
             });
 
             let (events_tx, events_rx) = mpsc::unbounded_channel();
+            let shared_metrics = Arc::new(metrics::Shared::default());
+            // Client ids go on from where the server before a reload left
+            // them: they make `HelloAck.seq_base`.
+            let next_client_id = Arc::new(AtomicU64::new(
+                state
+                    .as_ref()
+                    .map_or(0, |state| state.next_client_id)
+                    .max(1),
+            ));
             tokio::spawn(accept_loop(
                 Arc::clone(&listener),
                 Arc::new(Door {
                     allow_origins: options.allow_origins,
+                    // 0.0.0.0 or :: is not a host a request names.
+                    listen_host: Some(options.listen.ip())
+                        .filter(|ip| !ip.is_unspecified())
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                     token: token.clone(),
                     socks: options.socks,
                 }),
                 options.client_timeout,
+                Arc::clone(&shared_metrics),
+                Arc::clone(&next_client_id),
                 events_tx.clone(),
             ));
+            tokio::spawn(lag_ticks(events_tx.clone()));
             tokio::spawn(shutdown_signal(events_tx.clone()));
             tokio::spawn(reload_signal(events_tx.clone()));
             if options.auto_reload {
@@ -323,6 +365,8 @@ pub fn run(options: Options) -> Result<()> {
                 files,
                 host_events: host_socket.is_some(),
                 agent,
+                metrics: shared_metrics,
+                next_client_id,
             };
             if let Some(state) = state {
                 supervisor.resume(state);
@@ -446,24 +490,38 @@ async fn reload_signal(events: mpsc::UnboundedSender<Event>) {
     }
 }
 
+/// Tick every [`LAG_TICK`] through the event loop, which measures how late
+/// it gets to each.
+async fn lag_ticks(events: mpsc::UnboundedSender<Event>) {
+    let mut interval = tokio::time::interval(LAG_TICK);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        let due = interval.tick().await;
+        if events.send(Event::Tick(due.into_std())).is_err() {
+            break;
+        }
+    }
+}
+
 async fn accept_loop(
     listener: Arc<TcpListener>,
     door: Arc<Door>,
     client_timeout: Option<Duration>,
+    metrics: Arc<metrics::Shared>,
+    next_id: Arc<AtomicU64>,
     events: mpsc::UnboundedSender<Event>,
 ) {
-    let mut next_id: ClientId = 1;
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                let id = next_id;
-                next_id += 1;
+                let id: ClientId = next_id.fetch_add(1, Ordering::Relaxed);
                 tokio::spawn(serve_client(
                     id,
                     stream,
                     addr,
                     Arc::clone(&door),
                     client_timeout,
+                    Arc::clone(&metrics),
                     events.clone(),
                 ));
             }
@@ -481,6 +539,7 @@ async fn serve_client(
     addr: SocketAddr,
     door: Arc<Door>,
     client_timeout: Option<Duration>,
+    shared_metrics: Arc<metrics::Shared>,
     events: mpsc::UnboundedSender<Event>,
 ) {
     // Keystrokes and small diffs must not wait for Nagle.
@@ -503,6 +562,10 @@ async fn serve_client(
         }
         return;
     }
+    // A plain HTTP request, not a WebSocket.
+    if metrics::is_request(&stream).await {
+        return serve_metrics(stream, addr, &door, &shared_metrics, &events).await;
+    }
 
     // What the handshake asked for; the callback tells.
     let mut route = Route::Main;
@@ -520,22 +583,13 @@ async fn serve_client(
         if socks && !door.socks {
             return Err(refuse(StatusCode::NOT_FOUND, "not found"));
         }
-        // A browser attaches the page's origin to every WebSocket handshake.
-        // With no other authentication, this check is what stops an
-        // arbitrary website from opening a shell on this machine.
-        if let Some(origin) = request.headers().get("origin") {
-            let origin = origin.to_str().unwrap_or("");
-            if !door.allow_origins.iter().any(|allowed| allowed == origin) {
-                tracing::warn!(%addr, origin, "rejected connection from disallowed origin");
-                return Err(refuse(StatusCode::FORBIDDEN, "origin not allowed"));
-            }
+        if !door.origin_allowed(request, addr) {
+            return Err(refuse(StatusCode::FORBIDDEN, "origin not allowed"));
         }
         if socks {
             // The main protocol asks for the token in `Hello`; SOCKS has no
             // such message, so the handshake carries it.
-            if let Some(token) = &door.token
-                && !socks_token(request).is_some_and(|given| auth::matches(token, given))
-            {
+            if !door.token_shown(request) {
                 tracing::warn!(%addr, "rejected SOCKS WebSocket without the access token");
                 let mut refused = refuse(StatusCode::UNAUTHORIZED, "access token required");
                 refused
@@ -561,7 +615,7 @@ async fn serve_client(
     }
     tracing::info!(client = id, %addr, "client connected");
     let (mut sink, mut source) = ws.split();
-    let (tx, mut rx) = mpsc::channel::<Bytes>(CLIENT_QUEUE);
+    let (tx, mut rx) = mpsc::channel::<Outgoing>(CLIENT_QUEUE);
     if events.send(Event::ClientConnected { id, tx }).is_err() {
         return;
     }
@@ -577,15 +631,18 @@ async fn serve_client(
     // Ends when the supervisor drops the client's sender.
     let writer = tokio::spawn(async move {
         loop {
-            let message = tokio::select! {
+            let (message, read_at) = tokio::select! {
                 packet = rx.recv() => match packet {
-                    Some(packet) => Message::Binary(packet),
+                    Some(Outgoing { packet, read_at }) => (Message::Binary(packet), read_at),
                     None => break,
                 },
-                () = tick(&mut ping) => Message::Ping(Bytes::new()),
+                () = tick(&mut ping) => (Message::Ping(Bytes::new()), None),
             };
             if sink.send(message).await.is_err() {
                 break;
+            }
+            if let Some(read_at) = read_at {
+                shared_metrics.route.observe(read_at.elapsed());
             }
         }
         let _ = sink.close().await;
@@ -607,7 +664,13 @@ async fn serve_client(
         };
         match message {
             Message::Binary(packet) => {
-                if events.send(Event::ClientPacket { id, packet }).is_err() {
+                let received = Instant::now();
+                let event = Event::ClientPacket {
+                    id,
+                    packet,
+                    received,
+                };
+                if events.send(event).is_err() {
                     break;
                 }
             }
@@ -629,10 +692,141 @@ enum Route {
     Socks,
 }
 
-/// The access token a SOCKS WebSocket handshake carries: `Authorization:
-/// Bearer <token>`, else `?token=<token>` (a page cannot set headers on a
-/// WebSocket).
-fn socks_token(request: &Request) -> Option<&str> {
+impl Door {
+    /// Whether a request may come from where it says it does. A browser
+    /// attaches the page's origin to every request, WebSocket handshakes
+    /// included. With no other authentication, this check is what stops an
+    /// arbitrary website from opening a shell on this machine.
+    fn origin_allowed(&self, request: &Request, addr: SocketAddr) -> bool {
+        let Some(origin) = request.headers().get("origin") else {
+            return true;
+        };
+        let origin = origin.to_str().unwrap_or("");
+        let allowed = self.allow_origins.iter().any(|allowed| allowed == origin);
+        if !allowed {
+            tracing::warn!(%addr, origin, "rejected connection from disallowed origin");
+        }
+        allowed
+    }
+
+    /// Whether an HTTP request (`/socks`, `/metrics`) shows the access
+    /// token, or the server asks for none.
+    fn token_shown(&self, request: &Request) -> bool {
+        self.token.as_ref().is_none_or(|token| {
+            request_token(request).is_some_and(|given| auth::matches(token, given))
+        })
+    }
+
+    /// Whether a request that needs no token (a server without one) may
+    /// have the metrics. A browser page of another site could otherwise
+    /// read them: `Sec-Fetch-Site: cross-site` says it is one, and a `Host`
+    /// that is not this machine's loopback or the address listened on is
+    /// a DNS rebinding.
+    fn tokenless_metrics_allowed(&self, request: &Request, addr: SocketAddr) -> bool {
+        let header = |name| {
+            request
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+        };
+        if header("sec-fetch-site").is_some_and(|site| site.eq_ignore_ascii_case("cross-site")) {
+            tracing::warn!(%addr, "rejected cross-site metrics request");
+            return false;
+        }
+        let host = header("host").unwrap_or("");
+        if !host_allowed(host, &self.listen_host) {
+            tracing::warn!(%addr, host, "rejected metrics request for another host");
+            return false;
+        }
+        true
+    }
+}
+
+/// Whether `host` (a `Host` header: a name or address, maybe a port) is
+/// loopback (`localhost`, `127.0.0.1`, `[::1]`) or `listen_host`, the
+/// address the server listens on.
+fn host_allowed(host: &str, listen_host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        // `[::1]:7890`
+        Some(rest) => match rest.split_once(']') {
+            Some((name, port)) if port.is_empty() || port.starts_with(':') => name,
+            _ => return false,
+        },
+        None => host.split_once(':').map_or(host, |(name, _)| name),
+    };
+    if name.is_empty() {
+        return false;
+    }
+    name.eq_ignore_ascii_case("localhost")
+        || name == "127.0.0.1"
+        || name == "::1"
+        || name.eq_ignore_ascii_case(listen_host)
+}
+
+/// Answer `GET /metrics`: the token and the origin are checked as for
+/// `/socks`, then the event loop is asked for its counters.
+async fn serve_metrics(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    door: &Door,
+    shared: &metrics::Shared,
+    events: &mpsc::UnboundedSender<Event>,
+) {
+    let Some(request) = metrics::read_request(&mut stream).await else {
+        return metrics::respond(&mut stream, StatusCode::BAD_REQUEST, &[], "bad request\n").await;
+    };
+    if !door.origin_allowed(&request, addr) {
+        return metrics::respond(
+            &mut stream,
+            StatusCode::FORBIDDEN,
+            &[],
+            "origin not allowed\n",
+        )
+        .await;
+    }
+    if door.token.is_none() && !door.tokenless_metrics_allowed(&request, addr) {
+        return metrics::respond(&mut stream, StatusCode::FORBIDDEN, &[], "forbidden\n").await;
+    }
+    if !door.token_shown(&request) {
+        tracing::warn!(%addr, "rejected metrics request without the access token");
+        let headers = [("www-authenticate", "Bearer")];
+        return metrics::respond(
+            &mut stream,
+            StatusCode::UNAUTHORIZED,
+            &headers,
+            "access token required\n",
+        )
+        .await;
+    }
+    let (reply, answer) = oneshot::channel();
+    let snapshot = match events.send(Event::Metrics { reply }) {
+        Ok(()) => tokio::time::timeout(METRICS_TIMEOUT, answer).await.ok(),
+        Err(_) => None,
+    };
+    let Some(Ok(snapshot)) = snapshot else {
+        let status = StatusCode::SERVICE_UNAVAILABLE;
+        return metrics::respond(&mut stream, status, &[], "server busy\n").await;
+    };
+    let body = metrics::render(
+        &snapshot,
+        shared,
+        std::process::id(),
+        metrics::process_usage,
+    );
+    let headers = [("content-type", metrics::CONTENT_TYPE)];
+    metrics::respond(&mut stream, StatusCode::OK, &headers, &body).await;
+}
+
+/// `HelloAck.seq_base` of a connection: its id in the high 32 bits, so every
+/// connection's `ClientMessage.seq` (`seq_base + n`) is its own.
+fn seq_base(client_id: ClientId) -> u64 {
+    client_id << 32
+}
+
+/// The access token an HTTP request on the listening port carries (a SOCKS
+/// WebSocket handshake, a metrics scrape): `Authorization: Bearer <token>`,
+/// else `?token=<token>` (a page cannot set headers on a WebSocket).
+fn request_token(request: &Request) -> Option<&str> {
     let header = request
         .headers()
         .get("authorization")
@@ -679,6 +873,10 @@ struct Supervisor {
     host_events: bool,
     /// `None` when SSH agent forwarding is turned off.
     agent: Option<agent::Agent>,
+    /// The measurements the routing tasks share.
+    metrics: Arc<metrics::Shared>,
+    /// The id the next connection gets; handed on in a reload.
+    next_client_id: Arc<AtomicU64>,
 }
 
 impl Supervisor {
@@ -716,10 +914,18 @@ impl Supervisor {
                     },
                 );
             }
-            Event::ClientPacket { id, packet } => self.on_client_packet(id, packet),
+            Event::ClientPacket {
+                id,
+                packet,
+                received,
+            } => self.on_client_packet(id, packet, received),
             Event::ClientGone { id } => self.drop_client(id),
             Event::PaneStarted { pane_id } => self.on_pane_started(pane_id),
-            Event::PaneOutput { pane_id, packet } => self.on_pane_output(pane_id, packet),
+            Event::PaneOutput {
+                pane_id,
+                packet,
+                read_at,
+            } => self.on_pane_output(pane_id, packet, read_at),
             Event::PaneStatus { pane_id, status } => {
                 if let Some(pane) = self.panes.get_mut(&pane_id) {
                     pane.title = status.title;
@@ -738,6 +944,10 @@ impl Supervisor {
             Event::Agent(output) => self.on_agent_output(output),
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
+            }
+            Event::Tick(due) => self.metrics.loop_lag.observe(due.elapsed()),
+            Event::Metrics { reply } => {
+                let _ = reply.send(self.metrics_snapshot());
             }
             // Handled by the event loop.
             Event::Reload | Event::Shutdown => {}
@@ -786,9 +996,15 @@ impl Supervisor {
             if let Some(agent) = &mut self.agent {
                 agent.listen(pane_id);
             }
-            let (sender, link) = attach(pane_id, to_pane, detached, self.events.clone());
+            let (sender, link) = attach(
+                pane_id,
+                to_pane,
+                detached,
+                self.events.clone(),
+                Arc::clone(&self.metrics),
+            );
             // An empty packet is the reload request.
-            let _ = sender.send(Bytes::new());
+            let _ = sender.send((Bytes::new(), None));
             self.panes.insert(
                 pane_id,
                 Pane {
@@ -802,6 +1018,7 @@ impl Supervisor {
                     pid: pane.pid,
                     to_pane: sender,
                     link,
+                    counters: metrics::PaneCounters::default(),
                 },
             );
         }
@@ -882,7 +1099,13 @@ impl Supervisor {
         tracing::error!("reload failed: {err:#}");
         // Carry on as before.
         for (pane_id, to_pane, reader) in handed_over {
-            let (sender, link) = attach(pane_id, to_pane, reader, self.events.clone());
+            let (sender, link) = attach(
+                pane_id,
+                to_pane,
+                reader,
+                self.events.clone(),
+                Arc::clone(&self.metrics),
+            );
             if let Some(pane) = self.panes.get_mut(&pane_id) {
                 pane.to_pane = sender;
                 pane.link = link;
@@ -900,6 +1123,7 @@ impl Supervisor {
         let state = SupervisorState {
             listener,
             format: reload::STATE_FORMAT,
+            next_client_id: self.next_client_id.load(Ordering::Relaxed),
             panes: panes
                 .iter()
                 .filter_map(|(pane_id, to_pane, reader)| {
@@ -941,7 +1165,7 @@ impl Supervisor {
         err
     }
 
-    fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes) {
+    fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
         // A client the supervisor has dropped may still have packets on the
         // way. Acting on them would subscribe a client nobody will ever
         // remove again.
@@ -949,7 +1173,7 @@ impl Supervisor {
             return;
         };
         let msg = match tilr_proto::decode::<ClientMessage>(&packet) {
-            Ok(ClientMessage { msg: Some(msg) }) => msg,
+            Ok(ClientMessage { msg: Some(msg), .. }) => msg,
             // A message type this server does not know; see tilr.proto.
             Ok(_) => return,
             Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
@@ -1008,6 +1232,7 @@ impl Supervisor {
                         clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
                         server_id: self.server_id.to_string(),
                         fs_max_bytes: fs_max_bytes.unwrap_or(0),
+                        seq_base: seq_base(client_id),
                     }),
                 );
             }
@@ -1021,14 +1246,14 @@ impl Supervisor {
                 self.send(client_id, server_message::Msg::PaneList(reply));
             }
             // The pane process hangs up its shell and exits with it.
-            Msg::ClosePane(close) => self.forward(client_id, &close.pane_id, packet),
+            Msg::ClosePane(close) => self.forward(client_id, &close.pane_id, packet, None),
             Msg::Subscribe(Subscribe { pane_id: named }) => {
                 let Some((pane_id, pane)) = self.pane_mut(&named) else {
                     return self.send_no_pane(client_id, &named);
                 };
                 pane.subscribers.insert(client_id);
                 // The pane answers with a full frame.
-                let _ = pane.to_pane.send(packet);
+                let _ = pane.to_pane.send((packet, None));
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.subscriptions.insert(pane_id);
                 }
@@ -1055,14 +1280,14 @@ impl Supervisor {
                 };
                 pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
                 pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
-                let _ = pane.to_pane.send(packet);
+                let _ = pane.to_pane.send((packet, None));
                 self.broadcast_pane_list();
             }
-            Msg::Key(input) => self.forward(client_id, &input.pane_id, packet),
-            Msg::Mouse(input) => self.forward(client_id, &input.pane_id, packet),
-            Msg::Paste(input) => self.forward(client_id, &input.pane_id, packet),
-            Msg::Raw(input) => self.forward(client_id, &input.pane_id, packet),
-            Msg::Scroll(input) => self.forward(client_id, &input.pane_id, packet),
+            Msg::Key(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
+            Msg::Mouse(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
+            Msg::Paste(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
+            Msg::Raw(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
+            Msg::Scroll(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
             Msg::ClipboardPut(put) => self.on_clipboard_put(client_id, put),
             Msg::Ping(ping) => {
                 self.send(
@@ -1162,7 +1387,7 @@ impl Supervisor {
             if !client.host_events {
                 continue;
             }
-            if client.tx.try_send(packet.clone()).is_ok() {
+            if client.tx.try_send(packet.clone().into()).is_ok() {
                 delivered += 1;
             } else {
                 stuck.push(client_id);
@@ -1206,11 +1431,16 @@ impl Supervisor {
         Some((pane_id, self.panes.get_mut(&pane_id)?))
     }
 
-    /// Pass a client packet to the pane process as-is.
-    fn forward(&mut self, client_id: ClientId, named: &str, packet: Bytes) {
+    /// Pass a client packet to the pane process as-is. `input`: it is the
+    /// client's input, read at that instant, and counted as such.
+    fn forward(&mut self, client_id: ClientId, named: &str, packet: Bytes, input: Option<Instant>) {
         match self.pane_mut(named) {
             Some((_, pane)) => {
-                let _ = pane.to_pane.send(packet);
+                if input.is_some() {
+                    pane.counters.input += 1;
+                    pane.counters.input_bytes += packet.len() as u64;
+                }
+                let _ = pane.to_pane.send((packet, input));
             }
             None => self.send_no_pane(client_id, named),
         }
@@ -1227,8 +1457,16 @@ impl Supervisor {
         if let Some(path) = self.agent.as_mut().and_then(|agent| agent.listen(pane_id)) {
             env.push((OsString::from(agent::SOCK_ENV), path.into_os_string()));
         }
-        let started =
-            start_pane_process(pane_id, create, &cwd, cols, rows, &env, self.events.clone());
+        let started = start_pane_process(
+            pane_id,
+            create,
+            &cwd,
+            cols,
+            rows,
+            &env,
+            self.events.clone(),
+            Arc::clone(&self.metrics),
+        );
         let (pid, to_pane, link) = match started {
             Ok(started) => started,
             Err(err) => {
@@ -1252,6 +1490,7 @@ impl Supervisor {
             pid,
             to_pane,
             link,
+            counters: metrics::PaneCounters::default(),
         };
         self.starting.insert(
             pane_id,
@@ -1291,15 +1530,25 @@ impl Supervisor {
         self.broadcast_pane_list();
     }
 
-    fn on_pane_output(&mut self, pane_id: PaneId, packet: Bytes) {
-        let Some(pane) = self.panes.get(&pane_id) else {
+    fn on_pane_output(&mut self, pane_id: PaneId, packet: Bytes, read_at: Instant) {
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
+        // What a pane process relays is its frames.
+        pane.counters.frames += 1;
+        pane.counters.frame_bytes += packet.len() as u64;
         let mut stuck = Vec::new();
         for &client_id in &pane.subscribers {
-            if let Some(client) = self.clients.get(&client_id)
-                && client.tx.try_send(packet.clone()).is_err()
-            {
+            let Some(client) = self.clients.get(&client_id) else {
+                continue;
+            };
+            let outgoing = Outgoing {
+                packet: packet.clone(),
+                read_at: Some(read_at),
+            };
+            if client.tx.try_send(outgoing).is_ok() {
+                pane.counters.frames_sent += 1;
+            } else {
                 stuck.push(client_id);
             }
         }
@@ -1345,7 +1594,7 @@ impl Supervisor {
         )));
         for client in self.clients.values_mut() {
             client.subscriptions.remove(&pane_id);
-            let _ = client.tx.try_send(packet.clone());
+            let _ = client.tx.try_send(packet.clone().into());
         }
         self.broadcast_pane_list();
     }
@@ -1374,6 +1623,25 @@ impl Supervisor {
         }
     }
 
+    /// The counters `/metrics` reports, panes oldest first.
+    fn metrics_snapshot(&self) -> metrics::Snapshot {
+        let mut panes: Vec<_> = self.panes.iter().collect();
+        panes.sort_by_key(|(id, pane)| (pane.created_at_ms, **id));
+        metrics::Snapshot {
+            version: crate::VERSION.into(),
+            server_id: self.server_id.to_string(),
+            clients: self.clients.len(),
+            panes: panes
+                .into_iter()
+                .map(|(id, pane)| metrics::PaneSnapshot {
+                    id: id.to_string(),
+                    pid: pane.pid,
+                    counters: pane.counters,
+                })
+                .collect(),
+        }
+    }
+
     fn pane_list(&self, request_id: u64) -> PaneList {
         let mut panes: Vec<PaneInfo> = self.panes.iter().map(|(&id, pane)| pane.info(id)).collect();
         // Oldest first; the id only settles panes made in the same millisecond.
@@ -1391,7 +1659,9 @@ impl Supervisor {
         let stuck: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, client)| client.greeted && client.tx.try_send(packet.clone()).is_err())
+            .filter(|(_, client)| {
+                client.greeted && client.tx.try_send(packet.clone().into()).is_err()
+            })
             .map(|(&id, _)| id)
             .collect();
         for client_id in stuck {
@@ -1404,7 +1674,7 @@ impl Supervisor {
         let stuck = self
             .clients
             .get(&client_id)
-            .is_some_and(|client| client.tx.try_send(packet).is_err());
+            .is_some_and(|client| client.tx.try_send(packet.into()).is_err());
         if stuck {
             self.drop_client(client_id);
         }
@@ -1463,6 +1733,10 @@ fn start_dir(requested: &str) -> String {
 /// Start the pane process, which opens the pty and runs the shell, and wire
 /// it to the event loop over its stdin and stdout. Returns its pid, the
 /// sender for packets going to it, and the tasks behind both directions.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all of it describes the new pane"
+)]
 fn start_pane_process(
     pane_id: PaneId,
     create: &CreatePane,
@@ -1471,7 +1745,8 @@ fn start_pane_process(
     rows: u16,
     env: &[(OsString, OsString)],
     events: mpsc::UnboundedSender<Event>,
-) -> Result<(u32, mpsc::UnboundedSender<Bytes>, Link)> {
+    shared_metrics: Arc<metrics::Shared>,
+) -> Result<(u32, mpsc::UnboundedSender<ToPane>, Link)> {
     let mut cmd = Command::new(crate::exe());
     // What `ps` shows of a pane for as long as it lives: a reload execs the
     // pane process with these same arguments.
@@ -1508,7 +1783,7 @@ fn start_pane_process(
         from_pane,
         unparsed: BytesMut::new(),
     };
-    let (sender, link) = attach(pane_id, to_pane, detached, events);
+    let (sender, link) = attach(pane_id, to_pane, detached, events, shared_metrics);
     Ok((pid, sender, link))
 }
 
@@ -1518,11 +1793,12 @@ fn attach(
     to_pane: pipe::Sender,
     reader: Detached,
     events: mpsc::UnboundedSender<Event>,
-) -> (mpsc::UnboundedSender<Bytes>, Link) {
+    shared_metrics: Arc<metrics::Shared>,
+) -> (mpsc::UnboundedSender<ToPane>, Link) {
     let (sender, outgoing) = mpsc::unbounded_channel();
     let stop_reader = Arc::new(Notify::new());
     let link = Link {
-        writer: tokio::spawn(write_pane(to_pane, outgoing)),
+        writer: tokio::spawn(write_pane(to_pane, outgoing, shared_metrics)),
         reader: tokio::spawn(read_pane(pane_id, reader, Arc::clone(&stop_reader), events)),
         stop_reader,
     };
@@ -1533,10 +1809,14 @@ fn attach(
 /// dropped, then return the pipe. `None` if the process stopped reading.
 async fn write_pane(
     mut to_pane: pipe::Sender,
-    mut outgoing: mpsc::UnboundedReceiver<Bytes>,
+    mut outgoing: mpsc::UnboundedReceiver<ToPane>,
+    shared_metrics: Arc<metrics::Shared>,
 ) -> Option<pipe::Sender> {
-    while let Some(packet) = outgoing.recv().await {
+    while let Some((packet, received)) = outgoing.recv().await {
         link::write_packet(&mut to_pane, &packet).await.ok()?;
+        if let Some(received) = received {
+            shared_metrics.route_input.observe(received.elapsed());
+        }
     }
     Some(to_pane)
 }
@@ -1568,7 +1848,11 @@ async fn read_pane(
             }
             let kind = packet.split_to(1)[0];
             let event = match kind {
-                link::kind::RELAY => Event::PaneOutput { pane_id, packet },
+                link::kind::RELAY => Event::PaneOutput {
+                    pane_id,
+                    packet,
+                    read_at: Instant::now(),
+                },
                 link::kind::STATUS => match tilr_proto::decode::<PaneStatus>(&packet) {
                     Ok(status) => Event::PaneStatus { pane_id, status },
                     Err(_) => continue,
@@ -1613,4 +1897,37 @@ async fn read_pane(
         error,
     });
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metrics_without_a_token_are_for_this_machine_only() {
+        for host in [
+            "localhost",
+            "LOCALHOST:7890",
+            "127.0.0.1",
+            "127.0.0.1:7890",
+            "[::1]",
+            "[::1]:7890",
+            "10.0.0.5:7890",
+        ] {
+            assert!(host_allowed(host, "10.0.0.5"), "{host}");
+        }
+        for host in [
+            "",
+            "evil.example",
+            "evil.example:7890",
+            "localhost.evil.example",
+            "127.0.0.2",
+            "[::2]:7890",
+            "[::1",
+            "[::1]x",
+            "10.0.0.5:7890",
+        ] {
+            assert!(!host_allowed(host, ""), "{host}");
+        }
+    }
 }

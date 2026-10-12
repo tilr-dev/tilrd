@@ -38,6 +38,11 @@ message ClientMessage {
     StreamData stream_data = 24;
     StreamClose stream_close = 25;
   }
+  // Names an input message (KeyInput, MouseInput, Paste, RawInput, Scroll, Resize) so the
+  // client can tell which frame shows its effect: HelloAck.seq_base + n, n = 1, 2, 3, ...
+  // counted by the client on its connection; echoed in Frame.last_input_seq. 0 = not named.
+  // Optional; a server that does not know the field ignores it.
+  uint64 seq = 100;
 }
 
 // Must be the first message on a connection. The server answers HelloAck, or,
@@ -410,6 +415,14 @@ message HelloAck {
   // Largest content one FsRead returns or one FsWrite takes. 0 without the
   // "files" feature.
   uint64 fs_max_bytes = 6;
+  // What this connection adds to its own input counter to make ClientMessage.seq: the
+  // client sends seq = seq_base + n with n = 1, 2, 3, ... Different for every connection
+  // the server accepts (a reload of the server included), so the seq in
+  // Frame.last_input_seq tells whose input it was: seq_base <= seq < seq_base + 2^32 is
+  // this connection's. A client that ignores seq_base (numbering from 1) still gets its
+  // seq echoed, but with several clients on a pane, or after it reconnects, it cannot tell
+  // its echoes from another connection's. 0 from a server that does not know seq.
+  uint64 seq_base = 7;
 }
 
 message PaneInfo {
@@ -674,6 +687,54 @@ message Frame {
   // while the view is scrolled back (new output does not move it). A client that keeps
   // something at a row of the screen (a selection) moves it by the change between frames.
   uint32 viewport_top = 17;
+  // The ClientMessage.seq of the input message the pane credited last before this frame was
+  // built, from whichever client it came; 0 while there is none. Key, Mouse, Paste and Raw
+  // input is credited once the pty has taken its last byte, in the order it arrived; Scroll
+  // and Resize when applied, at once (ahead of key input still waiting for the pty). It is
+  // the latest, not the highest: it can go down when another client's input comes after.
+  // Inputs credited between two frames show only the last of them, so a client takes a
+  // frame carrying a later seq of its own (from the same seq_base) as the echo of the
+  // earlier ones too (a Scroll or Resize may have overtaken key input still pending).
+  // Every credited input gets a frame: when it changed nothing on the screen, a frame
+  // with no rows (see below); input without a seq makes no frame of its own. A client
+  // measures input latency from sending a message to the first frame that carries its
+  // seq, on its own clock.
+  //
+  // A frame for input that changed nothing: `full` false, no `changed` rows, no `styles`,
+  // no `title`, `placements_changed` false, no `images`; `cols`, `rows`, `cursor`,
+  // `mouse_tracking`, `alt_screen`, the cell size and `viewport_top` as in the previous
+  // frame. It is a frame like any other (its own `seq`); applying it changes nothing.
+  uint64 last_input_seq = 18;
+  // How the pane produced this frame, for performance measurement. Always present.
+  FrameTiming timing = 19;
+}
+
+// Timing of one frame's production inside the pane process. Durations are in microseconds,
+// on the pane's own clock (no clock sync with the client is needed); a duration too long for
+// the field is u32::MAX.
+message FrameTiming {
+  // From the first pty output after the previous frame to the start of this frame's build:
+  // coalescing (output arriving faster than a frame per 8 ms waits) and scheduling. 0 for a
+  // frame not caused by output (a subscribe, a resize, a scroll). Output that changed
+  // nothing on the screen makes no frame; it counts here (and in output_bytes) for the
+  // frame that comes next, however much later.
+  uint32 wait_us = 1;
+  // Time spent feeding pty output into the screen model since the previous frame, summed.
+  uint32 parse_us = 2;
+  // Turning the screen model into this frame: diffing rows and building the message.
+  uint32 build_us = 3;
+  // Protobuf encoding and zstd compression of the previous frame from this pane (this
+  // frame's own is not known until it is encoded); 0 on a pane's first frame.
+  uint32 encode_us = 4;
+  // Pty output consumed since the previous frame: bytes, and read() calls that returned
+  // them.
+  uint32 output_bytes = 5;
+  uint32 reads = 6;
+  // For the input named by Frame.last_input_seq, if it is new since the previous frame:
+  // from the pane process receiving it to the pty write that took its last byte returning
+  // (for Scroll and Resize: to it being applied). 0 when no new input. An input left
+  // pending across a reload of the server counts from when the old pane process got it.
+  uint32 input_us = 7;
 }
 // One image shown on the screen, as cells of the viewport.
 message Placement {
@@ -732,6 +793,9 @@ message SupervisorState {
   // over to an executable that reads the version it writes. 0 = written
   // before versions were recorded, same as 1; 1 named panes by number.
   uint32 format = 4;
+  // The id the next connection gets, so ids (and HelloAck.seq_base) are not
+  // given out twice across a reload. 0 = not recorded: start from 1.
+  uint64 next_client_id = 5;
 }
 
 message PaneState {
@@ -769,4 +833,18 @@ message PaneHandover {
   // The cell in pixels the pane was last resized to (0 = the default).
   uint32 cell_width_px = 10;
   uint32 cell_height_px = 11;
+  // Frame.last_input_seq so far.
+  uint64 last_input_seq = 12;
+  // Named input not yet credited, oldest first.
+  repeated PendingInput pending_inputs = 13;
+}
+
+// An input message named by ClientMessage.seq whose bytes are not all
+// written to the pty yet.
+message PendingInput {
+  uint64 seq = 1;
+  // Credited once this many bytes of PaneHandover.pending_input are written.
+  uint64 end = 2;
+  // Microseconds since the pane process received it.
+  uint64 age_us = 3;
 }

@@ -32,6 +32,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::metrics::ToClient;
 use crate::{clipboard, host};
 
 /// Set in every pane to the path of its socket.
@@ -170,7 +171,7 @@ impl Agent {
         &mut self,
         pane_id: Uuid,
         stream: UnixStream,
-        agent_client: impl Fn(u64) -> Option<mpsc::Sender<Bytes>>,
+        agent_client: impl Fn(u64) -> Option<ToClient>,
     ) {
         let Some(socket) = self.sockets.get(&pane_id) else {
             return;
@@ -195,11 +196,14 @@ impl Agent {
         }
         let stream_id = self.next_stream;
         self.next_stream += 1;
-        let opened = to_client.try_send(encode(server_message::Msg::StreamOpen(StreamOpen {
-            stream_id,
-            kind: KIND.into(),
-            pane_id: pane_id.to_string(),
-        })));
+        let opened = to_client.try_send(
+            encode(server_message::Msg::StreamOpen(StreamOpen {
+                stream_id,
+                kind: KIND.into(),
+                pane_id: pane_id.to_string(),
+            }))
+            .into(),
+        );
         if opened.is_err() {
             tracing::debug!(
                 client,
@@ -344,7 +348,7 @@ async fn pump(
     stream_id: u64,
     stream: UnixStream,
     mut from_client: mpsc::Receiver<Bytes>,
-    to_client: mpsc::Sender<Bytes>,
+    to_client: ToClient,
     sink: Sink,
 ) {
     let (mut read, mut write) = stream.into_split();
@@ -366,7 +370,7 @@ async fn pump(
                         stream_id,
                         data: Bytes::copy_from_slice(&buf[..n]),
                     }));
-                    if to_client.send(packet).await.is_err() {
+                    if to_client.send(packet.into()).await.is_err() {
                         return;
                     }
                 }
@@ -374,7 +378,7 @@ async fn pump(
         }
     }
     let close = encode(server_message::Msg::StreamClose(StreamClose { stream_id }));
-    let _ = to_client.send(close).await;
+    let _ = to_client.send(close.into()).await;
     sink(Output::Ended { stream_id });
 }
 

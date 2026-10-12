@@ -40,6 +40,12 @@ pub trait Screen {
     /// `pane_id` and `seq` are left for the caller to fill in.
     fn frame(&mut self, full: bool) -> Result<Option<Frame>>;
 
+    /// A frame that changes nothing, for when [`Screen::frame`] has just
+    /// returned `None`: the last frame's size, cursor, modes, cell and
+    /// viewport, no rows, no title, placements unchanged. `None` before the
+    /// first frame.
+    fn unchanged_frame(&self) -> Option<Frame>;
+
     /// Title and working directory as reported by the application, if either
     /// changed since the previous call.
     fn take_status(&mut self) -> Option<PaneStatus>;

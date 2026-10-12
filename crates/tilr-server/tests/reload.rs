@@ -154,7 +154,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let formats = Command::new(&exe).arg("state-formats").output().unwrap();
     assert_eq!(
         String::from_utf8(formats.stdout).unwrap(),
-        "supervisor-state 2\npane-state 2\n"
+        "supervisor-state 2\npane-state 3\n"
     );
 
     // A version that runs fine but keeps its state differently, first for
@@ -162,12 +162,12 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     // it is left and lose the shells.
     for (formats, refusal) in [
         (
-            "supervisor-state 1\npane-state 2",
+            "supervisor-state 1\npane-state 3",
             "reads supervisor-state format 1, this server writes 2",
         ),
         (
-            "supervisor-state 2\npane-state 1",
-            "reads pane-state format 1, this server writes 2",
+            "supervisor-state 2\npane-state 2",
+            "reads pane-state format 2, this server writes 3",
         ),
     ] {
         let staged = dir.join("tilr-server.new");
