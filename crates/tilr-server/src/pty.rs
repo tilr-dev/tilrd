@@ -196,13 +196,16 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(OwnedFd, OwnedFd)> {
     let mut slave: RawFd = -1;
     let mut size = winsize(cols, rows);
     // SAFETY: out-pointers are valid; name and termios are optional.
+    // The size is passed as a raw pointer: libc declares it `*mut` on macOS and `*const` on
+    // Linux, and a `*mut` coerces to both (`&mut size` trips clippy's unnecessary_mut_passed
+    // on Linux).
     let rc = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            &raw mut size,
         )
     };
     if rc == -1 {
