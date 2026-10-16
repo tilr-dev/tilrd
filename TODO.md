@@ -1,97 +1,97 @@
-# TODO перед выкладкой в опенсорс
+# TODO before going open source
 
-Номера файлов и строк — на момент ревью 2026-10-03; после правок 2026-10-04 (буфер обмена, перезагрузка супервизора, UUID панелей) в `supervisor.rs` и `pane.rs` они сдвинулись.
+File and line numbers are as of the 2026-10-03 review; after the 2026-10-04 changes (clipboard, supervisor reload, pane UUIDs) they moved in `supervisor.rs` and `pane.rs`.
 
-## Безопасность
+## Security
 
-- [x] Аутентификация: токен доступа в `Hello.token`, лежит в `$XDG_STATE_HOME/tilr/token` (0600), `tilr-server token` его печатает; `--no-auth` отключает с предупреждением.
-- [ ] Токен один на сервер и бессрочный: нет отзыва, нет отдельных токенов на клиента, нет прав (только чтение и т. п.).
-- [ ] Перебор токена не ограничен (хватает длины: 256 бит), но попытки не считаются и не журналируются по адресам.
-- [ ] Ограничить размер панели: clamp до 65535×65535 позволяет одним `Resize`/`CreatePane` уронить pane или съесть память (`supervisor.rs:364,388`, `pane.rs:177`).
-- [ ] Ограничить очереди: канал событий, `to_pane`, `pending_input` (`pane.rs:62`) не ограничены. Лимит входящего WS-сообщения снизить с 64 МБ до ~1 МБ.
-- [x] Ping/keepalive: сервер пингует клиентов и отключает замолчавшего (`--client-timeout`, по умолчанию 30 с).
-- [ ] Таймаут handshake, лимит соединений (`accept_loop`).
+- [x] Authentication: an access token in `Hello.token`, kept in `$XDG_STATE_HOME/tilr/token` (0600); `tilr-server token` prints it; `--no-auth` turns it off with a warning.
+- [ ] One token per server, and it never expires: no revocation, no per-client tokens, no permissions (read-only and the like).
+- [ ] Token guessing is not rate-limited (the length is enough: 256 bits), but attempts are neither counted nor logged per address.
+- [ ] Limit the pane size: clamping to 65535×65535 lets a single `Resize`/`CreatePane` crash a pane or eat memory (`supervisor.rs:364,388`, `pane.rs:177`).
+- [ ] Bound the queues: the event channel, `to_pane`, `pending_input` (`pane.rs:62`) are unbounded. Lower the incoming WS message limit from 64 MB to ~1 MB.
+- [x] Ping/keepalive: the server pings clients and drops one that goes silent (`--client-timeout`, 30 s by default).
+- [ ] Handshake timeout, connection limit (`accept_loop`).
 
-## Баги
+## Bugs
 
-- [x] Зомби-клиент: пакеты от клиента, которого супервизор уже отбросил, игнорируются (`on_client_packet`). Раньше `Subscribe` от такого клиента навсегда оставлял его в зрителях панели; ловит тест `many_reconnects_leave_no_viewers_behind`.
-- [ ] Переполнение в координатах мыши: `input.x * CELL_WIDTH_PX` (`ghostty.rs:291-292`). Clamp по размеру экрана.
-- [x] Новые панели запускаются через `current_exe()`: путь к бинарю теперь запоминается при старте (`exe()` в `main.rs`), а после замены бинаря сервер и панели сами переходят на новую версию.
-- [ ] При остановке сервера шелл, игнорирующий SIGHUP, остаётся сиротой: pane-процессы убиваются сразу, без SIGKILL шеллу.
-- [ ] Шторм `broadcast_pane_list`: каждая смена заголовка, `Subscribe`, `Resize` шлёт полный список всем клиентам. Нужен троттлинг или дельты.
-- [ ] Ошибка `CreatePane` без `request_id` (`supervisor.rs:321`): клиент не может сопоставить отказ с запросом.
-- [ ] «Login shell» не login: `$SHELL` запускается без `-l` (`pty.rs:24`). Чинить или править комментарий и proto.
-- [ ] `EINTR` при чтении/записи pty роняет pane (`pane.rs:130,140`).
-- [ ] Код выхода по сигналу превращается в -1 (`supervisor.rs:397`).
+- [x] Zombie client: packets from a client the supervisor has already dropped are ignored (`on_client_packet`). Before, a `Subscribe` from such a client left it among the pane's viewers forever; caught by the test `many_reconnects_leave_no_viewers_behind`.
+- [ ] Overflow in mouse coordinates: `input.x * CELL_WIDTH_PX` (`ghostty.rs:291-292`). Clamp to the screen size.
+- [x] New panes are started through `current_exe()`: the executable's path is now remembered at startup (`exe()` in `main.rs`), and after the executable is replaced the server and the panes move to the new version on their own.
+- [ ] When the server stops, a shell that ignores SIGHUP is left an orphan: pane processes are killed at once, with no SIGKILL to the shell.
+- [ ] `broadcast_pane_list` storm: every title change, `Subscribe`, `Resize` sends the full list to every client. Needs throttling or deltas.
+- [ ] A `CreatePane` error without `request_id` (`supervisor.rs:321`): the client cannot match the refusal to its request.
+- [ ] The "login shell" is not a login shell: `$SHELL` is started without `-l` (`pty.rs:24`). Fix it, or fix the comment and the proto.
+- [ ] `EINTR` on a pty read/write crashes the pane (`pane.rs:130,140`).
+- [ ] An exit code from a signal turns into -1 (`supervisor.rs:397`).
 
-## Протокол (до v1)
+## Protocol (before v1)
 
-- [x] `Hello`: версия проверяется, `Hello` обязателен первым сообщением; иначе `Error` и закрытие соединения.
-- [x] `Ping` / `Pong` в протоколе (возможность `"ping"`), чтобы клиент в браузере замечал молча пропавший сервер.
-- [ ] Веб-клиент: слать `Ping` и переподключаться, если `Pong` не пришёл.
-- [x] Расширяемость: незнакомые сообщения игнорируются, возможности объявляются в `Hello.features` / `HelloAck.features`.
-- [ ] `KeyInput`: физическая клавиша для не-латинских раскладок (Ctrl+С на русской не даёт `^C`).
-- [ ] Задокументировать или изменить: скролл и размер общие для всех зрителей, ввод принимается от неподписанных клиентов.
-- [ ] `seq` сбрасывается при рестарте pane-процесса.
-- [x] ID панели — UUID (строка), а не номер: один и тот же в протоколе, в `ps`, в `$TILR_PANE`. Версия протокола 2. ID сервера в `HelloAck.server_id`.
-- [ ] `tilr-server ps` не показывает pid шелла: супервизор его не знает, знает pane-процесс.
-- [ ] `UNSPECIFIED = 0` в `KeyAction` и `MouseAction`: сейчас неизвестное значение становится `Press`.
-- [ ] Убрать `PaneStatus` из публичного proto.
-- [ ] README: клиент обязан экранировать заголовок и cwd.
+- [x] `Hello`: the version is checked, `Hello` must be the first message; otherwise `Error` and the connection is closed.
+- [x] `Ping` / `Pong` in the protocol (feature `"ping"`), so a browser client notices a server that silently went away.
+- [ ] Web client: send `Ping` and reconnect when no `Pong` comes back.
+- [x] Extensibility: unknown messages are ignored, features are announced in `Hello.features` / `HelloAck.features`.
+- [ ] `KeyInput`: the physical key for non-Latin layouts (Ctrl+С on a Russian layout does not give `^C`).
+- [ ] Document or change: scroll and size are shared by all viewers, input is accepted from unsubscribed clients.
+- [ ] `seq` resets when the pane process restarts.
+- [x] The pane ID is a UUID (a string), not a number: the same in the protocol, in `ps`, in `$TILR_PANE`. Protocol version 2. The server ID is in `HelloAck.server_id`.
+- [ ] `tilr-server ps` does not show the shell's pid: the supervisor does not know it, the pane process does.
+- [ ] `UNSPECIFIED = 0` in `KeyAction` and `MouseAction`: an unknown value currently becomes `Press`.
+- [ ] Remove `PaneStatus` from the public proto.
+- [ ] README: a client must escape the title and the cwd.
 
-## Упаковка
+## Packaging
 
-- [ ] Файл `LICENSE` (Apache-2.0), CI, `SECURITY.md`. README есть.
-- [x] Убрать `.cargo/config.toml` из репозитория, описать обход в документации.
-- [ ] Описать требования сборки: `zig` 0.15.2, `protoc`, сеть (клон ghostty). Для proto — закоммитить сгенерированный код или `protox`.
-- [ ] README: риск зависимости `libghostty-vt = "=0.2.2"` (сторонняя обёртка, до 1.0).
-- [ ] Манифесты: `description`, `repository`, `rust-version` (1.88), `version` у path-зависимостей.
-- [ ] Публичный API: убрать `anyhow` из трейта `Screen`, `DecodeError` с `source()` и `#[non_exhaustive]`, документация pub-элементов.
-- [ ] `cfg(unix)` или внятная ошибка компиляции на Windows.
-- [x] Интеграционные тесты сервера по сценариям (`crates/tilr-server/tests/`, список — `USE_CASES.md`): соединение, переподключение, прокрутка, буфер обмена, перезагрузка.
-- [ ] Юнит-тесты `pty` и кодирования ввода в `pane`.
+- [x] `LICENSE-MIT` + `LICENSE-APACHE` (MIT OR Apache-2.0), CI (`.github/workflows/ci.yml`); `SECURITY.md` comes from the tilr-dev org defaults. README is there.
+- [x] Remove `.cargo/config.toml` from the repository, describe the workaround in the docs.
+- [x] Describe the build requirements: `zig` 0.15.2, `protoc`, network (ghostty clone) (README, "Build"). Still open: for the proto, commit the generated code or use `protox`.
+- [ ] README: the risk of depending on `libghostty-vt = "=0.2.2"` (a third-party wrapper, pre-1.0).
+- [ ] Manifests: `description`, `repository`, `rust-version` are done; still missing: `version` on the path dependencies.
+- [ ] Public API: drop `anyhow` from the `Screen` trait, `DecodeError` with `source()` and `#[non_exhaustive]`, docs for pub items.
+- [ ] `cfg(unix)` or a clear compile error on Windows.
+- [x] Scenario-based integration tests of the server (`crates/tilr-server/tests/`, listed in `USE_CASES.md`): connecting, reconnecting, scrolling, clipboard, reload.
+- [ ] Unit tests for `pty` and for input encoding in `pane`.
 - [x] `cargo fmt`.
-- [ ] Проверить, свободно ли имя `tilr` на crates.io.
-- [ ] Сайт документации: Astro + Starlight (`npm create astro@latest -- --template starlight`), по образцу herdr.dev/docs.
+- [ ] Check whether the name `tilr` is free on crates.io.
+- [ ] Documentation site: Astro + Starlight (`npm create astro@latest -- --template starlight`), modelled on herdr.dev/docs.
 
-## Три платформы (Linux, macOS, Windows)
+## Three platforms (Linux, macOS, Windows)
 
-- [x] pty и шелл живут в pane-процессе, связь с супервизором через stdin/stdout (без передачи дескрипторов и перезапуска pane).
-- [ ] Настройки сервера: `--max-cols`, `--max-rows`, `--scrollback-lines`; обрезает супервизор, ошибка resize не роняет pane.
-- [ ] Проверить сборку `tilr-screen` (libghostty-vt) под Windows. Запасной движок — `alacritty_terminal`.
-- [ ] Трейт `Pty` в pane-процессе: Unix-реализация (текущий `pty.rs`) и ConPTY.
-- [ ] Windows: Job Object вместо сигналов, шелл по умолчанию (`COMSPEC`/PowerShell), `path_from_pwd` для `file:///C:/...`.
-- [ ] CI-матрица на три платформы. Linux сейчас проверяется вручную: `scripts/linux.sh`.
+- [x] The pty and the shell live in the pane process, which talks to the supervisor over stdin/stdout (no descriptor passing, no pane restart).
+- [ ] Server settings: `--max-cols`, `--max-rows`, `--scrollback-lines`; the supervisor clamps, a resize error does not crash the pane.
+- [ ] Check that `tilr-screen` (libghostty-vt) builds on Windows. Fallback engine: `alacritty_terminal`.
+- [ ] A `Pty` trait in the pane process: the Unix implementation (the current `pty.rs`) and ConPTY.
+- [ ] Windows: a Job Object instead of signals, a default shell (`COMSPEC`/PowerShell), `path_from_pwd` for `file:///C:/...`.
+- [ ] CI matrix on three platforms. Linux and macOS run in CI now (`.github/workflows/ci.yml`); Windows is missing. `scripts/linux.sh` runs the Linux suite locally.
 
 ## tilr Cloud
 
-Сделано: `tilr-server cloud login|logout|status`, управляющее соединение,
-запуск `cloudflared` по команде Cloud (`src/cloud.rs`). Сам Cloud — `../cloud`.
+Done: `tilr-server cloud login|logout|status`, the control connection,
+starting `cloudflared` when Cloud says so (`src/cloud.rs`). Cloud itself lives in a separate repository.
 
-- [ ] Проверить с настоящим `cloudflared` и настоящим туннелем: до сих пор только скрипт-заглушка.
-- [ ] Сквозное шифрование клиент ↔ сервер: сейчас TLS кончается на Cloudflare, кадры там видны.
-- [ ] Передача токена доступа клиенту (сейчас руками: `tilr-server token` → вставить в клиент). Нужна привязка клиента без участия Cloud: QR или код.
-- [ ] `--allow-origin` для веб-клиента, открытого не с localhost, задаётся руками.
-- [ ] `cloudflared` не ставится сам: нужен в `PATH` или `--cloudflared`.
-- [ ] `cloudflared`, переживший аварийную смерть сервера, остаётся работать.
-- [ ] `cloud status` не спрашивает работающий сервер, только читает файл привязки: состояние туннеля видно лишь в журнале и на странице Cloud.
+- [ ] Check with a real `cloudflared` and a real tunnel: so far only a stub script.
+- [ ] End-to-end encryption client ↔ server: TLS currently ends at Cloudflare, frames are visible there.
+- [ ] Handing the access token to the client (by hand today: `tilr-server token` → paste into the client). Needs client pairing without Cloud: a QR code or a code.
+- [ ] `--allow-origin` for a web client not opened from localhost is set by hand.
+- [ ] `cloudflared` is not installed automatically: it must be on `PATH` or given with `--cloudflared`.
+- [ ] A `cloudflared` that outlives a crashed server keeps running.
+- [ ] `cloud status` does not ask the running server, it only reads the link file: the tunnel state is only visible in the log and on the Cloud page.
 
-## Буфер обмена
+## Clipboard
 
-- [x] Общий буфер сервера: `ClipboardPut` / `ClipboardAck`, лимит размера, срок жизни, подменные `xclip` и `wl-paste` в PATH панелей.
-- [ ] Проверить вставку в настоящем Claude Code на удалённом Linux (сейчас проверены только команды, которые он запускает).
-- [ ] Программы, читающие X11 или Wayland напрямую (не через `xclip` / `wl-paste`): запасной путь — вставка пути к файлу, либо настоящий X-буфер.
-- [ ] Удалённый macOS: программы читают буфер через `osascript`, подмена в PATH не подходит.
-- [ ] Обратное направление: копирование в панели (`xclip -i`, `wl-copy`) → буфер клиента.
-- [ ] Память: загрузка копится в памяти супервизора до лимита на каждого клиента.
+- [x] The server's shared clipboard: `ClipboardPut` / `ClipboardAck`, a size limit, a time to live, stand-in `xclip` and `wl-paste` on the panes' PATH.
+- [ ] Check pasting in a real Claude Code on a remote Linux (only the commands it runs have been checked so far).
+- [ ] Programs that read X11 or Wayland directly (not through `xclip` / `wl-paste`): fallback is pasting a file path, or a real X selection.
+- [ ] Remote macOS: programs read the clipboard through `osascript`; a PATH stand-in does not work there.
+- [ ] The other direction: copying in a pane (`xclip -i`, `wl-copy`) → the client's clipboard.
+- [ ] Memory: an upload accumulates in the supervisor's memory up to the limit, per client.
 
-## Перезагрузка без потери шеллов
+## Reloading without losing shells
 
-- [x] Супервизор заменяет себя новым бинарём (`exec`), панели остаются; срабатывает по SIGUSR1 и при замене бинаря на диске.
-- [ ] Соединения клиентов при перезагрузке рвутся (клиент переподключается). Можно передавать и их.
-- [ ] Обновление через перенаправление симлинка не замечается: сервер следит за путём, с которого запущен.
-- [x] Состояние передаётся наследнику файлом, который тот находит по имени (pid супервизора, UUID панели), а не аргументом `--resume`: командная строка после перезагрузки не меняется.
-- [ ] Файл состояния супервизора назван по pid. Если наследник умер, не успев его прочитать, файл остаётся; сервер, получивший тот же pid в том же каталоге, примет его за своё и не запустится с первого раза. Сейчас такие файлы убираются через час.
-- [x] Версия формата состояния супервизора и панели; перед `exec` сервер спрашивает новый бинарь (`state-formats`) и не перезагружается в тот, что читает другой формат.
-- [ ] Перенос состояния между форматами (сейчас при смене формата нужен перезапуск).
-- [ ] Если новый супервизор падает уже после `exec`, панели теряются: проверка перед `exec` — только запуск и формат состояния.
+- [x] The supervisor replaces itself with the new executable (`exec`), the panes stay; triggered by SIGUSR1 and by the executable being replaced on disk.
+- [ ] Client connections are dropped by a reload (the client reconnects). They could be handed over too.
+- [ ] An update done by repointing a symlink is not noticed: the server watches the path it was started from.
+- [x] State is handed to the successor in a file it finds by name (the supervisor's pid, the pane's UUID), not by a `--resume` argument: the command line does not change after a reload.
+- [ ] The supervisor's state file is named by pid. If the successor dies before reading it, the file stays; a server that gets the same pid in the same directory takes it for its own and fails to start the first time. Such files are currently cleaned up after an hour.
+- [x] A version for the supervisor's and the pane's state format; before `exec` the server asks the new executable (`state-formats`) and does not reload into one that reads another format.
+- [ ] Carrying state across formats (a format change currently needs a restart).
+- [ ] If the new supervisor crashes after `exec`, the panes are lost: the check before `exec` covers only starting and the state format.

@@ -2,7 +2,14 @@
 name = "tilr-server"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish = false
+description = "Terminal server: runs shells in panes on a machine and serves them to clients over a WebSocket; panes survive disconnects and reloads"
+readme = "../../README.md"
+keywords = ["terminal", "server", "websocket", "pty", "tilr"]
+categories = ["command-line-utilities", "network-programming"]
 
 [features]
 # Fault injection for the tests, see src/fail.rs.

@@ -1,0 +1,162 @@
+# CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR and every push to main.
+# The tests run on Linux and macOS (the server's two platforms; they need only /bin/sh, ps
+# and kill, no network, tmux or ssh), with the `failpoints` feature, as in the README. The
+# matrix shows as `test (ubuntu-latest)` and `test (macos-15)`: required checks name both.
+# Only `pull_request` (never pull_request_target): a PR's code runs without secrets.
+# Rust comes from the runner's rustup (no third-party toolchain action); tools are downloaded
+# at pinned versions and checked against pinned SHA-256 sums: cargo-deny and gitleaks here,
+# Zig (libghostty-vt is built with it) and protoc through scripts/install-tools.sh.
+# The first build of libghostty-vt-sys clones Ghostty from GitHub (its build.rs, a pinned
+# commit); rust-cache keeps the result in target/ for later runs.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A push to main always finishes; elsewhere a newer push replaces the run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust (stable, rustfmt + clippy)
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - name: Install Zig and protoc
+        run: |
+          scripts/install-tools.sh "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features tilr-server/failpoints --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install Zig and protoc
+        run: |
+          scripts/install-tools.sh "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The whole suite: the server tests start the real binary and drive it over a
+      # WebSocket on 127.0.0.1; `failpoints` adds the tests that break an update or a
+      # reload halfway (crates/tilr-server/src/fail.rs).
+      - run: cargo test --workspace --features tilr-server/failpoints --locked
+      # Smoke test of the binary as built: `--version` names the crate version, the commit
+      # and the platform (crates/tilr-server/build.rs), e.g. `tilr-server 0.1.0-26449dd
+      # (linux-x86_64)`.
+      - name: Smoke test tilr-server binary
+        run: |
+          cargo build -p tilr-server --locked
+          version=$(cargo metadata --format-version 1 --no-deps --locked \
+            | jq -r '.packages[] | select(.name == "tilr-server") | .version')
+          case "$(target/debug/tilr-server --version)" in
+            "tilr-server $version-$(git rev-parse --short HEAD) ("*")") ;;
+            *) target/debug/tilr-server --version; exit 1 ;;
+          esac
+          target/debug/tilr-server --help >/dev/null
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Keep in sync with `rust-version` in Cargo.toml ([workspace.package]).
+      - name: Install Rust (MSRV)
+        run: |
+          rustup toolchain install 1.90 --profile minimal
+          rustup default 1.90
+      - name: Install Zig and protoc
+        run: |
+          scripts/install-tools.sh "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo check --workspace --all-targets --features tilr-server/failpoints --locked
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/cargo-deny.tgz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VERSION}/cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${DENY_SHA256}  $RUNNER_TEMP/cargo-deny.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tgz" -C "$RUNNER_TEMP" --strip-components=1 \
+            "cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny"
+          echo "CARGO_DENY=$RUNNER_TEMP/cargo-deny" >> "$GITHUB_ENV"
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+      # deny.toml: advisories (RustSec), licenses, bans, sources.
+      - run: '"$CARGO_DENY" --locked check'
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans the whole history
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          echo "GITLEAKS=$RUNNER_TEMP/gitleaks" >> "$GITHUB_ENV"
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      - run: '"$GITLEAKS" git --redact --no-banner --exit-code 1 .'

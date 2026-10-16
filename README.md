@@ -1,147 +1,136 @@
-# tilr
+# tilrd
 
-A terminal server. It runs shells in panes on a machine and serves them to
-clients over a WebSocket: a client gets the screen as a grid of cells and sends
-keys back. Panes keep running when clients disconnect.
+A terminal server: it runs shells in panes on a machine and serves them to clients over a
+WebSocket. A client gets the screen as a grid of cells and sends keys back; panes keep
+running when clients disconnect, and survive the server reloading itself into a new
+version. The repository is `tilrd`; the binary and its crate are `tilr-server`.
 
 Status: early (see [TODO.md](TODO.md)).
 
-## Layout
+```text
+crates/tilr-proto/        the wire protocol: proto/tilr.proto and packet framing
+crates/tilr-screen/       terminal screen model (libghostty-vt) that produces frames
+crates/tilr-server/       the server binary `tilr-server`
+scripts/release.sh        Linux release binaries in the CDN layout; --publish uploads them
+scripts/package.sh        GitHub release archive of a built binary (release.yml)
+scripts/linux.sh          a command (the test suite by default) in the Linux build container
+scripts/install-tools.sh  the pinned Zig and protoc the build needs (CI, the container)
+scripts/update-test.sh    live check of `tilr-server update` on a real machine
+```
 
-| Crate | What it is |
-|---|---|
-| `tilr-proto` | The wire protocol: `proto/tilr.proto` and packet framing |
-| `tilr-screen` | Terminal screen model (libghostty-vt) that produces frames |
-| `tilr-server` | The server binary |
+One supervisor process accepts clients and routes packets. Each pane is its own process, a
+child of the supervisor, which owns the pty, the shell and the screen model.
 
-One supervisor process accepts clients and routes packets. Each pane is its
-own process, a child of the supervisor, which owns the pty, the shell and the
-screen model.
+A pane opened without a command runs the user's login shell (the password database's, else
+`$SHELL`, else `/bin/sh`) as a login shell, `argv[0]` = `-zsh` and the like, so it reads the
+user's profile whatever environment the server was started in (a launchd agent gets the bare
+system `PATH`). The pane gets `SHELL`, `HOME`, `USER`, `LOGNAME`, `TERM=xterm-256color`,
+`COLORTERM`, `TILR_PANE`; launchd's `XPC_SERVICE_NAME` / `XPC_FLAGS` are dropped. A pane with
+a command runs it as given, without a shell.
 
-A pane opened without a command runs the user's login shell (the password
-database's, else `$SHELL`, else `/bin/sh`) as a login shell, `argv[0]` = `-zsh`
-and the like, so it reads the user's profile whatever environment the server
-was started in (a launchd agent gets the bare system `PATH`). The pane gets
-`SHELL`, `HOME`, `USER`, `LOGNAME`, `TERM=xterm-256color`, `COLORTERM`,
-`TILR_PANE`; launchd's `XPC_SERVICE_NAME` / `XPC_FLAGS` are dropped. A pane
-with a command runs it as given, without a shell.
+## Install
 
-## Installing and updating
+Prebuilt binaries for macOS (arm64, x86_64) and Linux (x86_64, aarch64; glibc 2.36+) are
+attached to each [GitHub release](https://github.com/tilr-dev/tilrd/releases) as
+`tilr-server-vX.Y.Z-TARGET.tar.gz` with a `.sha256` next to it; the archive holds the
+`tilr-server` binary, the licenses and this README.
 
-**macOS application distribution.** The Mac app bundles a pinned bootstrap
-`tilr-server`, without the JavaScript `tilr` CLI. It installs a user LaunchAgent,
-then updates the managed server through its own signed server feed, separately
-from the application's Sparkle updates. A newer compatible server survives app
-upgrades with older bundled copies. Use **Tilr > Check for Server Updates** for
-this managed copy; separate installations retain their own updater.
-See [Mac release and lifecycle details](../apps/mac/PRODUCTION.md).
-
-Releases are built for Linux on aarch64 (glibc 2.36 or newer). There is no
-installer yet: download the binary and start it.
+From this repository (needs the [build prerequisites](#build)):
 
 ```sh
-version=$(curl -fsSL https://cdn.tilr.dev/releases/linux-aarch64/latest)
-curl -fsSLo tilr-server "https://cdn.tilr.dev/releases/$version/tilr-server-linux-aarch64"
+cargo install --path crates/tilr-server --locked
+```
+
+**Linux, from the CDN.** The Linux releases are also on `https://cdn.tilr.dev`, where
+`tilr-server update` looks for them. There is no installer: download the binary and start it.
+
+```sh
+platform=linux-aarch64            # or linux-x86_64
+version=$(curl -fsSL "https://cdn.tilr.dev/releases/$platform/latest")
+curl -fsSLo tilr-server "https://cdn.tilr.dev/releases/$version/tilr-server-$platform"
 chmod +x tilr-server
 ./tilr-server
 ```
 
-To update, in any shell on that machine:
+**macOS application distribution.** The Mac app bundles a pinned bootstrap `tilr-server`,
+without the JavaScript `tilr` CLI. It installs a user LaunchAgent, then updates the managed
+server through its own signed server feed, separately from the application's Sparkle
+updates. A newer compatible server survives app upgrades with older bundled copies. Use
+**Tilr > Check for Server Updates** for this managed copy; separate installations retain
+their own updater. See the Mac app's
+[release and lifecycle details](https://github.com/tilr-dev/desktop-mac/blob/main/PRODUCTION.md).
+
+### Updating
+
+In any shell on that machine:
 
 ```sh
 tilr-server update
 ```
 
-It asks the CDN which version is ready for its platform, downloads it, checks
-it against its checksum and that it runs, and puts it in place of the
-executable. A running server then [reloads itself](#reloading-without-closing-shells)
-and keeps every shell. `--cdn URL` (or `TILR_CDN`) names another place to
-fetch releases from.
+It asks the CDN which version is ready for its platform, downloads it, checks it against
+its checksum and that it runs, and puts it in place of the executable. A running server then
+[reloads itself](#reloading-without-closing-shells) and keeps every shell. `--cdn URL` (or
+`TILR_CDN`) names another place to fetch releases from.
 
-`tilr-server --version` prints what a build is: the package version, the
-commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)`.
+`tilr-server --version` prints what a build is: the package version, the commit and the
+platform, e.g. `0.1.0-26449dd (linux-aarch64)`.
 
-`scripts/release.sh --publish` builds a release and uploads it; the layout of
-releases on the CDN is described there. `scripts/update-test.sh HOST VERSION`
-checks an update on a real machine: it installs an older release there, opens
-panes and updates them to the latest one.
-
-## Building
-
-Needs Rust 1.88+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network
-access on the first build (libghostty-vt fetches the Ghostty source).
-
-```sh
-cargo build --release
-```
-
-**macOS.** Zig 0.15.2 cannot build against the macOS 27 SDK. Point the build at
-the Command Line Tools and an older SDK in `.cargo/config.toml` (the file is
-not tracked):
-
-```toml
-[env]
-DEVELOPER_DIR = "/Library/Developer/CommandLineTools"
-SDKROOT = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
-```
-
-**Linux, from another OS.** `scripts/linux.sh` runs a command in a container
-with the toolchain installed and the source mounted:
-
-```sh
-scripts/linux.sh                  # the test suite
-scripts/linux-build.sh            # release binary into dist/
-TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
-```
-
-## Running
+## Quickstart
 
 ```sh
 tilr-server                       # listens on ws://127.0.0.1:7890
+tilr-server token                 # the access token a client must present
+tilr-server ps                    # the panes of the running server
 ```
+
+A client connects to `ws://127.0.0.1:7890`, sends `Hello` with the
+[access token](#who-may-connect), and gets `HelloAck`; see [Protocol](#protocol). To reach a
+server on another machine, forward its port (`ssh -L 7890:127.0.0.1:7890 my-server`) or link
+it to [tilr Cloud](#tilr-cloud) for a tunnel.
+
+## Configuration
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--listen ADDR` | `127.0.0.1:7890` | WebSocket address |
 | `--allow-origin ORIGIN` | the configuration file's list, else `tilr://app` (the Tilr app's page), `tilr://tilr` (its terminal app) and the web client's | Browser origins allowed to connect; repeatable |
-| `--config PATH` | `~/.config/tilr/server.toml` (`$XDG_CONFIG_HOME/tilr/server.toml`), if there | The [configuration file](#the-configuration-file) |
+| `--config PATH` | `~/.config/tilr/server.toml` (`$XDG_CONFIG_HOME/tilr/server.toml`), if there | The [configuration file](#the-configuration-file) (also `TILR_CONFIG`) |
 | `--no-auth` | | Do not ask clients for the [access token](#who-may-connect) |
-| `--cloudflared PATH` | `cloudflared` | The `cloudflared` to run for a [tunnel](#tilr-cloud) |
-| `--no-clipboard` | | Turn the shared clipboard off |
+| `--cloudflared PATH` | `cloudflared` | The `cloudflared` to run for a [tunnel](#tilr-cloud) (also `TILR_CLOUDFLARED`) |
+| `--no-clipboard` | | Turn the [shared clipboard](#pasting-images-the-shared-clipboard) off |
 | `--clipboard-max SIZE` | `20MB` | Largest clipboard upload (`512K`, `20MB`, `1G`) |
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
 | `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
+| `--no-files` | | Do not offer the [files of this machine](#files-and-tilr-edit) (also `[files] enabled = false`) |
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
 
-## Who may connect
+### Who may connect
 
-A client must send the server's access token in `Hello.token`. The server
-makes the token the first time it runs and keeps it in
-`$XDG_STATE_HOME/tilr/token` (`~/.local/state/tilr`), readable by the user
-only. To see it, on that machine:
+A client must send the server's access token in `Hello.token`. The server makes the token
+the first time it runs and keeps it in `$XDG_STATE_HOME/tilr/token` (`~/.local/state/tilr`),
+readable by the user only. To see it, on that machine:
 
 ```sh
 tilr-server token
 ```
 
-A client without the token, or with another, gets an `Error` and the
-connection is closed. `tilr-server ps` reads the token itself.
+A client without the token, or with another, gets an `Error` and the connection is closed.
+`tilr-server ps` reads the token itself.
 
-`--no-auth` turns the check off: then anyone who can reach the port gets a
-shell. A page in a browser must, with or without the token, come from an
-allowed origin: `--allow-origin`, else the configuration file's list, else
-the built-in one.
+`--no-auth` turns the check off: then anyone who can reach the port gets a shell. A page in
+a browser must, with or without the token, come from an allowed origin: `--allow-origin`,
+else the configuration file's list, else the built-in one.
 
-## The configuration file
+### The configuration file
 
 What a machine's operator sets once lives in `~/.config/tilr/server.toml`
-(`$XDG_CONFIG_HOME/tilr/server.toml`, or `--config PATH` / `TILR_CONFIG`),
-read when the server starts (a reload starts it again, so a change takes
-effect on the next `tilr-server update` or SIGUSR1). A missing file is an
-empty configuration; one that does not parse, or names a key the server does
-not know, stops it from starting.
+(`$XDG_CONFIG_HOME/tilr/server.toml`, or `--config PATH` / `TILR_CONFIG`), read when the
+server starts (a reload starts it again, so a change takes effect on the next
+`tilr-server update` or SIGUSR1). A missing file is an empty configuration; one that does
+not parse, or names a key the server does not know, stops it from starting.
 
 ```toml
 # Browser origins allowed to connect. The Tilr app serves each of its apps
@@ -154,14 +143,26 @@ socks = true
 # Forward the SSH agent of the clients to the panes. On when unset;
 # false does what --no-agent does.
 agent = true
+
+# The files protocol.
+[files]
+# Off: clients cannot see or touch files, as --no-files does. Default on.
+enabled = true
+# The directories clients may go into. Default: the home directory.
+roots = ["~", "/srv/www"]
+# Clients may look but not change anything. Default off.
+readonly = false
+# Largest file content one read returns or one write takes: bytes, or a
+# size like "64MB". Default 64MB.
+max_bytes = "64MB"
 ```
 
 ## tilr Cloud
 
-Optional. Cloud lists the machines of a user, says which are online, and gives
-each a tunnel: a name on the internet that leads to the server's port, so a
-phone can reach a machine that accepts no incoming connections. What goes
-through the tunnel does not pass through Cloud.
+Optional. Cloud lists the machines of a user, says which are online, and gives each a
+tunnel: a name on the internet that leads to the server's port, so a phone can reach a
+machine that accepts no incoming connections. What goes through the tunnel does not pass
+through Cloud.
 
 ```sh
 tilr-server cloud login      # prints a link and a code to confirm in a browser
@@ -169,196 +170,289 @@ tilr-server cloud status
 tilr-server cloud logout     # Cloud forgets the machine and removes its tunnel
 ```
 
-A linked server keeps one outgoing connection to Cloud. When Cloud tells it
-to, it runs `cloudflared` (which must be installed) with a configuration it
-writes itself: the tunnel leads to the server's own port and nowhere else.
-A running server notices a login or a logout within a few seconds.
+`cloud login --name NAME` names the machine there (the host name by default).
+
+A linked server keeps one outgoing connection to Cloud. When Cloud tells it to, it runs
+`cloudflared` (which must be installed) with a configuration it writes itself: the tunnel
+leads to the server's own port and nowhere else. A running server notices a login or a
+logout within a few seconds.
 
 What Cloud can and cannot do:
 
-- It can open and close the tunnel, and it sees whether the server is online,
-  its version and platform.
-- It cannot reach a pane: nothing it sends is passed on to one, and it never
-  sees the access token. A client that comes through the tunnel needs the
-  token like any other.
+- It can open and close the tunnel, and it sees whether the server is online, its version
+  and platform.
+- It cannot reach a pane: nothing it sends is passed on to one, and it never sees the access
+  token. A client that comes through the tunnel needs the token like any other.
 - A server started with `--no-auth` takes no tunnel.
-- The tunnel is in Cloud's Cloudflare account, and TLS ends at Cloudflare:
-  whoever controls that account can read what goes through. End-to-end
-  encryption between client and server is not there yet.
+- The tunnel is in Cloud's Cloudflare account, and TLS ends at Cloudflare: whoever controls
+  that account can read what goes through. End-to-end encryption between client and server
+  is not there yet.
 
-The link (`cloud.json`, next to the token) holds a token of the machine's own
-for Cloud; it is not the access token. `--url` or `TILR_CLOUD` names another
-Cloud than `https://cloud.tilr.dev`.
+The link (`cloud.json`, next to the token) holds a token of the machine's own for Cloud; it
+is not the access token. `--url` or `TILR_CLOUD` names another Cloud than
+`https://cloud.tilr.dev`.
 
 ## SOCKS proxy
 
-Off unless the server runs with `--socks` (or `socks = true` in the
-configuration file). Then the server is also a SOCKS5 proxy (RFC 1928) on its
-own port, so a browser on another machine opens what listens there, a dev
-server on `127.0.0.1:3000` say. CONNECT only; BIND and UDP ASSOCIATE get
-"command not supported".
+Off unless the server runs with `--socks` (or `socks = true` in the configuration file).
+Then the server is also a SOCKS5 proxy (RFC 1928) on its own port, so a browser on another
+machine opens what listens there, a dev server on `127.0.0.1:3000` say. CONNECT only; BIND
+and UDP ASSOCIATE get "command not supported".
 
-Names are resolved on the server ("remote DNS"). `localhost` and every name
-under it (`pb.localhost`, `anything.localhost`, RFC 6761) never go to DNS:
-they reach services bound on this machine's loopback, 127.0.0.1 first, then
-`[::1]`. A browser connects to `localhost` and `127.0.0.1` itself rather than
-through a proxy, so a page asks for `pb.localhost:3000` instead.
+Names are resolved on the server ("remote DNS"). `localhost` and every name under it
+(`pb.localhost`, `anything.localhost`, RFC 6761) never go to DNS: they reach services bound
+on this machine's loopback, 127.0.0.1 first, then `[::1]`. A browser connects to
+`localhost` and `127.0.0.1` itself rather than through a proxy, so a page asks for
+`pb.localhost:3000` instead.
 
 Two ways in:
 
-- **`GET /socks`, a WebSocket**: the way through a [tunnel](#tilr-cloud), which
-  carries HTTP only. The handshake shows the access token: `Authorization:
-  Bearer <token>`, or `?token=<token>` for a page, which cannot set headers on
-  a WebSocket. A browser page must come from an allowed origin, as for the main
-  protocol. Without the token: 401; disallowed origin: 403; proxy off: 404.
-  After that, the client's binary messages are the SOCKS bytes it sends and
-  the server's are the ones it gets back, any sizes; SOCKS itself asks for no
-  authentication (a username and password, if offered, are taken unread). A
-  text message closes the WebSocket with 1003. A WebSocket cannot be half
-  closed: once the target is done sending, the server closes it with 1000.
-  The server pings it like the main protocol's clients (`--client-timeout`).
-- **Raw SOCKS5** on the same port, for `ssh -L 1080:127.0.0.1:7890` and the
-  like: a connection whose first byte is 5 is a SOCKS client, which must use
-  username/password authentication (RFC 1929) with the access token as the
-  password, any username. A server started with `--no-auth` asks for none.
+- **`GET /socks`, a WebSocket**: the way through a [tunnel](#tilr-cloud), which carries HTTP
+  only. The handshake shows the access token: `Authorization: Bearer <token>`, or
+  `?token=<token>` for a page, which cannot set headers on a WebSocket. A browser page must
+  come from an allowed origin, as for the main protocol. Without the token: 401; disallowed
+  origin: 403; proxy off: 404. After that, the client's binary messages are the SOCKS bytes
+  it sends and the server's are the ones it gets back, any sizes; SOCKS itself asks for no
+  authentication (a username and password, if offered, are taken unread). A text message
+  closes the WebSocket with 1003. A WebSocket cannot be half closed: once the target is done
+  sending, the server closes it with 1000. The server pings it like the main protocol's
+  clients (`--client-timeout`).
+- **Raw SOCKS5** on the same port, for `ssh -L 1080:127.0.0.1:7890` and the like: a
+  connection whose first byte is 5 is a SOCKS client, which must use username/password
+  authentication (RFC 1929) with the access token as the password, any username. A server
+  started with `--no-auth` asks for none.
 
 ```sh
 ssh -L 1080:127.0.0.1:7890 my-server
 curl --socks5-hostname "x:$(ssh my-server tilr-server token)@127.0.0.1:1080" http://pb.localhost:3000
 ```
 
-The token gives what it gives through the main protocol: everything this
-user can do on the machine, here any TCP connection from it. The raw mode
-listens wherever `--listen` does, 127.0.0.1 by default. Paths other than
-`/socks` are the main protocol, as before. Sessions end when the server
-reloads.
+The token gives what it gives through the main protocol: everything this user can do on the
+machine, here any TCP connection from it. The raw mode listens wherever `--listen` does,
+127.0.0.1 by default. Paths other than `/socks` are the main protocol, as before. Sessions
+end when the server reloads.
 
 ## SSH agent forwarding
 
-What `ssh -A` does, over the tilr protocol: `ssh`, `git` or `ssh-add` in a
-pane use the SSH agent of the user's computer, the client's side, and the
-keys never leave it. On unless the server runs with `--no-agent` (or
-`agent = false` in the configuration file).
+What `ssh -A` does, over the tilr protocol: `ssh`, `git` or `ssh-add` in a pane use the SSH
+agent of the user's computer, the client's side, and the keys never leave it. On unless the
+server runs with `--no-agent` (or `agent = false` in the configuration file).
 
-- Every pane gets a Unix socket of its own, `agent/<pane id>.sock` in the
-  runtime directory (`$XDG_RUNTIME_DIR/tilr`; on macOS `~/Library/Application
-  Support/tilr`; `/tmp/tilr-<uid>` where that path is too long for a socket),
-  and `SSH_AUTH_SOCK` pointing at it. The directory and the socket are the
-  user's only. A [reload](#reloading-without-closing-shells) makes the socket
-  again at the same path, so a shell's `SSH_AUTH_SOCK` stays good; the socket
-  goes when the pane does.
-- A client that can serve the agent says `"agent"` in `Hello.features`; the
-  server lists `"agent"` in `HelloAck.features` when forwarding is on.
-- A program that connects to the socket gets a stream to one client: of the
-  clients watching the pane that said `"agent"`, the one that subscribed
-  last. The client gets `StreamOpen` (kind `"ssh-agent"`, the pane's id); the
-  bytes go both ways as `StreamData` until either side sends `StreamClose`.
-  The server only carries them.
-- With no such client attached, the connection is closed at once: `ssh`
-  finds an agent with no keys and goes on to its other ways in. A client
-  that goes away takes its streams with it; so does a reload.
-- A client has at most 64 streams open; a program sending faster than the
-  client takes is held up, a client sending faster than the program reads
-  loses the stream.
+- Every pane gets a Unix socket of its own, `agent/<pane id>.sock` in the runtime directory
+  (`$XDG_RUNTIME_DIR/tilr`; on macOS `~/Library/Application Support/tilr`; `/tmp/tilr-<uid>`
+  where that path is too long for a socket), and `SSH_AUTH_SOCK` pointing at it. The
+  directory and the socket are the user's only. A [reload](#reloading-without-closing-shells)
+  makes the socket again at the same path, so a shell's `SSH_AUTH_SOCK` stays good; the
+  socket goes when the pane does.
+- A client that can serve the agent says `"agent"` in `Hello.features`; the server lists
+  `"agent"` in `HelloAck.features` when forwarding is on.
+- A program that connects to the socket gets a stream to one client: of the clients watching
+  the pane that said `"agent"`, the one that subscribed last. The client gets `StreamOpen`
+  (kind `"ssh-agent"`, the pane's id); the bytes go both ways as `StreamData` until either
+  side sends `StreamClose`. The server only carries them.
+- With no such client attached, the connection is closed at once: `ssh` finds an agent with
+  no keys and goes on to its other ways in. A client that goes away takes its streams with
+  it; so does a reload.
+- A client has at most 64 streams open; a program sending faster than the client takes is
+  held up, a client sending faster than the program reads loses the stream.
 
-As with `ssh -A`: while a client with the feature watches a pane, every
-process of the user on the server's machine that finds a socket can use the
-agent, for as many signatures as it asks. The agent on the client's side
-asks for each signature if it is set up to (keys added with `ssh-add -c`,
-say); otherwise turn forwarding off on servers you do not trust.
+As with `ssh -A`: while a client with the feature watches a pane, every process of the user
+on the server's machine that finds a socket can use the agent, for as many signatures as it
+asks. The agent on the client's side asks for each signature if it is set up to (keys added
+with `ssh-add -c`, say); otherwise turn forwarding off on servers you do not trust.
+
+## Files and `tilr edit`
+
+The files protocol (feature `"files"`: `FsList`, `FsStat`, `FsRead`, `FsWrite`, `FsMkdir`,
+`FsRename`, `FsDelete`, `FsWatch`, `FsUnwatch`; see tilr.proto) lets a client look at and
+change the files of the server's machine, for a file browser and an editor. Only the
+directories in `[files] roots` of the [configuration file](#the-configuration-file) are
+served, the home directory by default; a path that leads out of them, by `..` or through a
+symbolic link, is refused. With `readonly = true` nothing can be changed. With
+`enabled = false` or `--no-files` the feature is not offered at all. One read returns, and
+one write takes, at most `max_bytes` (`HelloAck.fs_max_bytes`).
+
+Host events (feature `"host-events"`) go the other way: a program in a pane asks the client
+to open something. Every pane has `tilr` on its `PATH` (this executable under another
+name; `tilr-server edit` / `tilr-server open` do the same), and `$TILR_PANE`, `$TILR_SERVER`
+(the server's id) and `$TILR_SOCK` (the server's socket) in its environment:
+
+```sh
+tilr edit notes.md               # open the file in the client's editor
+tilr open https://example.com    # open a URL; --kind and `-- args` say more
+```
+
+The server passes the request on as `HostEvent` (with an absolute path) to every client
+watching that pane that announced `"host-events"`. With nobody to hear it, `tilr` says
+"no tilr client attached" and exits with 1; outside a pane, "not inside a tilr pane". Other
+`tilr` commands go to the next `tilr` on the `PATH`.
 
 ## Telling panes apart
 
-A pane is named by a UUID the server makes up when the pane is created. It
-names that pane and no other: not on another machine, and not after the server
-is restarted, when a number would be handed out again.
+A pane is named by a UUID the server makes up when the pane is created. It names that pane
+and no other: not on another machine, and not after the server is restarted, when a number
+would be handed out again.
 
 The id is the same everywhere a pane shows up:
 
 - in the protocol, as `pane_id`;
-- in the process list: the pane process runs as `tilr-server pane --id <id>`,
-  followed by how the pane was started (`--cols` and `--rows` unless 80×24,
-  `--cwd`, the command), and the shell is its child;
+- in the process list: the pane process runs as `tilr-server pane --id <id>`, followed by
+  how the pane was started (`--cols` and `--rows` unless 80×24, `--cwd`, the command), and
+  the shell is its child;
 - inside the pane, as `$TILR_PANE`;
 - in `tilr-server ps`, which asks a running server for its panes:
 
 ```
 $ tilr-server ps
 PANE                                      PID     SIZE  VIEWERS  CWD  COMMAND
-3b750286-ae31-4cc4-9edd-3f314fb00d57     8193    80x24        1  /home/dan  (shell)
+3b750286-ae31-4cc4-9edd-3f314fb00d57     8193    80x24        1  /home/me  (shell)
 d88b738a-fb48-41a5-bd4c-2050fdf33538     8219   120x40        0  /tmp  htop
 ```
 
 `PID` is the pane process. `--url` names a server listening elsewhere than
 `ws://127.0.0.1:7890`.
 
-A server has an id of its own too, in `HelloAck.server_id`: a UUID made the
-first time it runs on a machine and kept in `$XDG_STATE_HOME/tilr/server-id`
-(`~/.local/state/tilr`), so it is the same after a restart.
+A server has an id of its own too, in `HelloAck.server_id`: a UUID made the first time it
+runs on a machine and kept in `$XDG_STATE_HOME/tilr/server-id` (`~/.local/state/tilr`), so
+it is the same after a restart.
+
+## Pasting images: the shared clipboard
+
+A program in a pane cannot reach the clipboard of the user's computer. When it is asked to
+paste an image it reads the clipboard of the machine it runs on, usually by running `xclip`
+or `wl-paste`, and over a plain SSH session finds nothing there.
+
+The server gives that machine a clipboard the client can fill:
+
+1. The user pastes in the client. The client uploads the image with `ClipboardPut` (chunks
+   of about 256 KB), then sends the paste key, Ctrl+V, to the pane.
+2. The server stores the content, one clipboard for all panes.
+3. The program in the pane runs `xclip` or `wl-paste`. The server has put its own versions
+   of both first on the `PATH` the pane starts with; they answer from the stored content.
+   The login profile keeps them when it adds to `PATH` (macOS `path_helper` puts the system
+   directories in front and keeps the rest; `export PATH="...:$PATH"`); a profile that sets
+   `PATH` from scratch (Debian's `/etc/profile`) drops them, and `PATH="$TILR_SHIMS:$PATH"`
+   at the end of it brings them back.
+
+So the program pastes as it would on a desktop. Verified against the commands Claude Code
+2.1.289 runs on Linux; they are spelled out in `crates/tilr-server/tests/common/mod.rs`.
+
+Rules:
+
+- The client need not wait for `ClipboardAck` before sending the key: the server handles
+  messages of a connection in order.
+- The first chunk of an upload empties the clipboard, so a failed upload never leaves an
+  older image to be pasted by mistake.
+- An upload over the limit is refused with a `ClipboardAck` carrying the reason. The limit
+  is in `HelloAck.clipboard_max_bytes`; a client should check before sending and tell the
+  user.
+- Content expires after `--clipboard-ttl`.
+- While the clipboard is empty, the server's `xclip` and `wl-paste` hand over to the real
+  tools further down the `PATH`, if any. They also do for anything they do not serve:
+  copying, the primary selection.
+
+Limits of this approach:
+
+- It serves programs that run `xclip` or `wl-paste`. A program that talks to X11 or Wayland
+  directly does not see it.
+- The clipboard is one per user and machine. Two clients pasting at the same moment
+  overwrite each other.
+- Linux only for now: on macOS, programs read the clipboard through other means.
+
+Files live in `$XDG_RUNTIME_DIR/tilr` (or `tilr-<uid>` under the temp directory), readable
+by the user only. To use the clipboard from a shell outside tilr, say an SSH session on the
+same machine, put the `bin` directory there first on its `PATH`.
+
+## Reloading without closing shells
+
+The server picks up a new executable without ending any shell:
+
+- on its own, about a second after the file it was started from is replaced;
+- on `SIGUSR1`.
+
+The supervisor execs the new executable in place, keeping its pid, the listening socket and
+the pane processes, then has every pane process do the same. Shells, their screens,
+scrollback and scroll position carry over.
+
+A process is exec'd with the arguments it was started with, so it looks the same in `ps`
+before and after. What it hands to its successor goes into a file in the runtime directory
+that the successor finds by name: `server-<pid>.state` for the supervisor (an exec keeps the
+pid), `panes/<pane id>.state` for a pane. The successor removes the file as it reads it. The
+files are readable by the user only: a pane's holds its screen and the input not yet
+delivered.
+
+What to know:
+
+- Client connections are dropped by a reload. Clients reconnect and find the panes as they
+  were.
+- Install a new version by writing it next to the old one and renaming it into place
+  (`install`, `mv`). The server reloads from the path it was started from; a version switch
+  done by repointing a symlink is not noticed.
+- Before reloading, the server asks the new file which versions of the reload state it reads
+  (`tilr-server state-formats`). If it does not run, or reads another version than the
+  server writes, the server logs `not reloading` and carries on with the code it has. Such
+  an upgrade needs a restart.
+- A pane process that cannot take its queued input within 5 seconds is closed rather than
+  carried over.
 
 ## Protocol
 
-Defined in [`crates/tilr-proto/proto/tilr.proto`](crates/tilr-proto/proto/tilr.proto).
-A packet is one binary WebSocket message: a flag byte (0 = plain, 1 = zstd)
-followed by a protobuf `ClientMessage` or `ServerMessage`.
+Defined in [`crates/tilr-proto/proto/tilr.proto`](crates/tilr-proto/proto/tilr.proto). A
+packet is one binary WebSocket message: a flag byte (0 = plain, 1 = zstd) followed by a
+protobuf `ClientMessage` or `ServerMessage`.
 
-The protocol grows by adding message types. Both sides ignore messages they do
-not know, and say what they support in `Hello.features` / `HelloAck.features`.
+The protocol grows by adding message types. Both sides ignore messages they do not know, and
+say what they support in `Hello.features` / `HelloAck.features`.
 
-A connection starts with `Hello`, which carries the protocol version of the
-client and the [access token](#who-may-connect). A server that speaks another version, or is sent anything else first,
-answers with an `Error` and closes the connection. `HelloAck` carries the
-version of the server, and is the first message the client gets: nothing else
-is sent to it before.
+A connection starts with `Hello`, which carries the protocol version of the client and the
+[access token](#who-may-connect). A server that speaks another version, or is sent anything
+else first, answers with an `Error` and closes the connection. `HelloAck` carries the
+version of the server, and is the first message the client gets: nothing else is sent to it
+before.
 
-The server sends a WebSocket ping every third of `--client-timeout`. Browsers
-and WebSocket libraries answer on their own. A client that stays silent for
-the whole timeout has dropped off the network without closing the connection:
-the server drops it, and its panes stop counting it as a viewer.
+The server sends a WebSocket ping every third of `--client-timeout`. Browsers and WebSocket
+libraries answer on their own. A client that stays silent for the whole timeout has dropped
+off the network without closing the connection: the server drops it, and its panes stop
+counting it as a viewer.
 
-A page in a browser cannot see those pings, so for the other direction there
-is `Ping` (feature `"ping"`): the server answers `Pong` with the same nonce at
-once. A client that pings regularly and gets no answer in time knows the
-server is out of reach, and reconnects.
+A page in a browser cannot see those pings, so for the other direction there is `Ping`
+(feature `"ping"`): the server answers `Pong` with the same nonce at once. A client that
+pings regularly and gets no answer in time knows the server is out of reach, and
+reconnects.
 
 ### Measuring input latency
 
-The terminal pipeline can be measured end to end without synchronising
-clocks. A client names an input message by `ClientMessage.seq` (outside the
-`oneof`) on `KeyInput`, `MouseInput`, `Paste`, `RawInput`, `Scroll` or
-`Resize`: `HelloAck.seq_base + n`, with `n` counting 1, 2, 3, ... on the
-connection. `seq_base` is the connection's own (its number in the high 32
-bits; numbers go on across a reload of the server), so a seq says which
-connection's input it was, `seq_base <= seq < seq_base + 2^32`, even with
-several clients on a pane or after a page reload.
+The terminal pipeline can be measured end to end without synchronising clocks. A client
+names an input message by `ClientMessage.seq` (outside the `oneof`) on `KeyInput`,
+`MouseInput`, `Paste`, `RawInput`, `Scroll` or `Resize`: `HelloAck.seq_base + n`, with `n`
+counting 1, 2, 3, ... on the connection. `seq_base` is the connection's own (its number in
+the high 32 bits; numbers go on across a reload of the server), so a seq says which
+connection's input it was, `seq_base <= seq < seq_base + 2^32`, even with several clients on
+a pane or after a page reload.
 
-Every `Frame` carries `last_input_seq`: the seq of the input the pane
-credited last before it built the frame, from whichever client; 0 until there
-is one. Key, mouse, paste and raw input is credited once the pty has taken its
-last byte, in the order it came; `Scroll` and `Resize` when applied, which is
-at once, so they may overtake key input still waiting for the pty. It is the
-latest, not the highest: another client's input moves it, down as well. Every
-credited input gets a frame. When it changed nothing on the screen (a click
-the program ignores, a scroll that moves nothing, input not echoed), that
-frame has no rows: `full` false, no `changed`, `styles`, `title` or
-`images`, `placements_changed` false, and `cols`, `rows`, `cursor`,
-`mouse_tracking`, `alt_screen`, the cell size and `viewport_top` as before, so
-applying it changes nothing. Inputs credited between two frames show only the
-last of them; a client takes a frame carrying a later seq of its own as the
-echo of the earlier ones too.
+Every `Frame` carries `last_input_seq`: the seq of the input the pane credited last before
+it built the frame, from whichever client; 0 until there is one. Key, mouse, paste and raw
+input is credited once the pty has taken its last byte, in the order it came; `Scroll` and
+`Resize` when applied, which is at once, so they may overtake key input still waiting for
+the pty. It is the latest, not the highest: another client's input moves it, down as well.
+Every credited input gets a frame. When it changed nothing on the screen (a click the
+program ignores, a scroll that moves nothing, input not echoed), that frame has no rows:
+`full` false, no `changed`, `styles`, `title` or `images`, `placements_changed` false, and
+`cols`, `rows`, `cursor`, `mouse_tracking`, `alt_screen`, the cell size and `viewport_top`
+as before, so applying it changes nothing. Inputs credited between two frames show only the
+last of them; a client takes a frame carrying a later seq of its own as the echo of the
+earlier ones too.
 
-The time from sending input `n` to the first frame carrying its seq (or a
-later one of the same connection) is the latency the user sees, measured on
-the client's clock alone. The frame that shows the echo usually comes a frame
-or two later; `FrameTiming.output_bytes` tells which frames carry output.
-Input without a seq makes no frame of its own. The fields are optional: a
-server that does not know `seq` ignores it and sends `seq_base` 0, a client
-that sends none gets 0. A client that ignores `seq_base` and numbers from 1
-still gets its numbers echoed, but cannot tell them from another
-connection's.
+The time from sending input `n` to the first frame carrying its seq (or a later one of the
+same connection) is the latency the user sees, measured on the client's clock alone. The
+frame that shows the echo usually comes a frame or two later; `FrameTiming.output_bytes`
+tells which frames carry output. Input without a seq makes no frame of its own. The fields
+are optional: a server that does not know `seq` ignores it and sends `seq_base` 0, a client
+that sends none gets 0. A client that ignores `seq_base` and numbers from 1 still gets its
+numbers echoed, but cannot tell them from another connection's.
 
-Every frame also carries `timing` (`FrameTiming`), the pane process's own
-account, in microseconds:
+Every frame also carries `timing` (`FrameTiming`), the pane process's own account, in
+microseconds:
 
 | Field | What |
 |---|---|
@@ -369,25 +463,22 @@ account, in microseconds:
 | `output_bytes`, `reads` | Pty output since the previous frame, and the reads that brought it |
 | `input_us` | For a new `last_input_seq`: the pane process receiving the input to the pty write that took its last byte returning (`Scroll`, `Resize`: to it being applied). 0 when no new input. Input still waiting for the pty when the server reloads keeps its time |
 
-The supervisor's part (routing between client and pane) is in
-[`/metrics`](#metrics).
+The supervisor's part (routing between client and pane) is in [`/metrics`](#metrics).
 
 ## Metrics
 
-`GET /metrics` on the server's port answers a plain HTTP request (not a
-WebSocket) with the server's counters in the Prometheus text format
-(`Content-Type: text/plain; version=0.0.4`). A request whose line starts with
-`GET /metrics` followed by a space or `?` is taken for one, so `/metrics` and
-`/metrics?...` are no longer paths a WebSocket can be opened on.
+`GET /metrics` on the server's port answers a plain HTTP request (not a WebSocket) with the
+server's counters in the Prometheus text format (`Content-Type: text/plain; version=0.0.4`).
+A request whose line starts with `GET /metrics` followed by a space or `?` is taken for one,
+so `/metrics` and `/metrics?...` are no longer paths a WebSocket can be opened on.
 
-It asks for the access token as [`/socks`](#socks-proxy) does:
-`Authorization: Bearer <token>`, or `?token=<token>`. Without it: 401; from a
-browser page of a disallowed origin (`Origin`): 403. A server without a token
-(`--no-auth`) asks for none, but answers only this machine: the `Host` header
-must be loopback (`localhost`, `127.0.0.1` or `[::1]`, with or without a
-port) or the address the server listens on (not `0.0.0.0`), and a request
-with `Sec-Fetch-Site: cross-site` (a page of another site) is refused; 403
-otherwise. A response not read within 5 s is dropped.
+It asks for the access token as [`/socks`](#socks-proxy) does: `Authorization: Bearer
+<token>`, or `?token=<token>`. Without it: 401; from a browser page of a disallowed origin
+(`Origin`): 403. A server without a token (`--no-auth`) asks for none, but answers only this
+machine: the `Host` header must be loopback (`localhost`, `127.0.0.1` or `[::1]`, with or
+without a port) or the address the server listens on (not `0.0.0.0`), and a request with
+`Sec-Fetch-Site: cross-site` (a page of another site) is refused; 403 otherwise. A response
+not read within 5 s is dropped.
 
 ```sh
 curl -H "Authorization: Bearer $(tilr-server token)" http://127.0.0.1:7890/metrics
@@ -409,109 +500,93 @@ curl -H "Authorization: Bearer $(tilr-server token)" http://127.0.0.1:7890/metri
 | `tilr_process_cpu_seconds_total{role,pid,pane}` | counter | User and system CPU time of the supervisor (`role="supervisor"`, no `pane`) and of each pane process (`role="pane"`) |
 | `tilr_process_memory_bytes{role,pid,pane}` | gauge | Their memory: resident set on Linux, physical footprint on macOS |
 
-The histograms have buckets from 50 µs to 100 ms (0.00005, 0.0001, 0.00025,
-0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, +Inf). The pane counters
-start from zero when the supervisor does, a reload included. CPU and memory
-are read when scraped. The pane process (the shell is its child) is what is
-measured, not the programs in the pane.
-
-## Pasting images: the shared clipboard
-
-A program in a pane cannot reach the clipboard of the user's computer. When it
-is asked to paste an image it reads the clipboard of the machine it runs on,
-usually by running `xclip` or `wl-paste`, and over a plain SSH session finds
-nothing there.
-
-The server gives that machine a clipboard the client can fill:
-
-1. The user pastes in the client. The client uploads the image with
-   `ClipboardPut` (chunks of about 256 KB), then sends the paste key, Ctrl+V,
-   to the pane.
-2. The server stores the content, one clipboard for all panes.
-3. The program in the pane runs `xclip` or `wl-paste`. The server has put its
-   own versions of both first on the `PATH` the pane starts with; they answer
-   from the stored content. The login profile keeps them when it adds to
-   `PATH` (macOS `path_helper` puts the system directories in front and keeps
-   the rest; `export PATH="...:$PATH"`); a profile that sets `PATH` from
-   scratch (Debian's `/etc/profile`) drops them, and
-   `PATH="$TILR_SHIMS:$PATH"` at the end of it brings them back.
-
-So the program pastes as it would on a desktop. Verified against the commands
-Claude Code 2.1.289 runs on Linux; they are spelled out in
-`crates/tilr-server/tests/common/mod.rs`.
-
-Rules:
-
-- The client need not wait for `ClipboardAck` before sending the key: the
-  server handles messages of a connection in order.
-- The first chunk of an upload empties the clipboard, so a failed upload never
-  leaves an older image to be pasted by mistake.
-- An upload over the limit is refused with a `ClipboardAck` carrying the
-  reason. The limit is in `HelloAck.clipboard_max_bytes`; a client should
-  check before sending and tell the user.
-- Content expires after `--clipboard-ttl`.
-- While the clipboard is empty, the server's `xclip` and `wl-paste` hand over
-  to the real tools further down the `PATH`, if any. They also do for anything
-  they do not serve: copying, the primary selection.
-
-Limits of this approach:
-
-- It serves programs that run `xclip` or `wl-paste`. A program that talks to
-  X11 or Wayland directly does not see it.
-- The clipboard is one per user and machine. Two clients pasting at the same
-  moment overwrite each other.
-- Linux only for now: on macOS, programs read the clipboard through other
-  means.
-
-Files live in `$XDG_RUNTIME_DIR/tilr` (or `tilr-<uid>` under the temp
-directory), readable by the user only. To use the clipboard from a shell
-outside tilr, say an SSH session on the same machine, put the `bin` directory
-there first on its `PATH`.
-
-## Reloading without closing shells
-
-The server picks up a new executable without ending any shell:
-
-- on its own, about a second after the file it was started from is replaced;
-- on `SIGUSR1`.
-
-The supervisor execs the new executable in place, keeping its pid, the
-listening socket and the pane processes, then has every pane process do the
-same. Shells, their screens, scrollback and scroll position carry over.
-
-A process is exec'd with the arguments it was started with, so it looks the
-same in `ps` before and after. What it hands to its successor goes into a file
-in the runtime directory that the successor finds by name: `server-<pid>.state`
-for the supervisor (an exec keeps the pid), `panes/<pane id>.state` for a pane.
-The successor removes the file as it reads it. The files are readable by the
-user only: a pane's holds its screen and the input not yet delivered.
-
-What to know:
-
-- Client connections are dropped by a reload. Clients reconnect and find the
-  panes as they were.
-- Install a new version by writing it next to the old one and renaming it into
-  place (`install`, `mv`). The server reloads from the path it was started
-  from; a version switch done by repointing a symlink is not noticed.
-- Before reloading, the server asks the new file which versions of the reload
-  state it reads (`tilr-server state-formats`). If it does not run, or reads
-  another version than the server writes, the server logs `not reloading` and
-  carries on with the code it has. Such an upgrade needs a restart.
-- A pane process that cannot take its queued input within 5 seconds is closed
-  rather than carried over.
+The histograms have buckets from 50 µs to 100 ms (0.00005, 0.0001, 0.00025, 0.0005, 0.001,
+0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, +Inf). The pane counters start from zero when the
+supervisor does, a reload included. CPU and memory are read when scraped. The pane process
+(the shell is its child) is what is measured, not the programs in the pane.
 
 ## Tests
 
 ```sh
-cargo test --workspace --features tilr-server/failpoints
+cargo test --workspace --features tilr-server/failpoints --locked
+scripts/linux.sh                  # the same suite in the Linux build container
 ```
 
-The tests in `crates/tilr-server/tests/` start the real server and drive it as
-a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
-connecting, reconnecting, scrolling, reloading, updating, the clipboard, the SSH agent, metrics — and
-what is not covered yet.
+The tests in `crates/tilr-server/tests/` start the real server and drive it as a client
+would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover — connecting,
+reconnecting, scrolling, reloading, updating, the clipboard, files, the SOCKS proxy, the SSH
+agent, metrics — and what is not covered yet. They need `/bin/sh`, `ps` and `kill`; no
+network.
 
-The `failpoints` feature compiles in the places where a test can make an
-update or a reload go wrong halfway: fail a step, crash or kill the process
-there (`crates/tilr-server/src/fail.rs`). Without it those tests are left out
-and the rest runs. A release is built without it.
+The `failpoints` feature compiles in the places where a test can make an update or a reload
+go wrong halfway: fail a step, crash or kill the process there
+(`crates/tilr-server/src/fail.rs`). Without it those tests are left out and the rest runs. A
+release is built without it.
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --all --check`, clippy with `-D warnings`,
+the suite on Linux and macOS, `cargo check` on the MSRV, `cargo deny check` and gitleaks.
+`scripts/update-test.sh HOST VERSION` checks an update on a real machine against the real
+CDN: it installs an older release there, opens panes and updates them to the latest one.
+
+## Build
+
+Needs Rust 1.90+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network access on the
+first build (libghostty-vt fetches the Ghostty source). `scripts/install-tools.sh DIR`
+downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
+
+```sh
+cargo build --release --locked -p tilr-server
+```
+
+**macOS.** Zig 0.15.2 cannot build against the macOS 27 SDK. Point the build at the Command
+Line Tools and an older SDK in `.cargo/config.toml` (the file is not tracked):
+
+```toml
+[env]
+DEVELOPER_DIR = "/Library/Developer/CommandLineTools"
+SDKROOT = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+```
+
+**Linux, from another OS.** `scripts/linux.sh` runs a command in a container
+(`scripts/linux.Dockerfile`: Debian 12, the pinned Zig) with the source mounted:
+
+```sh
+scripts/linux.sh                  # the test suite
+scripts/linux-build.sh            # release binary into dist/
+TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
+```
+
+## Releases
+
+Releases are made by [release-please](https://github.com/googleapis/release-please)
+(`.github/workflows/release.yml`): Conventional Commits on `main` keep a release PR open with
+the version bump (`[workspace.package] version` in Cargo.toml, and Cargo.lock; the three
+crates share it) and CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release and
+then:
+
+- builds `tilr-server` for `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+  `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` and attaches
+  `tilr-server-vX.Y.Z-TARGET.tar.gz` + `.sha256` to the release (`scripts/package.sh`)
+  (`aarch64-unknown-linux-gnu` only while the repository variable `RELEASE_LINUX_ARM64` is
+  `true`: its runner is free only for public repositories);
+- publishes the Linux binaries to the CDN, the R2 bucket `tilr-cdn` behind
+  `https://cdn.tilr.dev`, with `scripts/release.sh --upload-only`.
+
+The CDN layout is what `tilr-server update` reads:
+
+```text
+releases/<platform>/latest                   the version ready for the platform
+releases/<version>/tilr-server-<platform>
+releases/<version>/tilr-server-<platform>.sha256
+```
+
+A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
+`linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
+hand, from a clean checkout: `scripts/release.sh --publish linux-aarch64 linux-x86_64`
+builds in the Linux container and uploads with `wrangler` (see the script); export
+`CLOUDFLARE_ACCOUNT_ID` first, e.g. via `infisical run --path /cloudflare`. Versions and
+CHANGELOG.md are not edited by hand.
+
+## License
+
+MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
