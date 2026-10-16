@@ -136,7 +136,7 @@ fn tunnel(hostname: &str) -> Value {
         "type": "tunnel_open",
         "tunnel": {
             "id": "6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4",
-            "account_tag": "8e0530af975a33f2f739127f75084531",
+            "account_tag": "0123456789abcdef0123456789abcdef",
             "secret": "c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0cw==",
             "hostname": hostname,
         },
@@ -197,7 +197,7 @@ async fn a_linked_server_gets_its_tunnel_from_cloud() {
     let credentials = server.dir.join("runtime/cloudflared/credentials.json");
     let secret: Value =
         serde_json::from_str(&std::fs::read_to_string(credentials).unwrap()).unwrap();
-    assert_eq!(secret["AccountTag"], "8e0530af975a33f2f739127f75084531");
+    assert_eq!(secret["AccountTag"], "0123456789abcdef0123456789abcdef");
 
     // Taken away: cloudflared is stopped and its secret removed.
     let pid = read("cloudflared.pid").trim().to_owned();

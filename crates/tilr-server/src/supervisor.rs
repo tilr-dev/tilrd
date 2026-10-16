@@ -895,6 +895,8 @@ impl Supervisor {
         // Returning closes the pipes to the pane processes, which makes them
         // exit; each shell is hung up when its pty closes.
         tracing::info!("shutting down, closing {} pane(s)", self.panes.len());
+        // Asked to exit, so it signs off at Cloudflare, and reaped.
+        self.tunnel.stop().await;
         if let Some(agent) = &mut self.agent {
             agent.remove_all();
         }
@@ -1090,8 +1092,9 @@ impl Supervisor {
             }
         }
 
-        // It is not carried over: the successor starts its own.
-        self.tunnel.stop();
+        // It is not carried over: the successor starts its own. Reaped
+        // before the exec, or it stays a zombie of the successor.
+        self.tunnel.stop().await;
         let err = match crate::fail::point("reload-before-exec") {
             Ok(()) => self.exec_successor(&handed_over),
             Err(err) => err,

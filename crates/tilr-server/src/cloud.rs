@@ -19,8 +19,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -29,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{self, Message};
@@ -225,29 +223,29 @@ pub struct Options {
 /// that runs it.
 #[derive(Clone)]
 pub struct Tunnel {
-    pid: Arc<AtomicI32>,
+    /// Asks the task that runs `cloudflared` to stop it; the answer comes
+    /// once it has exited and been reaped.
+    stops: mpsc::UnboundedSender<oneshot::Sender<()>>,
 }
 
 impl Tunnel {
-    /// Stop `cloudflared` now. It would outlive a server that replaces
-    /// itself, which starts another; a server that carries on gets it back
-    /// after a moment.
-    pub fn stop(&self) {
-        let pid = self.pid.load(Ordering::Relaxed);
-        if pid > 0 {
-            // SAFETY: kill has no memory-safety preconditions.
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
+    /// Stop `cloudflared` now and wait until it is gone, reaped too: it
+    /// would outlive a server that replaces itself, which starts another,
+    /// and an exited child nobody waited for stays a zombie of the
+    /// successor. A server that carries on gets it back after a moment.
+    pub async fn stop(&self) {
+        let (done, stopped) = oneshot::channel();
+        if self.stops.send(done).is_ok() {
+            // `stop` below takes at most TUNNEL_STOP and then a SIGKILL.
+            let _ = tokio::time::timeout(2 * TUNNEL_STOP, stopped).await;
         }
     }
 }
 
 /// Keep this server connected to Cloud for as long as it is linked.
 pub fn spawn(options: Options) -> Tunnel {
-    let tunnel = Tunnel {
-        pid: Arc::new(AtomicI32::new(0)),
-    };
+    let (stops_tx, stops) = mpsc::unbounded_channel();
+    let tunnel = Tunnel { stops: stops_tx };
     let (want, wanted) = watch::channel(None);
     let (report, state) = watch::channel(State::down(""));
     tokio::spawn(run_tunnel(
@@ -255,7 +253,7 @@ pub fn spawn(options: Options) -> Tunnel {
         report,
         options.local,
         options.cloudflared,
-        Arc::clone(&tunnel.pid),
+        stops,
     ));
     tokio::spawn(stay_connected(options.auth, want, state));
     tunnel
@@ -534,13 +532,23 @@ fn prepare(spec: &Spec, local: SocketAddr, cloudflared: &Path) -> Result<Command
     Ok(command)
 }
 
+/// Why a running `cloudflared` is done with.
+enum Ended {
+    /// Not wanted any more, or another one is.
+    Unwanted,
+    /// It exited on its own.
+    Exited(std::io::Result<std::process::ExitStatus>),
+    /// [`Tunnel::stop`] asked for it to go; answered once it is reaped.
+    Stopped(oneshot::Sender<()>),
+}
+
 /// Run `cloudflared` whenever a tunnel is wanted, and say how it is doing.
 async fn run_tunnel(
     mut wanted: watch::Receiver<Option<Spec>>,
     report: watch::Sender<State>,
     local: SocketAddr,
     cloudflared: PathBuf,
-    pid: Arc<AtomicI32>,
+    mut stops: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
 ) {
     let say = |state: State| {
         report.send_if_modified(|current| {
@@ -552,8 +560,14 @@ async fn run_tunnel(
     loop {
         let Some(spec) = wanted.borrow_and_update().clone() else {
             say(State::down(""));
-            if wanted.changed().await.is_err() {
-                return;
+            tokio::select! {
+                changed = wanted.changed() => if changed.is_err() {
+                    return;
+                },
+                // Nothing runs, so nothing to stop.
+                Some(done) = stops.recv() => {
+                    let _ = done.send(());
+                }
             }
             continue;
         };
@@ -568,14 +582,10 @@ async fn run_tunnel(
             Err(err) => {
                 tracing::warn!("tunnel: {err:#}");
                 say(State::failed(&format!("{err:#}")));
-                tokio::select! {
-                    _ = wanted.changed() => {}
-                    () = tokio::time::sleep(TUNNEL_RETRY) => {}
-                }
+                pause(&mut wanted, &mut stops).await;
                 continue;
             }
         };
-        pid.store(child.id().map_or(0, |pid| pid as i32), Ordering::Relaxed);
         tracing::info!(hostname = spec.hostname, "tunnel starting");
         let stderr = child.stderr.take().expect("cloudflared stderr is piped");
         let mut lines = BufReader::new(stderr).lines();
@@ -583,9 +593,10 @@ async fn run_tunnel(
             tokio::select! {
                 changed = wanted.changed() => {
                     if changed.is_err() || wanted.borrow().as_ref() != Some(&spec) {
-                        break None;
+                        break Ended::Unwanted;
                     }
                 }
+                Some(done) = stops.recv() => break Ended::Stopped(done),
                 line = lines.next_line() => match line {
                     Ok(Some(line)) => {
                         if line.contains("Registered tunnel connection") {
@@ -594,36 +605,57 @@ async fn run_tunnel(
                         }
                         tracing::debug!("cloudflared: {line}");
                     }
-                    _ => break Some(child.wait().await),
+                    _ => break Ended::Exited(child.wait().await),
                 },
             }
         };
-        pid.store(0, Ordering::Relaxed);
         match ended {
-            // Not wanted any more, or another one is.
-            None => {
+            Ended::Unwanted => {
                 stop(&mut child).await;
                 let _ = fs::remove_dir_all(tunnel_dir());
                 tracing::info!(hostname = spec.hostname, "tunnel closed");
             }
-            Some(exit) => {
+            Ended::Stopped(done) => {
+                stop(&mut child).await;
+                let _ = done.send(());
+                tracing::info!(hostname = spec.hostname, "tunnel stopped");
+                say(State::down("stopped"));
+                pause(&mut wanted, &mut stops).await;
+            }
+            Ended::Exited(exit) => {
                 let why = match exit {
                     Ok(status) => format!("cloudflared stopped: {status}"),
                     Err(err) => format!("cloudflared stopped: {err}"),
                 };
                 tracing::warn!("tunnel: {why}");
                 say(State::failed(&why));
-                tokio::select! {
-                    _ = wanted.changed() => {}
-                    () = tokio::time::sleep(TUNNEL_RETRY) => {}
-                }
+                pause(&mut wanted, &mut stops).await;
+            }
+        }
+    }
+}
+
+/// Wait before `cloudflared` is started again, or until another tunnel is
+/// wanted. A stop asked for meanwhile is answered at once: nothing runs.
+async fn pause(
+    wanted: &mut watch::Receiver<Option<Spec>>,
+    stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<()>>,
+) {
+    let sleep = tokio::time::sleep(TUNNEL_RETRY);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            _ = wanted.changed() => return,
+            () = &mut sleep => return,
+            Some(done) = stops.recv() => {
+                let _ = done.send(());
             }
         }
     }
 }
 
 /// Ask `cloudflared` to exit, so it signs off at Cloudflare; kill it if it
-/// does not.
+/// does not. Either way it is waited for, so no zombie is left behind.
 async fn stop(child: &mut Child) {
     if let Some(pid) = child.id() {
         // SAFETY: kill has no memory-safety preconditions.
@@ -635,6 +667,7 @@ async fn stop(child: &mut Child) {
         .await
         .is_err()
     {
+        // SIGKILL, then wait.
         let _ = child.kill().await;
     }
 }
@@ -646,8 +679,8 @@ mod tests {
     fn described(hostname: &str) -> Value {
         json!({
             "id": "6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4",
-            "account_tag": "8e0530af975a33f2f739127f75084531",
-            "secret": "c2VjcmV0K3NlY3JldC9zZWNyZXQ9PQ==",
+            "account_tag": "0123456789abcdef0123456789abcdef",
+            "secret": "c2VjcmV0K3NlY3JldC9zZWNyZXQ9PQ==", // gitleaks:allow (fake)
             "hostname": hostname,
         })
     }
