@@ -120,13 +120,13 @@ fn update(exe: &Path, cdn: &str) -> std::process::Output {
 /// Start an update in which things go wrong where `failpoints` says, see
 /// `src/fail.rs`.
 fn update_failing(exe: &Path, cdn: &str, failpoints: &str) -> Child {
-    Command::new(exe)
-        .args(["update", "--cdn", cdn])
-        .env("TILR_FAILPOINTS", failpoints)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
+    spawn_copied(
+        Command::new(exe)
+            .args(["update", "--cdn", cdn])
+            .env("TILR_FAILPOINTS", failpoints)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
 }
 
 /// This build with a byte more: another file, which runs the same.

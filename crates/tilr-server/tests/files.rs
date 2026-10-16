@@ -12,7 +12,12 @@ use tilr_proto::{
 };
 
 fn start_with_config(config: &str, args: &[&str]) -> Server {
-    let dir = Server::scratch_dir();
+    start_in_with_config(Server::scratch_dir(), config, args)
+}
+
+/// Like `start_with_config`, in `dir`: the server looks its roots up as it
+/// starts, so they must exist by then.
+fn start_in_with_config(dir: PathBuf, config: &str, args: &[&str]) -> Server {
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(dir.join("config/server.toml"), config).unwrap();
     Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilr-server")), args)
@@ -618,13 +623,13 @@ async fn a_watched_directory_reports_what_changes_in_it() {
 
 #[tokio::test]
 async fn nothing_outside_the_shared_directories_is_served() {
-    let server = start_with_config("[files]\nroots = [\"~/shared\"]\n", &[]);
-    let home = server.dir.clone();
+    let home = Server::scratch_dir();
     std::fs::create_dir_all(home.join("shared/inner")).unwrap();
     std::fs::create_dir_all(home.join("secret")).unwrap();
     std::fs::write(home.join("secret/key"), "key").unwrap();
     std::os::unix::fs::symlink("../secret", home.join("shared/door")).unwrap();
     std::os::unix::fs::symlink("../secret/key", home.join("shared/key-link")).unwrap();
+    let server = start_in_with_config(home.clone(), "[files]\nroots = [\"~/shared\"]\n", &[]);
     let mut client = Client::connect(&server).await;
 
     let (_, entries) = list(&mut client, 1, "~/shared").await.unwrap();
@@ -799,6 +804,15 @@ async fn tilr_edit_in_a_pane_asks_the_clients_watching_it_to_open_the_file() {
     let pane_id = client.open_pane().await;
     let mut other = Client::connect(&server).await;
     other.subscribe(pane_id).await;
+    // Watching once the pane's first frame comes: the Subscribe travels on
+    // its own connection and may still be on the way when the shell below
+    // runs `tilr edit` (on Linux it was, now and then, and the event went
+    // to `client` alone).
+    other
+        .wait_for(|msg| {
+            matches!(msg, server_message::Msg::Frame(frame) if frame.full).then_some(())
+        })
+        .await;
 
     // The pane knows its server and how to reach it.
     let check = format!(
