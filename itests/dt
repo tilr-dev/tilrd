@@ -1,0 +1,80 @@
+#!/bin/sh
+# Run the tilrd integration tests on the pb Dagger engine (see README.md).
+#
+#   ./dt [test] [--only rust,lint,scenarios] [--filter TEXT] [--jobs N] [--cached] [--open]
+#                                 --open: show report.html in the browser afterwards
+#   ./dt fixtures                 fixture graph
+#   ./dt fixture NAME             export one fixture snapshot to results/fixture-NAME
+#   ./dt call FUNCTION [ARGS]     any module function, e.g. ./dt call server export --path ./tilr-server
+#   ./dt history                  open results/index.html (all runs)
+#   ./dt clear [--keep N]         delete local run reports (all, or all but the N newest)
+#
+# DT_ENGINE=dagger runs on the local engine instead of dagger-pb; DT_DISTRO picks the
+# runtime image of the scenarios (ubuntu).
+set -eu
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+ENGINE=${DT_ENGINE:-dagger-pb}
+DISTRO=${DT_DISTRO:-ubuntu}
+COMMIT=$(git -C "$HERE/.." rev-parse --short HEAD 2>/dev/null || echo itest)
+export DAGGER_NO_NAG=1
+
+call() { "$ENGINE" -m "$HERE" call --commit "$COMMIT" --distro "$DISTRO" "$@"; }
+
+cmd=test
+case "${1:-}" in
+  test|fixtures|fixture|call|history|clear) cmd=$1; shift ;;
+  -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+case "$cmd" in
+  test)
+    # --open is ours; everything else goes to the module's test function.
+    open_report=0
+    for arg do
+      shift
+      if [ "$arg" = --open ]; then open_report=1; else set -- "$@" "$arg"; fi
+    done
+    out="$HERE/results/$(date +%Y%m%dT%H%M%S)-$$"
+    mkdir -p "$HERE/results"
+    call test "$@" export --path "$out" >/dev/null
+    echo "$*" > "$out/args.txt"
+    ln -sfn "$out" "$HERE/results/latest"
+    uv run --no-project --quiet python "$HERE/tools/report.py" "$out" \
+      || echo "warning: report.html not generated" >&2
+    uv run --no-project --quiet python "$HERE/tools/history.py" "$HERE/results" \
+      || echo "warning: results/index.html not updated" >&2
+    cat "$out/summary.txt"
+    echo "Report:  $out/report.html"
+    echo "History: $HERE/results/index.html"
+    [ "$open_report" = 0 ] || [ ! -f "$out/report.html" ] || open "$out/report.html"
+    [ "$(cat "$out/status")" = ok ]
+    ;;
+  fixtures) call fixtures ;;
+  fixture)
+    [ $# -eq 1 ] || { echo "usage: ./dt fixture NAME" >&2; exit 2; }
+    out="$HERE/results/fixture-$1"
+    rm -rf "$out"
+    call fixture --name "$1" export --path "$out" >/dev/null
+    echo "Snapshot: $out"
+    ;;
+  call) call "$@" ;;
+  clear)
+    keep=0
+    case "${1:-}" in
+      --keep) keep=${2:?usage: ./dt clear [--keep N]} ;;
+      "") ;;
+      *) echo "usage: ./dt clear [--keep N]" >&2; exit 2 ;;
+    esac
+    # Local reports only; the Dagger cache on pb is not touched.
+    runs=$(ls -1d "$HERE"/results/[0-9]* 2>/dev/null | sort -r | tail -n +"$((keep + 1))")
+    [ -n "$runs" ] && echo "$runs" | while read -r d; do rm -rf "$d"; done
+    if [ "$keep" = 0 ]; then rm -rf "$HERE"/results/fixture-* "$HERE/results/latest" "$HERE/results/index.html"; fi
+    left=$(ls -1d "$HERE"/results/[0-9]* 2>/dev/null | wc -l | tr -d ' ')
+    [ "$left" = 0 ] || uv run --no-project --quiet python "$HERE/tools/history.py" "$HERE/results"
+    echo "Removed $(printf '%s' "$runs" | grep -c . || true) run(s); $left left."
+    ;;
+  history)
+    uv run --no-project --quiet python "$HERE/tools/history.py" "$HERE/results"
+    open "$HERE/results/index.html"
+    ;;
+esac

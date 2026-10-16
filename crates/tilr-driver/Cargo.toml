@@ -1,0 +1,17 @@
+[package]
+name = "tilr-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Scripted tilr client for black-box tests: JSON-lines commands in, events out"
+
+[dependencies]
+tilr-proto.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+regex = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "net", "io-std", "io-util", "sync", "time"] }
+tokio-tungstenite = "0.28"
