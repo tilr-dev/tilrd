@@ -8,10 +8,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends protobuf-compiler git xz-utils unzip ca-certificates curl procps \
     && rm -rf /var/lib/apt/lists/*
 
+# clippy, so the lint CI runs on Linux can run here too.
+RUN rustup component add clippy
+
 # libghostty-vt is built with Zig: the pinned version, checked against its SHA-256.
 COPY install-tools.sh /usr/local/lib/tilr/install-tools.sh
 RUN /usr/local/lib/tilr/install-tools.sh /opt/tilr-tools zig \
     && ln -s /opt/tilr-tools/zig /usr/local/bin/zig
+
+# Commands run as a non-root user with a passwd entry, as on the GitHub runner.
+COPY linux-entrypoint.sh /usr/local/lib/tilr/linux-entrypoint.sh
+ENTRYPOINT ["/usr/local/lib/tilr/linux-entrypoint.sh"]
 
 ENV CARGO_TARGET_DIR=/target
 WORKDIR /src
