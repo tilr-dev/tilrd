@@ -70,29 +70,9 @@ impl Server {
     /// `src/fail.rs`. It hands them on to what it reloads into.
     pub fn start_failing(dir: PathBuf, exe: &Path, args: &[&str], failpoints: &str) -> Self {
         let mut command = Command::new(exe);
-        command
-            .env("TILR_FAILPOINTS", failpoints)
-            .args(["--listen", "127.0.0.1:0"])
-            .args(args)
-            .env("TILR_RUNTIME_DIR", dir.join("runtime"))
-            .env("TILR_STATE_DIR", dir.join("state"))
-            .env("TILR_CONFIG_DIR", dir.join("config"))
-            .env("TILR_FAILPOINTS_FILE", dir.join("failpoints"))
-            .env("HOME", &dir)
-            .env("PATH", "/usr/bin:/bin")
-            .env("SHELL", "/bin/sh")
-            .env("PS1", "$ ")
-            // No real clipboard for the shims to fall back to, and no shell
-            // startup file.
-            .env_remove("DISPLAY")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("ENV")
-            // Nor an SSH agent of the machine running the tests, nor the
-            // clipboard of a Tilr pane the tests may run in.
-            .env_remove("SSH_AUTH_SOCK")
-            .env_remove("TILR_CLIPBOARD_DIR")
-            .stdin(Stdio::null())
-            .stderr(Stdio::piped());
+        command.args(["--listen", "127.0.0.1:0"]).args(args);
+        Self::environment(&mut command, &dir, failpoints);
+        command.stdin(Stdio::null()).stderr(Stdio::piped());
         // A copy of the executable made a moment ago can be "busy" on Linux
         // while a child forked by another test still holds it open for
         // writing; that passes as soon as the child execs.
@@ -138,6 +118,30 @@ impl Server {
             dir,
             log,
         }
+    }
+
+    /// The environment a server under test runs in: its directories under
+    /// `dir`, failures where `failpoints` says, nothing of the machine's.
+    pub fn environment(command: &mut Command, dir: &Path, failpoints: &str) {
+        command
+            .env("TILR_FAILPOINTS", failpoints)
+            .env("TILR_RUNTIME_DIR", dir.join("runtime"))
+            .env("TILR_STATE_DIR", dir.join("state"))
+            .env("TILR_CONFIG_DIR", dir.join("config"))
+            .env("TILR_FAILPOINTS_FILE", dir.join("failpoints"))
+            .env("HOME", dir)
+            .env("PATH", "/usr/bin:/bin")
+            .env("SHELL", "/bin/sh")
+            .env("PS1", "$ ")
+            // No real clipboard for the shims to fall back to, and no shell
+            // startup file.
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("ENV")
+            // Nor an SSH agent of the machine running the tests, nor the
+            // clipboard of a Tilr pane the tests may run in.
+            .env_remove("SSH_AUTH_SOCK")
+            .env_remove("TILR_CLIPBOARD_DIR");
     }
 
     pub fn logged(&self, needle: &str) -> bool {

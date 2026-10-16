@@ -191,8 +191,11 @@ fn main() -> anyhow::Result<ExitCode> {
         return Ok(host::shim(exe, args.collect()));
     }
 
+    // Write errors are dropped: stderr may be a terminal that hung up (EIO),
+    // and reporting that to stderr again would panic.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .log_internal_errors(false)
         .init();
 
     let cli = Cli::parse();

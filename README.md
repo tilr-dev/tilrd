@@ -115,6 +115,12 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
 
+Signals: `SIGTERM` and `SIGINT` stop the server and end its shells; `SIGUSR1`
+[reloads](#reloading-without-closing-shells) it. `SIGHUP` is ignored: a server
+started from a terminal (`tilr-server &` in an SSH session) outlives it, and so
+do its panes, each in a session of its own. Its log then goes nowhere; redirect
+stderr to keep it.
+
 ## Who may connect
 
 A client must send the server's access token in `Hello.token`. The server

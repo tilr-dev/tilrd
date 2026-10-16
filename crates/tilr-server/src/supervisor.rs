@@ -306,6 +306,7 @@ pub fn run(options: Options) -> Result<()> {
             tokio::spawn(lag_ticks(events_tx.clone()));
             tokio::spawn(shutdown_signal(events_tx.clone()));
             tokio::spawn(reload_signal(events_tx.clone()));
+            tokio::spawn(hangup_signal());
             if options.auto_reload {
                 let events = events_tx.clone();
                 tokio::spawn(reload::watch_executable(crate::exe(), move || {
@@ -488,6 +489,18 @@ async fn reload_signal(events: mpsc::UnboundedSender<Event>) {
             break;
         }
     }
+}
+
+/// SIGHUP is the terminal the server was started from going away (an SSH
+/// session dropping, the shell passing it on to its jobs). The server, like
+/// its panes, outlives that terminal; reloading is SIGUSR1's.
+async fn hangup_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut hup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
+    if hup.recv().await.is_some() {
+        tracing::info!("SIGHUP ignored: the server keeps running without its terminal");
+    }
+    while hup.recv().await.is_some() {}
 }
 
 /// Tick every [`LAG_TICK`] through the event loop, which measures how late
@@ -1767,6 +1780,19 @@ fn start_pane_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .kill_on_drop(true);
+    // A session of its own, away from the terminal the server may have been
+    // started from: what goes to that terminal's process group (SIGHUP when
+    // it hangs up, SIGINT on Ctrl-C) is not the pane's business. The
+    // supervisor ends the pane by closing its stdin.
+    // SAFETY: setsid is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = cmd.spawn().context("spawn pane process")?;
     let pid = child.id().context("pane process pid")?;
     // Plain pipes rather than tokio's child handles: on a reload they are

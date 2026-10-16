@@ -197,3 +197,198 @@ async fn a_client_can_tell_that_the_server_vanished_without_closing() {
     assert!(client.pong_within(2, TIMEOUT).await);
     assert_eq!(client.run(pane_id, "true").await, 0);
 }
+
+#[tokio::test]
+async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
+    // `tilr-server &` typed into an SSH login; the dir goes to `Server`,
+    // which removes it.
+    let dir = Server::scratch_dir();
+    let mut shell = Command::new("/bin/sh");
+    shell
+        .arg("-c")
+        .arg("\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait")
+        .arg(env!("CARGO_BIN_EXE_tilr-server"));
+    Server::environment(&mut shell, &dir, "");
+    let mut login = Login::start(shell);
+    let addr = login.wait_output(|output| {
+        output
+            .split("listening on ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(str::to_owned)
+    });
+    let pid: u32 = login.wait_output(|output| {
+        output
+            .split("server pid ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|pid| pid.parse().ok())
+    });
+    let mut server = Server {
+        child: login.shell.take().unwrap(),
+        addr,
+        dir,
+        log: Arc::default(),
+    };
+    let _stop = StopOnDrop(pid);
+
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pane_pid = client.list_panes().await[0].pid;
+    let shell_pid = shell_pid(&server, &mut client, pane_id).await;
+    client.type_line(pane_id, "KEPT=yes").await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    drop(client);
+
+    // The connection drops: the terminal hangs up, and its process group,
+    // the server's, gets SIGHUP.
+    login.hang_up();
+    eventually("the login shell exits with its terminal", || {
+        !server.is_running()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(process_alive(pid), "the server is still running");
+    assert!(process_alive(pane_pid), "the pane process is still running");
+    assert!(process_alive(shell_pid), "the shell is still running");
+
+    let mut client = Client::connect(&server).await;
+    client.subscribe(pane_id).await;
+    client.type_line(pane_id, "echo \"kept=$KEPT\"").await;
+    client.wait_row("kept=yes").await;
+
+    // Stopping it still ends the shells.
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    eventually("the shell exits", || !process_alive(shell_pid)).await;
+    eventually("the server exits", || !process_alive(pid)).await;
+}
+
+/// An SSH login: a shell leading a session of its own, with a pty as its
+/// controlling terminal. What the terminal shows is collected until it hangs
+/// up.
+struct Login {
+    shell: Option<Child>,
+    /// The login shell's pid, which names its session and process group.
+    pgid: u32,
+    output: Arc<Mutex<String>>,
+    hang_up: Arc<std::sync::atomic::AtomicBool>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Login {
+    fn start(mut shell: Command) -> Self {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: out-pointers are valid; name, termios and size are optional.
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: openpty returned two fresh descriptors that we now own.
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        // Children of other tests must not keep the terminal open.
+        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+            // SAFETY: fcntl on a descriptor we own.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        // SAFETY: fcntl on a descriptor we own.
+        unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        shell
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave.try_clone().unwrap()))
+            .stderr(Stdio::from(slave));
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            shell.pre_exec(|| {
+                if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = shell.spawn().expect("start the login shell");
+        drop(shell);
+
+        let output = Arc::new(Mutex::new(String::new()));
+        let hang_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = std::thread::spawn({
+            let output = Arc::clone(&output);
+            let hang_up = Arc::clone(&hang_up);
+            let mut master = std::fs::File::from(master);
+            move || {
+                let mut buf = [0; 4096];
+                while !hang_up.load(Ordering::Relaxed) {
+                    match master.read(&mut buf) {
+                        Ok(n) if n > 0 => output
+                            .lock()
+                            .unwrap()
+                            .push_str(&String::from_utf8_lossy(&buf[..n])),
+                        _ => std::thread::sleep(Duration::from_millis(20)),
+                    }
+                }
+                // Closing the last descriptor of the master hangs up.
+            }
+        });
+        Self {
+            pgid: child.id(),
+            shell: Some(child),
+            output,
+            hang_up,
+            reader: Some(reader),
+        }
+    }
+
+    /// Wait for the terminal to show what `pick` finds.
+    fn wait_output<T>(&self, mut pick: impl FnMut(&str) -> Option<T>) -> T {
+        for _ in 0..200 {
+            if let Some(found) = pick(&self.output.lock().unwrap()) {
+                return found;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("not on the terminal: {}", self.output.lock().unwrap());
+    }
+
+    /// Close the terminal, then SIGHUP the login's process group, as sshd
+    /// does when the connection drops.
+    fn hang_up(&mut self) {
+        let Some(reader) = self.reader.take() else {
+            return;
+        };
+        self.hang_up.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
+        // SAFETY: killpg has no memory-safety preconditions.
+        unsafe { libc::killpg(self.pgid as libc::pid_t, libc::SIGHUP) };
+    }
+}
+
+impl Drop for Login {
+    fn drop(&mut self) {
+        self.hang_up();
+    }
+}
+
+/// Stops a server this test is not the parent of.
+struct StopOnDrop(u32);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        // SAFETY: kill has no memory-safety preconditions.
+        unsafe {
+            libc::kill(self.0 as libc::pid_t, libc::SIGTERM);
+        }
+    }
+}

@@ -68,6 +68,7 @@ Cloud в этих тестах играет сам тест, `cloudflared` — �
 | Клиент молчит, но на месте (отвечает на пинги): соединение остаётся | `an_idle_client_that_is_still_there_stays_connected` |
 | С `--client-timeout 0` молчащих клиентов не отключают | `a_silent_client_is_kept_when_the_timeout_is_off` |
 | Сервер пропал молча: клиент шлёт `Ping`, ответа `Pong` нет — клиент это видит; сервер ожил — ответ приходит | `a_client_can_tell_that_the_server_vanished_without_closing` |
+| Сервер запущен из SSH-сессии (`tilr-server &`), соединение оборвалось: терминал закрыт, группе процессов пришёл SIGHUP — сервер, процессы панелей и шеллы живы, клиент подключается к той же панели; остановка сервера по-прежнему завершает шеллы | `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` |
 
 ## Прокрутка — `tests/scroll.rs`
 

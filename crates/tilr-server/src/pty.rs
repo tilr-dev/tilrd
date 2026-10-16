@@ -202,7 +202,8 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(OwnedFd, OwnedFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // A raw pointer: Linux takes `*const winsize`, macOS `*mut`.
+            &raw mut size,
         )
     };
     if rc == -1 {
