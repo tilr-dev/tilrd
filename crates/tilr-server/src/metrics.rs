@@ -10,12 +10,10 @@
 
 use std::fmt::{Display, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::Request;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 
@@ -73,26 +71,42 @@ pub struct Shared {
     pub route_input: Histogram,
     /// How late the supervisor's actor takes its once-a-second tick.
     pub loop_lag: Histogram,
+    /// Clients the server let go, by [`ClientDrop`].
+    pub client_drops: [AtomicU64; ClientDrop::ALL.len()],
 }
 
-/// A packet on its way to a client. `read_at`, for a pane's packet, is when
-/// the supervisor read it from the pane process.
-pub struct Outgoing {
-    pub packet: Bytes,
-    pub read_at: Option<Instant>,
+/// Why the server let a client go, for `tilr_client_drops_total`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClientDrop {
+    /// A newer connection of the same client took over.
+    Superseded,
+    /// Its queue was full: it did not take what it was sent.
+    TooSlow,
+    /// Nothing heard from it for the client timeout.
+    Silent,
+    /// It still sent, but did not answer the server's pings for the client
+    /// timeout: the way towards it is gone.
+    NoPong,
 }
 
-impl From<Bytes> for Outgoing {
-    fn from(packet: Bytes) -> Self {
-        Self {
-            packet,
-            read_at: None,
+impl ClientDrop {
+    pub const ALL: [Self; 4] = [Self::Superseded, Self::TooSlow, Self::Silent, Self::NoPong];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Superseded => "superseded",
+            Self::TooSlow => "too_slow",
+            Self::Silent => "silent",
+            Self::NoPong => "no_pong",
         }
     }
 }
 
-/// Where the supervisor queues packets for one client.
-pub type ToClient = mpsc::Sender<Outgoing>;
+impl Shared {
+    pub fn count_drop(&self, why: ClientDrop) {
+        self.client_drops[why as usize].fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// What the supervisor counts for one pane while it routes.
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
@@ -103,6 +117,9 @@ pub struct PaneCounters {
     pub frame_bytes: u64,
     /// Frames handed to clients: one per frame and client.
     pub frames_sent: u64,
+    /// Frames not sent to a client that lagged, which got a whole screen
+    /// later instead: one per frame and client.
+    pub frames_skipped: u64,
     /// Input packets (key, mouse, paste, raw, scroll) passed to the pane,
     /// and their bytes.
     pub input: u64,
@@ -160,7 +177,7 @@ pub fn render(
     out.sample("tilr_server_panes", &[], snapshot.panes.len());
 
     type Counter = fn(&PaneCounters) -> u64;
-    let per_pane: [(&str, &str, Counter); 5] = [
+    let per_pane: [(&str, &str, Counter); 6] = [
         ("tilr_pane_frames_total", "Frames the pane produced.", |c| {
             c.frames
         }),
@@ -173,6 +190,11 @@ pub fn render(
             "tilr_pane_frames_sent_total",
             "Frames handed to clients, one per frame and client.",
             |c| c.frames_sent,
+        ),
+        (
+            "tilr_pane_frames_skipped_total",
+            "Frames not sent to a client that lagged (it got the whole screen later), one per frame and client.",
+            |c| c.frames_skipped,
         ),
         (
             "tilr_pane_input_total",
@@ -190,6 +212,19 @@ pub fn render(
         for pane in &snapshot.panes {
             out.sample(name, &[("pane", &pane.id)], value(&pane.counters));
         }
+    }
+
+    out.family(
+        "tilr_client_drops_total",
+        "counter",
+        "Clients the server let go: superseded by a newer connection of the same client, too slow, silent, or not answering pings.",
+    );
+    for why in ClientDrop::ALL {
+        out.sample(
+            "tilr_client_drops_total",
+            &[("reason", why.label())],
+            shared.client_drops[why as usize].load(Ordering::Relaxed),
+        );
     }
 
     out.histogram(
@@ -494,6 +529,7 @@ mod tests {
                     frames: 3,
                     frame_bytes: 300,
                     frames_sent: 6,
+                    frames_skipped: 2,
                     input: 4,
                     input_bytes: 40,
                 },
@@ -512,7 +548,9 @@ mod tests {
 
     #[test]
     fn exposition_lists_every_family_with_help_and_type() {
-        let text = rendered(&Shared::default());
+        let shared = Shared::default();
+        shared.count_drop(ClientDrop::Superseded);
+        let text = rendered(&shared);
         for (name, kind) in [
             ("tilr_server_info", "gauge"),
             ("tilr_server_clients", "gauge"),
@@ -520,8 +558,10 @@ mod tests {
             ("tilr_pane_frames_total", "counter"),
             ("tilr_pane_frame_bytes_total", "counter"),
             ("tilr_pane_frames_sent_total", "counter"),
+            ("tilr_pane_frames_skipped_total", "counter"),
             ("tilr_pane_input_total", "counter"),
             ("tilr_pane_input_bytes_total", "counter"),
+            ("tilr_client_drops_total", "counter"),
             ("tilr_route_seconds", "histogram"),
             ("tilr_route_input_seconds", "histogram"),
             ("tilr_supervisor_loop_lag_seconds", "histogram"),
@@ -541,6 +581,9 @@ mod tests {
             "tilr_pane_frames_total{pane=\"p1\"} 3",
             "tilr_pane_frame_bytes_total{pane=\"p1\"} 300",
             "tilr_pane_frames_sent_total{pane=\"p1\"} 6",
+            "tilr_pane_frames_skipped_total{pane=\"p1\"} 2",
+            "tilr_client_drops_total{reason=\"superseded\"} 1",
+            "tilr_client_drops_total{reason=\"no_pong\"} 0",
             "tilr_pane_input_total{pane=\"p1\"} 4",
             "tilr_pane_input_bytes_total{pane=\"p1\"} 40",
             "tilr_process_cpu_seconds_total{role=\"supervisor\",pid=\"10\"} 5",

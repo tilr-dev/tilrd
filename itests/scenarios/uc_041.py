@@ -5,13 +5,10 @@ connection is fine. The client (tilr-driver) reaches tilrd through the layer-1 p
 which freezes one direction; an observer connected directly counts the pane's viewers.
 The server runs with --client-timeout 6 (a WebSocket ping every 2 s).
 
-Observed (FAIL, product): with server -> client cut and a client that keeps sending
-(its pings, its input) without noticing it hears nothing, the server never drops it.
-supervisor.rs (serve_client, the `client_timeout` read loop) counts any message from the
-client as a sign of life, so the client's own pings keep a connection alive whose
-direction towards the client is dead; the server's WebSocket pings are never answered and
-nothing looks at that. Frames pile up in the kernel buffers and the client queue
-(CLIENT_QUEUE = 1024 packets) for minutes before "client too slow" would drop it.
+The server counts the client's answers to its own WebSocket pings, not just anything the
+client sends: a client that keeps sending (its pings, its input) without hearing the
+server stops answering, and is dropped within the client timeout like a silent one
+("client stopped answering pings").
 """
 
 import time
@@ -47,7 +44,7 @@ def back_to_normal(t: T, proxy, observer, client, pane: str, counter: Counter, s
     time.sleep(CLIENT_TIMEOUT_S / 2)
     t.eq(observer.viewers(pane), 1, "no ghost viewer from the old connection")
     counter.check_log()
-    client.key(pane, "ctrl-c")
+    client.interrupt(pane)
     t.eq(client.run(pane, "echo typed-after-return"), 0, "input works after the return")
 
 
@@ -93,6 +90,8 @@ def a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server(t: T)
     t.metric("client_messages_reaching_server", stats["ws_up"])
     t.check("the server's own pings go unanswered, so it drops the client within "
             f"{limit}s (dropped: {dropped}, after {took:.1f}s)", lambda: t.ok(dropped and took <= limit, "dropped"))
+    t.check("the server logged that the client no longer answers its pings",
+            lambda: t.ok(server.logged("client stopped answering pings") >= 1, "logged"))
     proxy.resume()
     counter.check_log()
 

@@ -141,6 +141,39 @@ async fn a_client_that_vanishes_without_closing_is_dropped() {
 }
 
 #[tokio::test]
+async fn a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped() {
+    let server = Server::start(&["--client-timeout", "1"]);
+    let mut stays = Client::connect(&server).await;
+    let pane_id = stays.open_pane().await;
+    let mut deaf = Client::connect(&server).await;
+    deaf.subscribe(pane_id).await;
+    deaf.wait_for(|msg| matches!(msg, server_message::Msg::Frame(_)).then_some(()))
+        .await;
+    while stays.pushed_pane_list().await[0].viewers != 2 {}
+
+    // The way from the server to `deaf` is cut: it reads nothing, so it
+    // answers no ping, but what it sends (its own pings) still arrives.
+    let talking = async {
+        for nonce in 0.. {
+            let ping = ClientMessage::from(Msg::Ping(Ping { nonce }));
+            let _ = deaf
+                .ws
+                .send(Message::Binary(tilr_proto::encode(&ping)))
+                .await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    let dropped = async { while stays.pushed_pane_list().await[0].viewers != 1 {} };
+    tokio::select! {
+        () = talking => unreachable!(),
+        () = dropped => {}
+    }
+    assert!(server.logged("client stopped answering pings"));
+    assert!(!server.logged("client went silent"));
+    assert_eq!(stays.run(pane_id, "true").await, 0);
+}
+
+#[tokio::test]
 async fn an_idle_client_that_is_still_there_stays_connected() {
     let server = Server::start(&["--client-timeout", "1"]);
     let mut client = Client::connect(&server).await;
@@ -391,4 +424,114 @@ impl Drop for StopOnDrop {
             libc::kill(self.0 as libc::pid_t, libc::SIGTERM);
         }
     }
+}
+
+/// Connect as the client instance `client_id` and say hello.
+async fn connect_as(server: &Server, client_id: &str) -> Client {
+    let mut client = Client::connect_silent(server).await;
+    client.client_id = client_id.to_owned();
+    client.hello().await;
+    client
+}
+
+/// The close frame the server ends the connection with, read past anything
+/// still queued.
+async fn close_frame(client: &mut Client) -> Option<(u16, String)> {
+    let close = async {
+        while let Some(Ok(message)) = client.ws.next().await {
+            if let Message::Close(frame) = message {
+                return frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
+            }
+        }
+        None
+    };
+    tokio::time::timeout(TIMEOUT, close)
+        .await
+        .expect("connection left open")
+}
+
+#[tokio::test]
+async fn a_client_back_on_a_new_connection_supersedes_its_old_one_at_once() {
+    let server = Server::start(&[]);
+    let mut stays = Client::connect(&server).await;
+    let pane_id = stays.open_pane().await;
+    // Two tabs of one app on this machine: client ids of their own.
+    let mut old = connect_as(&server, "6c1d0c8e-0000-4000-8000-00000000000a").await;
+    old.subscribe(pane_id).await;
+    let mut tab = connect_as(&server, "6c1d0c8e-0000-4000-8000-00000000000b").await;
+    tab.subscribe(pane_id).await;
+    eventually_viewers(&mut stays, 3).await;
+    let panes = stays.list_panes().await;
+    let mut ids: Vec<&str> = panes[0]
+        .viewed_by
+        .iter()
+        .map(|viewer| viewer.client_id.as_str())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            "",
+            "6c1d0c8e-0000-4000-8000-00000000000a",
+            "6c1d0c8e-0000-4000-8000-00000000000b"
+        ]
+    );
+    assert!(
+        panes[0]
+            .viewed_by
+            .iter()
+            .all(|viewer| viewer.address.starts_with("127.0.0.1:")),
+        "{:?}",
+        panes[0].viewed_by
+    );
+
+    // The first client comes back on a new connection while the old one is
+    // still open (its network left it half-open): the old one goes before the
+    // new one hears its HelloAck, with no wait for the client timeout.
+    let mut new = connect_as(&server, "6c1d0c8e-0000-4000-8000-00000000000a").await;
+    assert_eq!(new.list_panes().await[0].viewers, 2);
+    assert_eq!(
+        close_frame(&mut old).await,
+        Some((tilr_proto::close::SUPERSEDED, "superseded".into()))
+    );
+    assert!(server.logged("client superseded by a newer connection"));
+    // The new connection starts afresh: it subscribes as any other.
+    new.subscribe(pane_id).await;
+    assert_eq!(new.run(pane_id, "true").await, 0);
+    assert_eq!(tab.run(pane_id, "true").await, 0);
+    eventually_viewers(&mut stays, 3).await;
+}
+
+#[tokio::test]
+async fn the_same_client_id_under_another_token_supersedes_nobody() {
+    let id = "6c1d0c8e-0000-4000-8000-00000000000c";
+    // A wrong token is turned away before it could take anyone's place.
+    let server = Server::start(&[]);
+    let mut first = connect_as(&server, id).await;
+    let pane_id = first.open_pane().await;
+    let mut spoof = Client::connect_silent(&server).await;
+    spoof.client_id = id.to_owned();
+    spoof.token = "not the token".into();
+    spoof.hello_as(PROTOCOL_VERSION).await;
+    assert_eq!(spoof.error().await, "wrong access token");
+    assert_eq!(first.run(pane_id, "true").await, 0);
+    assert_eq!(first.list_panes().await[0].viewers, 1);
+
+    // A server without a token lets any in: another token is another user's
+    // client, whatever id it gives.
+    let server = Server::start(&["--no-auth"]);
+    let mut first = Client::connect_silent(&server).await;
+    first.client_id = id.to_owned();
+    first.token = "one".into();
+    first.hello().await;
+    let pane_id = first.open_pane().await;
+    let mut other = Client::connect_silent(&server).await;
+    other.client_id = id.to_owned();
+    other.token = "two".into();
+    other.hello().await;
+    other.subscribe(pane_id).await;
+    assert_eq!(other.run(pane_id, "true").await, 0);
+    assert_eq!(first.run(pane_id, "true").await, 0);
+    assert_eq!(first.list_panes().await[0].viewers, 2);
+    assert!(!server.logged("superseded"));
 }

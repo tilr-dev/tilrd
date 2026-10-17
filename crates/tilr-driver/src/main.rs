@@ -146,6 +146,10 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
                     })
                     .unwrap_or_else(|| vec!["ping".into()]),
                 timeout: millis(c, "timeout_ms", 10_000),
+                // One per driver, kept across its reconnects, as a client
+                // instance keeps it; a case may name another (a second tab of
+                // the same client, a spoof).
+                client_id: opt_string(c, "client_id").unwrap_or_else(|| client_id().to_owned()),
             };
             let mut ack = session.connect(target).await?;
             ack["ev"] = json!("connected");
@@ -582,6 +586,12 @@ async fn wait_msg<T>(
     }
 }
 
+/// This driver's `Hello.client_id`: made up when it starts.
+fn client_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 fn pane_json(pane: &tilr_proto::PaneInfo) -> Value {
     let mut map = Map::new();
     map.insert("pane".into(), json!(pane.pane_id));
@@ -591,6 +601,12 @@ fn pane_json(pane: &tilr_proto::PaneInfo) -> Value {
     map.insert("title".into(), json!(pane.title));
     map.insert("cwd".into(), json!(pane.cwd));
     map.insert("viewers".into(), json!(pane.viewers));
+    let viewed_by: Vec<Value> = pane
+        .viewed_by
+        .iter()
+        .map(|v| json!({"client_id": v.client_id, "name": v.client_name, "addr": v.address}))
+        .collect();
+    map.insert("viewed_by".into(), json!(viewed_by));
     map.insert("pid".into(), json!(pane.pid));
     map.insert("created_at_ms".into(), json!(pane.created_at_ms));
     Value::Object(map)

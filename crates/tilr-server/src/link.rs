@@ -62,6 +62,48 @@ pub mod kind {
     pub const EXITED: u8 = 3;
     /// An `Error` packet: the shell could not be started.
     pub const FAILED: u8 = 4;
+    /// A frame to relay, behind a [`FrameHead`]: what the supervisor needs
+    /// to know of it without decoding it. A pane process sends its frames
+    /// this way; `RELAY` is what one from before it did.
+    pub const FRAME: u8 = 5;
+}
+
+/// What a `FRAME` packet says of its frame ahead of the `ServerMessage`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameHead {
+    /// `Frame.full`.
+    pub full: bool,
+    /// `Frame.last_input_seq`.
+    pub last_input_seq: u64,
+}
+
+impl FrameHead {
+    const LEN: usize = 9;
+
+    /// The head in front of `packet`, as the body of a `FRAME` packet.
+    pub fn prepend(self, packet: &[u8]) -> Vec<u8> {
+        let mut body = Vec::with_capacity(Self::LEN + packet.len());
+        body.push(u8::from(self.full));
+        body.extend_from_slice(&self.last_input_seq.to_le_bytes());
+        body.extend_from_slice(packet);
+        body
+    }
+
+    /// Split the body of a `FRAME` packet into its head and the packet.
+    pub fn split(mut body: Bytes) -> Option<(Self, Bytes)> {
+        if body.len() < Self::LEN {
+            return None;
+        }
+        let head = body.split_to(Self::LEN);
+        let seq = head[1..].try_into().ok()?;
+        Some((
+            Self {
+                full: head[0] & 1 != 0,
+                last_input_seq: u64::from_le_bytes(seq),
+            },
+            body,
+        ))
+    }
 }
 
 /// Like [`write_packet`], with a [`kind`] byte in front of the packet.
@@ -111,6 +153,17 @@ mod tests {
         }
         assert_eq!(packets, [&b"one"[..], b"", b"three"]);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn a_frame_head_comes_off_as_it_went_on() {
+        let head = FrameHead {
+            full: true,
+            last_input_seq: (7 << 32) + 3,
+        };
+        let body = Bytes::from(head.prepend(b"frame"));
+        assert_eq!(FrameHead::split(body), Some((head, Bytes::from("frame"))));
+        assert_eq!(FrameHead::split(Bytes::from("short")), None);
     }
 
     #[test]

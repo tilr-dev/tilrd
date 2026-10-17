@@ -799,6 +799,12 @@ async fn tilr_edit_in_a_pane_asks_the_clients_watching_it_to_open_the_file() {
     let pane_id = client.open_pane().await;
     let mut other = Client::connect(&server).await;
     other.subscribe(pane_id).await;
+    // A host event goes to the clients watching the pane when it comes. The
+    // subscribe travels on a connection of its own, not ordered with
+    // `client`'s input: `other` watches once its first frame is there.
+    other
+        .wait_for(|msg| matches!(msg, server_message::Msg::Frame(_)).then_some(()))
+        .await;
 
     // The pane knows its server and how to reach it.
     let check = format!(

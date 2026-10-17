@@ -11,6 +11,21 @@ include!(concat!(env!("OUT_DIR"), "/tilr.v1.rs"));
 
 pub const PROTOCOL_VERSION: u32 = 2;
 
+/// WebSocket close codes the server ends a connection with, besides the
+/// standard ones; the close frame's reason is the text given here.
+pub mod close {
+    /// A newer connection of the same client (`Hello.client_id`) took over.
+    /// The client does not reconnect this one.
+    pub const SUPERSEDED: u16 = 4000;
+    pub const SUPERSEDED_REASON: &str = "superseded";
+    /// The client did not take what it was sent.
+    pub const TOO_SLOW: u16 = 4001;
+    pub const TOO_SLOW_REASON: &str = "too slow";
+    /// The client went silent, or stopped answering the server's pings.
+    pub const TIMEOUT: u16 = 4002;
+    pub const TIMEOUT_REASON: &str = "timeout";
+}
+
 /// Modifier bits used in [`KeyInput::mods`] and [`MouseInput::mods`].
 pub mod mods {
     pub const SHIFT: u32 = 1;

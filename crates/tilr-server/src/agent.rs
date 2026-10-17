@@ -32,7 +32,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::metrics::ToClient;
+use crate::outbox::ToClient;
 use crate::{clipboard, host};
 
 /// Set in every pane to the path of its socket.

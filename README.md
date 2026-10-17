@@ -110,7 +110,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--no-clipboard` | | Turn the shared clipboard off |
 | `--clipboard-max SIZE` | `20MB` | Largest clipboard upload (`512K`, `20MB`, `1G`) |
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
-| `--client-timeout SECS` | `30` | Drop a client that stays silent this long; `0` = never |
+| `--client-timeout SECS` | `30` | Drop a client that stays silent, or does not answer the server's pings, this long; `0` = never |
 | `--no-auto-reload` | | Do not reload when the executable changes |
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
@@ -318,9 +318,42 @@ version of the server, and is the first message the client gets: nothing else
 is sent to it before.
 
 The server sends a WebSocket ping every third of `--client-timeout`. Browsers
-and WebSocket libraries answer on their own. A client that stays silent for
-the whole timeout has dropped off the network without closing the connection:
-the server drops it, and its panes stop counting it as a viewer.
+and WebSocket libraries answer on their own. A client is dropped, and its
+panes stop counting it as a viewer, when nothing came from it for the whole
+timeout (it dropped off the network without closing the connection, or its
+way to the server is cut), or when it still sends (something within the last
+ping interval) but answered no ping for the whole timeout: it no longer hears
+the server, its way from the server cut. What the client sends, `Ping`
+included, does not keep a connection alive whose other direction is dead. The log says which (`client went silent`, `client stopped answering
+pings`), and the server closes the connection with WebSocket close code 4002
+(`timeout`), or resets it if not even the close gets out.
+
+A client is one instance of an app (a window, a tab, a process), and says so
+in `Hello.client_id`: a UUID v4 it makes up when it starts and sends on every
+connection it makes. When a `Hello` names the `client_id` of a connection
+still open, under the same access token, the server closes that older
+connection at once with close code 4000 (`superseded`): it is the same client
+come back (from another network, after a reload of its page), and the old
+connection is what the network it left still holds, a ghost viewer otherwise
+until the client timeout. The new connection starts afresh and subscribes
+itself; nothing is carried over and no input is replayed (input sent into the
+old connection may be lost, never doubled). A client does not reconnect a
+connection closed as superseded. Another token with the same id supersedes
+nobody; an empty `client_id` neither supersedes nor is superseded.
+`PaneInfo.viewed_by` lists each viewer's `client_id`, name and address, and the
+log has them on connect, hello, supersede and drop.
+
+The server does not hoard frames for a client that cannot keep up. Unsent
+data the kernel holds for a client is kept small (`TCP_NOTSENT_LOWAT`, 16 KiB),
+so what it is behind on waits in its queue. A client whose queue has held a
+packet for longer than 250 ms lags: its frames of a pane are skipped until
+its queue is written out, then it gets a full frame of the screen as it is
+then (the pane is asked for one; the other viewers get it too), whose
+`last_input_seq` carries the client's own latest input if a skipped frame
+echoed it. A client that skips gets fewer frames, each up to date, instead of
+a growing backlog of stale ones; other clients are not slowed. A client whose
+queue fills up all the same (1024 packets) is dropped (`client too slow`, close
+code 4001), and its connection closed at once, whatever was queued.
 
 A page in a browser cannot see those pings, so for the other direction there
 is `Ping` (feature `"ping"`): the server answers `Pong` with the same nonce at
@@ -407,6 +440,8 @@ curl -H "Authorization: Bearer $(tilr-server token)" http://127.0.0.1:7890/metri
 | `tilr_pane_frames_total{pane}` | counter | Frames the pane produced |
 | `tilr_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
 | `tilr_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
+| `tilr_pane_frames_skipped_total{pane}` | counter | Frames not sent to a client that lagged (it got the whole screen later), one per frame and client |
+| `tilr_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings) |
 | `tilr_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
 | `tilr_pane_input_bytes_total{pane}` | counter | Their bytes |
 | `tilr_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |

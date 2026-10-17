@@ -23,10 +23,10 @@ use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use tilr_proto::{
-    ClientMessage, ClipboardAck, ClipboardPut, CreatePane, Error as ProtoError, HelloAck,
+    ClientMessage, ClipboardAck, ClipboardPut, CreatePane, Error as ProtoError, Frame, HelloAck,
     HostEvent, PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState,
-    PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, client_message::Msg,
-    server_message,
+    PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, Viewer, client_message::Msg,
+    close, server_message,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe;
@@ -38,14 +38,15 @@ use tokio::time::{Interval, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use uuid::Uuid;
 
-use crate::metrics::{self, Outgoing, ToClient};
+use crate::link::FrameHead;
+use crate::metrics::{self, ClientDrop};
+use crate::outbox::{self, Outgoing, ToClient};
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
 use crate::{agent, auth, clipboard, cloud, files, host, identity, link, pty, reload, socks};
 
-/// Packets queued for one client before it is considered stuck and dropped.
-const CLIENT_QUEUE: usize = 1024;
 const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
 /// queued for it.
@@ -56,6 +57,17 @@ const RELOAD_RETRY: Duration = Duration::from_millis(200);
 /// Pings sent to a client within the time it may stay silent, so that one
 /// lost ping does not cost the connection.
 const PINGS_PER_TIMEOUT: u32 = 3;
+/// How long closing a connection may take: the close frame going out, and
+/// the client's answer coming back. A connection that does not close in time
+/// is reset, and whatever it still held for the client is thrown away.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Unsent bytes the kernel holds for a client before the writer waits
+/// (`TCP_NOTSENT_LOWAT`): what a slow client is behind on stays in its queue,
+/// where frames can still be skipped, instead of in the socket. On a lossy
+/// network TCP sends a segment or two per round trip, so every few KB held
+/// there are seconds of delay; a fast network takes it as soon as it is
+/// written.
+const UNSENT_LIMIT: libc::c_int = 4 * 1024;
 /// Feature name for the shared clipboard, see `HelloAck.features`.
 const FEATURE_CLIPBOARD: &str = "clipboard";
 /// Feature name for `Ping`, see `HelloAck.features`.
@@ -81,7 +93,10 @@ type ToPane = (Bytes, Option<Instant>);
 enum Event {
     ClientConnected {
         id: ClientId,
+        addr: SocketAddr,
         tx: ToClient,
+        /// Ends the connection.
+        close: mpsc::UnboundedSender<Closing>,
     },
     ClientPacket {
         id: ClientId,
@@ -89,7 +104,15 @@ enum Event {
         /// When the connection's task read it.
         received: Instant,
     },
+    /// The connection ended: closed by the client or the network, or by its
+    /// task for `why`.
     ClientGone {
+        id: ClientId,
+        why: Option<ClientDrop>,
+    },
+    /// What was queued for the client is written out, as it asked
+    /// ([`ToClient::want_drained`]).
+    ClientDrained {
         id: ClientId,
     },
     /// The pane process has its shell running.
@@ -102,6 +125,8 @@ enum Event {
         packet: Bytes,
         /// When the pane's reader took it off the pipe.
         read_at: Instant,
+        /// What the packet is, if the pane process said (a frame).
+        head: Option<FrameHead>,
     },
     /// Title or working directory changed inside the pane.
     PaneStatus {
@@ -141,6 +166,8 @@ enum Event {
 
 struct Client {
     tx: ToClient,
+    close: mpsc::UnboundedSender<Closing>,
+    addr: SocketAddr,
     subscriptions: HashSet<PaneId>,
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
@@ -149,6 +176,40 @@ struct Client {
     host_events: bool,
     /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
     agent: bool,
+    /// `Hello.client_id`, `client_name` and `token`.
+    client_id: String,
+    name: String,
+    token: String,
+    /// Panes whose frames this client is skipping until a full one, because
+    /// it lagged; see [`Supervisor::on_pane_output`].
+    lagging: HashMap<PaneId, Lag>,
+}
+
+/// What a client missed of a pane while its frames were skipped.
+#[derive(Default)]
+struct Lag {
+    /// The latest of the client's own input seqs among the skipped frames'
+    /// `last_input_seq`, 0 if none: the full frame that ends the lag carries
+    /// it, so every input still gets its echo.
+    own_seq: u64,
+}
+
+/// How a connection is to end, as its writer is told.
+enum Closing {
+    /// Write out what is queued (a refusal), then close.
+    Flush,
+    /// Close at once, whatever is queued, with this code and reason.
+    Now(u16, &'static str),
+}
+
+/// Why the supervisor forgets a client.
+#[derive(Clone, Copy)]
+enum Gone {
+    /// Its connection ended.
+    Disconnected,
+    /// Turned away (see [`Supervisor::refuse`]).
+    Refused,
+    Dropped(ClientDrop),
 }
 
 struct Pane {
@@ -164,6 +225,9 @@ struct Pane {
     link: Link,
     /// What `/metrics` reports for the pane.
     counters: metrics::PaneCounters,
+    /// A full frame is asked for, for clients that lagged, and has not come
+    /// yet.
+    full_asked: bool,
 }
 
 /// The tasks moving packets to and from one pane process.
@@ -627,54 +691,111 @@ async fn serve_client(
         return;
     }
     tracing::info!(client = id, %addr, "client connected");
+    let socket = ws.get_ref().as_raw_fd();
+    limit_unsent(socket);
     let (mut sink, mut source) = ws.split();
-    let (tx, mut rx) = mpsc::channel::<Outgoing>(CLIENT_QUEUE);
-    if events.send(Event::ClientConnected { id, tx }).is_err() {
+    let (tx, mut outbox) = outbox::channel();
+    let (closer, mut closing) = mpsc::unbounded_channel();
+    let connected = Event::ClientConnected {
+        id,
+        addr,
+        tx,
+        close: closer.clone(),
+    };
+    if events.send(connected).is_err() {
         return;
     }
 
     // A network that drops out without closing the connection leaves it open
     // for hours. Pings make a client that is still there answer, so one that
-    // stays silent is known to be gone.
+    // stays silent is known to be gone, and one that sends but no longer
+    // answers is known not to hear the server.
     let mut ping = client_timeout.map(|timeout| {
         let mut ping = tokio::time::interval(timeout / PINGS_PER_TIMEOUT);
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ping
     });
-    // Ends when the supervisor drops the client's sender.
-    let writer = tokio::spawn(async move {
-        loop {
+    // Ends when the connection is to close (see `Closing`), with whether the
+    // close went out.
+    let drained = events.clone();
+    let mut writer = tokio::spawn(async move {
+        let how = loop {
             let (message, read_at) = tokio::select! {
-                packet = rx.recv() => match packet {
+                // The supervisor says why before it lets go of the queue.
+                biased;
+                how = closing.recv() => break how,
+                packet = outbox.recv() => match packet {
                     Some(Outgoing { packet, read_at }) => (Message::Binary(packet), read_at),
-                    None => break,
+                    None => break closing.try_recv().ok(),
                 },
                 () = tick(&mut ping) => (Message::Ping(Bytes::new()), None),
             };
-            if sink.send(message).await.is_err() {
-                break;
+            let packet = matches!(message, Message::Binary(_));
+            let send = sink.send(message);
+            tokio::pin!(send);
+            tokio::select! {
+                sent = &mut send => if sent.is_err() {
+                    return false;
+                },
+                how = closing.recv() => {
+                    // A close at once does not wait for a client that does
+                    // not read; any other finishes what it was writing.
+                    if !matches!(how, Some(Closing::Now(..))) {
+                        let _ = tokio::time::timeout(CLOSE_TIMEOUT, send).await;
+                    }
+                    break how;
+                }
             }
             if let Some(read_at) = read_at {
                 shared_metrics.route.observe(read_at.elapsed());
             }
-        }
-        let _ = sink.close().await;
+            if packet && outbox.written() {
+                let _ = drained.send(Event::ClientDrained { id });
+            }
+        };
+        let close = async {
+            let frame = match how {
+                Some(Closing::Now(code, reason)) => Some(CloseFrame {
+                    code: code.into(),
+                    reason: reason.into(),
+                }),
+                Some(Closing::Flush) => {
+                    while let Some(Outgoing { packet, .. }) = outbox.try_recv() {
+                        sink.send(Message::Binary(packet)).await?;
+                    }
+                    None
+                }
+                None => None,
+            };
+            sink.send(Message::Close(frame)).await
+        };
+        matches!(tokio::time::timeout(CLOSE_TIMEOUT, close).await, Ok(Ok(())))
     });
 
-    loop {
-        let message = match client_timeout {
-            Some(timeout) => match tokio::time::timeout(timeout, source.next()).await {
-                Ok(message) => message,
-                Err(_) => {
-                    tracing::warn!(client = id, "client went silent, dropping");
-                    break;
-                }
-            },
-            None => source.next().await,
+    let mut heard = tokio::time::Instant::now();
+    let mut answered = heard;
+    let why = loop {
+        let mut wake = None;
+        if let Some(timeout) = client_timeout {
+            match judge(heard, answered, timeout) {
+                Ok(next) => wake = Some(next),
+                Err(why) => break Some(why),
+            }
+        }
+        let message = tokio::select! {
+            biased;
+            // The supervisor closed the connection.
+            closed = &mut writer => {
+                finish_close(&mut source, socket, closed.unwrap_or(false)).await;
+                break None;
+            }
+            message = source.next() => message,
+            () = sleep_until(wake) => continue,
         };
         let Some(Ok(message)) = message else {
-            break;
+            break None;
         };
+        heard = tokio::time::Instant::now();
         match message {
             Message::Binary(packet) => {
                 let received = Instant::now();
@@ -684,16 +805,127 @@ async fn serve_client(
                     received,
                 };
                 if events.send(event).is_err() {
-                    break;
+                    break None;
                 }
             }
-            Message::Close(_) => break,
+            Message::Pong(_) => answered = heard,
+            Message::Close(_) => break None,
             _ => {}
         }
+    };
+    let _ = events.send(Event::ClientGone { id, why });
+    if why.is_some() {
+        let _ = closer.send(Closing::Now(close::TIMEOUT, close::TIMEOUT_REASON));
+        if let Ok(closed) = writer.await {
+            finish_close(&mut source, socket, closed).await;
+        }
+    } else if !writer.is_finished() {
+        writer.abort();
     }
-    let _ = events.send(Event::ClientGone { id });
-    writer.abort();
-    tracing::info!(client = id, "client disconnected");
+}
+
+/// Whether a client is still there, from when anything was last `heard`
+/// from it and when it last `answered` a ping: `Ok` with when to look again,
+/// or why it is to be dropped. Silent: nothing heard for the timeout, the
+/// way from it gone (or the client). Deaf: it still sends (within the last
+/// ping interval) but answered no ping for the timeout, the way to it gone. A
+/// client that went quiet only a while ago is given the rest of its timeout
+/// as silent, not judged deaf for the pongs it could not send meanwhile.
+fn judge(
+    heard: tokio::time::Instant,
+    answered: tokio::time::Instant,
+    timeout: Duration,
+) -> Result<tokio::time::Instant, ClientDrop> {
+    let now = tokio::time::Instant::now();
+    if now >= heard + timeout {
+        return Err(ClientDrop::Silent);
+    }
+    let talking = now < heard + timeout / PINGS_PER_TIMEOUT;
+    if now >= answered + timeout {
+        if talking {
+            return Err(ClientDrop::NoPong);
+        }
+        // Deaf as soon as it talks again (a message wakes the loop), silent
+        // if it does not.
+        return Ok(heard + timeout);
+    }
+    Ok((answered + timeout).min(heard + timeout))
+}
+
+/// After the close frame went out (`sent`), wait a moment for the client's
+/// answer, which ends the connection cleanly. A close frame that could not
+/// go out leaves the connection to be reset when dropped: what the socket
+/// still holds for the client is stale, and a client that does not read
+/// would hold it for minutes.
+async fn finish_close<S>(source: &mut S, socket: RawFd, sent: bool)
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    if !sent {
+        return reset_on_close(socket);
+    }
+    let _ = tokio::time::timeout(CLOSE_TIMEOUT, async {
+        while let Some(Ok(message)) = source.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+    })
+    .await;
+}
+
+/// Sleep until `deadline`; forever without one.
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Keep at most [`UNSENT_LIMIT`] bytes unsent in the client's socket. Best
+/// effort: without it a slow client is only found later.
+fn limit_unsent(socket: RawFd) {
+    #[cfg(target_os = "linux")]
+    const TCP_NOTSENT_LOWAT: libc::c_int = libc::TCP_NOTSENT_LOWAT;
+    // <netinet/tcp.h>; the libc crate does not have it for Apple.
+    #[cfg(target_os = "macos")]
+    const TCP_NOTSENT_LOWAT: libc::c_int = 0x201;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    set_socket_option(socket, libc::IPPROTO_TCP, TCP_NOTSENT_LOWAT, &UNSENT_LIMIT);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = socket;
+}
+
+/// Have closing `socket` reset the connection instead of sending what is
+/// left: a linger of zero.
+fn reset_on_close(socket: RawFd) {
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    set_socket_option(socket, libc::SOL_SOCKET, libc::SO_LINGER, &linger);
+}
+
+fn set_socket_option<T>(socket: RawFd, level: libc::c_int, name: libc::c_int, value: &T) {
+    // SAFETY: `value` points to a live T of the size passed; the socket is
+    // the caller's, open for as long as the call.
+    let status = unsafe {
+        libc::setsockopt(
+            socket,
+            level,
+            name,
+            std::ptr::from_ref(value).cast(),
+            std::mem::size_of::<T>() as libc::socklen_t,
+        )
+    };
+    if status != 0 {
+        tracing::debug!(
+            level,
+            name,
+            "setsockopt failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 /// What a WebSocket on the listening port is for.
@@ -915,15 +1147,26 @@ impl Supervisor {
 
     fn on_event(&mut self, event: Event) {
         match event {
-            Event::ClientConnected { id, tx } => {
+            Event::ClientConnected {
+                id,
+                addr,
+                tx,
+                close,
+            } => {
                 self.clients.insert(
                     id,
                     Client {
                         tx,
+                        close,
+                        addr,
                         subscriptions: HashSet::new(),
                         greeted: false,
                         host_events: false,
                         agent: false,
+                        client_id: String::new(),
+                        name: String::new(),
+                        token: String::new(),
+                        lagging: HashMap::new(),
                     },
                 );
             }
@@ -932,13 +1175,17 @@ impl Supervisor {
                 packet,
                 received,
             } => self.on_client_packet(id, packet, received),
-            Event::ClientGone { id } => self.drop_client(id),
+            Event::ClientGone { id, why } => {
+                self.drop_client(id, why.map_or(Gone::Disconnected, Gone::Dropped));
+            }
+            Event::ClientDrained { id } => self.on_client_drained(id),
             Event::PaneStarted { pane_id } => self.on_pane_started(pane_id),
             Event::PaneOutput {
                 pane_id,
                 packet,
                 read_at,
-            } => self.on_pane_output(pane_id, packet, read_at),
+                head,
+            } => self.on_pane_output(pane_id, packet, read_at, head),
             Event::PaneStatus { pane_id, status } => {
                 if let Some(pane) = self.panes.get_mut(&pane_id) {
                     pane.title = status.title;
@@ -1032,6 +1279,7 @@ impl Supervisor {
                     to_pane: sender,
                     link,
                     counters: metrics::PaneCounters::default(),
+                    full_asked: false,
                 },
             );
         }
@@ -1217,10 +1465,21 @@ impl Supervisor {
         }
         match msg {
             Msg::Hello(hello) => {
+                self.supersede(client_id, &hello.client_id, &hello.token);
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.greeted = true;
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                     client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
+                    tracing::info!(
+                        client = client_id,
+                        client_id = hello.client_id,
+                        name = hello.client_name,
+                        addr = %client.addr,
+                        "client said hello"
+                    );
+                    client.client_id = hello.client_id;
+                    client.name = hello.client_name;
+                    client.token = hello.token;
                 }
                 let clipboard_max_bytes =
                     self.clipboard.as_ref().map(clipboard::Receiver::max_bytes);
@@ -1280,6 +1539,7 @@ impl Supervisor {
                     pane.subscribers.remove(&client_id);
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.subscriptions.remove(&pane_id);
+                        client.lagging.remove(&pane_id);
                     }
                     if let Some(agent) = &mut self.agent {
                         agent.unsubscribed(pane_id, client_id);
@@ -1407,7 +1667,7 @@ impl Supervisor {
             }
         }
         for client_id in stuck {
-            self.drop_client(client_id);
+            self.drop_stuck(client_id);
         }
         if delivered == 0 {
             return Err("no tilr client attached".into());
@@ -1504,6 +1764,7 @@ impl Supervisor {
             to_pane,
             link,
             counters: metrics::PaneCounters::default(),
+            full_asked: false,
         };
         self.starting.insert(
             pane_id,
@@ -1543,20 +1804,67 @@ impl Supervisor {
         self.broadcast_pane_list();
     }
 
-    fn on_pane_output(&mut self, pane_id: PaneId, packet: Bytes, read_at: Instant) {
+    /// Pass a pane's packet on to its subscribers. A frame (`head`) is
+    /// skipped for a client that lags behind (see [`ToClient::lagging`]): it
+    /// gets no more frames of the pane until a full one, asked of the pane
+    /// once its queue is written out, brings it the screen as it is then.
+    /// Its own input echoed in the frames it missed is carried by that one.
+    fn on_pane_output(
+        &mut self,
+        pane_id: PaneId,
+        packet: Bytes,
+        read_at: Instant,
+        head: Option<FrameHead>,
+    ) {
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
         // What a pane process relays is its frames.
         pane.counters.frames += 1;
         pane.counters.frame_bytes += packet.len() as u64;
+        if head.is_some_and(|head| head.full) {
+            pane.full_asked = false;
+        }
         let mut stuck = Vec::new();
+        let mut ask_full = false;
         for &client_id in &pane.subscribers {
-            let Some(client) = self.clients.get(&client_id) else {
+            let Some(client) = self.clients.get_mut(&client_id) else {
                 continue;
             };
+            let mut packet = packet.clone();
+            if let Some(head) = head {
+                let own = (head.last_input_seq >> 32 == client_id).then_some(head.last_input_seq);
+                match client.lagging.get_mut(&pane_id) {
+                    Some(lag) if !head.full => {
+                        lag.own_seq = lag.own_seq.max(own.unwrap_or(0));
+                        pane.counters.frames_skipped += 1;
+                        ask_full |= client.tx.drained();
+                        continue;
+                    }
+                    Some(_) => {
+                        let lag = client.lagging.remove(&pane_id).unwrap_or_default();
+                        let seq = lag.own_seq.max(own.unwrap_or(0));
+                        if lag.own_seq != 0 && seq != head.last_input_seq {
+                            packet = with_last_input_seq(&packet, seq).unwrap_or(packet);
+                        }
+                    }
+                    None if !head.full && client.tx.lagging() => {
+                        tracing::debug!(client = client_id, pane = %pane_id, "client lags, skipping frames");
+                        client.lagging.insert(
+                            pane_id,
+                            Lag {
+                                own_seq: own.unwrap_or(0),
+                            },
+                        );
+                        client.tx.want_drained();
+                        pane.counters.frames_skipped += 1;
+                        continue;
+                    }
+                    None => {}
+                }
+            }
             let outgoing = Outgoing {
-                packet: packet.clone(),
+                packet,
                 read_at: Some(read_at),
             };
             if client.tx.try_send(outgoing).is_ok() {
@@ -1565,11 +1873,26 @@ impl Supervisor {
                 stuck.push(client_id);
             }
         }
+        if ask_full {
+            ask_full_frame(pane_id, pane);
+        }
         // A client that lost a diff has a corrupt screen; disconnecting it is
         // the honest outcome.
         for client_id in stuck {
-            tracing::warn!(client = client_id, "client too slow, dropping");
-            self.drop_client(client_id);
+            self.drop_stuck(client_id);
+        }
+    }
+
+    /// A client that lagged has written out its queue: ask the panes it
+    /// skipped for a full frame.
+    fn on_client_drained(&mut self, client_id: ClientId) {
+        let Some(client) = self.clients.get(&client_id) else {
+            return;
+        };
+        for pane_id in client.lagging.keys() {
+            if let Some(pane) = self.panes.get_mut(pane_id) {
+                ask_full_frame(*pane_id, pane);
+            }
         }
     }
 
@@ -1607,15 +1930,62 @@ impl Supervisor {
         )));
         for client in self.clients.values_mut() {
             client.subscriptions.remove(&pane_id);
+            client.lagging.remove(&pane_id);
             let _ = client.tx.try_send(packet.clone().into());
         }
         self.broadcast_pane_list();
     }
 
-    fn drop_client(&mut self, client_id: ClientId) {
+    /// Forget a client and end its connection, saying why.
+    fn drop_client(&mut self, client_id: ClientId, why: Gone) {
         let Some(client) = self.clients.remove(&client_id) else {
             return;
         };
+        let (id, addr) = (client.client_id.as_str(), client.addr);
+        let closing = match why {
+            Gone::Disconnected => {
+                tracing::info!(client = client_id, client_id = id, %addr, "client disconnected");
+                None
+            }
+            Gone::Refused => Some(Closing::Flush),
+            Gone::Dropped(drop) => {
+                self.metrics.count_drop(drop);
+                let (code, reason) = match drop {
+                    ClientDrop::Superseded => {
+                        tracing::info!(
+                            client = client_id,
+                            client_id = id,
+                            %addr,
+                            "client superseded by a newer connection of the same client, dropping"
+                        );
+                        (close::SUPERSEDED, close::SUPERSEDED_REASON)
+                    }
+                    ClientDrop::TooSlow => {
+                        tracing::warn!(client = client_id, client_id = id, %addr, "client too slow, dropping");
+                        (close::TOO_SLOW, close::TOO_SLOW_REASON)
+                    }
+                    ClientDrop::Silent => {
+                        tracing::warn!(client = client_id, client_id = id, %addr, "client went silent, dropping");
+                        (close::TIMEOUT, close::TIMEOUT_REASON)
+                    }
+                    ClientDrop::NoPong => {
+                        tracing::warn!(
+                            client = client_id,
+                            client_id = id,
+                            %addr,
+                            "client stopped answering pings, dropping"
+                        );
+                        (close::TIMEOUT, close::TIMEOUT_REASON)
+                    }
+                };
+                Some(Closing::Now(code, reason))
+            }
+        };
+        // The connection's writer closes it; whatever else still holds the
+        // queue's sender (an agent stream) does not keep it open.
+        if let Some(closing) = closing {
+            let _ = client.close.send(closing);
+        }
         if let Some(clipboard) = &mut self.clipboard {
             clipboard.drop_client(client_id);
         }
@@ -1633,6 +2003,55 @@ impl Supervisor {
         }
         if had_subscriptions {
             self.broadcast_pane_list();
+        }
+    }
+
+    /// Drop a client whose queue took no more: too slow, unless its
+    /// connection is already gone.
+    fn drop_stuck(&mut self, client_id: ClientId) {
+        let gone = self
+            .clients
+            .get(&client_id)
+            .is_some_and(|client| client.tx.closed());
+        let why = if gone {
+            Gone::Disconnected
+        } else {
+            Gone::Dropped(ClientDrop::TooSlow)
+        };
+        self.drop_client(client_id, why);
+    }
+
+    /// A client says hello with `client_id`: close the connections it made
+    /// before that are still open, under the same token. They are what a
+    /// network the client left still holds (a half-open connection, a ghost
+    /// viewer until the client timeout).
+    fn supersede(&mut self, new: ClientId, client_id: &str, token: &str) {
+        if client_id.is_empty() {
+            return;
+        }
+        let old: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|&(&id, client)| {
+                id != new
+                    && client.greeted
+                    && client.client_id == client_id
+                    && auth::matches(&client.token, token)
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        for id in old {
+            if let (Some(old), Some(by)) = (self.clients.get(&id), self.clients.get(&new)) {
+                tracing::info!(
+                    client = id,
+                    client_id,
+                    addr = %old.addr,
+                    by = new,
+                    by_addr = %by.addr,
+                    "superseding the client's older connection"
+                );
+            }
+            self.drop_client(id, Gone::Dropped(ClientDrop::Superseded));
         }
     }
 
@@ -1656,7 +2075,24 @@ impl Supervisor {
     }
 
     fn pane_list(&self, request_id: u64) -> PaneList {
-        let mut panes: Vec<PaneInfo> = self.panes.iter().map(|(&id, pane)| pane.info(id)).collect();
+        let mut panes: Vec<PaneInfo> = self
+            .panes
+            .iter()
+            .map(|(&id, pane)| {
+                let mut info = pane.info(id);
+                info.viewed_by = pane
+                    .subscribers
+                    .iter()
+                    .filter_map(|id| self.clients.get(id))
+                    .map(|client| Viewer {
+                        client_id: client.client_id.clone(),
+                        client_name: client.name.clone(),
+                        address: client.addr.to_string(),
+                    })
+                    .collect();
+                info
+            })
+            .collect();
         // Oldest first; the id only settles panes made in the same millisecond.
         panes.sort_by(|a, b| (a.created_at_ms, &a.pane_id).cmp(&(b.created_at_ms, &b.pane_id)));
         PaneList { panes, request_id }
@@ -1678,7 +2114,7 @@ impl Supervisor {
             .map(|(&id, _)| id)
             .collect();
         for client_id in stuck {
-            self.drop_client(client_id);
+            self.drop_stuck(client_id);
         }
     }
 
@@ -1689,7 +2125,7 @@ impl Supervisor {
             .get(&client_id)
             .is_some_and(|client| client.tx.try_send(packet.into()).is_err());
         if stuck {
-            self.drop_client(client_id);
+            self.drop_stuck(client_id);
         }
     }
 
@@ -1707,7 +2143,7 @@ impl Supervisor {
         tracing::warn!(client = client_id, "refusing client: {reason}");
         self.send_error(client_id, reason);
         // The writer sends what is queued, then closes.
-        self.drop_client(client_id);
+        self.drop_client(client_id, Gone::Refused);
     }
 
     fn send_no_pane(&mut self, client_id: ClientId, named: &str) {
@@ -1727,8 +2163,34 @@ impl Pane {
             viewers: self.subscribers.len() as u32,
             created_at_ms: self.created_at_ms,
             pid: self.pid,
+            // Filled in by `Supervisor::pane_list`, which knows the clients.
+            viewed_by: Vec::new(),
         }
     }
+}
+
+/// Ask the pane for a full frame, for the clients that skipped its frames,
+/// unless one is asked for already. A subscribe is what makes a pane send one.
+fn ask_full_frame(pane_id: PaneId, pane: &mut Pane) {
+    if pane.full_asked {
+        return;
+    }
+    pane.full_asked = true;
+    let ask = ClientMessage::from(Msg::Subscribe(Subscribe {
+        pane_id: pane_id.to_string(),
+    }));
+    let _ = pane.to_pane.send((tilr_proto::encode(&ask), None));
+}
+
+/// A frame packet with `Frame.last_input_seq` set to `seq`; `None` if it is
+/// not a frame.
+fn with_last_input_seq(packet: &[u8], seq: u64) -> Option<Bytes> {
+    let mut msg = tilr_proto::decode::<ServerMessage>(packet).ok()?;
+    let Some(server_message::Msg::Frame(Frame { last_input_seq, .. })) = &mut msg.msg else {
+        return None;
+    };
+    *last_input_seq = seq;
+    Some(tilr_proto::encode(&msg))
 }
 
 /// The directory a new pane starts in: the one the client asked for, or the
@@ -1878,6 +2340,16 @@ async fn read_pane(
                     pane_id,
                     packet,
                     read_at: Instant::now(),
+                    head: None,
+                },
+                link::kind::FRAME => match FrameHead::split(packet) {
+                    Some((head, packet)) => Event::PaneOutput {
+                        pane_id,
+                        packet,
+                        read_at: Instant::now(),
+                        head: Some(head),
+                    },
+                    None => continue,
                 },
                 link::kind::STATUS => match tilr_proto::decode::<PaneStatus>(&packet) {
                     Ok(status) => Event::PaneStatus { pane_id, status },
@@ -1928,6 +2400,21 @@ async fn read_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_is_judged_silent_or_deaf_by_what_it_sends_and_answers() {
+        let timeout = Duration::from_secs(30);
+        let now = tokio::time::Instant::now();
+        let ago = |secs| now - Duration::from_secs(secs);
+        // Answers, talks: look again when the first of the two runs out.
+        assert_eq!(judge(ago(1), ago(5), timeout), Ok(ago(5) + timeout));
+        // Nothing heard for the timeout.
+        assert_eq!(judge(ago(31), ago(31), timeout), Err(ClientDrop::Silent));
+        // Still talking, no pong for the timeout: the way to it is gone.
+        assert_eq!(judge(ago(1), ago(31), timeout), Err(ClientDrop::NoPong));
+        // Quiet for a while and no pong: the rest of its timeout as silent.
+        assert_eq!(judge(ago(20), ago(31), timeout), Ok(ago(20) + timeout));
+    }
 
     #[test]
     fn metrics_without_a_token_are_for_this_machine_only() {

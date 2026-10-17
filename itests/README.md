@@ -21,6 +21,7 @@ cd itests
 ./dt --only scenarios --filter uc_040  # one use case
 ./dt --only rust --filter reload       # some Rust tests
 ./dt --only scenarios --repeat 5       # every scenario five times: flakiness
+./dt --only rust --filter edit --repeat 200   # Rust tests too
 ./dt --jobs 32                         # concurrency (default 16; the engine has 8 CPUs)
 ./dt --cached                          # rerun only tests whose inputs changed
 ./dt fixtures                          # fixture graph and how many cases use each
@@ -109,7 +110,7 @@ every subscribed pane's screen from the frames.
 
 | Command | Arguments | Answer |
 | --- | --- | --- |
-| `connect` | `url`, `token`, `origin`, `features` (default `["ping"]`), `timeout_ms` | `connected` with `server_version`, `features`, `seq_base` |
+| `connect` | `url`, `token`, `origin`, `features` (default `["ping"]`), `timeout_ms`, `client_id` (`Hello.client_id`; default: the driver's own, made up when it starts and kept across its reconnects) | `connected` with `server_version`, `features`, `seq_base`, `client_id` |
 | `create_pane` | `cols`, `rows`, `cwd`, `command`, `subscribe` (default true) | `pane_created` with `pane`, `info` |
 | `subscribe` / `unsubscribe` / `close_pane` | `pane` | `ok` |
 | `input` / `paste` | `pane`, `text` (raw bytes, escapes are JSON's) | `ok` with the input `seq` |
@@ -117,7 +118,7 @@ every subscribed pane's screen from the frames.
 | `resize` | `pane`, `cols`, `rows` | `ok` |
 | `screen` | `pane` | `screen`: `rows`, `text`, `cursor`, `alt_screen`, `title`, `frames` |
 | `wait_for` | `pane`, `regex` (on the screen text, rows joined by `\n`), `timeout_ms` | `matched` with `groups`, or an error with the screen |
-| `list` | | `panes` |
+| `list` | | `panes` (each with `viewers` and `viewed_by`: `client_id`, `name`, `addr` per viewer) |
 | `ping` | `timeout_ms` | `pong` with `rtt_ms` |
 | `keepalive` | `interval_ms` (0 = off), `timeout_ms`, `auto_reconnect`, `reconnect_timeout_ms`, `attempt_timeout_ms` (one reconnect attempt, 3000), `mode` (`any`: any data is a sign of life; `pong`: only answers to its pings), `abandon` (`close`; `leak`: a dead connection is left open and unread, like a suspended app) | `ok` |
 | `reconnect` | `timeout_ms` | `reconnected` with `ms`, `attempts`, `server_version` |
@@ -133,7 +134,8 @@ every subscribed pane's screen from the frames.
 | `frames` | `since` (index), `pane`, `reset` | `frames`: the last 20000 frames (`t`, `pane`, `seq`, `full`, `rows`, `bytes`, `input_seq`, the pane's `FrameTiming`), `seen`, `bytes`, `max_gap_ms` |
 | `quit` | | `bye` |
 
-Unsolicited events: `disconnected` (reason), `dead` (keepalive saw `timeout_ms` of
+Unsolicited events: `disconnected` (`reason`; `superseded`: the server closed it with 4000
+because a newer connection of the same client id took over, and it is not reconnected), `dead` (keepalive saw `timeout_ms` of
 silence), `reconnected` / `reconnect_failed` (auto reconnect; resubscribes), `pane_exited`,
 `server_error`, `protocol_error`, `stream_open` / `stream_closed` / `stream_lost` (agent
 streams; a stream is lost with its connection). Screens go stale when the connection is
@@ -182,7 +184,7 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `host(name)` | a host container (`hosts=[...]`): `.ip .peer_ip` (the case container as the host reaches it) `.run() .sh() .driver(name) .net` |
 | `net()` | `Net` of the case's own container (`net_admin=True`) |
 | `Counter(t, driver, pane, period)` | a counter in a pane: `.last(d) .check_screen(d)` (moving, lines consecutive) `.check_log()` (the pane's own log: nothing skipped, longest gap as `counter_max_gap_ms`) |
-| driver extras | `.viewers(pane)` (as the server counts them), `.latency(reset)`, `.connected()`, `.wait_event(("dead", "disconnected"), since=)` |
+| driver extras | `.interrupt(pane)` (Ctrl-C until the prompt is back), `.viewers(pane)` (as the server counts them), `.latency(reset)`, `.connected()`, `.wait_event(("dead", "disconnected"), since=)` |
 | `service(name)` | URL of a service container named in `@case(services=[...])` |
 | `run(*argv)`, `sh(script)`, `spawn(*argv)` | processes (missing executable = exit 127) |
 | `procs(regex)`, `proc(pid)`, `listener_pid(port)` | /proc: pid, ppid, pgid, sid, tty, state, cmdline, rss_kb, fds |
@@ -273,8 +275,8 @@ its checksum, as `tilr-server update` reads them.
   only the program prints (`echo "<v""1>..."` is typed split for that reason; vim's
   `"file" [New]`, not the file name).
 * UC-040's server-side drop time varies between `client-timeout − ping interval` and
-  `client-timeout`: the server counts silence from the client's last message (its last
-  pong), not from the moment the network froze.
+  `client-timeout`: the server counts from the client's last pong, not from the moment
+  the network froze.
 * The interface of a Dagger container is `eth1`, not `eth0`.
 * `ss -K dst <case>` and `iptables` rules on the case's whole address also kill the
   host agent's own control connection: match the server's port.

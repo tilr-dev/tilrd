@@ -526,3 +526,121 @@ async fn metrics_count_frames_input_and_routing() {
         "{text}"
     );
 }
+
+#[tokio::test]
+async fn metrics_count_the_clients_let_go_and_why() {
+    let server = Server::start(&[]);
+    let url = format!("/metrics?token={}", server.token());
+    let drops = |text: &str, reason: &str| {
+        sample(
+            text,
+            &format!("tilr_client_drops_total{{reason=\"{reason}\"}}"),
+        )
+    };
+    let (_, text) = http_get(&server, &url, &[]).await;
+    assert_eq!(drops(&text, "superseded"), Some(0.0), "{text}");
+
+    let mut old = Client::connect_silent(&server).await;
+    old.client_id = "6c1d0c8e-0000-4000-8000-00000000000d".into();
+    old.hello().await;
+    let mut new = Client::connect_silent(&server).await;
+    new.client_id = old.client_id.clone();
+    new.hello().await;
+    while old.next().await.is_some() {}
+    let (_, text) = http_get(&server, &url, &[]).await;
+    assert_eq!(drops(&text, "superseded"), Some(1.0), "{text}");
+    assert_eq!(drops(&text, "too_slow"), Some(0.0), "{text}");
+}
+
+#[tokio::test]
+async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo() {
+    let server = Server::start(&[]);
+    let (mut fast, fast_base) = connect_with_base(&server).await;
+    let pane_id = fast.open_pane_with(300, 100, "").await;
+    // A client on a slow network: a small receive buffer fills at once.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let addr = server.addr.trim_start_matches("ws://").parse().unwrap();
+    let stream = socket.connect(addr).await.unwrap();
+    let (ws, _) = tokio_tungstenite::client_async(&server.addr, MaybeTlsStream::Plain(stream))
+        .await
+        .unwrap();
+    let mut slow = Client::connect_silent(&server).await;
+    slow.ws = ws;
+    let slow_base = slow.hello().await.seq_base;
+    slow.subscribe(pane_id).await;
+    // Frames of the shell's prompt may still be on their way ahead of it.
+    while !next_frame(&mut slow).await.full {}
+
+    // Output far faster than `slow` reads, which is not at all for a while:
+    // its frames pile up behind the socket.
+    fast.type_line(
+        pane_id,
+        "head -c 30000000 /dev/urandom | base64; sleep 1; echo \"<do\"\"ne>\"",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(4000)).await;
+    // Input of both while `slow` lags: its own comes first, so the frames
+    // that echo it are among those it misses.
+    send_with_seq(&mut slow, raw(pane_id, ""), slow_base + 1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    send_with_seq(&mut fast, raw(pane_id, ""), fast_base + 1).await;
+    // `fast` keeps reading meanwhile.
+    let read = async {
+        loop {
+            fast.next().await.expect("connection closed");
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(3), read).await;
+
+    // `slow` reads again: frames it was behind on, then a whole screen, the
+    // echo of its input, and the end of the output like everyone.
+    let mut echoed = false;
+    let mut full_after_lag = false;
+    let mut frames = 0;
+    let caught_up = async {
+        while !echoed || !slow.screen.text().contains("<done>") {
+            let frame = next_frame(&mut slow).await;
+            frames += 1;
+            full_after_lag |= frame.full;
+            echoed |= frame.last_input_seq == slow_base + 1;
+        }
+    };
+    // `fast` answers the server's pings meanwhile, as a client does.
+    let reading = async {
+        loop {
+            fast.next().await.expect("connection closed");
+        }
+    };
+    tokio::select! {
+        () = caught_up => {}
+        () = reading => unreachable!(),
+    }
+    assert!(
+        full_after_lag,
+        "no full frame after the lag ({frames} frames)"
+    );
+    fast.wait_screen("<done>").await;
+
+    let url = format!("/metrics?token={}", server.token());
+    let (_, text) = http_get(&server, &url, &[]).await;
+    let skipped = sample(
+        &text,
+        &format!("tilr_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
+    )
+    .unwrap_or_default();
+    let produced = sample(
+        &text,
+        &format!("tilr_pane_frames_total{{pane=\"{pane_id}\"}}"),
+    )
+    .unwrap_or_default();
+    assert!(skipped > 0.0, "nothing skipped:\n{text}");
+    assert!(
+        (frames as f64) < produced,
+        "{frames} frames of {produced} went to the lagging client"
+    );
+    assert_eq!(
+        sample(&text, "tilr_client_drops_total{reason=\"too_slow\"}"),
+        Some(0.0)
+    );
+}

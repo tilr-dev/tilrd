@@ -266,7 +266,7 @@ class TilrItests:
 
     # ---------------------------------------------------------------- rust, lint
 
-    async def _rust_tests(self, sem, run_id: str, filter: str) -> list[Result]:
+    async def _rust_tests(self, sem, run_id: str, filter: str, repeat: int = 1) -> list[Result]:
         out = self.build()
         manifest = json.loads(await out.file("manifest.json").contents())
         base = (
@@ -274,7 +274,6 @@ class TilrItests:
             .with_directory(SRC, self.source)
             .with_directory("/out/tests", out.directory("tests"))
             .with_file(f"{TARGET}/debug/tilr-server", out.file("bin/tilr-server-failpoints"))
-            .with_env_variable("TT_RUN", run_id)
         )
         jobs = []
         for s in manifest["suites"]:
@@ -282,8 +281,10 @@ class TilrItests:
                 rid = f"rust:{s['suite']}::{name}"
                 if filter and filter not in rid:
                     continue
-                ctr = base.with_workdir(s["manifest_dir"])
-                jobs.append(self._run(sem, ctr, [s["exe"], "--exact", name, "--test-threads=1"], rid, "rust"))
+                for k in range(1, repeat + 1):
+                    ctr = base.with_workdir(s["manifest_dir"]).with_env_variable("TT_RUN", f"{run_id}-{k}")
+                    jobs.append(self._run(sem, ctr, [s["exe"], "--exact", name, "--test-threads=1"],
+                                          rid + (f"#{k}" if repeat > 1 else ""), "rust"))
         return list(await asyncio.gather(*jobs))
 
     async def _lint(self, sem, run_id: str, filter: str) -> list[Result]:
@@ -475,7 +476,7 @@ class TilrItests:
         filter: Annotated[str, Doc("substring of a test id, e.g. uc_040 or reload")] = "",
         jobs: Annotated[int, Doc("tests running at once")] = 16,
         cached: Annotated[bool, Doc("reuse results of tests whose inputs did not change")] = False,
-        repeat: Annotated[int, Doc("run every scenario this many times (flakiness hunt)")] = 1,
+        repeat: Annotated[int, Doc("run every scenario and Rust test this many times (flakiness hunt)")] = 1,
     ) -> dagger.Directory:
         """Run the tests concurrently; returns report.json, junit.xml, summary.txt, status and logs/."""
         kinds = {k.strip() for k in only.split(",") if k.strip()} or {"rust", "lint", "scenarios"}
@@ -487,7 +488,7 @@ class TilrItests:
         started = datetime.datetime.now(datetime.timezone.utc)
         groups = []
         if "rust" in kinds:
-            groups.append(self._rust_tests(sem, run_id, filter))
+            groups.append(self._rust_tests(sem, run_id, filter, max(1, repeat)))
         if "lint" in kinds:
             groups.append(self._lint(sem, run_id, filter))
         if "scenarios" in kinds:

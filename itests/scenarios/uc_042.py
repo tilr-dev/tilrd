@@ -8,9 +8,11 @@ comes back on "lte", another container with another IP, to the same pane. tilrd 
 the case's container with --client-timeout 6; an observer connected locally counts the
 viewers.
 
-The protocol has no client identity (Hello names no session to resume), so the server
-cannot tell that the new connection is the old client: the ghost viewer goes only when
-the old connection's silence reaches the client timeout. Recorded as ghost_viewer_ms.
+The client on lte is the same client instance (the same Hello.client_id, the same
+token): its Hello supersedes the half-open connection at once, so the ghost viewer is
+gone before the client has even subscribed again, well within a second, not when the
+old connection's silence reaches the client timeout. Recorded as ghost_viewer_ms (from
+the new connection's hello).
 """
 
 import re
@@ -26,21 +28,27 @@ def addresses(server) -> list[str]:
     return re.findall(r"client connected client=\d+ addr=([\d.]+):\d+", server.log_text())
 
 
-def move_to_lte(t: T, server, observer, wifi, lte, lte_url: str, pane: str, counter: Counter, cut, restore):
+def move_to_lte(t: T, server, observer, wifi, lte, lte_url: str, pane: str, counter: Counter, cut, restore,
+                client_id: str):
     t.eq(observer.viewers(pane), 1, "viewers before")
     since = wifi.mark()
     cut_at = time.monotonic()
     cut()
-    lte.connect(lte_url, token=server.token())
+    # The same app on its other network: the same client id.
+    hello = time.monotonic()
+    lte.connect(lte_url, token=server.token(), client_id=client_id)
+    t.eventually(lambda: observer.viewers(pane) == 0, "the new connection's hello supersedes the old viewer",
+                 timeout=1, interval=0.02)
+    ghost = time.monotonic() - hello
+    t.metric("ghost_viewer_ms", round(ghost * 1000))
+    t.ok(ghost < 1, f"no ghost viewer once the client is back ({ghost:.2f}s)")
+    t.ok(server.logged("client superseded by a newer connection") >= 1, "the server logged the supersede")
     lte.cmd("subscribe", pane=pane)
     counter.check_screen(lte, what="the screen on the new network")
     t.metric("new_network_screen_ms", round((time.monotonic() - cut_at) * 1000))
     seen = addresses(server)
     t.ok(len(set(seen)) >= 2, f"the new connection comes from another address ({seen})")
-    t.eventually(lambda: observer.viewers(pane) == 1, "the server collapses the old connection's viewer",
-                 timeout=CLIENT_TIMEOUT_S + 3, interval=0.1)
-    ghost = time.monotonic() - cut_at
-    t.metric("ghost_viewer_ms", round(ghost * 1000))
+    t.eq(observer.viewers(pane), 1, "one viewer: the client on its new network")
     dead = wifi.wait_event("dead", since=since, timeout=30)
     t.metric("old_client_detect_ms", round((dead["_at"] - cut_at) * 1000))
 
@@ -64,14 +72,15 @@ def a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection(t: T
     observer = t.driver("observer")
     observer.connect(server)
     wifi = wifi_host.driver("wifi")
-    wifi.connect(f"ws://{me}:{server.port}", token=server.token())
+    client_id = wifi.connect(f"ws://{me}:{server.port}", token=server.token())["client_id"]
     wifi.cmd("keepalive", interval_ms=KEEPALIVE_MS, timeout_ms=DEAD_AFTER_MS)
     pane = wifi.shell_pane(100, 30)
     counter = Counter(t, wifi, pane)
     wifi.wait_for(pane, r"(?m)^tick 20$")
     lte = lte_host.driver("lte")
     move_to_lte(t, server, observer, wifi, lte, f"ws://{lte_host.peer_ip}:{server.port}", pane, counter,
-                cut=lambda: wifi_host.net.drop(me, server.port), restore=wifi_host.net.restore)
+                cut=lambda: wifi_host.net.drop(me, server.port), restore=wifi_host.net.restore,
+                client_id=client_id)
 
 
 @case(fixture="server_state", hosts=["wifi", "lte"], services=["proxy"])
@@ -85,7 +94,7 @@ def a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_pro
     observer = t.driver("observer")
     observer.connect(server)
     wifi = wifi_host.driver("wifi")
-    wifi.connect(proxy.url, token=server.token())
+    client_id = wifi.connect(proxy.url, token=server.token())["client_id"]
     wifi.cmd("keepalive", interval_ms=KEEPALIVE_MS, timeout_ms=DEAD_AFTER_MS)
     pane = wifi.shell_pane(100, 30)
     counter = Counter(t, wifi, pane)
@@ -93,4 +102,4 @@ def a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_pro
     t.eq(proxy.stats()[0]["peer"].split(":")[0], wifi_host.ip, "the old path runs from the wifi container")
     lte = lte_host.driver("lte")
     move_to_lte(t, server, observer, wifi, lte, f"ws://{lte_host.peer_ip}:{server.port}", pane, counter,
-                cut=lambda: proxy.freeze(conn=1), restore=lambda: proxy.resume(conn=1))
+                cut=lambda: proxy.freeze(conn=1), restore=lambda: proxy.resume(conn=1), client_id=client_id)

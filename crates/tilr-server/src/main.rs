@@ -9,6 +9,7 @@ mod host;
 mod identity;
 mod link;
 mod metrics;
+mod outbox;
 mod pane;
 mod ps;
 mod pty;

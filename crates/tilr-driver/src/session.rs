@@ -37,6 +37,8 @@ pub struct Target {
     pub origin: Option<String>,
     pub features: Vec<String>,
     pub timeout: Duration,
+    /// `Hello.client_id`, the same on every connection.
+    pub client_id: String,
 }
 
 pub struct Keepalive {
@@ -150,6 +152,7 @@ impl Session {
         let started = Instant::now();
         let (ws, ack) = open(&target).await?;
         self.install(ws, &ack);
+        let client_id = target.client_id.clone();
         self.target = Some(target);
         Ok(json!({
             "server_version": ack.server_version,
@@ -158,6 +161,7 @@ impl Session {
             "server_id": ack.server_id,
             "seq_base": ack.seq_base,
             "fs_max_bytes": ack.fs_max_bytes,
+            "client_id": client_id,
             "ms": ms(started.elapsed()),
         }))
     }
@@ -197,12 +201,18 @@ impl Session {
     /// Forget the connection, as when the network goes: the socket is
     /// dropped without a closing handshake.
     pub fn lose(&mut self, reason: &str) {
+        self.lose_as(reason, false);
+    }
+
+    /// `superseded`: the server closed the connection because a newer one of
+    /// this client took over; a client does not reconnect that one.
+    fn lose_as(&mut self, reason: &str, superseded: bool) {
         if self.ws.take().is_none() {
             return;
         }
-        emit(json!({"ev": "disconnected", "reason": reason}));
+        emit(json!({"ev": "disconnected", "reason": reason, "superseded": superseded}));
         self.forget_streams(reason);
-        if self.auto_reconnect() && self.target.is_some() {
+        if self.auto_reconnect() && self.target.is_some() && !superseded {
             self.lost_at = Some((Instant::now(), reason.to_owned()));
             self.attempts = 0;
         }
@@ -367,8 +377,12 @@ impl Session {
         let packet = match message {
             Message::Binary(packet) => packet,
             Message::Close(frame) => {
+                let superseded = frame
+                    .as_ref()
+                    .is_some_and(|f| u16::from(f.code) == tilr_proto::close::SUPERSEDED);
                 let reason = frame.map(|f| format!("{} {}", f.code, f.reason));
-                self.lose(format!("server closed {}", reason.unwrap_or_default()).trim());
+                let reason = format!("server closed {}", reason.unwrap_or_default());
+                self.lose_as(reason.trim(), superseded);
                 return None;
             }
             _ => return None,
@@ -554,6 +568,7 @@ async fn open(target: &Target) -> Result<(Ws, tilr_proto::HelloAck)> {
             client_name: "tilr-driver".into(),
             features: target.features.clone(),
             token: target.token.clone(),
+            client_id: target.client_id.clone(),
         }));
         ws.send(Message::Binary(tilr_proto::encode(&hello))).await?;
         loop {

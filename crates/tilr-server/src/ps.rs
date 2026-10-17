@@ -40,6 +40,8 @@ async fn list_panes(url: &str) -> Result<(Vec<PaneInfo>, String)> {
             features: Vec::new(),
             // The server on this machine is this user's: its token is at hand.
             token: crate::auth::stored_token().unwrap_or_default(),
+            // A one-off look: no client instance to come back as.
+            client_id: String::new(),
         }),
         Msg::ListPanes(ListPanes { request_id: 1 }),
     ] {

@@ -410,6 +410,18 @@ class Driver:
     def key(self, pane: str, key: str) -> dict:
         return self.cmd("key", pane=pane, key=key)
 
+    def interrupt(self, pane: str, timeout: float = 30) -> None:
+        """Ctrl-C the pane's foreground program until the shell's prompt is back. Text typed
+        before the program died is flushed with it, so what comes next waits for this."""
+        deadline = time.monotonic() + timeout
+        while True:
+            self.key(pane, "ctrl-c")
+            left = max(0.5, min(3, deadline - time.monotonic()))
+            if self.wait_for(pane, r"(?m)^\$ ?$", timeout=left, ok=False).get("ev") == "matched":
+                return
+            if time.monotonic() >= deadline:
+                raise Failure(f"{self.name}: no prompt after Ctrl-C in {pane}")
+
     def screen(self, pane: str) -> dict:
         return self.cmd("screen", pane=pane, quiet=True)
 

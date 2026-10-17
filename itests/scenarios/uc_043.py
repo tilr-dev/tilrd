@@ -11,19 +11,35 @@ and types into a second pane, then the network heals.
 
 What TCP makes of 30% loss each way dominates what the client sees: retransmission
 backoff stalls the screen for tens of seconds, a reconnect may need several attempts, and
-the frames the server queues behind lost packets push input latency to 5-20 s (the
-server sends every frame to a lagging client; it neither merges them nor skips to the
-latest screen). Those are recorded as metrics; the assertions are what the server owes:
-no drop of a client that is only slow, at most a few disconnects, one viewer and a
-whole screen once the network heals.
+input latency is seconds (p50 1-13 s over runs). The server keeps what it is behind on
+out of the socket (4 KiB unsent at most) and skips frames for the lagging client
+(frames_skipped), sending the latest screen whole, so stale frames do not pile up behind
+lost packets; what remains is TCP's own backoff, both ways (the input goes up the same
+lossy link). Those are recorded as metrics; the assertions are what the server owes: no
+drop of a client that is only slow, at most a few disconnects, one viewer and a whole
+screen once the network heals.
 """
 
 import time
+import urllib.request
 
 from tt import T, Counter, case
 
 NETEM = "delay 500ms 200ms distribution normal loss 30%"
 WINDOW_S = 60
+
+
+def frames_skipped(server) -> float:
+    """Frames the server skipped for a client that lagged, all panes (tilr_pane_frames_skipped_total)."""
+    url = f"http://127.0.0.1:{server.port}/metrics?token={server.token()}"
+    text = urllib.request.urlopen(url, timeout=5).read().decode()
+    return sum(float(line.rsplit(" ", 1)[1]) for line in text.splitlines()
+               if line.startswith("tilr_pane_frames_skipped_total{"))
+
+
+def server_drops(server) -> int:
+    """Clients the server dropped for not being heard from, or not answering its pings."""
+    return server.logged("client went silent, dropping") + server.logged("client stopped answering pings")
 
 
 @case(fixture="server_state", hosts=["phone"], net_admin=True, timeout=400)
@@ -64,7 +80,9 @@ def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it
     reconnects = sum(e.get("ev") == "reconnected" for e in events)
     lat = phone.latency()
     t.metric("disconnects", disconnects)
-    t.metric("server_drops", server.logged("client went silent, dropping"))
+    drops = server_drops(server)
+    t.metric("server_drops", drops)
+    t.metric("frames_skipped", frames_skipped(server))
     t.metric("reconnects", reconnects)
     t.metric("longest_screen_stall_ms", round(longest_stall * 1000))
     t.metric("ticks_seen_in_window", last_tick)
@@ -73,8 +91,11 @@ def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it
 
     # Hard assertions are about the server; what the client lives through over a TCP
     # this lossy (retransmission backoff, frames queued behind lost packets) is recorded.
-    drops = server.logged("client went silent, dropping")
-    t.eq(drops, 0, f"the server never drops a client that is only slow (in {WINDOW_S}s)")
+    # The server drops a client whose pongs stop for its timeout (30 s); the client gives
+    # up on a connection silent for 15 s. Over a stall that long the client lets go first:
+    # the server never drops a connection the client still holds.
+    t.ok(drops <= disconnects, f"the server drops only connections the client gave up on ({drops} drops, "
+                               f"{disconnects} disconnects in {WINDOW_S}s)")
     t.ok(disconnects <= 3, f"the session is not torn down on every lag ({disconnects} disconnects in {WINDOW_S}s)")
 
     healed = time.monotonic()
@@ -85,7 +106,7 @@ def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it
     t.metric("recover_ms", round((time.monotonic() - healed) * 1000))
     t.eventually(lambda: observer.viewers(pane) == 1, "exactly one viewer after", timeout=40)
     counter.check_log()
-    phone.key(typing, "ctrl-c")
+    phone.interrupt(typing, timeout=60)
     t.eq(phone.run(typing, "echo typed-after", timeout=60), 0, "input works after the network heals")
 
 
@@ -119,10 +140,11 @@ def a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect(t: T)
     lat = client.latency()
     disconnects = sum(e.get("ev") == "disconnected" for e in client.events[since:])
     t.metric("disconnects", disconnects)
+    t.metric("frames_skipped", frames_skipped(server))
     t.metric("longest_screen_stall_ms", round(longest_stall * 1000))
     for k in ("count", "p50_ms", "p90_ms", "max_ms"):
         t.metric(f"input_latency_{k}", lat[k])
-    t.eq(server.logged("client went silent, dropping"), 0, "the server never drops the slow client")
+    t.eq(server_drops(server), 0, "the server never drops the slow client")
     t.eq(disconnects, 0, "the session is never torn down")
     t.ok(longest_stall <= 10, f"the screen keeps moving ({longest_stall:.1f}s at most without a new tick)")
     t.ok(lat["p90_ms"] is not None and lat["p90_ms"] < 5000, f"input gets through (p90 {lat['p90_ms']} ms)")

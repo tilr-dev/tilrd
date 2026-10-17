@@ -246,6 +246,8 @@ pub struct Client {
     pub host_events: VecDeque<HostEvent>,
     /// The server's access token, as `tilr-server token` prints it.
     pub token: String,
+    /// What `hello` says as `Hello.client_id`; empty: none.
+    pub client_id: String,
 }
 
 impl Client {
@@ -273,6 +275,7 @@ impl Client {
             acks: VecDeque::new(),
             host_events: VecDeque::new(),
             token: server.token(),
+            client_id: String::new(),
         })
     }
 
@@ -282,9 +285,12 @@ impl Client {
     }
 
     /// The next message, or `None` once the server closed the connection.
+    /// Fails if none comes within [`TIMEOUT`]: the server's pings, which come
+    /// all the time, do not count.
     pub async fn next(&mut self) -> Option<server_message::Msg> {
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
         loop {
-            let message = tokio::time::timeout(TIMEOUT, self.ws.next())
+            let message = tokio::time::timeout_at(deadline, self.ws.next())
                 .await
                 .expect("timed out waiting for the server");
             match message {
@@ -355,6 +361,7 @@ impl Client {
             client_name: "test".into(),
             features: features.iter().map(|f| (*f).to_owned()).collect(),
             token: self.token.clone(),
+            client_id: self.client_id.clone(),
         }))
         .await;
     }
@@ -542,6 +549,7 @@ impl Client {
                 acks: VecDeque::new(),
                 host_events: VecDeque::new(),
                 token: server.token(),
+                client_id: String::new(),
             }),
             Err(err) => Err(err.to_string()),
         }

@@ -1142,6 +1142,7 @@ dependencies = [
  "tilr-proto",
  "tokio",
  "tokio-tungstenite",
+ "uuid",
 ]
 
 [[package]]

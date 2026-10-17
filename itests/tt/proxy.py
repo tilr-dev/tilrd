@@ -297,7 +297,8 @@ class Proxy:
                     await c.room[d].wait()
                 if c.closed:
                     break
-                data = await reader.read(65536)
+                # Never more than the buffer has room for: it bounds what the proxy holds.
+                data = await reader.read(max(1, min(65536, self.knobs[d]["buffer_bytes"] - c.queued[d])))
                 if not data:
                     break
                 c.read[d] += len(data)

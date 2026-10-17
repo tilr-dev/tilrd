@@ -58,7 +58,25 @@ message Hello {
   // one answers a Hello without it, or with another, with an Error and
   // closes the connection.
   string token = 4;
+  // Names this client instance (a window, a tab, a process) for as long as it
+  // runs, the same on every connection it makes: a UUID v4 in its text form,
+  // made up by the client when it starts. A Hello that names the client_id of
+  // a connection still open with the same token closes that connection at
+  // once, with the WebSocket close code CLOSE_SUPERSEDED: it is the same
+  // client come back on a new connection, and the old one is what a network
+  // it left still holds. Nothing carries over to the new connection; it
+  // subscribes as any other. A client whose connection is closed as
+  // superseded does not reconnect it. Empty = no identity: such a connection
+  // supersedes nobody and nobody supersedes it.
+  string client_id = 5;
 }
+
+// WebSocket close codes the server ends a connection with, besides the
+// standard ones (see `tilr_proto::close`):
+//   4000 "superseded" - a newer connection of the same client (Hello.client_id)
+//   4001 "too slow"   - the client did not take what it was sent
+//   4002 "timeout"    - the client went silent, or stopped answering the
+//                       server's WebSocket pings (it no longer hears it)
 
 // Panes are named by `pane_id`: a UUID in its usual text form
 // ("6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4") that the server makes up when the
@@ -227,7 +245,9 @@ message ClipboardPut {
 // A network that drops out without closing the connection leaves a client
 // waiting forever. A client that pings and hears nothing back for a while
 // knows to reconnect. (The server checks on its clients with WebSocket pings,
-// which a browser answers by itself but does not let a page send.)
+// which a browser answers by itself but does not let a page send. A client
+// that sends but no longer answers them, its way from the server cut, is
+// dropped like one that went silent: Ping does not keep a connection alive.)
 message Ping {
   // Echoed back in the Pong.
   uint64 nonce = 1;
@@ -442,6 +462,19 @@ message PaneInfo {
   // Process id of the pane process on the server machine. The shell is its
   // child.
   uint32 pid = 9;
+  // The clients subscribed to the pane, one per connection (`viewers` of
+  // them), in no particular order.
+  repeated Viewer viewed_by = 10;
+}
+
+// A connection watching a pane.
+message Viewer {
+  // Hello.client_id of the connection; empty if it named none.
+  string client_id = 1;
+  // Hello.client_name.
+  string client_name = 2;
+  // Where the connection comes from, as the server sees it: "203.0.113.5:51234".
+  string address = 3;
 }
 
 message PaneCreated {
@@ -657,6 +690,13 @@ message Cursor {
 
 // Screen update for one pane. `full` frames carry every row and reset the
 // client's copy; otherwise only changed rows are present.
+//
+// A client that falls behind (what is queued for it waited too long for its
+// connection) is not sent every frame: the server skips its frames of the
+// pane and, once its connection has caught up, sends it a full frame of the
+// screen as it is then. `seq` then jumps. Its own input echoed only in the
+// frames it missed is carried by that full frame's `last_input_seq`, so every
+// input of a client still gets a frame that echoes it.
 message Frame {
   string pane_id = 1;
   uint64 seq = 2;

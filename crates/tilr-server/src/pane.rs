@@ -659,12 +659,20 @@ impl Pane {
             reads: stats.reads,
             input_us: stats.input_us,
         });
+        let head = link::FrameHead {
+            full: frame.full,
+            last_input_seq: frame.last_input_seq,
+        };
         let encode_start = Instant::now();
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::Frame(frame)));
         self.last_encode = encode_start.elapsed();
-        link::write_tagged(&mut self.to_supervisor, link::kind::RELAY, &packet)
-            .await
-            .context("send frame to supervisor")
+        link::write_tagged(
+            &mut self.to_supervisor,
+            link::kind::FRAME,
+            &head.prepend(&packet),
+        )
+        .await
+        .context("send frame to supervisor")
     }
 }
 
