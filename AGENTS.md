@@ -20,7 +20,11 @@ tests cover. Repo-specific notes go below the line.
 
   CI also checks the MSRV (`rust-version` in Cargo.toml, `cargo +1.90 check --workspace
   --all-targets --locked`) and runs the tests on Linux and macOS. `scripts/linux.sh` runs
-  the suite in a Linux container from another OS.
+  the suite in a Linux container from another OS (`scripts/linux.sh cargo clippy ...` the
+  lint), as a non-root user with a passwd entry and a home directory, like CI's `runner`
+  (`scripts/linux-entrypoint.sh`): root skips file permission checks and has another login
+  shell setup, so a run as root does not show what CI will. `TILR_LINUX_USER=root` runs as
+  root when that is what you want.
 - `cargo fmt --all` fixes formatting. Clippy findings are fixed, not silenced; an `#[allow]`
   names the lint and says why.
 - `Cargo.lock` is committed; every cargo command in CI runs with `--locked`.

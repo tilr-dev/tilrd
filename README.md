@@ -548,7 +548,8 @@ SDKROOT = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
 ```
 
 **Linux, from another OS.** `scripts/linux.sh` runs a command in a container
-(`scripts/linux.Dockerfile`: Debian 12, the pinned Zig) with the source mounted:
+(`scripts/linux.Dockerfile`: Debian 12, the pinned Zig) with the source mounted, as a
+non-root user `runner` like the CI runner (`TILR_LINUX_USER=root` for root):
 
 ```sh
 scripts/linux.sh                  # the test suite

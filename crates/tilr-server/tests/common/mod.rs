@@ -41,6 +41,24 @@ pub struct Server {
     pub log: Arc<Mutex<Vec<String>>>,
 }
 
+/// Spawn `command`, whose executable may be a copy made a moment ago. On
+/// Linux such a copy is "busy" (ETXTBSY) while a child forked by another
+/// test thread still holds the copy's write descriptor (it is closed on
+/// exec, not on fork); that passes as soon as the child execs.
+pub fn spawn_copied(command: &mut Command) -> Child {
+    let mut tries = 0;
+    loop {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(err) => panic!("spawn {:?}: {err}", command.get_program()),
+        }
+    }
+}
+
 impl Server {
     pub fn start(args: &[&str]) -> Self {
         Self::start_exe(Path::new(env!("CARGO_BIN_EXE_tilr-server")), args)
@@ -93,20 +111,7 @@ impl Server {
             .env_remove("TILR_CLIPBOARD_DIR")
             .stdin(Stdio::null())
             .stderr(Stdio::piped());
-        // A copy of the executable made a moment ago can be "busy" on Linux
-        // while a child forked by another test still holds it open for
-        // writing; that passes as soon as the child execs.
-        let mut tries = 0;
-        let mut child = loop {
-            match command.spawn() {
-                Ok(child) => break child,
-                Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && tries < 100 => {
-                    tries += 1;
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(err) => panic!("start server: {err}"),
-            }
-        };
+        let mut child = spawn_copied(&mut command);
 
         let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -278,11 +283,19 @@ impl Client {
     }
 
     /// The next message, or `None` once the server closed the connection.
+    /// Gives up after TIMEOUT: one deadline for the whole wait, since the
+    /// server's WebSocket pings (skipped here) come more often than that.
     pub async fn next(&mut self) -> Option<server_message::Msg> {
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
         loop {
-            let message = tokio::time::timeout(TIMEOUT, self.ws.next())
+            let message = tokio::time::timeout_at(deadline, self.ws.next())
                 .await
-                .expect("timed out waiting for the server");
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timed out waiting for the server; screen:\n{}",
+                        self.screen.text()
+                    )
+                });
             match message {
                 Some(Ok(Message::Binary(packet))) => {
                     let msg = tilr_proto::decode::<ServerMessage>(&packet)
