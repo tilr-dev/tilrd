@@ -104,6 +104,9 @@ async fn a_pane_without_a_command_runs_the_users_login_shell() {
     let check = if system_profile_keeps_path() {
         "test -n \"$TILR_SHIMS\" && case \":$PATH:\" in *\":$TILR_SHIMS:\"*) true;; *) false;; esac"
     } else {
+        // Here the test puts TILR_SHIMS on PATH itself: this only checks that
+        // the login shell got TILR_SHIMS and the shims are there, not that a
+        // user's profile brings them back onto PATH.
         "test -n \"$TILR_SHIMS\" && PATH=\"$TILR_SHIMS:$PATH\" && test \"$(command -v xclip)\" = \"$TILR_SHIMS/xclip\""
     };
     assert_eq!(
