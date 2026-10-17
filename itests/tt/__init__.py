@@ -764,6 +764,52 @@ class Net:
         return self._run("ss", "-K", "dst", peer, "dport", "=", f":{port}", check=False)
 
 
+# ---------------------------------------------------------------------------- a CDN of the case's own
+
+
+class LocalCdn:
+    """Releases served from the case's own container (http.server in a thread), laid out
+    as crates/tilr-server/src/update.rs reads them; for releases the `cdn` service does
+    not have (an older version, a broken one). `url` goes to `tilr-server update --cdn`."""
+
+    def __init__(self, t: "T"):
+        import functools
+        import http.server
+        self.t = t
+        self.dir = t.scratch("cdn")
+        self.platform = t.manifest()["platform"]
+
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+        handler = functools.partial(Quiet, directory=str(self.dir))
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def release(self, version: str, exe: Path | str, latest: bool = True) -> Path:
+        """Offer `exe` as release `version` (with its checksum), and as the latest."""
+        import hashlib
+        name = f"tilr-server-{self.platform}"
+        dest = self.dir / "releases" / version / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(exe, dest)
+        digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+        (dest.parent / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+        if latest:
+            self.latest(version)
+        return dest
+
+    def latest(self, version: str):
+        path = self.dir / "releases" / self.platform / "latest"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(version + "\n")
+
+    def close(self):
+        self.httpd.shutdown()
+
+
 # ---------------------------------------------------------------------------- the context
 
 
@@ -929,6 +975,32 @@ class T:
         p = RemoteProxy(addr)
         self._cleanup.append(p.close)
         return p
+
+    def cdn(self) -> LocalCdn:
+        """A CDN served from this container (see LocalCdn)."""
+        c = LocalCdn(self)
+        self._cleanup.append(c.close)
+        print(f"{stamp()} local CDN at {c.url}")
+        return c
+
+    def cloud(self):
+        """tilr Cloud played by the case (tt/cloud.py)."""
+        from .cloud import Cloud
+        c = Cloud()
+        self._cleanup.append(c.close)
+        print(f"{stamp()} cloud at {c.url}")
+        return c
+
+    def tmpfs(self, path: Path, size: str) -> Path:
+        """A tmpfs of `size` (as mount takes it: 64M, 300k) mounted at `path`: a small
+        disk to fill. Needs root with CAP_SYS_ADMIN (@case(net_admin=True))."""
+        self.need("root")
+        if os.environ.get("TT_NET_ADMIN") != "1":
+            raise Blocked("mounting a tmpfs needs the capabilities of @case(net_admin=True)")
+        path.mkdir(parents=True, exist_ok=True)
+        self.run("mount", "-t", "tmpfs", "-o", f"size={size}", "tmpfs", path, check=True)
+        self._cleanup.append(lambda: self.run("umount", "-l", path, quiet=True))
+        return path
 
     def service(self, name: str) -> str:
         """URL of a service the case declared in @case(services=...)."""

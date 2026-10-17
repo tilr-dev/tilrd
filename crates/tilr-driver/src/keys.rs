@@ -37,7 +37,9 @@ pub fn parse(pane_id: &str, spec: &str) -> Result<KeyInput> {
         bail!("unknown key: {spec:?}");
     };
     key.codepoint = u32::from(ch.to_ascii_lowercase());
-    if mods_mask & (mods::CTRL | mods::ALT | mods::SUPER) == 0 {
+    // The text the key types: with Alt (as Option-as-Alt) too, so Alt+Shift+X is "X";
+    // Ctrl and Super make none.
+    if mods_mask & (mods::CTRL | mods::SUPER) == 0 {
         key.text = if mods_mask & mods::SHIFT != 0 {
             ch.to_ascii_uppercase().to_string()
         } else {

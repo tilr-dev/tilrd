@@ -11,6 +11,7 @@ pub struct Screen {
     pub cursor: (u32, u32),
     pub cursor_visible: bool,
     pub alt_screen: bool,
+    pub mouse_tracking: bool,
     pub title: String,
     pub frames: u64,
     pub last_seq: u64,
@@ -47,6 +48,7 @@ impl Screen {
             self.title.clone_from(title);
         }
         self.alt_screen = frame.alt_screen;
+        self.mouse_tracking = frame.mouse_tracking;
         self.frames += 1;
         self.last_seq = frame.seq;
     }
@@ -65,6 +67,7 @@ impl Screen {
             "cursor": [self.cursor.0, self.cursor.1],
             "cursor_visible": self.cursor_visible,
             "alt_screen": self.alt_screen,
+            "mouse_tracking": self.mouse_tracking,
             "title": self.title,
             "frames": self.frames,
             "frame_seq": self.last_seq,

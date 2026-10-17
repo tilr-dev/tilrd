@@ -16,19 +16,24 @@
 //! ```
 //!
 //! Commands: connect, disconnect, drop, reconnect, keepalive, create_pane,
-//! close_pane, list, subscribe, unsubscribe, input, paste, key, resize,
-//! screen, wait_for, ping, sleep, fs_write, agent, streams, stream_close,
-//! socks_open, socks_send, socks_recv, socks_close, latency, frames, quit.
-//! See itests/README.md.
+//! close_pane, list, subscribe, unsubscribe, input, paste, key, mouse,
+//! resize, screen, wait_for, ping, sleep, fs_write, fs_read, fs_wait,
+//! fs_list, fs_stat, clipboard_put, agent, streams, stream_send,
+//! stream_close, socks_open, socks_send, socks_recv, socks_close,
+//! socks_listen, socks_stats, exec, exec_input, exec_signal, exec_cancel,
+//! exec_wait, latency, frames, quit. See itests/README.md.
 
+mod exec;
 mod keys;
+mod relay;
 mod screen;
 mod session;
 mod socks;
 mod trace;
+mod transfer;
 
 use std::io::Write;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -36,12 +41,13 @@ use bytes::Bytes;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use tilr_proto::{
-    ClosePane, CreatePane, FsWrite, ListPanes, Paste, RawInput, Resize, StreamClose, Unsubscribe,
-    client_message::Msg, server_message,
+    ClipboardPut, ClosePane, CreatePane, FsList, FsStat, ListPanes, MouseInput, Paste, RawInput,
+    Resize, StreamClose, StreamData, Unsubscribe, client_message::Msg, server_message,
 };
 use tokio::io::AsyncBufReadExt;
 
-use session::{Keepalive, Session, Target, ms};
+use session::{AgentMode, Keepalive, Session, Target, ms};
+use transfer::{Download, DownloadSpec, Source, Upload, UploadSpec};
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -79,9 +85,10 @@ async fn main() {
     loop {
         // Between commands the connection keeps being read: screens stay
         // current, keepalive and reconnecting go on.
+        session.flush().await;
         let line = tokio::select! {
             line = rx.recv() => line,
-            _ = session.pump(Instant::now() + Duration::from_secs(3600)) => continue,
+            _ = session.read(Instant::now() + Duration::from_secs(3600)) => continue,
         };
         let Some(line) = line else { break };
         if line.trim().is_empty() {
@@ -285,6 +292,33 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
             }
             Ok(json!({"seq": seqs.last()}))
         }
+        "mouse" => {
+            let action = match opt_string(c, "action").as_deref().unwrap_or("press") {
+                "press" => tilr_proto::MouseAction::Press,
+                "release" => tilr_proto::MouseAction::Release,
+                "motion" => tilr_proto::MouseAction::Motion,
+                other => bail!("unknown mouse action {other:?}"),
+            };
+            let button = match opt_string(c, "button").as_deref().unwrap_or("left") {
+                "none" => tilr_proto::MouseButton::None,
+                "left" => tilr_proto::MouseButton::Left,
+                "right" => tilr_proto::MouseButton::Right,
+                "middle" => tilr_proto::MouseButton::Middle,
+                "wheel_up" => tilr_proto::MouseButton::WheelUp,
+                "wheel_down" => tilr_proto::MouseButton::WheelDown,
+                other => bail!("unknown mouse button {other:?}"),
+            };
+            let msg = Msg::Mouse(MouseInput {
+                pane_id: string(c, "pane")?,
+                action: action as i32,
+                button: button as i32,
+                mods: number(c, "mods", 0) as u32,
+                x: number(c, "x", 0) as u32,
+                y: number(c, "y", 0) as u32,
+            });
+            let seq = session.send_input(msg).await?;
+            Ok(json!({"seq": seq}))
+        }
         "resize" => {
             let msg = Msg::Resize(Resize {
                 pane_id: string(c, "pane")?,
@@ -367,24 +401,91 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
             Ok(json!({}))
         }
         "fs_write" => fs_write(session, c).await,
+        "fs_read" => fs_read(session, c).await,
+        "fs_wait" => {
+            let id = number(c, "transfer", 0);
+            let mut out = wait_transfer(session, id, millis(c, "timeout_ms", 60_000)).await?;
+            out["ev"] = json!("fs_done");
+            Ok(out)
+        }
+        "fs_list" => {
+            let request_id = session.request_id();
+            let path = string(c, "path")?;
+            session
+                .send(Msg::FsList(FsList { request_id, path }))
+                .await?;
+            wait_msg(session, millis(c, "timeout_ms", 10_000), |msg| match msg {
+                server_message::Msg::FsEntries(list) if list.request_id == request_id => {
+                    let entries: Vec<Value> = list.entries.iter().map(entry_json).collect();
+                    Some(Ok(json!({
+                        "ev": "fs_entries", "path": list.path, "entries": entries, "error": list.error,
+                    })))
+                }
+                _ => None,
+            })
+            .await
+        }
+        "fs_stat" => {
+            let request_id = session.request_id();
+            let path = string(c, "path")?;
+            session
+                .send(Msg::FsStat(FsStat { request_id, path }))
+                .await?;
+            wait_msg(session, millis(c, "timeout_ms", 10_000), |msg| match msg {
+                server_message::Msg::FsInfo(info) if info.request_id == request_id => {
+                    Some(Ok(json!({
+                        "ev": "fs_info", "path": info.path, "error": info.error,
+                        "entry": info.entry.as_ref().map(entry_json),
+                    })))
+                }
+                _ => None,
+            })
+            .await
+        }
+        "clipboard_put" => clipboard_put(session, c).await,
         "agent" => {
-            if let Some(echo) = c.get("echo").and_then(Value::as_bool) {
-                session.agent_echo = echo;
+            if let Some(mode) = opt_string(c, "mode") {
+                session.agent = match mode.as_str() {
+                    "echo" => AgentMode::Echo,
+                    "sink" => AgentMode::Sink,
+                    "socket" => AgentMode::Socket(string(c, "socket")?.into()),
+                    other => bail!("unknown agent mode {other:?}"),
+                };
+            } else if let Some(echo) = c.get("echo").and_then(Value::as_bool) {
+                session.agent = if echo {
+                    AgentMode::Echo
+                } else {
+                    AgentMode::Sink
+                };
             }
-            Ok(json!({"echo": session.agent_echo}))
+            Ok(json!({"mode": format!("{:?}", session.agent)}))
         }
         "streams" => {
             let open: Vec<Value> = session
                 .streams
                 .iter()
-                .map(|(id, s)| {
-                    json!({
-                        "stream": id, "kind": s.kind, "pane": s.pane, "opened_ms": s.opened_ms,
-                        "bytes_in": s.bytes_in, "bytes_out": s.bytes_out,
-                    })
-                })
+                .map(|(id, s)| s.to_json(*id))
                 .collect();
             Ok(json!({"ev": "streams", "streams": open}))
+        }
+        "stream_send" => {
+            let stream_id = number(c, "stream", 0);
+            let data = content(c)?;
+            let started = Instant::now();
+            for piece in data.chunks(64 * 1024) {
+                session
+                    .send(Msg::StreamData(StreamData {
+                        stream_id,
+                        data: Bytes::copy_from_slice(piece),
+                    }))
+                    .await?;
+            }
+            if let Some(stream) = session.streams.get_mut(&stream_id) {
+                stream.bytes_out += data.len() as u64;
+            }
+            Ok(
+                json!({"sent": data.len(), "sha256": transfer::sha256(&data), "ms": ms(started.elapsed())}),
+            )
         }
         "stream_close" => {
             let stream_id = number(c, "stream", 0);
@@ -442,6 +543,68 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
             out["ev"] = json!("socks_data");
             Ok(out)
         }
+        "socks_listen" => {
+            let target = session.target.clone().context("never connected")?;
+            let url = match opt_string(c, "url") {
+                Some(url) => url,
+                None => format!(
+                    "{}/socks?token={}",
+                    target.url.trim_end_matches('/'),
+                    target.token
+                ),
+            };
+            let addr = opt_string(c, "addr").unwrap_or_else(|| "127.0.0.1:0".into());
+            let port = relay::socks_listen(&addr, url, Arc::clone(&session.socks_stats)).await?;
+            Ok(json!({"ev": "socks_listening", "port": port}))
+        }
+        "socks_stats" => {
+            let mut out = session.socks_stats.to_json();
+            out["ev"] = json!("socks_stats");
+            Ok(out)
+        }
+        "exec" => exec_start(session, c).await,
+        "exec_input" => {
+            let exec_id = number(c, "exec", 0);
+            let data =
+                if c.get("text").is_some() || c.get("size").is_some() || c.get("from").is_some() {
+                    content(c)?
+                } else {
+                    Vec::new()
+                };
+            session
+                .send_draft(exec::Client::Input(exec::ExecInput {
+                    exec_id,
+                    data: Bytes::from(data),
+                    eof: flag(c, "eof"),
+                }))
+                .await?;
+            Ok(json!({}))
+        }
+        "exec_signal" => {
+            let exec_id = number(c, "exec", 0);
+            let signal = c.get("signal").and_then(Value::as_i64).unwrap_or(15) as i32;
+            session
+                .send_draft(exec::Client::Signal(exec::ExecSignal { exec_id, signal }))
+                .await?;
+            Ok(json!({}))
+        }
+        "exec_cancel" => {
+            let exec_id = number(c, "exec", 0);
+            session
+                .send_draft(exec::Client::Cancel(exec::ExecCancel { exec_id }))
+                .await?;
+            Ok(json!({}))
+        }
+        "exec_wait" => {
+            let mut out = wait_exec(
+                session,
+                number(c, "exec", 0),
+                millis(c, "timeout_ms", 30_000),
+            )
+            .await?;
+            out["ev"] = json!("exec_exit");
+            Ok(out)
+        }
         "socks_close" => {
             let id = number(c, "socks", 0);
             if let Some(socks) = session.socks.remove(&id) {
@@ -474,16 +637,136 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
 
 /// Replace a file on the server's machine (FsWrite) in chunks, `pause_ms`
 /// apart, and wait for the FsAck. Fails if the connection is lost on the
-/// way (a reconnect does not carry the transfer over).
+/// way (a reconnect does not carry the transfer over). `background`: answer
+/// at once with the transfer's id; `fs_done` says how it ended.
 async fn fs_write(session: &mut Session, c: &Value) -> Result<Value> {
+    let (source, total) = match opt_string(c, "from") {
+        Some(from) => {
+            let file = std::fs::File::open(&from).with_context(|| format!("open {from}"))?;
+            let size = file.metadata()?.len();
+            (Source::File(file), size)
+        }
+        None => {
+            let data = content(c)?;
+            let size = data.len() as u64;
+            (Source::Bytes(data), size)
+        }
+    };
+    let spec = UploadSpec {
+        path: string(c, "path")?,
+        source,
+        total,
+        chunk: number(c, "chunk", 64 * 1024) as usize,
+        pause: millis(c, "pause_ms", 0),
+        create: flag_or(c, "create", true),
+        truncate: flag_or(c, "truncate", true),
+    };
+    if !session.connected() {
+        bail!("not connected");
+    }
+    session.next_transfer += 1;
+    let id = session.next_transfer;
+    let request_id = session.request_id();
+    let background = flag(c, "background");
+    session
+        .uploads
+        .push(Upload::new(id, request_id, spec, background));
+    if background {
+        return Ok(json!({"ev": "fs_started", "transfer": id}));
+    }
+    let deadline = Instant::now() + millis(c, "timeout_ms", 30_000);
+    if !flag_or(c, "wait", true) {
+        while let Some(upload) = session.uploads.iter().find(|u| u.id == id) {
+            if upload.all_sent {
+                return Ok(json!({"sent": upload.sent, "chunks": upload.chunks}));
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "not all sent within the timeout ({} bytes sent)",
+                    upload.sent
+                );
+            }
+            session.pump(deadline).await;
+        }
+    }
+    let mut out = wait_transfer(
+        session,
+        id,
+        deadline.saturating_duration_since(Instant::now()),
+    )
+    .await?;
+    if out["lost"] == json!(true) {
+        bail!(
+            "connection lost after {} of {} bytes",
+            out["sent"],
+            out["size"]
+        );
+    }
+    out["ev"] = json!("fs_ack");
+    Ok(out)
+}
+
+/// Read a file of the server's machine (FsRead), in parts of `part` bytes
+/// (0: in one), into the local file `to` or into the answer (`text`, the
+/// first 64 KiB). `background` as for fs_write.
+async fn fs_read(session: &mut Session, c: &Value) -> Result<Value> {
+    let to = match opt_string(c, "to") {
+        Some(to) => Some(std::fs::File::create(&to).with_context(|| format!("create {to}"))?),
+        None => None,
+    };
+    let spec = DownloadSpec {
+        path: string(c, "path")?,
+        to,
+        offset: number(c, "offset", 0),
+        length: number(c, "length", 0),
+        part: number(c, "part", 0),
+    };
+    if !session.connected() {
+        bail!("not connected");
+    }
+    session.next_transfer += 1;
+    let id = session.next_transfer;
+    let background = flag(c, "background");
+    session.downloads.push(Download::new(id, spec, background));
+    if background {
+        return Ok(json!({"ev": "fs_started", "transfer": id}));
+    }
+    let mut out = wait_transfer(session, id, millis(c, "timeout_ms", 30_000)).await?;
+    if out["lost"] == json!(true) {
+        bail!("connection lost after {} bytes", out["size"]);
+    }
+    out["ev"] = json!("fs_data");
+    Ok(out)
+}
+
+/// The outcome of transfer `id` once it is over.
+async fn wait_transfer(session: &mut Session, id: u64, timeout: Duration) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(out) = session.finished.remove(&id) {
+            return Ok(out);
+        }
+        let going = session.uploads.iter().any(|u| u.id == id)
+            || session.downloads.iter().any(|d| d.id == id);
+        if !going {
+            bail!("no transfer {id}");
+        }
+        if Instant::now() >= deadline {
+            bail!("transfer {id} not done within {} ms", timeout.as_millis());
+        }
+        session.pump(deadline).await;
+    }
+}
+
+/// Upload content to the server's clipboard (ClipboardPut in chunks) and
+/// wait for the ClipboardAck. `total_size` may lie about the size.
+async fn clipboard_put(session: &mut Session, c: &Value) -> Result<Value> {
     static TRANSFER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let data = content(c)?;
-    let path = string(c, "path")?;
+    let mime = opt_string(c, "mime").unwrap_or_else(|| "text/plain".into());
     let chunk = (number(c, "chunk", 64 * 1024) as usize).max(1);
-    let pause = millis(c, "pause_ms", 0);
-    let request_id = session.request_id();
+    let total = number(c, "total_size", data.len() as u64);
     let transfer_id = TRANSFER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let generation = session.generation;
     let started = Instant::now();
     let pieces: Vec<&[u8]> = if data.is_empty() {
         vec![&[]]
@@ -491,61 +774,141 @@ async fn fs_write(session: &mut Session, c: &Value) -> Result<Value> {
         data.chunks(chunk).collect()
     };
     let count = pieces.len();
-    let mut sent = 0usize;
     for (n, piece) in pieces.into_iter().enumerate() {
-        if session.generation != generation || !session.connected() {
-            bail!("connection lost after {sent} of {} bytes", data.len());
-        }
         let first = n == 0;
         session
-            .send(Msg::FsWrite(FsWrite {
-                request_id,
+            .send(Msg::ClipboardPut(ClipboardPut {
                 transfer_id,
-                path: if first { path.clone() } else { String::new() },
-                total_size: if first { data.len() as u64 } else { 0 },
-                create: first && c.get("create").and_then(Value::as_bool).unwrap_or(true),
-                truncate: first && c.get("truncate").and_then(Value::as_bool).unwrap_or(true),
+                mime: if first { mime.clone() } else { String::new() },
+                total_size: if first { total } else { 0 },
                 data: Bytes::copy_from_slice(piece),
                 last: n + 1 == count,
             }))
-            .await
-            .with_context(|| format!("after {sent} of {} bytes", data.len()))?;
-        sent += piece.len();
-        if n + 1 < count && !pause.is_zero() {
-            let until = Instant::now() + pause;
-            while Instant::now() < until {
-                session.pump(until).await;
-            }
-        }
+            .await?;
     }
-    if !flag_or(c, "wait", true) {
-        return Ok(json!({"sent": sent, "chunks": count}));
-    }
-    let deadline = Instant::now() + millis(c, "timeout_ms", 30_000);
-    let error = loop {
-        if session.generation != generation || !session.connected() {
-            bail!("connection lost before the answer ({sent} bytes sent)");
+    let (ok, error) = wait_msg(session, millis(c, "timeout_ms", 30_000), |msg| match msg {
+        server_message::Msg::ClipboardAck(ack) if ack.transfer_id == transfer_id => {
+            Some(Ok((ack.ok, ack.error.clone())))
         }
-        if Instant::now() >= deadline {
-            bail!("no FsAck within the timeout ({sent} bytes sent)");
-        }
-        if let Some(server_message::Msg::FsAck(ack)) = session.pump(deadline).await
-            && ack.request_id == request_id
-        {
-            break ack.error;
-        }
-    };
+        _ => None,
+    })
+    .await?;
     Ok(json!({
-        "ev": "fs_ack", "error": error, "sent": sent, "chunks": count,
-        "ms": ms(started.elapsed()),
+        "ev": "clipboard_ack", "ok": ok, "error": error, "size": data.len(),
+        "sha256": transfer::sha256(&data), "ms": ms(started.elapsed()),
     }))
 }
 
-/// The bytes a command carries: `text`, or `size` bytes of `fill` repeated
-/// (default "0123456789abcdef").
+/// Run a program on the server's machine by Exec (draft, see exec.rs):
+/// wait for its end, or with `background` answer once it started.
+async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
+    if !session.features.iter().any(|f| f == exec::FEATURE) {
+        bail!(
+            "the server does not offer {:?} (HelloAck.features {:?}): no Exec in the protocol",
+            exec::FEATURE,
+            session.features
+        );
+    }
+    let strings = |key: &str| -> Vec<String> {
+        c.get(key)
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let request_id = session.request_id();
+    let stdin = c.get("stdin").is_some();
+    session
+        .send_draft(exec::Client::Start(exec::ExecStart {
+            request_id,
+            argv: strings("argv"),
+            cwd: opt_string(c, "cwd").unwrap_or_default(),
+            env: strings("env"),
+            stdin,
+            timeout_ms: number(c, "limit_ms", 0) as u32,
+        }))
+        .await?;
+    let deadline = Instant::now() + millis(c, "start_timeout_ms", 10_000);
+    let exec_id = loop {
+        if Instant::now() >= deadline {
+            bail!("no ExecStarted within the timeout");
+        }
+        if session.down() {
+            bail!("not connected");
+        }
+        if let Some(id) = session.exec_started.remove(&request_id) {
+            break id?;
+        }
+        session.pump(deadline).await;
+    };
+    let background = flag(c, "background");
+    session
+        .execs
+        .insert(exec_id, exec::Run::new(exec_id, background));
+    if let Some(text) = opt_string(c, "stdin") {
+        session
+            .send_draft(exec::Client::Input(exec::ExecInput {
+                exec_id,
+                data: Bytes::from(text.into_bytes()),
+                eof: true,
+            }))
+            .await?;
+    }
+    if background {
+        return Ok(json!({"ev": "exec_started", "exec": exec_id}));
+    }
+    let mut out = wait_exec(session, exec_id, millis(c, "timeout_ms", 30_000)).await?;
+    out["ev"] = json!("exec_exit");
+    Ok(out)
+}
+
+/// The end of Exec run `id`.
+async fn wait_exec(session: &mut Session, id: u64, timeout: Duration) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match session.execs.get(&id) {
+            None => bail!("no exec {id}"),
+            Some(run) => {
+                if let Some(exit) = &run.exit {
+                    return Ok(exit.clone());
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("exec {id} did not end within {} ms", timeout.as_millis());
+        }
+        if session.down() {
+            bail!("not connected");
+        }
+        session.pump(deadline).await;
+    }
+}
+
+fn entry_json(entry: &tilr_proto::FsEntry) -> Value {
+    let kind = |k: i32| match tilr_proto::FileKind::try_from(k) {
+        Ok(tilr_proto::FileKind::File) => "file",
+        Ok(tilr_proto::FileKind::Dir) => "dir",
+        Ok(tilr_proto::FileKind::Link) => "link",
+        _ => "other",
+    };
+    json!({
+        "name": entry.name, "kind": kind(entry.kind), "target": kind(entry.target),
+        "size": entry.size, "mtime_ms": entry.mtime_ms, "mode": entry.mode,
+    })
+}
+
+/// The bytes a command carries: `text`, the content of the local file
+/// `from`, or `size` bytes of `fill` repeated (default "0123456789abcdef").
 fn content(c: &Value) -> Result<Vec<u8>> {
     if let Some(text) = opt_string(c, "text") {
         return Ok(text.into_bytes());
+    }
+    if let Some(from) = opt_string(c, "from") {
+        return std::fs::read(&from).with_context(|| format!("read {from}"));
     }
     let size = number(c, "size", 0) as usize;
     let fill = opt_string(c, "fill").unwrap_or_else(|| "0123456789abcdef".into());

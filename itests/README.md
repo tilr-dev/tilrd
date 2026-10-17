@@ -85,6 +85,8 @@ itests/
     __main__.py          python3 -m tt list | fixture M:NAME | case uc_NNN:NAME
     proxy.py             the layer-1 fault proxy (also a standalone process / service)
     host.py              the agent of a host container (commands, a driver over TCP)
+    live.py              live software in panes for the update and reload cases (group F)
+    cloud.py             tilr Cloud played by a case, the stand-in cloudflared
   fixtures/*.py          prepared states shared by cases
   scenarios/uc_NNN.py    the cases of one use case
   tools/                 report.html and the history page
@@ -110,13 +112,14 @@ every subscribed pane's screen from the frames.
 
 | Command | Arguments | Answer |
 | --- | --- | --- |
-| `connect` | `url`, `token`, `origin`, `features` (default `["ping"]`), `timeout_ms`, `client_id` (`Hello.client_id`; default: the driver's own, made up when it starts and kept across its reconnects) | `connected` with `server_version`, `features`, `seq_base`, `client_id` |
+| `connect` | `url`, `token`, `origin`, `features` (default `["ping"]`), `timeout_ms`, `client_id` (`Hello.client_id`; default: the driver's own, made up when it starts and kept across its reconnects) | `connected` with `server_version`, `features`, `seq_base`, `fs_max_bytes`, `clipboard_max_bytes`, `client_id` |
 | `create_pane` | `cols`, `rows`, `cwd`, `command`, `subscribe` (default true) | `pane_created` with `pane`, `info` |
 | `subscribe` / `unsubscribe` / `close_pane` | `pane` | `ok` |
 | `input` / `paste` | `pane`, `text` (raw bytes, escapes are JSON's) | `ok` with the input `seq` |
-| `key` | `pane`, `key`: `enter`, `esc`, `up`, `f5`, `ctrl-c`, `alt-x`, `q`; several space-separated | `ok` |
+| `key` | `pane`, `key`: `enter`, `esc`, `up`, `f5`, `ctrl-c`, `alt-x`, `shift-tab`, `q`, any character (`ctrl-с`: Cyrillic, as a Russian layout sends it); several space-separated | `ok` |
+| `mouse` | `pane`, `action` (`press`, `release`, `motion`), `button` (`left`, `right`, `middle`, `wheel_up`, `wheel_down`, `none`), `x`, `y` (cells from 0), `mods` (bits: 1 shift, 2 alt, 4 ctrl) | `ok` with the input `seq` |
 | `resize` | `pane`, `cols`, `rows` | `ok` |
-| `screen` | `pane` | `screen`: `rows`, `text`, `cursor`, `alt_screen`, `title`, `frames` |
+| `screen` | `pane` | `screen`: `rows`, `text`, `cursor`, `cursor_visible`, `alt_screen`, `mouse_tracking`, `title`, `frames` |
 | `wait_for` | `pane`, `regex` (on the screen text, rows joined by `\n`), `timeout_ms` | `matched` with `groups`, or an error with the screen |
 | `list` | | `panes` (each with `viewers` and `viewed_by`: `client_id`, `name`, `addr` per viewer) |
 | `ping` | `timeout_ms` | `pong` with `rtt_ms` |
@@ -125,11 +128,20 @@ every subscribed pane's screen from the frames.
 | `drop` / `disconnect` | | `ok` (drop: socket gone without a close, like the network) |
 | `sleep` | `ms` (keeps reading meanwhile) | `ok` |
 | `status` | | `connected`, `subscribed` |
-| `fs_write` | `path`, content (`text`, or `size` bytes of `fill` repeated), `chunk` (65536), `pause_ms` between chunks, `create`, `truncate` (both true), `wait` (true), `timeout_ms` | `fs_ack` with `error` ("" = done), `sent`, `chunks`, `ms`; an error if the connection is lost on the way (needs `features` with `files`) |
-| `agent` | `echo` (true: the driver is a toy SSH agent that echoes every byte back) | `ok` |
-| `streams` / `stream_close` | `stream` | the open streams (`stream`, `kind`, `pane`, bytes) / `ok` |
+| `fs_write` | `path`, content (`text`, `from`: a local file read as the chunks go, or `size` bytes of `fill` repeated), `chunk` (65536), `pause_ms` between chunks, `create`, `truncate` (both true), `wait` (true), `background`, `timeout_ms` | `fs_ack` with `error` ("" = done, or why the server refused; the rest of a refused write is not sent), `sent`, `size`, `chunks`, `sha256` of what was sent, `ms`; an error if the connection is lost on the way (needs `features` with `files`). `background`: `fs_started` with `transfer` at once, the chunks go between everything else the driver does, `fs_done` says how it ended |
+| `fs_read` | `path`, `to` (a local file; without, the answer's `text` has the first 64 KiB), `offset`, `length` (0 = to the end), `part` (bytes one FsRead asks for; 0 = all in one, refused over `fs_max_bytes`), `background`, `timeout_ms` | `fs_data` with `error`, `size`, `file_size`, `parts`, `sha256`, `ms` (`background`: as fs_write) |
+| `fs_wait` | `transfer`, `timeout_ms` | `fs_done`: the outcome of a background transfer (as fs_write's / fs_read's answer, `lost` if its connection went) |
+| `fs_list` / `fs_stat` | `path` | `fs_entries` with `path`, `entries`, `error` / `fs_info` with `path`, `entry`, `error`; an entry is `name`, `kind` and `target` (`file`, `dir`, `link`, `other`), `size`, `mtime_ms`, `mode` |
+| `clipboard_put` | `mime` (text/plain), content as fs_write, `chunk`, `total_size` (what the first chunk announces; default the real size), `timeout_ms` | `clipboard_ack` with `ok`, `error`, `size`, `sha256` |
+| `agent` | `mode`: `echo` (a toy SSH agent that echoes every byte back; the default), `sink` (take and hash, answer nothing), `socket` with `socket`: a local agent's path, each stream relayed to it as `ssh -A` does; `echo` true/false = echo/sink | `ok` |
+| `streams` / `stream_close` | `stream` | the open streams (`stream`, `kind`, `pane`, `bytes_in`, `bytes_out`, `sha256_in`) / `ok` |
+| `stream_send` | `stream`, content as fs_write (64 KiB per StreamData) | `ok` with `sent`, `sha256` |
 | `socks_open` | `host`, `port` on the server's machine, `url` (default: the connection's `/socks?token=`), `timeout_ms` | `socks_open` with `socks` (an id) |
 | `socks_send` / `socks_recv` / `socks_close` | `socks`; send: content as `fs_write`; recv: `bytes` wanted, `timeout_ms` | recv: `socks_data` with `received`, `text`, `ended` |
+| `socks_listen` | `addr` (127.0.0.1:0), `url` (default: the connection's `/socks?token=`) | `socks_listening` with `port`: a local SOCKS5 port for programs on the client's machine (curl), each connection carried to the server's /socks as it is |
+| `socks_stats` | | `socks_stats`: `sessions`, `open`, `failed`, `bytes_up`, `bytes_down` of the local SOCKS ports |
+| `exec` | `argv`, `cwd`, `env` (`["NAME=value"]`), `stdin` (text, fed and closed; `null`: a pipe fed by exec_input), `limit_ms` (the program's time limit), `background`, `timeout_ms` | `exec_exit` with `code`, `signal`, `timed_out`, `cancelled`, `stdout`, `stderr` (256 KiB of each), `*_bytes`, `*_sha256`, `ms`; `background`: `exec_started` with `exec`. A draft (`src/exec.rs`): sent only to a server with the feature "exec", which none has yet (UC-077) |
+| `exec_input` / `exec_signal` / `exec_cancel` / `exec_wait` | `exec`; input: content as fs_write, `eof`; signal: `signal` (15) | `ok` / `ok` / `ok` / `exec_exit` |
 | `latency` | `reset` | `latency`: `count`, `pending`, `unanswered`, `p50_ms` `p90_ms` `p99_ms` `max_ms` of input → first frame carrying its seq (`Frame.last_input_seq`) |
 | `frames` | `since` (index), `pane`, `reset` | `frames`: the last 20000 frames (`t`, `pane`, `seq`, `full`, `rows`, `bytes`, `input_seq`, the pane's `FrameTiming`), `seen`, `bytes`, `max_gap_ms` |
 | `quit` | | `bye` |
@@ -137,8 +149,10 @@ every subscribed pane's screen from the frames.
 Unsolicited events: `disconnected` (`reason`; `superseded`: the server closed it with 4000
 because a newer connection of the same client id took over, and it is not reconnected), `dead` (keepalive saw `timeout_ms` of
 silence), `reconnected` / `reconnect_failed` (auto reconnect; resubscribes), `pane_exited`,
-`server_error`, `protocol_error`, `stream_open` / `stream_closed` / `stream_lost` (agent
-streams; a stream is lost with its connection). Screens go stale when the connection is
+`server_error`, `protocol_error`, `stream_open` / `stream_closed` (with `sha256_in`) /
+`stream_lost` (agent streams; a stream is lost with its connection), `host_event` (`pane`,
+`name`, `kind`, `path`, `args`: `tilr edit` / `tilr open` in a pane, to a client with
+"host-events"), `fs_done` (a background transfer ended), `exec_exit` (a background exec). Screens go stale when the connection is
 lost: `screen` and `wait_for` wait for the full frame of the next connection.
 
 ## Writing a case
@@ -186,6 +200,10 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `Counter(t, driver, pane, period)` | a counter in a pane: `.last(d) .check_screen(d)` (moving, lines consecutive) `.check_log()` (the pane's own log: nothing skipped, longest gap as `counter_max_gap_ms`) |
 | driver extras | `.interrupt(pane)` (Ctrl-C until the prompt is back), `.viewers(pane)` (as the server counts them), `.latency(reset)`, `.connected()`, `.wait_event(("dead", "disconnected"), since=)` |
 | `service(name)` | URL of a service container named in `@case(services=[...])` |
+| `cdn()` | `LocalCdn`: releases served from the case's own container, `.release(version, exe)`, `.latest(version)`, `.url` for `update --cdn` (an older release, a broken one) |
+| `cloud()` | tilr Cloud played by the case (tt/cloud.py): `.link(state_dir)`, `.accept()` → a control connection: `.greet()`, `.send(msg)`, `.next()`, `.tunnel_is(state)`; `fake_cloudflared(dir)` notes `args`, `config`, `pid`, `ended` there |
+| `tmpfs(path, size)` | a small disk to fill (needs `net_admin=True`: mount wants the root capabilities) |
+| `tt.live` | `LivePanes(t, d, server, echo=)`: a shell with a variable and a job, a counter, vim (unsaved, mouse on), htop, less, a python REPL, `sleep 1000`, a TCP connection to the echo service; `.check(what)` after an update or reload (pids, screens and modes, no orphans), `.finish()` (`:wq`, `q`, Ctrl+C); `wait_reloads`, `reload_times`, `state_files` |
 | `run(*argv)`, `sh(script)`, `spawn(*argv)` | processes (missing executable = exit 127) |
 | `procs(regex)`, `proc(pid)`, `listener_pid(port)` | /proc: pid, ppid, pgid, sid, tty, state, cmdline, rss_kb, fds |
 | `eq`, `ok`, `has`, `lacks`, `eventually(fn, what, timeout)`, `check(what, fn)` | assertions |
@@ -257,7 +275,8 @@ All of it is undone when the case ends.
 A case asks for a service container by name: `@case(services=["cdn"])`. The module
 builds it (`_service` in main.py), binds it under that hostname and passes its URL as
 `TT_SERVICE_<NAME>`. `cdn` serves `releases/<platform>/latest` and the next release with
-its checksum, as `tilr-server update` reads them.
+its checksum, as `tilr-server update` reads them. `echo` is a TCP echo service on port
+7007 (`tcp://echo:7007`), the far end of a pane's connection that must outlive a reload.
 
 ## Gotchas
 

@@ -29,7 +29,8 @@ ZIG_VERSION = "0.15.2"
 # Runtime images of the distributions the scenarios run on; one for now.
 DISTROS = {"ubuntu": "ubuntu:24.04"}
 RUNTIME_APT = ["python3", "procps", "psmisc", "util-linux", "bash", "ca-certificates", "curl",
-               "vim", "htop", "less", "iproute2", "lsof", "iptables"]
+               "vim", "htop", "less", "iproute2", "lsof", "iptables", "openssh-client", "openssh-server",
+               "git"]
 
 # Same paths in every container: test executables bake CARGO_MANIFEST_DIR and
 # CARGO_BIN_EXE_* at compile time.
@@ -151,6 +152,20 @@ shutil.copy2("/build/bin/tilr-server-next", f"/cdn/releases/{version}/{name}")
 digest = hashlib.sha256(open(f"/cdn/releases/{version}/{name}", "rb").read()).hexdigest()
 open(f"/cdn/releases/{version}/{name}.sha256", "w").write(f"{digest}  {name}\n")
 open(f"/cdn/releases/{platform}/latest", "w").write(version + "\n")
+'''
+
+# A TCP echo service on port 7007, a thread per connection: the far end of a pane's
+# outbound connection that must outlive a reload of the server.
+ECHO = r'''#!/usr/bin/env python3
+import socket, threading
+def serve(conn):
+    with conn:
+        while data := conn.recv(65536):
+            conn.sendall(data)
+srv = socket.create_server(("0.0.0.0", 7007), reuse_port=True)
+while True:
+    conn, _ = srv.accept()
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
 '''
 
 # A deterministic interactive shell in the panes: plain prompt, no history file.
@@ -390,6 +405,12 @@ class TilrItests:
                    .with_exposed_port(8080)
                    .as_service(args=["python3", "-m", "http.server", "8080", "--directory", "/cdn"]))
             return svc, "http://cdn:8080"
+        if name == "echo":
+            svc = (self.runtime()
+                   .with_new_file("/usr/local/bin/tt-echo", ECHO, permissions=0o755)
+                   .with_exposed_port(7007)
+                   .as_service(args=["tt-echo"]))
+            return svc, "tcp://echo:7007"
         raise ValueError(f"unknown service {name}")
 
     def _host(self, owner: str, services: dict[str, dagger.Service]) -> dagger.Service:

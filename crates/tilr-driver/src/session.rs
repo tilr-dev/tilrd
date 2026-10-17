@@ -3,24 +3,32 @@
 //! opened to it, and how long its input and frames took.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tilr_proto::{
-    ClientMessage, Hello, PROTOCOL_VERSION, ServerMessage, StreamData, Subscribe,
+    ClientMessage, Hello, PROTOCOL_VERSION, ServerMessage, StreamClose, StreamData, Subscribe,
     client_message::Msg, server_message,
 };
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::time::sleep_until;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+use crate::exec;
+use crate::relay::{self, FromAgent};
 use crate::screen::Screen;
 use crate::socks::Socks;
 use crate::trace::Trace;
+use crate::transfer::{Download, Progress, Upload, hex};
 use crate::{emit, now_ms};
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -70,6 +78,39 @@ pub struct Stream {
     pub opened_ms: f64,
     pub bytes_in: u64,
     pub bytes_out: u64,
+    /// Of the bytes that came in, in order.
+    pub sha_in: Sha256,
+    /// To the relay of a local agent (`AgentMode::Socket`).
+    to_agent: Option<mpsc::UnboundedSender<Bytes>>,
+}
+
+impl Stream {
+    pub fn to_json(&self, id: u64) -> Value {
+        json!({
+            "stream": id, "kind": self.kind, "pane": self.pane, "opened_ms": self.opened_ms,
+            "bytes_in": self.bytes_in, "bytes_out": self.bytes_out,
+            "sha256_in": hex(&self.sha_in.clone().finalize()),
+        })
+    }
+}
+
+/// What woke [`Session::read`].
+enum Next {
+    Message(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
+    Agent(u64, Option<Bytes>),
+    Wake,
+}
+
+/// What the driver does with the streams the server opens to it.
+#[derive(Clone, Debug)]
+pub enum AgentMode {
+    /// Echo every byte back: a toy agent.
+    Echo,
+    /// Take the bytes and answer nothing (counted and hashed).
+    Sink,
+    /// Pass them on to the SSH agent listening at this path, as a client
+    /// forwarding the user's agent does.
+    Socket(PathBuf),
 }
 
 pub struct Session {
@@ -93,10 +134,24 @@ pub struct Session {
     pub generation: u64,
     pub trace: Trace,
     pub streams: BTreeMap<u64, Stream>,
-    /// Echo what a program sends on a stream back to it (a toy agent).
-    pub agent_echo: bool,
-    /// Messages to send before the next read (the echoes).
+    pub agent: AgentMode,
+    /// Messages to send before the next read (echoes, a local agent's bytes).
     outbox: VecDeque<Msg>,
+    relay_tx: mpsc::UnboundedSender<FromAgent>,
+    relay_rx: mpsc::UnboundedReceiver<FromAgent>,
+    /// HelloAck.features of the connection.
+    pub features: Vec<String>,
+    pub uploads: Vec<Upload>,
+    pub downloads: Vec<Download>,
+    /// Outcomes of transfers, by transfer id, until taken.
+    pub finished: HashMap<u64, Value>,
+    pub next_transfer: u64,
+    /// Programs run by Exec, by exec id.
+    pub execs: BTreeMap<u64, exec::Run>,
+    /// Answers to ExecStart by request id: the exec id, or why it did not start.
+    pub exec_started: HashMap<u64, Result<u64>>,
+    /// Of the local SOCKS ports (`socks_listen`).
+    pub socks_stats: Arc<relay::SocksStats>,
     pub socks: BTreeMap<u64, Socks>,
     pub next_socks: u64,
     /// Connections given up on but left open (Keepalive.leak_dead).
@@ -105,6 +160,7 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
+        let (relay_tx, relay_rx) = mpsc::unbounded_channel();
         Self {
             ws: None,
             target: None,
@@ -123,8 +179,18 @@ impl Session {
             generation: 0,
             trace: Trace::default(),
             streams: BTreeMap::new(),
-            agent_echo: true,
+            agent: AgentMode::Echo,
             outbox: VecDeque::new(),
+            relay_tx,
+            relay_rx,
+            features: Vec::new(),
+            uploads: Vec::new(),
+            downloads: Vec::new(),
+            finished: HashMap::new(),
+            next_transfer: 0,
+            execs: BTreeMap::new(),
+            exec_started: HashMap::new(),
+            socks_stats: Arc::default(),
             socks: BTreeMap::new(),
             next_socks: 0,
             leaked: Vec::new(),
@@ -161,6 +227,7 @@ impl Session {
             "server_id": ack.server_id,
             "seq_base": ack.seq_base,
             "fs_max_bytes": ack.fs_max_bytes,
+            "clipboard_max_bytes": ack.clipboard_max_bytes,
             "client_id": client_id,
             "ms": ms(started.elapsed()),
         }))
@@ -168,6 +235,7 @@ impl Session {
 
     fn install(&mut self, ws: Ws, ack: &tilr_proto::HelloAck) {
         self.ws = Some(ws);
+        self.features.clone_from(&ack.features);
         self.seq_base = ack.seq_base;
         self.seq_n = 0;
         self.generation += 1;
@@ -240,6 +308,36 @@ impl Session {
                 "bytes_in": stream.bytes_in, "bytes_out": stream.bytes_out,
             }));
         }
+        // Transfers do not carry over to another connection.
+        for mut upload in std::mem::take(&mut self.uploads) {
+            let mut out = upload.outcome(&format!("connection lost: {reason}"));
+            out["lost"] = json!(true);
+            self.finish(upload.id, upload.background, out);
+        }
+        for mut download in std::mem::take(&mut self.downloads) {
+            let mut out = download.outcome(&format!("connection lost: {reason}"));
+            out["lost"] = json!(true);
+            self.finish(download.id, download.background, out);
+        }
+    }
+
+    /// A transfer is over: its outcome waits for `fs_wait` (or the command
+    /// that started it); one in the background also says so (`fs_done`).
+    pub fn finish(&mut self, id: u64, background: bool, outcome: Value) {
+        if background {
+            let mut event = outcome.clone();
+            event["ev"] = json!("fs_done");
+            emit(event);
+        }
+        self.finished.insert(id, outcome);
+    }
+
+    /// Whether some transfer has something to send now, or when it will.
+    fn send_due(&self) -> Option<Instant> {
+        let uploads = self.uploads.iter().filter_map(Upload::due);
+        let now = Instant::now();
+        let reads = self.downloads.iter().filter(|d| d.ask_next).map(|_| now);
+        uploads.chain(reads).min()
     }
 
     pub async fn send(&mut self, msg: Msg) -> Result<()> {
@@ -323,11 +421,67 @@ impl Session {
         }
     }
 
-    /// Wait for the next thing to happen, up to `deadline`: a message from
-    /// the server (returned), a keepalive step, a reconnect attempt.
-    /// Cancel-safe, but for an echo being sent when cancelled, which may be
-    /// lost (never sent twice).
+    /// Send what is waiting, then wait for the next thing to happen, up to
+    /// `deadline` (see [`Self::read`]). Not to be cancelled (see
+    /// [`Self::flush`]); the command loop calls the two apart.
     pub async fn pump(&mut self, deadline: Instant) -> Option<server_message::Msg> {
+        self.flush().await;
+        self.read(deadline).await
+    }
+
+    /// Send what is waiting: echoes, a local agent's bytes, the next chunk of
+    /// each write that is due, the next part of each read. Not to be
+    /// cancelled: a chunk is counted as sent once its send returns.
+    pub async fn flush(&mut self) {
+        if self.ws.is_none() {
+            return;
+        }
+        while let Some(msg) = self.outbox.pop_front() {
+            if self.send(msg).await.is_err() {
+                return;
+            }
+        }
+        let now = Instant::now();
+        let mut n = 0;
+        while n < self.uploads.len() {
+            if self.uploads[n].due().is_none_or(|due| due > now) {
+                n += 1;
+                continue;
+            }
+            let chunk = match self.uploads[n].next_chunk() {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    let mut upload = self.uploads.remove(n);
+                    let out = upload.outcome(&format!("{err:#}"));
+                    self.finish(upload.id, upload.background, out);
+                    continue;
+                }
+            };
+            let (len, last) = (chunk.data.len(), chunk.last);
+            if self.send(Msg::FsWrite(chunk)).await.is_err() {
+                // The connection is gone, and its transfers with it.
+                return;
+            }
+            self.uploads[n].sent_chunk(len, last);
+            n += 1;
+        }
+        let mut asks = Vec::new();
+        for download in self.downloads.iter_mut().filter(|d| d.ask_next) {
+            self.next_request += 1;
+            asks.push(download.next_request(self.next_request));
+        }
+        for ask in asks {
+            if self.send(Msg::FsRead(ask)).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Wait for the next thing to happen, up to `deadline`: a message from
+    /// the server (returned), a keepalive step, a reconnect attempt, a
+    /// transfer having something to send. Cancel-safe, but for a ping being
+    /// sent when cancelled, which may be lost.
+    pub async fn read(&mut self, deadline: Instant) -> Option<server_message::Msg> {
         if self.ws.is_none() {
             if self.lost_at.is_some() {
                 self.reconnect_step(deadline).await;
@@ -336,24 +490,45 @@ impl Session {
             }
             return None;
         }
-        while let Some(msg) = self.outbox.pop_front() {
-            if self.send(msg).await.is_err() {
-                return None;
-            }
-        }
         let wake = self
             .keepalive_due()
             .map_or(deadline, |due| due.min(deadline));
+        let wake = self.send_due().map_or(wake, |due| due.min(wake));
         let ws = self.ws.as_mut()?;
+        let relay = &mut self.relay_rx;
         let next = tokio::select! {
-            message = ws.next() => Some(message),
-            () = sleep_until(wake.into()) => None,
+            message = ws.next() => Next::Message(message),
+            Some((stream_id, data)) = relay.recv() => Next::Agent(stream_id, data),
+            () = sleep_until(wake.into()) => Next::Wake,
         };
         match next {
-            Some(message) => self.receive(message),
-            None => {
+            Next::Message(message) => self.receive(message),
+            Next::Agent(stream_id, data) => {
+                self.on_agent_bytes(stream_id, data);
+                None
+            }
+            Next::Wake => {
                 self.keepalive_step().await;
                 None
+            }
+        }
+    }
+
+    /// Bytes from a local agent (or its end) for the server.
+    fn on_agent_bytes(&mut self, stream_id: u64, data: Option<Bytes>) {
+        let Some(stream) = self.streams.get_mut(&stream_id) else {
+            return;
+        };
+        match data {
+            Some(data) => {
+                stream.bytes_out += data.len() as u64;
+                self.outbox
+                    .push_back(Msg::StreamData(StreamData { stream_id, data }));
+            }
+            None => {
+                self.streams.remove(&stream_id);
+                self.outbox
+                    .push_back(Msg::StreamClose(StreamClose { stream_id }));
             }
         }
     }
@@ -388,7 +563,16 @@ impl Session {
             _ => return None,
         };
         let msg = match tilr_proto::decode::<ServerMessage>(&packet) {
-            Ok(decoded) => decoded.msg?,
+            Ok(ServerMessage { msg: Some(msg) }) => msg,
+            Ok(_) => {
+                // Not a message of tilr.proto: one of the driver's drafts?
+                if let Ok(exec::ServerMessage { msg: Some(draft) }) =
+                    tilr_proto::decode::<exec::ServerMessage>(&packet)
+                {
+                    self.on_draft(draft);
+                }
+                return None;
+            }
             Err(err) => {
                 emit(json!({"ev": "protocol_error", "message": err.to_string()}));
                 return None;
@@ -412,6 +596,19 @@ impl Session {
                 emit(json!({"ev": "server_error", "message": error.message}));
             }
             server_message::Msg::StreamOpen(open) => {
+                let to_agent = match &self.agent {
+                    AgentMode::Socket(path) => {
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        tokio::spawn(relay::agent(
+                            open.stream_id,
+                            path.clone(),
+                            rx,
+                            self.relay_tx.clone(),
+                        ));
+                        Some(tx)
+                    }
+                    _ => None,
+                };
                 self.streams.insert(
                     open.stream_id,
                     Stream {
@@ -420,6 +617,8 @@ impl Session {
                         opened_ms: now_ms(),
                         bytes_in: 0,
                         bytes_out: 0,
+                        sha_in: Sha256::new(),
+                        to_agent,
                     },
                 );
                 emit(json!({
@@ -430,26 +629,107 @@ impl Session {
             server_message::Msg::StreamData(data) => {
                 if let Some(stream) = self.streams.get_mut(&data.stream_id) {
                     stream.bytes_in += data.data.len() as u64;
-                    if self.agent_echo {
-                        stream.bytes_out += data.data.len() as u64;
-                        self.outbox.push_back(Msg::StreamData(StreamData {
-                            stream_id: data.stream_id,
-                            data: data.data.clone(),
-                        }));
+                    stream.sha_in.update(&data.data);
+                    match (&self.agent, &stream.to_agent) {
+                        (AgentMode::Echo, _) => {
+                            stream.bytes_out += data.data.len() as u64;
+                            self.outbox.push_back(Msg::StreamData(StreamData {
+                                stream_id: data.stream_id,
+                                data: data.data.clone(),
+                            }));
+                        }
+                        (_, Some(to_agent)) => {
+                            let _ = to_agent.send(data.data.clone());
+                        }
+                        _ => {}
                     }
                 }
             }
             server_message::Msg::StreamClose(close) => {
                 if let Some(stream) = self.streams.remove(&close.stream_id) {
-                    emit(json!({
-                        "ev": "stream_closed", "stream": close.stream_id,
-                        "bytes_in": stream.bytes_in, "bytes_out": stream.bytes_out,
-                    }));
+                    let mut event = stream.to_json(close.stream_id);
+                    event["ev"] = json!("stream_closed");
+                    emit(event);
                 }
             }
+            server_message::Msg::FsAck(ack) => {
+                if let Some(n) = self
+                    .uploads
+                    .iter()
+                    .position(|u| u.request_id == ack.request_id)
+                {
+                    // Done, or refused: the rest of a refused write is not sent.
+                    let mut upload = self.uploads.remove(n);
+                    let out = upload.outcome(&ack.error);
+                    self.finish(upload.id, upload.background, out);
+                }
+            }
+            server_message::Msg::FsData(data) => {
+                if let Some(n) = self
+                    .downloads
+                    .iter()
+                    .position(|d| d.request_id == data.request_id && !d.ask_next)
+                    && let Progress::Done(out) = self.downloads[n].on_data(data)
+                {
+                    let download = self.downloads.remove(n);
+                    self.finish(download.id, download.background, out);
+                }
+            }
+            server_message::Msg::HostEvent(event) => emit(json!({
+                "ev": "host_event", "pane": event.pane_id, "name": event.name,
+                "kind": event.kind, "path": event.path, "args": event.args,
+            })),
             _ => {}
         }
         Some(msg)
+    }
+
+    /// A draft message (see exec.rs) from a server that speaks it.
+    fn on_draft(&mut self, draft: exec::Server) {
+        match draft {
+            exec::Server::Started(started) => {
+                let outcome = if started.error.is_empty() {
+                    Ok(started.exec_id)
+                } else {
+                    Err(anyhow!("exec refused: {}", started.error))
+                };
+                self.exec_started.insert(started.request_id, outcome);
+            }
+            exec::Server::Output(output) => {
+                if let Some(run) = self.execs.get_mut(&output.exec_id) {
+                    run.output(&output);
+                }
+            }
+            exec::Server::Exit(exit) => {
+                if let Some(run) = self.execs.get_mut(&exit.exec_id) {
+                    let mut value = run.exited(&exit);
+                    if run.background {
+                        value["ev"] = json!("exec_exit");
+                        emit(value);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Send a draft message (see exec.rs), as input named by the next seq.
+    pub async fn send_draft(&mut self, msg: exec::Client) -> Result<()> {
+        let ws = self.ws.as_mut().ok_or_else(|| anyhow!("not connected"))?;
+        let packet = tilr_proto::encode(&exec::ClientMessage {
+            msg: Some(msg),
+            seq: 0,
+        });
+        match tokio::time::timeout(SEND_TIMEOUT, ws.send(Message::Binary(packet))).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => {
+                self.lose(&format!("send failed: {err}"));
+                bail!("send failed: {err}")
+            }
+            Err(_) => {
+                self.lose("send timed out");
+                bail!("send timed out")
+            }
+        }
     }
 
     fn keepalive_due(&self) -> Option<Instant> {
