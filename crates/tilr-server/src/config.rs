@@ -12,6 +12,9 @@
 //! socks = true
 //! # SSH agent forwarding (see agent.rs); false does as --no-agent. Default on.
 //! agent = true
+//! # Exec: clients run programs outside a pane (see exec.rs); false does as
+//! # --no-exec. Default on.
+//! exec = true
 //!
 //! # The files protocol (see files.rs).
 //! [files]
@@ -54,6 +57,8 @@ pub struct Config {
     pub socks: Option<bool>,
     /// Forward the SSH agent of a client to the panes. Unset: on.
     pub agent: Option<bool>,
+    /// Let clients run programs outside a pane. Unset: on.
+    pub exec: Option<bool>,
     /// The files protocol.
     #[serde(default)]
     pub files: FilesConfig,
@@ -164,6 +169,12 @@ pub fn agent(no_agent: bool, config: &Config) -> bool {
     !no_agent && config.agent.unwrap_or(true)
 }
 
+/// Whether clients may run programs (Exec): `--no-exec` turns it off, else
+/// the file's `exec`, else on.
+pub fn exec(no_exec: bool, config: &Config) -> bool {
+    !no_exec && config.exec.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +196,14 @@ mod tests {
         assert!(socks(true, &Config::default()));
         let config: Config = toml::from_str("socks = true").unwrap();
         assert!(socks(false, &config));
+    }
+
+    #[test]
+    fn exec_is_on_unless_turned_off() {
+        assert!(exec(false, &Config::default()));
+        assert!(!exec(true, &Config::default()));
+        let config: Config = toml::from_str("exec = false").unwrap();
+        assert!(!exec(false, &config));
     }
 
     #[test]

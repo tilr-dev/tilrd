@@ -3,6 +3,7 @@ mod auth;
 mod clipboard;
 mod cloud;
 mod config;
+mod exec;
 mod fail;
 mod files;
 mod host;
@@ -101,6 +102,11 @@ struct Cli {
     /// file.
     #[arg(long)]
     no_agent: bool,
+
+    /// Do not let clients run programs on this machine outside a pane
+    /// (Exec). Also `exec = false` in the configuration file.
+    #[arg(long)]
+    no_exec: bool,
 
     /// Do not reload when the executable on disk changes. SIGUSR1 still does.
     #[arg(long)]
@@ -234,6 +240,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 socks: config::socks(cli.socks, &config),
                 files: config::files(cli.no_files, &config)?,
                 agent: config::agent(cli.no_agent, &config),
+                exec: config::exec(cli.no_exec, &config),
             })?
         }
     }

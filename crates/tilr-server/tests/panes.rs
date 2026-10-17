@@ -12,7 +12,7 @@ async fn hello_announces_the_clipboard_and_its_limit() {
     assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
     assert_eq!(
         ack.features,
-        ["clipboard", "ping", "files", "host-events", "agent"]
+        ["clipboard", "ping", "files", "host-events", "agent", "exec"]
     );
     assert_eq!(ack.clipboard_max_bytes, 3 << 20);
 }

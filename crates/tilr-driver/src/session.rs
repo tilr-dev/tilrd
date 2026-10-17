@@ -564,15 +564,7 @@ impl Session {
         };
         let msg = match tilr_proto::decode::<ServerMessage>(&packet) {
             Ok(ServerMessage { msg: Some(msg) }) => msg,
-            Ok(_) => {
-                // Not a message of tilr.proto: one of the driver's drafts?
-                if let Ok(exec::ServerMessage { msg: Some(draft) }) =
-                    tilr_proto::decode::<exec::ServerMessage>(&packet)
-                {
-                    self.on_draft(draft);
-                }
-                return None;
-            }
+            Ok(_) => return None,
             Err(err) => {
                 emit(json!({"ev": "protocol_error", "message": err.to_string()}));
                 return None;
@@ -679,15 +671,7 @@ impl Session {
                 "ev": "host_event", "pane": event.pane_id, "name": event.name,
                 "kind": event.kind, "path": event.path, "args": event.args,
             })),
-            _ => {}
-        }
-        Some(msg)
-    }
-
-    /// A draft message (see exec.rs) from a server that speaks it.
-    fn on_draft(&mut self, draft: exec::Server) {
-        match draft {
-            exec::Server::Started(started) => {
+            server_message::Msg::ExecStarted(started) => {
                 let outcome = if started.error.is_empty() {
                     Ok(started.exec_id)
                 } else {
@@ -695,41 +679,28 @@ impl Session {
                 };
                 self.exec_started.insert(started.request_id, outcome);
             }
-            exec::Server::Output(output) => {
+            server_message::Msg::ExecOutput(output) => {
                 if let Some(run) = self.execs.get_mut(&output.exec_id) {
-                    run.output(&output);
+                    run.output(output);
                 }
             }
-            exec::Server::Exit(exit) => {
+            server_message::Msg::ExecInputAck(ack) => {
+                if let Some(run) = self.execs.get_mut(&ack.exec_id) {
+                    run.taken = run.taken.max(ack.taken);
+                }
+            }
+            server_message::Msg::ExecExit(exit) => {
                 if let Some(run) = self.execs.get_mut(&exit.exec_id) {
-                    let mut value = run.exited(&exit);
+                    let mut value = run.exited(exit);
                     if run.background {
                         value["ev"] = json!("exec_exit");
                         emit(value);
                     }
                 }
             }
+            _ => {}
         }
-    }
-
-    /// Send a draft message (see exec.rs), as input named by the next seq.
-    pub async fn send_draft(&mut self, msg: exec::Client) -> Result<()> {
-        let ws = self.ws.as_mut().ok_or_else(|| anyhow!("not connected"))?;
-        let packet = tilr_proto::encode(&exec::ClientMessage {
-            msg: Some(msg),
-            seq: 0,
-        });
-        match tokio::time::timeout(SEND_TIMEOUT, ws.send(Message::Binary(packet))).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => {
-                self.lose(&format!("send failed: {err}"));
-                bail!("send failed: {err}")
-            }
-            Err(_) => {
-                self.lose("send timed out");
-                bail!("send timed out")
-            }
-        }
+        Some(msg)
     }
 
     fn keepalive_due(&self) -> Option<Instant> {

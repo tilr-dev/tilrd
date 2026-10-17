@@ -114,6 +114,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 | `--no-auto-reload` | | Do not reload when the executable changes |
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
+| `--no-exec` | | Do not let clients [run programs](#running-programs-exec) outside a pane (also `exec = false`) |
 
 Signals: `SIGTERM` and `SIGINT` stop the server and end its shells; `SIGUSR1`
 [reloads](#reloading-without-closing-shells) it. `SIGHUP` is ignored: a server
@@ -160,6 +161,9 @@ socks = true
 # Forward the SSH agent of the clients to the panes. On when unset;
 # false does what --no-agent does.
 agent = true
+# Let clients run programs outside a pane (Exec). On when unset; false does
+# what --no-exec does.
+exec = true
 ```
 
 ## tilr Cloud
@@ -274,6 +278,46 @@ agent, for as many signatures as it asks. The agent on the client's side
 asks for each signature if it is set up to (keys added with `ssh-add -c`,
 say); otherwise turn forwarding off on servers you do not trust.
 
+## Running programs (Exec)
+
+A client can run a program on the server's machine without a pane or a
+shell, as `ssh host cmd` would without the shell, and get its stdout and
+stderr apart and how it ended. On unless the server runs with `--no-exec`
+(or `exec = false` in the configuration file); the server lists `"exec"` in
+`HelloAck.features`. It takes the same access token as everything else: a
+client that may open a shell may run a program.
+
+- `ExecStart` names the program and its arguments (`argv`), run as they
+  are: no shell, nothing expanded; `argv[0]` is looked up in the server's
+  `PATH`. Optionally a directory (`cwd`, else the home directory), `NAME=value`
+  entries added to the server's environment, `stdin`, and a time limit
+  (`timeout_ms`). The answer is `ExecStarted` with the exec's id and the
+  program's pid, or with why it did not start (no such program or
+  directory, more than 64 execs of the client running).
+- The output comes as `ExecOutput` (stream 1 stdout, 2 stderr; at most
+  64 KiB each, in order per stream), then `ExecExit`: the exit code, or the
+  signal that killed the program, and whether it was for the time limit
+  (`timed_out`) or `ExecCancel` (`cancelled`). Both go by the [second
+  lane](#protocol): a client that takes them slowly holds the program up,
+  blocked writing to its pipe, and the server's memory stays flat.
+- `ExecInput` feeds stdin and closes it (`eof`). The server acknowledges
+  what the program took with `ExecInputAck` (bytes in all); a client keeps
+  at most 4 MiB ahead of that, and one that sends more has the exec killed
+  (`reason` `"input overrun"`).
+- `ExecSignal` sends a signal to the program's process group, as a terminal
+  does for Ctrl+C; `ExecCancel` kills it at once.
+
+The program leads a process group of its own, and nothing of it outlives
+the exec: the whole group is killed (SIGKILL) on the time limit, on
+`ExecCancel`, and when the program exits (a background child that keeps the
+output open ends with it). Execs are not panes and do not survive a reload:
+it kills them and their groups, and a client still connected gets
+`ExecExit` with `reason` `"reload"` before its connection goes (`"shutdown"`
+when the server stops). A client whose connection ends takes its execs with
+it. On Linux a program is also killed should the server die without doing
+it (`PR_SET_PDEATHSIG`); its children then go only if it had them in its
+group. The log has each start and end with the client's id.
+
 ## Telling panes apart
 
 A pane is named by a UUID the server makes up when the pane is created. It
@@ -358,8 +402,9 @@ code 4001), and its connection closed at once, whatever was queued.
 
 Data in quantity does not wait in that queue. A client's queue has two lanes:
 frames, answers and acknowledgements in one, and in the other file content
-(`FsData`) and the bytes of [streams](#ssh-agent-forwarding) (`StreamData`, and
-the `StreamClose` after them). The connection writes from the second only when
+(`FsData`), the bytes of [streams](#ssh-agent-forwarding) (`StreamData`, and
+the `StreamClose` after them) and the output of [execs](#running-programs-exec)
+(`ExecOutput`, and the `ExecExit` after it). The connection writes from the second only when
 the first is empty, so a keystroke's echo waits behind at most the one chunk
 being written, not behind megabytes of files being read. Nor behind what the
 network holds: of the second lane's data, at most 1 MiB is out on the way to
@@ -367,8 +412,8 @@ the client and not yet read by it (its receive buffer can hold several MB). The
 server knows how far the client has read by WebSocket pings it sends between
 the chunks, which the client's WebSocket answers as it reads; a client must
 answer pings, as browsers and WebSocket libraries do on their own. The second
-lane holds at most 4 MiB per client: a file read, or a program sending to a
-stream, waits for room, so a client that takes data slowly holds the read or
+lane holds at most 4 MiB per client: a file read, a program sending to a
+stream, or an exec's program writing output, waits for room, so a client that takes data slowly holds the read or
 the program back, while the server's memory stays flat, and is not dropped for
 being slow.
 

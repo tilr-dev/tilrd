@@ -42,8 +42,9 @@ use bytes::Bytes;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use tilr_proto::{
-    ClipboardPut, ClosePane, CreatePane, FsList, FsStat, ListPanes, MouseInput, Paste, RawInput,
-    Resize, StreamClose, StreamData, Unsubscribe, client_message::Msg, server_message,
+    ClipboardPut, ClosePane, CreatePane, ExecCancel, ExecSignal, ExecStart, FsList, FsStat,
+    ListPanes, MouseInput, Paste, RawInput, Resize, StreamClose, StreamData, Unsubscribe,
+    client_message::Msg, server_message,
 };
 use tokio::io::AsyncBufReadExt;
 
@@ -580,27 +581,21 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
                 } else {
                     Vec::new()
                 };
-            session
-                .send_draft(exec::Client::Input(exec::ExecInput {
-                    exec_id,
-                    data: Bytes::from(data),
-                    eof: flag(c, "eof"),
-                }))
-                .await?;
+            exec_input(session, exec_id, &data, flag(c, "eof")).await?;
             Ok(json!({}))
         }
         "exec_signal" => {
             let exec_id = number(c, "exec", 0);
             let signal = c.get("signal").and_then(Value::as_i64).unwrap_or(15) as i32;
             session
-                .send_draft(exec::Client::Signal(exec::ExecSignal { exec_id, signal }))
+                .send(Msg::ExecSignal(ExecSignal { exec_id, signal }))
                 .await?;
             Ok(json!({}))
         }
         "exec_cancel" => {
             let exec_id = number(c, "exec", 0);
             session
-                .send_draft(exec::Client::Cancel(exec::ExecCancel { exec_id }))
+                .send(Msg::ExecCancel(ExecCancel { exec_id }))
                 .await?;
             Ok(json!({}))
         }
@@ -808,7 +803,7 @@ async fn clipboard_put(session: &mut Session, c: &Value) -> Result<Value> {
     }))
 }
 
-/// Run a program on the server's machine by Exec (draft, see exec.rs):
+/// Run a program on the server's machine by Exec (see exec.rs):
 /// wait for its end, or with `background` answer once it started.
 async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
     if !session.features.iter().any(|f| f == exec::FEATURE) {
@@ -832,7 +827,7 @@ async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
     let request_id = session.request_id();
     let stdin = c.get("stdin").is_some();
     session
-        .send_draft(exec::Client::Start(exec::ExecStart {
+        .send(Msg::ExecStart(ExecStart {
             request_id,
             argv: strings("argv"),
             cwd: opt_string(c, "cwd").unwrap_or_default(),
@@ -859,13 +854,7 @@ async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
         .execs
         .insert(exec_id, exec::Run::new(exec_id, background));
     if let Some(text) = opt_string(c, "stdin") {
-        session
-            .send_draft(exec::Client::Input(exec::ExecInput {
-                exec_id,
-                data: Bytes::from(text.into_bytes()),
-                eof: true,
-            }))
-            .await?;
+        exec_input(session, exec_id, text.as_bytes(), true).await?;
     }
     if background {
         return Ok(json!({"ev": "exec_started", "exec": exec_id}));
@@ -873,6 +862,46 @@ async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
     let mut out = wait_exec(session, exec_id, millis(c, "timeout_ms", 30_000)).await?;
     out["ev"] = json!("exec_exit");
     Ok(out)
+}
+
+/// Send stdin to Exec run `id` in pieces, keeping no more than
+/// [`exec::INPUT_WINDOW`] ahead of what the program took; `eof` closes it
+/// after them.
+async fn exec_input(session: &mut Session, id: u64, data: &[u8], eof: bool) -> Result<()> {
+    let mut pieces: Vec<&[u8]> = data.chunks(exec::INPUT_CHUNK).collect();
+    if pieces.is_empty() {
+        pieces.push(&[]);
+    }
+    let last = pieces.len() - 1;
+    for (n, piece) in pieces.into_iter().enumerate() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let Some(run) = session.execs.get(&id) else {
+                bail!("no exec {id}");
+            };
+            if run.exit.is_some() {
+                bail!("exec {id} ended");
+            }
+            if run.sent + piece.len() as u64 <= run.taken + exec::INPUT_WINDOW {
+                break;
+            }
+            if Instant::now() >= deadline || session.down() {
+                bail!("exec {id} took no stdin for 30 s");
+            }
+            session.pump(deadline).await;
+        }
+        if let Some(run) = session.execs.get_mut(&id) {
+            run.sent += piece.len() as u64;
+        }
+        session
+            .send(Msg::ExecInput(tilr_proto::ExecInput {
+                exec_id: id,
+                data: Bytes::copy_from_slice(piece),
+                eof: eof && n == last,
+            }))
+            .await?;
+    }
+    Ok(())
 }
 
 /// The end of Exec run `id`.

@@ -37,6 +37,10 @@ message ClientMessage {
     FsUnwatch fs_unwatch = 23;
     StreamData stream_data = 24;
     StreamClose stream_close = 25;
+    ExecStart exec_start = 26;
+    ExecInput exec_input = 27;
+    ExecSignal exec_signal = 28;
+    ExecCancel exec_cancel = 29;
   }
   // Names an input message (KeyInput, MouseInput, Paste, RawInput, Scroll, Resize) so the
   // client can tell which frame shows its effect: HelloAck.seq_base + n, n = 1, 2, 3, ...
@@ -80,11 +84,12 @@ message Hello {
 //
 // A client answers the server's WebSocket pings, as browsers and WebSocket
 // libraries do on their own, in the order it reads. Besides telling the
-// client is there, they pace data in quantity (FsData, StreamData): the
-// server keeps at most about 1 MiB of it written but not yet read by the
-// client, which it knows by the pongs to pings it sends between the chunks,
-// so that a frame never waits behind megabytes of file in the network. A
-// client that does not answer pings stalls its file reads and streams.
+// client is there, they pace data in quantity (FsData, StreamData,
+// ExecOutput): the server keeps at most about 1 MiB of it written but not
+// yet read by the client, which it knows by the pongs to pings it sends
+// between the chunks, so that a frame never waits behind megabytes of file
+// in the network. A client that does not answer pings stalls its file
+// reads, streams and execs.
 
 // Panes are named by `pane_id`: a UUID in its usual text form
 // ("6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4") that the server makes up when the
@@ -452,6 +457,66 @@ message StreamClose {
 }
 
 // ---------------------------------------------------------------------------
+// Exec: run a program on the server's machine without a pane or a shell, its
+// stdout and stderr apart, and hear how it ended (feature "exec").
+//
+// ExecStart is answered with ExecStarted: the exec's id, or why it did not
+// start. Then come ExecOutput, in order per stream, and last ExecExit. Output
+// and the exit go as data in quantity (see the WebSocket pings above): a
+// client that takes them slowly holds the program up, which blocks on
+// writing, rather than the server's memory growing.
+//
+// The program runs in a process group of its own and nothing of it outlives
+// the exec: when it exits, whatever is left in its group is killed
+// (SIGKILL), and so is the whole group on a time limit, ExecCancel, the end
+// of the client's connection, and a reload or stop of the server. Execs are
+// not panes: they do not survive a reload, and a client sees them end with
+// ExecExit.reason "reload" if its connection lets it.
+// ---------------------------------------------------------------------------
+
+// Start a program. Answered with ExecStarted.
+message ExecStart {
+  // Echoed in ExecStarted.
+  uint64 request_id = 1;
+  // The program and its arguments, as they are: no shell, nothing expanded.
+  // argv[0] is looked up in the server's PATH unless it has a "/".
+  repeated string argv = 2;
+  // Directory to run in; it must exist. Empty = the home directory.
+  string cwd = 3;
+  // "NAME=value", added to the server's environment.
+  repeated string env = 4;
+  // The program's stdin is fed by ExecInput. Without, it reads end of file.
+  bool stdin = 5;
+  // The program and its process group are killed (SIGKILL) after this long,
+  // and its ExecExit says timed_out. 0 = no limit.
+  uint32 timeout_ms = 6;
+}
+
+// Bytes for the program's stdin, of an exec started with `stdin`; `eof`
+// closes it after them. A client keeps at most 4 MiB of stdin sent but not
+// yet taken by the program, as ExecInputAck tells; an exec whose client
+// sends more is killed (ExecExit.reason "input overrun"). Input after `eof`,
+// and for an exec that is not the client's, is ignored.
+message ExecInput {
+  uint64 exec_id = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+// Send a signal (its number: 2 SIGINT, 15 SIGTERM, ...) to the program's
+// process group, as a terminal does for Ctrl+C. Not answered.
+message ExecSignal {
+  uint64 exec_id = 1;
+  int32 signal = 2;
+}
+
+// The client no longer wants the program: it and its process group are
+// killed at once (SIGKILL), and ExecExit says cancelled.
+message ExecCancel {
+  uint64 exec_id = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Server -> client
 // ---------------------------------------------------------------------------
 
@@ -474,6 +539,10 @@ message ServerMessage {
     StreamOpen stream_open = 15;
     StreamData stream_data = 16;
     StreamClose stream_close = 17;
+    ExecStarted exec_started = 18;
+    ExecOutput exec_output = 19;
+    ExecExit exec_exit = 20;
+    ExecInputAck exec_input_ack = 21;
   }
 }
 
@@ -489,6 +558,7 @@ message HelloAck {
   //   "agent" - SSH agent forwarding: StreamOpen with kind "ssh-agent",
   //             StreamData, StreamClose. Only towards a client that has
   //             "agent" in its Hello.features.
+  //   "exec" - ExecStart, ExecInput, ExecSignal, ExecCancel
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;
@@ -697,6 +767,49 @@ message StreamOpen {
   string kind = 2;
   // The pane whose socket the program connected to.
   string pane_id = 3;
+}
+
+// Answer to ExecStart.
+message ExecStarted {
+  uint64 request_id = 1;
+  // Chosen by the server, never used again while it runs.
+  uint64 exec_id = 2;
+  // Of the program on the server's machine; the id of its process group too.
+  uint32 pid = 3;
+  // Why it did not start (no such program, no such directory, too many
+  // execs); then `exec_id` is 0 and nothing else comes.
+  string error = 4;
+}
+
+// Output of a program, at most 64 KiB in one message, in order per stream.
+message ExecOutput {
+  uint64 exec_id = 1;
+  // 1 stdout, 2 stderr.
+  uint32 stream = 2;
+  bytes data = 3;
+}
+
+// How much of its stdin the program has taken: `taken` bytes in all, of the
+// ExecInput data sent for it. Sent as it takes them.
+message ExecInputAck {
+  uint64 exec_id = 1;
+  uint64 taken = 2;
+}
+
+// The program ended, and its output did; the last message of an exec.
+message ExecExit {
+  uint64 exec_id = 1;
+  // Its exit status, if it exited; 0 if a signal killed it.
+  int32 code = 2;
+  // The signal that killed it, 0 if none.
+  int32 signal = 3;
+  // Killed for its time limit (ExecStart.timeout_ms).
+  bool timed_out = 4;
+  // Killed for ExecCancel.
+  bool cancelled = 5;
+  // Why the server killed it on its own: "reload", "shutdown", "input
+  // overrun". Empty otherwise.
+  string reason = 6;
 }
 
 // Absent Color = terminal default.

@@ -217,6 +217,28 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
 | Два клиента с `agent`: поток получает подписавшийся последним (клиент без `agent` не в счёт); он отписался — получает первый | `the_client_that_subscribed_last_serves_the_agent` |
 | Перезагрузка: открытый поток кончается, сокет на том же пути снова принимает и ведёт к переподключившемуся клиенту | `the_panes_socket_works_after_a_reload` |
 
+## Exec — `tests/exec.rs`
+
+Программа на машине сервера без панели и без шелла (возможность `"exec"`):
+`ExecStart` → `ExecStarted`, вывод `ExecOutput` (1 — stdout, 2 — stderr),
+в конце `ExecExit`; `ExecInput` (подтверждается `ExecInputAck`),
+`ExecSignal`, `ExecCancel`. Программа — лидер своей группы процессов, ничего
+из группы exec не переживает.
+
+| Сценарий | Тест |
+|---|---|
+| Сервер объявляет возможность `exec`; с `--no-exec` и `exec = false` её нет, `ExecStart` не отвечается, соединение живо | `exec_is_offered_unless_turned_off` |
+| stdout и stderr раздельно, код выхода; аргументы как есть (`$HOME`, `*`, `` `id` ``, пробел не раскрываются); каталог и окружение, без каталога — домашний; без stdin программа читает конец; нет программы, пустой `argv`, нет каталога, окружение не `NAME=value` — отказ в `ExecStarted.error`; в журнале старт, конец и отказ | `a_program_runs_without_a_shell_and_its_outputs_come_apart` |
+| Убитая сигналом (своим SIGTERM, SIGINT от клиента группе) — `signal`, код 0 | `the_signal_that_killed_a_program_is_reported` |
+| Лимит времени 0,5 с: `timed_out`, SIGKILL, меньше 3 с; ни программы, ни её фонового ребёнка | `a_time_limit_kills_the_program_and_its_children` |
+| `ExecCancel`: `cancelled`, программа и ребёнок убиты сразу | `a_cancelled_program_ends_at_once_with_its_children` |
+| Программа вышла, оставив в группе фоновый процесс, держащий stdout: exec кончается с ней, процесс убит | `what_a_program_leaves_running_in_its_group_goes_when_it_exits` |
+| stdin: пустой и закрытый — конец файла; 8 МиБ кусками в пределах окна по подтверждениям доходят целиком; клиент, ушедший больше чем на 4 МиБ вперёд нечитающей программы, — exec убит, `reason` `input overrun` | `stdin_reaches_the_program_and_is_acknowledged` |
+| 32 МиБ вывода: пока клиент не читает, программа ждёт (не дописала); потом всё целиком и по порядку, stderr отдельно, выход после вывода | `a_large_output_arrives_whole_in_order_and_holds_up_a_slow_client` |
+| Восемь exec по 1 с вместе — около секунды, у каждого свой вывод; панель работает рядом | `execs_run_side_by_side_with_the_panes` |
+| Клиент ушёл — его программы с детьми убиты, в журнале `client gone` | `a_client_that_goes_takes_its_programs_with_it` |
+| Перезагрузка: идущий exec убит с группой, клиент до закрытия соединения получает `ExecExit` с `reason` `reload` и вывод до того; после переподключения exec работает | `a_reload_ends_the_programs_and_their_clients_hear_why` |
+
 ## Метрики — `tests/metrics.rs`
 
 Задержку ввода клиент меряет сам, без синхронизации часов: помечает ввод

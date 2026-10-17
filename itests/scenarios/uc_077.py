@@ -1,21 +1,25 @@
 """UC-077: Exec over the protocol, without a shell or a pane: a client runs a program on the
 server's machine and gets its stdout and stderr apart, its exit code or the signal that
-killed it; a time limit, cancelling, a large output, stdin, several at once. [no feature]
+killed it; a time limit, cancelling, a large output, stdin, several at once; what a
+reload and a client that goes do to running execs.
 
-tilrd has no Exec yet: tilr.proto has no such messages and HelloAck.features no "exec".
-The cases are written against the driver's draft of the interface (crates/tilr-driver/src/
-exec.rs: ExecStart {argv, cwd, env, stdin, timeout_ms} -> ExecStarted, ExecOutput per
-stream, ExecExit {code, signal, timed_out, cancelled}; ExecInput, ExecSignal,
-ExecCancel), which the driver sends only to a server that offers "exec". Until then
-every case fails at its first `exec` with "the server does not offer exec". When the
-real messages land, the draft goes and the cases stay.
+The messages are tilr.proto's (crates/tilr-server/src/exec.rs): ExecStart {argv, cwd,
+env, stdin, timeout_ms} -> ExecStarted, ExecOutput per stream, ExecExit {code, signal,
+timed_out, cancelled, reason}; ExecInput (acknowledged by ExecInputAck, at most 4 MiB
+ahead of the program), ExecSignal (to the program's process group), ExecCancel. The
+program leads a process group of its own and nothing of it outlives the exec: the group
+is killed on its time limit, a cancel, its exit, the end of its client's connection and
+a reload, after which the client still connected hears ExecExit.reason "reload".
+Red until 2026-10-17: tilrd had no Exec.
 """
 
 import hashlib
 import os
+import signal
 import time
 
 from tt import T, case
+from tt.live import wait_reloads
 
 
 def start(t: T):
@@ -92,6 +96,8 @@ def a_large_output_arrives_whole_and_in_order(t: T):
     err.write_bytes(os.urandom(1 << 20))
     r = d.cmd("exec", argv=["sh", "-c", f"cat {data} & cat {err} >&2; wait"], timeout_ms=120_000)
     t.eq(r["code"], 0, "exit status")
+    t.metric("large_output_ms", r["ms"])
+    t.metric("large_output_mb_s", round((65 << 20) / 1e6 / max(r["ms"] / 1000, 1e-3), 1))
     t.eq((r["stdout_bytes"], r["stdout_sha256"]), (64 << 20, hashlib.sha256(data.read_bytes()).hexdigest()),
          "stdout whole")
     t.eq((r["stderr_bytes"], r["stderr_sha256"]), (1 << 20, hashlib.sha256(err.read_bytes()).hexdigest()),
@@ -122,5 +128,45 @@ def eight_execs_run_at_once(t: T):
     runs = [d.cmd("exec", argv=["sh", "-c", f"sleep 1; echo run {n}"], background=True)["exec"] for n in range(8)]
     outs = [d.cmd("exec_wait", exec=e, timeout_ms=10_000) for e in runs]
     t.eq([o["stdout"] for o in outs], [f"run {n}\n" for n in range(8)], "each its own output")
+    t.metric("eight_execs_ms", round((time.monotonic() - began) * 1000))
     t.ok(time.monotonic() - began < 4, f"they ran at once ({time.monotonic() - began:.1f} s)")
     t.eq(d.run(d.shell_pane(), "echo panes-still-work"), 0, "panes work beside them")
+
+
+@case(fixture="server_state")
+def a_reload_ends_the_running_execs_with_their_children_and_says_why(t: T):
+    """UC-077: execs are not panes: a reload kills a running one and its children, the
+    client hears ExecExit with reason "reload" before its connection goes; after it, exec
+    works again."""
+    server, d = start(t)
+    started = d.cmd("exec", argv=["sh", "-c", "sleep 50 & sleep 51; wait"], background=True)
+    t.eventually(lambda: t.procs(r"^sleep 5[01]$"), "the program runs", timeout=5)
+    since = d.mark()
+    server.signal(signal.SIGUSR1)
+    r = d.cmd("exec_wait", exec=started["exec"], timeout_ms=10_000)
+    t.eq((r["reason"], r["signal"], r["cancelled"], r["timed_out"]), ("reload", 9, False, False),
+         "the exit says reload")
+    t.eventually(lambda: not t.procs(r"^sleep 5[01]$"), "no sleep is left running", timeout=3)
+    wait_reloads(t, server, 1)
+    d.wait_event("disconnected", since=since, timeout=10)
+    d.cmd("reconnect", timeout_ms=20_000)
+    t.eq(d.cmd("exec", argv=["echo", "again"])["stdout"], "again\n", "exec after the reload")
+
+
+@case(fixture="server_state")
+def a_client_that_goes_takes_its_execs_and_their_children_with_it(t: T):
+    """UC-077: the client's connection ends (closed, or cut without a close): its running
+    execs are killed with their process groups; the log says so with the client's id."""
+    server, d = start(t)
+    d.cmd("exec", argv=["sh", "-c", "sleep 60 & sleep 61; wait"], background=True)
+    t.eventually(lambda: t.procs(r"^sleep 6[01]$"), "the program runs", timeout=5)
+    d.cmd("disconnect")
+    t.eventually(lambda: not t.procs(r"^sleep 6[01]$"), "no sleep is left running", timeout=3)
+    t.eventually(lambda: server.logged("killed=\"client gone\""), "the log says the client went",
+                 timeout=3)
+    d.cmd("reconnect", timeout_ms=10_000)
+    d.cmd("exec", argv=["sh", "-c", "sleep 62 & sleep 63; wait"], background=True)
+    t.eventually(lambda: t.procs(r"^sleep 6[23]$"), "the program runs", timeout=5)
+    d.cmd("drop")
+    t.eventually(lambda: not t.procs(r"^sleep 6[23]$"), "no sleep is left running after a cut",
+                 timeout=45)

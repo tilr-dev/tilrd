@@ -210,6 +210,11 @@ impl ToClient {
         self.backlog.packets.load(Ordering::Relaxed) == 0
     }
 
+    /// Whether nothing is queued in either lane, nor being written.
+    pub fn idle(&self) -> bool {
+        self.drained() && self.credit.available_permits() == BULK_BYTES
+    }
+
     /// Have the writer say so (see [`Outbox::written`]) the next time the
     /// interactive lane is empty.
     pub fn want_drained(&self) {

@@ -8,6 +8,8 @@ fn main() {
             ".tilr.v1.FsWrite.data",
             ".tilr.v1.FsData.data",
             ".tilr.v1.StreamData.data",
+            ".tilr.v1.ExecInput.data",
+            ".tilr.v1.ExecOutput.data",
         ])
         .compile_protos(&["proto/tilr.proto"], &["proto"])
         .expect("failed to compile tilr.proto");

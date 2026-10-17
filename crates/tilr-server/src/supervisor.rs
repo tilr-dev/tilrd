@@ -45,7 +45,7 @@ use crate::link::FrameHead;
 use crate::metrics::{self, ClientDrop};
 use crate::outbox::{self, Outgoing, ToClient};
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
-use crate::{agent, auth, clipboard, cloud, files, host, identity, link, pty, reload, socks};
+use crate::{agent, auth, clipboard, cloud, exec, files, host, identity, link, pty, reload, socks};
 
 const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
@@ -78,6 +78,11 @@ const FEATURE_FILES: &str = "files";
 const FEATURE_HOST_EVENTS: &str = "host-events";
 /// Feature name for SSH agent forwarding, see `HelloAck.features`.
 const FEATURE_AGENT: &str = "agent";
+/// Feature name for Exec, see `HelloAck.features`.
+const FEATURE_EXEC: &str = "exec";
+/// How long a reload waits for what its clients were last sent (the ends of
+/// their execs) to be written out before the connections go.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// How often the event loop's lag is measured (`tilr_supervisor_loop_lag_seconds`).
 const LAG_TICK: Duration = Duration::from_secs(1);
 /// How long a scrape of `/metrics` waits for the event loop.
@@ -145,6 +150,8 @@ enum Event {
     Files(files::Output),
     /// What the agent's tasks report, see [`crate::agent`].
     Agent(agent::Output),
+    /// What the tasks of execs report, see [`crate::exec`].
+    Exec(exec::Output),
     /// A program in a pane asks the clients watching it for something, see
     /// [`crate::host`]. `reply` gets how many clients it went to.
     Host {
@@ -280,6 +287,8 @@ pub struct Options {
     /// Forward the SSH agent of the clients to the panes, see
     /// [`crate::agent`].
     pub agent: bool,
+    /// Let clients run programs, see [`crate::exec`].
+    pub exec: bool,
 }
 
 /// Who may come in through the listening port, and to what.
@@ -416,6 +425,15 @@ pub fn run(options: Options) -> Result<()> {
             } else {
                 tracing::info!(target: "tilr_server::agent", "SSH agent forwarding off");
             }
+            let execs = options.exec.then(|| {
+                let events = events_tx.clone();
+                exec::Execs::new(Arc::new(move |output| {
+                    let _ = events.send(Event::Exec(output));
+                }))
+            });
+            if execs.is_none() {
+                tracing::info!(target: "tilr_server::exec", "exec off");
+            }
 
             let mut supervisor = Supervisor {
                 events: events_tx,
@@ -431,6 +449,7 @@ pub fn run(options: Options) -> Result<()> {
                 files,
                 host_events: host_socket.is_some(),
                 agent,
+                execs,
                 metrics: shared_metrics,
                 next_client_id,
             };
@@ -1143,6 +1162,8 @@ struct Supervisor {
     host_events: bool,
     /// `None` when SSH agent forwarding is turned off.
     agent: Option<agent::Agent>,
+    /// `None` when Exec is turned off.
+    execs: Option<exec::Execs>,
     /// The measurements the routing tasks share.
     metrics: Arc<metrics::Shared>,
     /// The id the next connection gets; handed on in a reload.
@@ -1167,6 +1188,9 @@ impl Supervisor {
         tracing::info!("shutting down, closing {} pane(s)", self.panes.len());
         if let Some(agent) = &mut self.agent {
             agent.remove_all();
+        }
+        if let Some(execs) = &mut self.execs {
+            execs.stop_all(exec::End::Shutdown).await;
         }
     }
 
@@ -1227,6 +1251,11 @@ impl Supervisor {
             } => self.on_pane_link_closed(pane_id, exit_code, error),
             Event::Files(output) => self.on_files_output(output),
             Event::Agent(output) => self.on_agent_output(output),
+            Event::Exec(exec::Output::Ended { exec_id }) => {
+                if let Some(execs) = &mut self.execs {
+                    execs.ended(exec_id);
+                }
+            }
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
             }
@@ -1331,6 +1360,14 @@ impl Supervisor {
             return false;
         }
         tracing::info!(exe = %exe.display(), panes = self.panes.len(), "reloading");
+
+        // Execs are not handed over: they end here, and their clients are
+        // told so before the connections go.
+        if let Some(execs) = &mut self.execs
+            && execs.stop_all(exec::End::Reload).await
+        {
+            self.flush_clients().await;
+        }
 
         // Stop reading from the pane processes, each between two packets.
         for pane in self.panes.values() {
@@ -1515,6 +1552,7 @@ impl Supervisor {
                     (FEATURE_FILES, fs_max_bytes.is_some()),
                     (FEATURE_HOST_EVENTS, self.host_events),
                     (FEATURE_AGENT, self.agent.is_some()),
+                    (FEATURE_EXEC, self.execs.is_some()),
                 ];
                 self.send(
                     client_id,
@@ -1622,6 +1660,19 @@ impl Supervisor {
                 Some(agent) => agent.on_close(client_id, close),
                 None => tracing::debug!(client = client_id, "stream close while the agent is off"),
             },
+            msg @ (Msg::ExecStart(_)
+            | Msg::ExecInput(_)
+            | Msg::ExecSignal(_)
+            | Msg::ExecCancel(_)) => {
+                let (Some(execs), Some(client)) = (&mut self.execs, self.clients.get(&client_id))
+                else {
+                    return tracing::debug!(client = client_id, "exec request while exec is off");
+                };
+                if let Some(reply) = execs.on_message(client_id, &client.client_id, &client.tx, msg)
+                {
+                    self.send(client_id, reply);
+                }
+            }
         }
     }
 
@@ -2021,6 +2072,9 @@ impl Supervisor {
         if let Some(agent) = &mut self.agent {
             agent.drop_client(client_id);
         }
+        if let Some(execs) = &mut self.execs {
+            execs.drop_client(client_id);
+        }
         let had_subscriptions = !client.subscriptions.is_empty();
         for pane_id in client.subscriptions {
             if let Some(pane) = self.panes.get_mut(&pane_id) {
@@ -2141,6 +2195,20 @@ impl Supervisor {
             .collect();
         for client_id in stuck {
             self.drop_stuck(client_id);
+        }
+    }
+
+    /// Wait, up to [`FLUSH_TIMEOUT`], until everything queued for the
+    /// clients is written out.
+    async fn flush_clients(&self) {
+        let deadline = tokio::time::Instant::now() + FLUSH_TIMEOUT;
+        while tokio::time::Instant::now() < deadline
+            && self
+                .clients
+                .values()
+                .any(|client| !client.tx.closed() && !client.tx.idle())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
