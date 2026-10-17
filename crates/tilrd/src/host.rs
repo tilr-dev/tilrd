@@ -14,7 +14,9 @@
 //! "error": "no tilr client attached"}` when nobody would hear it.
 //!
 //! The program is this executable under the name `tilr` (put on the PATH of
-//! the panes, see [`shim`]) or `tilrd edit` / `tilrd open`.
+//! the panes, see [`shim`]) or `tilrd edit` / `tilrd open`. The socket is
+//! 0600 in a 0700 directory, and a connection from another uid is refused
+//! even where the permissions were opened.
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
@@ -119,7 +121,11 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
         Ok(_) => anyhow::bail!("{} is in the way: not a socket", path.display()),
         Err(_) => {}
     }
-    UnixListener::bind(path).with_context(|| format!("listen on {}", path.display()))
+    let listener =
+        UnixListener::bind(path).with_context(|| format!("listen on {}", path.display()))?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .with_context(|| format!("chmod {}", path.display()))?;
+    Ok(listener)
 }
 
 /// Remove the socket file, when the server stops for good.
@@ -139,6 +145,11 @@ pub async fn serve(listener: UnixListener, deliver: Deliver) {
                 continue;
             }
         };
+        // The user's own programs only, whatever the permissions say.
+        if let Err(err) = crate::local::peer(&stream) {
+            tracing::warn!("host socket: refused a connection: {err:#}");
+            continue;
+        }
         let deliver = std::sync::Arc::clone(&deliver);
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();

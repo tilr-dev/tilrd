@@ -40,24 +40,28 @@
 
 | Сценарий | Тест |
 |---|---|
-| Без `--listen` сервер слушает только Unix-сокет: каталог 0700, сокет и lock 0600, в lock — pid; `Hello` без токена принят, `tilrd ps` ходит через сокет | `the_socket_is_the_users_alone_and_asks_no_token` |
+| Сервер говорит systemd `READY=1` на `$NOTIFY_SOCKET`, когда слушает (`Type=notify`) | `a_service_manager_is_told_when_the_server_is_ready` |
+| Сервер слушает Unix-сокет (каталог 0700, сокет и lock 0600, в lock — pid; `Hello` без токена принят, `tilrd ps` ходит через сокет) и по умолчанию TCP на 127.0.0.1 | `the_socket_is_the_users_alone_and_asks_no_token` |
+| `--no-listen` — только сокет; `--no-listen --no-socket` — ошибка «nothing to listen on» | `no_listen_serves_the_socket_alone` |
+| Занятый TCP-порт — сервер не стартует, ошибка говорит, что порт занят, и предлагает `--listen`/`--no-listen`; сокет не остаётся | `a_tcp_port_that_is_taken_stops_the_server_with_a_clear_error` |
 | Другой uid не подключается: сначала его не пускают права, а открытые руками права не помогают — сервер сверяет uid собеседника (только под root) | `another_user_is_turned_away_even_where_the_permissions_let_it_in` |
 | Сокет, оставленный убитым (SIGKILL) сервером, следующий сервер убирает и слушает на его месте | `a_socket_left_by_a_killed_server_is_replaced` |
 | Обычный файл на месте сокета — внятная ошибка, файл цел | `a_file_at_the_path_is_left_alone_with_a_clear_error` |
 | Чужая программа слушает на месте сокета — внятная ошибка, её сокет цел и работает | `another_programs_listener_at_the_path_is_left_alone_with_a_clear_error` |
 | Путь длиннее `sun_path` — внятная ошибка с выходом (`TILR_SOCKET`) | `a_socket_path_too_long_is_a_clear_error` |
 | Восемь серверов стартуют разом на один сокет — остаётся ровно один, остальные говорят «another tilrd» | `of_servers_started_at_once_one_serves_the_socket` |
-| С `--listen` занятый сокет — только предупреждение, сервер работает по TCP (как приложение Tilr); сокет, названный `--socket`, обязан работать | `with_a_tcp_port_a_socket_in_use_is_only_a_warning` |
+| С TCP занятый сокет — только предупреждение, сервер работает по TCP (как приложение Tilr); сокет, названный `--socket`, обязан работать | `with_a_tcp_port_a_socket_in_use_is_only_a_warning` |
 | Перезагрузка сохраняет сокет и lock (тот же pid, панели на месте, второй сервер сокет не получает) | `a_reload_keeps_the_socket_and_its_lock` |
 | Остановка убирает сокет и lock | `a_server_that_stops_removes_its_socket_and_lock` |
 | Команды сервера (`tilr token`) идут только по Unix-сокету, даже с `--no-exec`; по TCP — отказ | `server_commands_run_for_local_clients_only` |
-| Сервер только на сокете не перезагружается в исполняемый файл, который сокет не принимает (`state-formats` без `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
+| Сервер только на сокете (`--no-listen`) не перезагружается в исполняемый файл, который сокет не принимает (`state-formats` без `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
 
 ## Клиент `tilr` — `crates/tilr/tests/client.rs`
 
 | Сценарий | Тест |
 |---|---|
-| Первый `tilr` поднимает сервер отвязанным (своя сессия, не ребёнок), следующий подключается к нему же; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
+| Первый `tilr` поднимает сервер отвязанным (своя сессия, не ребёнок, с TCP на loopback), следующий подключается к нему же; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
+| Порт TCP занят (приложение Tilr, другой пользователь) — сервер, поднятый `tilr`, всё равно стартует: предупреждение в логе, только сокет | `a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken` |
 | Шесть `tilr` разом на пустой машине — один сервер, второй даже не запускался | `tilr_started_many_times_at_once_starts_one_server` |
 | `tilr kill-server`: сервер и процессы панелей завершены, сокет и lock убраны | `kill_server_ends_the_shells_and_removes_the_socket` |
 | Сокет после SIGKILL: `ls` ничего не поднимает, `new` поднимает новый сервер | `a_socket_left_by_a_killed_server_is_replaced_by_the_next_tilr` |
@@ -72,7 +76,7 @@
 | Сценарий | Тест |
 |---|---|
 | Клиент без токена доступа или с чужим получает ошибку и отключается; с токеном — проходит | `a_client_needs_the_access_token` |
-| Токен лежит в файле, доступном только пользователю, переживает перезапуск; `tilrd token` печатает его же | `the_token_is_kept_for_the_user_only_and_across_restarts` |
+| Токен лежит в файле, доступном только пользователю (каталог состояния 0700), переживает перезапуск; `tilrd token` печатает его же | `the_token_is_kept_for_the_user_only_and_across_restarts` |
 | Сервер с `--no-auth` токен не спрашивает и предупреждает об этом в журнале | `a_server_started_without_authentication_asks_for_no_token` |
 
 ## tilr Cloud — `tests/cloud.rs`
@@ -249,6 +253,7 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
 | Клиент агента отключился посреди потока — программа читает конец; следующий клиент обслуживает тот же сокет | `the_program_reads_the_end_when_the_agent_client_disconnects` |
 | Два клиента с `agent`: поток получает подписавшийся последним (клиент без `agent` не в счёт); он отписался — получает первый | `the_client_that_subscribed_last_serves_the_agent` |
 | Перезагрузка: открытый поток кончается, сокет на том же пути снова принимает и ведёт к переподключившемуся клиенту | `the_panes_socket_works_after_a_reload` |
+| Сокеты агента, оставленные сервером, убитым SIGKILL, следующий старт убирает; живые сокеты другого сервера остаются | `the_sockets_a_killed_server_left_are_removed_when_the_next_starts` |
 
 ## Exec — `tests/exec.rs`
 

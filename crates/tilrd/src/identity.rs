@@ -23,6 +23,20 @@ pub fn state_dir() -> Option<PathBuf> {
     Some(std::env::home_dir()?.join(".local/state/tilr"))
 }
 
+/// Make the state directory (or another of the user's own) if it is not
+/// there: private to the user (0700), its parents as usual.
+pub fn create_private_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("create {}", dir.display())),
+    }
+}
+
 /// The id of this server. A server that cannot keep one on disk gets one
 /// that lasts until it stops.
 pub fn server_id() -> Uuid {
@@ -38,13 +52,23 @@ pub fn server_id() -> Uuid {
 fn read_or_create(dir: &Path) -> Result<Uuid> {
     let path = dir.join(ID_FILE);
     if !path.exists() {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        create_private_dir(dir)?;
         // Written aside and linked into place: the file appears whole, and a
         // server starting at the same moment does not replace the id of this
         // one, it reads it.
         let staged = dir.join(format!("{ID_FILE}.{}", std::process::id()));
-        std::fs::write(&staged, format!("{}\n", Uuid::new_v4()))
-            .with_context(|| format!("write {}", staged.display()))?;
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&staged)
+                .and_then(|mut file| writeln!(file, "{}", Uuid::new_v4()))
+                .with_context(|| format!("write {}", staged.display()))?;
+        }
         let linked = std::fs::hard_link(&staged, &path);
         let _ = std::fs::remove_file(&staged);
         match linked {

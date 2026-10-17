@@ -30,12 +30,19 @@
 
 ## A. Установка и первый запуск (без сервиса)
 
-- UC-001. `curl tilr.sh | sh` без root: бинарь в `~/.local/bin`, контрольная сумма сошлась, версия печатается. **[нет фичи: инсталлер]**
-- UC-002. `~/.local/bin` нет в PATH — инсталлер говорит, что добавить; ничего не правит молча.
-- UC-003. Повторная установка поверх: идемпотентно, работающий tilrd не убит (или перезагружается без потери шеллов).
-- UC-004. Битая контрольная сумма / оборванная загрузка / нет релиза под платформу — ничего не установлено, мусора нет.
-- UC-005. Чистая система без `$XDG_RUNTIME_DIR`, без `$HOME/.config` — пути создаются, права 0700/0600.
-- UC-006. Запуск не от root, без sudo, в контейнере без systemd — всё работает.
+Реализовано (2026-10-17): все UC-001…006. Инсталлер — копия из репо sh
+(`itests/installer/install.sh`, в контейнере `/opt/tt/install.sh`), его отдаёт `t.cdn()`
+вместе с релизом из этого дерева (`tilrd-`, `tilr-server-`, `tilr-<platform>` и `.sha256`,
+`LocalCdn.publish`); ставит пользователь, созданный кейсом (`t.user()`: `useradd -m`,
+чистое окружение логина без `XDG_*`, без sudo, без systemd). Красные — дефекты инсталлера,
+описаны в `uc_004.py`.
+
+- UC-001. `curl tilr.sh | sh` без root: бинарь в `~/.local/bin`, контрольная сумма сошлась, версия печатается. → `uc_001.py::the_installer_puts_tilrd_and_tilr_in_local_bin_without_root` (оба бинаря 0755 пользователя, sha256 = релиз, `.sha256` запрошены, `/usr/local/bin` и `/etc` не тронуты; `tilr` поднимает установленный tilrd от пользователя)
+- UC-002. `~/.local/bin` нет в PATH — инсталлер говорит, что добавить; ничего не правит молча. → `uc_002.py::without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing` (в доме новые только `~/.local/bin/{tilrd,tilr}`)
+- UC-003. Повторная установка поверх: идемпотентно, работающий tilrd не убит (или перезагружается без потери шеллов). → `uc_003.py::installing_the_same_release_again_changes_nothing` (те же inode и mtime, нет reload), `::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells` (тот же pid, панели, `$KEPT`, `$$` и job; драйвер по TCP 7890 с токеном)
+- UC-004. Битая контрольная сумма / оборванная загрузка / нет релиза под платформу — ничего не установлено, мусора нет. → `uc_004.py::a_bad_checksum_installs_nothing` (FAIL: остаётся пустой `~/.local/bin`), `::a_download_cut_short_installs_nothing` (FAIL: то же), `::no_release_for_the_platform_installs_nothing`, `::a_bad_client_checksum_installs_neither` (FAIL: tilrd ставится, инсталлер выходит с 0), `::a_broken_update_leaves_the_installation_and_its_server_alone`
+- UC-005. Чистая система без `$XDG_RUNTIME_DIR`, без `$HOME/.config` — пути создаются, права 0700/0600. → `uc_005.py::on_a_clean_system_tilr_makes_its_directories_private` (`/tmp/tilr-<uid>` и всё в нём, `~/.local/state/tilr` 0700, токен и server-id 0600)
+- UC-006. Запуск не от root, без sudo, в контейнере без systemd — всё работает. → `uc_006.py::without_root_sudo_or_systemd_everything_works` (sudo — ловушка, не вызван), `::tilr_no_service_installs_the_executables_only` (`TILR_NO_SERVICE=1`: systemctl не спрошен)
 
 ## B. Модель как у tmux — жизнь демона
 
@@ -55,23 +62,31 @@
 
 ## C. Сервис — опционально, только файлы
 
-- UC-020. `tilr service install`: user unit записан верно (`ExecStart`, `Type=notify`, Restart), `enable` вызван. **[нет фичи]**
-- UC-021. linger недоступен → crontab `@reboot` записан, вывод говорит, какой способ выбран.
-- UC-022. `tilr service uninstall` убирает всё, что поставил install, и только это.
-- UC-023. Без `service install` нигде нет автозапуска (явность, не руткит).
+Реализовано (2026-10-17): `tilr service install|uninstall` (README «Starting at boot»).
+systemd нет в контейнере: `systemctl`, `loginctl`, `crontab` — скрипты, которые пишут свои
+аргументы (`tt.FakeServiceTools`); юнит и crontab проверяются как файлы, `Type=notify` —
+запуском `ExecStart` юнита с `$NOTIFY_SOCKET`.
+
+- UC-020. `tilr service install`: user unit записан верно (`ExecStart`, `Type=notify`, Restart), `enable` вызван. → `uc_020.py::service_install_writes_a_notify_user_unit_and_enables_it` (tilrd шлёт `READY=1`), `::with_lingering_off_install_turns_it_on_and_notes_it`, `::a_running_tilrd_is_left_alone` (`enable` без `--now`)
+- UC-021. linger недоступен → crontab `@reboot` записан, вывод говорит, какой способ выбран. → `uc_021.py::without_lingering_a_crontab_reboot_line_is_written`, `::without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own` (строка пользователя цела, повторный install не дублирует), `::with_neither_systemd_nor_crontab_install_fails_and_writes_nothing`; строка `@reboot`, запущенная как cron, поднимает tilrd на сокете пользователя
+- UC-022. `tilr service uninstall` убирает всё, что поставил install, и только это. → `uc_022.py::uninstall_removes_the_unit_it_wrote_and_nothing_else` (disable, linger выключен, другой юнит цел, сервер и панели живы), `::uninstall_leaves_lingering_it_did_not_turn_on`, `::uninstall_removes_its_crontab_line_and_keeps_the_users`, `::uninstall_removes_the_crontab_it_made`, `::uninstall_leaves_what_it_did_not_write` (юнит инсталлера не трогает)
+- UC-023. Без `service install` нигде нет автозапуска (явность, не руткит). → `uc_023.py::nothing_starts_tilrd_at_boot_unless_asked` (установка и все команды `tilr`: ни юнита, ни crontab, ни autostart, профили и `/etc` не тронуты; без systemd — инсталлер со своим юнитом при systemd здесь не проверяется)
 
 ## D. Сокеты — unix и TCP
 
-- UC-030. Слушает только 127.0.0.1 по умолчанию; с другого контейнера порт закрыт.
-- UC-031. `--listen 0.0.0.0` / `[::]` — доступен снаружи, токен обязателен.
-- UC-032. IPv6 loopback и dual-stack.
-- UC-033. Порт занят — ошибка с понятным текстом, код выхода не 0.
+Реализовано (2026-10-17): все UC-030…039. TCP по умолчанию — `127.0.0.1:7890` и у
+голого `tilrd`, и у поднятого `tilr` (порт занят — такой работает без TCP).
+
+- UC-030. Слушает только 127.0.0.1 по умолчанию; с другого контейнера порт закрыт. → `uc_030.py::a_tilrd_tilr_starts_listens_on_loopback_only`, `::a_bare_tilrd_listens_on_loopback_only` (хост `peer`: refused)
+- UC-031. `--listen 0.0.0.0` / `[::]` — доступен снаружи, токен обязателен. → `uc_031.py::listening_on_every_ipv4_address_asks_for_the_token`, `::listening_on_every_address_takes_ipv4_too_and_asks_for_the_token` (без токена и с чужим — отказ, с токеном — шелл)
+- UC-032. IPv6 loopback и dual-stack. → `uc_032.py::ipv6_loopback_serves_ipv6_only`, `::dual_stack_serves_both_loopbacks` (без IPv6 на lo — BLOCKED)
+- UC-033. Порт занят — ошибка с понятным текстом, код выхода не 0. → `uc_033.py::a_taken_port_is_a_clear_error` (exit 1 за миллисекунды, «… is taken …; pick another port with --listen, or none with --no-listen», сокета нет), `::a_bare_tilrd_next_to_a_running_one_says_the_default_port_is_taken`, `::a_tilrd_tilr_starts_goes_on_without_the_taken_port`
 - UC-034. Клиентский unix-сокет демона (B): права 0600, каталог 0700; другой uid подключиться не может. → `uc_034.py::another_user_cannot_use_the_socket` (uid 65534 через `setpriv`: сначала не пускают права, с открытыми руками правами — сервер по uid собеседника)
-- UC-035. Unix-сокет `$TILR_SOCK` панели: другой uid не может слать `tilr edit`.
-- UC-036. Сокеты агента `agent/<pane>.sock` после SIGKILL сервера — следующий старт убирает. (Сейчас не убираются — FAIL.)
-- UC-037. Длинный путь к сокету (>108 байт `sun_path`) — внятная ошибка или обход. → `uc_037.py::a_socket_path_longer_than_sun_path_is_a_clear_error` (ошибка с подсказкой `TILR_SOCKET`; с ним — работает)
-- UC-038. Много соединений сразу (1000 TCP), лимит соединений, медленный handshake (slowloris) — сервер жив, остальные клиенты работают.
-- UC-039. Полуоткрытый TCP от клиента (connect и тишина) — отваливается по таймауту handshake.
+- UC-035. Unix-сокет `$TILR_SOCK` панели: другой uid не может слать `tilr edit`. → `uc_035.py::another_user_cannot_send_tilr_edit_to_the_pane` (сокет 0600 в 0700; с открытыми правами сервер сверяет uid; так же сокет агента)
+- UC-036. Сокеты агента `agent/<pane>.sock` после SIGKILL сервера — следующий старт убирает. → `uc_036.py::agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start` (сокет, на котором кто-то слушает, остаётся)
+- UC-037. Длинный путь к сокету (>108 байт `sun_path`) — внятная ошибка или обход. → `uc_037.py::a_socket_path_longer_than_sun_path_is_a_clear_error` (ошибка с подсказкой `TILR_SOCKET`; с ним — работает; голый `tilrd` с TCP — предупреждение)
+- UC-038. Много соединений сразу (1000 TCP), лимит соединений, медленный handshake (slowloris) — сервер жив, остальные клиенты работают. → `uc_038.py::a_thousand_silent_connections_and_a_slowloris_leave_the_server_working` (лимита числа соединений нет: незавершённый за 10 с handshake закрывается)
+- UC-039. Полуоткрытый TCP от клиента (connect и тишина) — отваливается по таймауту handshake. → `uc_039.py::a_silent_connection_is_closed_by_the_handshake_timeout` (~10 с), `::a_websocket_that_never_says_hello_is_dropped_by_the_client_timeout`
 
 ## E. Плохая сеть и переподключение
 

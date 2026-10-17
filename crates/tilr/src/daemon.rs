@@ -63,6 +63,11 @@ fn probe(socket: &Path) -> Result<Probe> {
     }
 }
 
+/// Whether a tilrd (or something) accepts connections on `socket`.
+pub fn running(socket: &Path) -> bool {
+    matches!(probe(socket), Ok(Probe::Up))
+}
+
 /// Make sure a tilrd serves `socket`: start one if none does. Returns once
 /// the socket accepts connections.
 pub fn ensure_running(socket: &Path) -> Result<()> {
@@ -178,7 +183,9 @@ fn start(socket: &Path, lock: &File) -> Result<PathBuf> {
         // What says which pane `tilr` runs in is not the server's to keep.
         .env_remove("TILR_PANE")
         .env_remove("TILR_SOCK")
-        .env_remove("TILR_SERVER");
+        .env_remove("TILR_SERVER")
+        // Nor the service manager of a server it may run in.
+        .env_remove("NOTIFY_SOCKET");
     // SAFETY: only async-signal-safe calls between fork and exec: setsid,
     // fcntl, fork, _exit.
     unsafe {

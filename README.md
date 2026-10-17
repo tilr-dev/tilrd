@@ -43,14 +43,17 @@ upgrades with older bundled copies. Use **Tilr > Check for Server Updates** for
 this managed copy; separate installations retain their own updater.
 See [Mac release and lifecycle details](../apps/mac/PRODUCTION.md).
 
-Releases are built for Linux on aarch64 (glibc 2.36 or newer). There is no
-installer yet: download the server (and `tilr`, built from this repository,
-next to it) and run `tilr`, which starts the server.
+Releases are built for Linux on aarch64 (glibc 2.36 or newer): the server
+`tilrd-<platform>` and its client `tilr-<platform>`, each with its
+`.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`) puts both in
+`~/.local/bin`; by hand:
 
 ```sh
 version=$(curl -fsSL https://cdn.tilr.dev/releases/linux-aarch64/latest)
-curl -fsSLo ~/.local/bin/tilrd "https://cdn.tilr.dev/releases/$version/tilrd-linux-aarch64"
-chmod +x ~/.local/bin/tilrd
+for name in tilrd tilr; do
+  curl -fsSLo ~/.local/bin/$name "https://cdn.tilr.dev/releases/$version/$name-linux-aarch64"
+  chmod +x ~/.local/bin/$name
+done
 tilr
 ```
 
@@ -192,12 +195,28 @@ Run by hand or by a service manager it stays in the foreground and logs to
 stderr:
 
 ```sh
-tilrd                                 # the Unix socket only
-tilrd --listen 127.0.0.1:7890         # and a TCP port (the Tilr app, remote clients)
+tilrd                                 # the Unix socket and TCP 127.0.0.1:7890
+tilrd --listen 0.0.0.0:7890           # TCP on every address (the token is still asked)
+tilrd --no-listen                     # the Unix socket only
 ```
 
-**Sockets.** The Unix socket is always on unless `--no-socket` (which needs
-`--listen`); TCP only with `--listen`. The socket is `--socket PATH`, else
+**TCP.** On by default, on loopback: `127.0.0.1:7890` (`--listen ADDR` or
+`TILR_LISTEN`), where the Tilr app, an SSH tunnel (`ssh -L
+7890:127.0.0.1:7890`) and the [Cloud tunnel](#tilr-cloud) reach the server
+with the access token. `--listen [::]:7890` is both IPv4 and IPv6 where the
+system allows dual stack. `--no-listen` turns TCP off. A port that is taken
+stops the server with an error that says so (exit status 1), so a service
+manager shows it, except in a server `tilr` started: that one warns in its
+log and serves the Unix socket alone, without a tunnel, rather than another
+port nobody would know of. A Tilr app's server or another user's may hold
+7890; `tilr` on the machine works either way. A reload keeps what the server
+had: its TCP socket, or none. A connection on the port that has not finished
+its WebSocket handshake (or SOCKS or metrics request) within 10 s is closed,
+so connections that say nothing hold no descriptor longer; there is no limit
+on their number otherwise.
+
+**Sockets.** The Unix socket is always on unless `--no-socket` (not with
+`--no-listen`). The socket is `--socket PATH`, else
 `$TILR_SOCKET`, else `tilrd.sock` in the runtime directory: `$TILR_RUNTIME_DIR`,
 else `$XDG_RUNTIME_DIR/tilr`, else `tilr-<uid>` in the temporary directory
 (`$TMPDIR` on macOS, `/tmp` on Linux). The directory is made 0700 (and must be
@@ -218,16 +237,19 @@ as the TCP socket's does). Stopping removes the socket and the lock file.
 
 **The Tilr app is unaffected.** It runs `tilrd --listen 127.0.0.1:7890 --config …`
 and uses its TCP port and `tilrd token`, `ps --url`, `state-formats` and
-`--version`, which stay (hidden from `--help`). With `--listen` and no
+`--version`, which stay (hidden from `--help`). With TCP on and no
 `--socket`, a socket that cannot be taken (another tilrd, `tilr`'s, serves it;
 the path is too long) is only a warning: that server serves TCP alone. If the
-app's server took the socket first, `tilr` attaches to it.
+app's server took the socket first, `tilr` attaches to it. A server `tilr`
+started first holds 7890 in turn (same user, same token): the app's own
+server then cannot listen there.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--listen ADDR` | none | Also a WebSocket on this TCP address, e.g. `127.0.0.1:7890` |
+| `--listen ADDR` | `127.0.0.1:7890` (`TILR_LISTEN`) | The TCP address of the WebSocket, e.g. `0.0.0.0:7890`, `[::]:7890` |
+| `--no-listen` | | No TCP port: the Unix socket only |
 | `--socket PATH` | see above | The Unix socket; must work when named |
-| `--no-socket` | | No Unix socket (needs `--listen`) |
+| `--no-socket` | | No Unix socket (not with `--no-listen`) |
 | `--allow-origin ORIGIN` | the configuration file's list, else `tilr://app` (the Tilr app's page), `tilr://tilr` (its terminal app) and the web client's | Browser origins allowed to connect; repeatable |
 | `--config PATH` | `~/.config/tilr/server.toml` (`$XDG_CONFIG_HOME/tilr/server.toml`), if there | The [configuration file](#the-configuration-file) |
 | `--no-auth` | | Do not ask clients for the [access token](#who-may-connect) |
@@ -247,6 +269,38 @@ be gone); `SIGUSR1` [reloads](#reloading-without-closing-shells) it. `SIGHUP`
 is ignored: a server started from a terminal (`tilrd &` in an SSH session)
 outlives it, and so do its panes, each in a session of its own. Its log then
 goes nowhere; redirect stderr to keep it.
+
+## Starting at boot
+
+Optional, and only when asked: nothing starts tilrd at boot but this.
+
+```sh
+tilr service install      # start tilrd at boot, and again if it fails
+tilr service uninstall    # remove what install added
+```
+
+- **Linux with systemd and lingering**: a user unit,
+  `~/.config/systemd/user/tilr.service` (`$XDG_CONFIG_HOME`), the name the
+  installer uses: `Type=notify` (tilrd says `READY=1` on `$NOTIFY_SOCKET`
+  once it listens), `ExecStart=/bin/sh -lc 'exec "…/tilrd"'` (a login shell,
+  so the panes get the environment of `~/.profile`, as over SSH),
+  `Restart=on-failure`; `systemctl --user enable` (with `--now` unless a tilrd
+  runs). Lingering (the user's manager runs from boot, not only while logged
+  in) is turned on with `loginctl enable-linger` if it is off; the unit notes
+  that, and uninstall turns it off again.
+- **No systemd user manager, or lingering refused**: a line in the user's
+  crontab, `@reboot /bin/sh -lc '… exec "…/tilrd" --socket … >>…/tilrd.log 2>&1' # tilr service`,
+  and tilrd is started now if none runs. The output says which was chosen.
+  Neither systemd nor `crontab`: an error, nothing written.
+- **macOS**: a launchd agent, `~/Library/LaunchAgents/sh.tilr.tilrd.plist`
+  (`RunAtLoad`, `KeepAlive` on failure, the socket named, the log in
+  `~/Library/Logs/tilrd.log`), loaded with `launchctl bootstrap gui/<uid>`.
+
+A tilrd that already runs (one `tilr` started) is left alone: the service
+takes over from the next boot. Uninstall removes the unit, the crontab line
+(the whole crontab if install made it) or the agent, and nothing it did not
+write; it stops nothing, so the running server and its shells go on until
+`tilr kill-server`.
 
 ## Who may connect
 
@@ -297,7 +351,7 @@ exec = true
 
 Optional. Cloud lists the machines of a user, says which are online, and gives
 each a tunnel: a name on the internet that leads to the server's TCP port
-(`--listen`; a server on its Unix socket alone gets no tunnel), so a phone can
+(a server on its Unix socket alone, `--no-listen`, gets no tunnel), so a phone can
 reach a machine that accepts no incoming connections. What goes through the
 tunnel does not pass through Cloud.
 
@@ -384,7 +438,10 @@ keys never leave it. On unless the server runs with `--no-agent` (or
   and `SSH_AUTH_SOCK` pointing at it. The directory and the socket are the
   user's only. A [reload](#reloading-without-closing-shells) makes the socket
   again at the same path, so a shell's `SSH_AUTH_SOCK` stays good; the socket
-  goes when the pane does.
+  goes when the pane does. A program of another uid is refused, even where
+  the permissions were opened by hand. Sockets a server killed with SIGKILL left behind
+  are removed when the next one starts (those nobody accepts on: another
+  running server's stay).
 - A client that can serve the agent says `"agent"` in `Hello.features`; the
   server lists `"agent"` in `HelloAck.features` when forwarding is on.
 - A program that connects to the socket gets a stream to one client: of the

@@ -85,7 +85,7 @@ fn link_stamp() -> Option<SystemTime> {
 fn write_link(link: &Link) -> Result<()> {
     let path = link_path()?;
     let dir = path.parent().context("state directory")?;
-    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    identity::create_private_dir(dir)?;
     // Written aside and renamed: a running server never reads half a file.
     let staged = dir.join(format!("{LINK_FILE}.{}", std::process::id()));
     let written = fs::OpenOptions::new()

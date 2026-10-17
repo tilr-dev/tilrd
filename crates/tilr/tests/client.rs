@@ -51,6 +51,9 @@ impl Machine {
             .env("TILR_STATE_DIR", self.dir.join("state"))
             .env("TILR_CONFIG_DIR", self.dir.join("config"))
             .env("HOME", &self.dir)
+            // Not the default port: the tests run at once, and next to a
+            // Tilr app's server.
+            .env("TILR_LISTEN", "127.0.0.1:0")
             .env("PATH", "/usr/bin:/bin")
             .env("SHELL", "/bin/sh")
             .env("PS1", "$ ")
@@ -163,6 +166,38 @@ fn the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it() {
         version.starts_with("tilr ") && version.contains("\ntilrd "),
         "{version}"
     );
+    // And the TCP port, on loopback, for the Tilr app and tunnels.
+    assert!(
+        machine.log().contains("listening on ws://127.0.0.1:"),
+        "{}",
+        machine.log()
+    );
+}
+
+#[test]
+fn a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken() {
+    // The Tilr app's server, or another user's, holds the port.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = taken.local_addr().unwrap().to_string();
+    let machine = Machine::new();
+    let output = machine
+        .command(&["new", "-d"])
+        .env("TILR_LISTEN", &addr)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        machine.log()
+    );
+    let log = machine.log();
+    assert!(
+        log.contains(&format!("{addr} is taken")) && log.contains("serving the Unix socket only"),
+        "{log}"
+    );
+    assert!(!log.contains("listening on ws://"), "{log}");
+    assert_eq!(machine.ok(&["ls", "-q"]).lines().count(), 1);
 }
 
 #[test]

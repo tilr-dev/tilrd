@@ -98,6 +98,42 @@ pub fn socket_path(pane_id: Uuid) -> PathBuf {
     host::runtime_socket(&Path::new("agent").join(format!("{pane_id}.sock")))
 }
 
+/// Remove the sockets a server that did not get to clean up (SIGKILL, a
+/// crash) left in `agent/`: those nobody accepts on. The live ones of
+/// another server of the same user stay.
+pub fn sweep() {
+    let Some(dir) = socket_path(Uuid::nil()).parent().map(Path::to_owned) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_socket = entry
+            .file_type()
+            .is_ok_and(|kind| std::os::unix::fs::FileTypeExt::is_socket(&kind));
+        if !is_socket || path.extension().is_none_or(|ext| ext != "sock") {
+            continue;
+        }
+        let abandoned = matches!(
+            std::os::unix::net::UnixStream::connect(&path),
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused
+        );
+        if abandoned && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            target: "tilrd::agent",
+            dir = %dir.display(),
+            "removed {removed} agent socket(s) a server that is gone left"
+        );
+    }
+}
+
 impl Agent {
     pub fn new(sink: Sink) -> Self {
         Self {
@@ -332,7 +368,14 @@ fn bind(path: &Path) -> anyhow::Result<UnixListener> {
 async fn accept(pane_id: Uuid, listener: UnixListener, sink: Sink) {
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => sink(Output::Connected { pane_id, stream }),
+            // The user's own programs only, whatever the permissions say:
+            // the agent holds their keys.
+            Ok((stream, _)) => match crate::local::peer(&stream) {
+                Ok(_) => sink(Output::Connected { pane_id, stream }),
+                Err(err) => {
+                    tracing::warn!(pane = %pane_id, "agent socket: refused a connection: {err:#}")
+                }
+            },
             Err(err) => {
                 tracing::warn!(pane = %pane_id, "agent socket: accept failed: {err}");
                 tokio::time::sleep(Duration::from_millis(100)).await;

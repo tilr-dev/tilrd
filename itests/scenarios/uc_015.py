@@ -64,7 +64,7 @@ def a_file_that_is_not_a_socket_is_left_alone(t: T):
     env = t.user_env()
     path = socket_path(env)
     path.write_text("not a socket\n")
-    for argv in (["tilr", "new", "-d"], ["tilr"], [SERVER_EXE]):
+    for argv in (["tilr", "new", "-d"], ["tilr"], [SERVER_EXE, "--socket", path]):
         r = t.run(*argv, env=env, timeout=30)
         t.ok(r.code != 0, f"{argv[0]} fails")
         t.has(r.err, str(path), "not a socket", "nothing was removed")

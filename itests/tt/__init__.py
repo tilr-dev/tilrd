@@ -17,6 +17,7 @@ Layout of a container (backend `dagger`, see src/tilr_itests/main.py):
     /opt/tt/tilrd-next     the same source built as the next version
     /opt/tt/tilr-server-previous  the last release named tilr-server (0.0.9)
     /opt/tt/manifest.json  versions and platform of both builds
+    /opt/tt/install.sh     the installer (itests/installer/install.sh)
     $TT_SERVICE_<NAME>     URL of a service container the case asked for (cdn)
 """
 
@@ -46,6 +47,10 @@ NEXT_EXE = os.environ.get("TT_SERVER_NEXT", "/opt/tt/tilrd-next")
 # The last release named tilr-server (src/tilr_itests/main.py builds it from ./dt's --previous).
 PREVIOUS_EXE = os.environ.get("TT_SERVER_PREVIOUS", "/opt/tt/tilr-server-previous")
 MANIFEST = Path(os.environ.get("TT_MANIFEST", "/opt/tt/manifest.json"))
+# The installer (`curl tilr.sh | sh`), a copy of the sh repository's (itests/installer).
+INSTALLER = Path(os.environ.get("TT_INSTALLER", "/opt/tt/install.sh"))
+# PATH of a login on Ubuntu, without ~/.local/bin.
+USER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # What each backend can give a case; t.need() turns a missing one into BLOCKED.
 CAPABILITIES = {
@@ -801,19 +806,39 @@ class Net:
 
 class LocalCdn:
     """Releases served from the case's own container (http.server in a thread), laid out
-    as crates/tilrd/src/update.rs reads them; for releases the `cdn` service does
-    not have (an older version, a broken one). `url` goes to `tilrd update --cdn`."""
+    as crates/tilrd/src/update.rs and the installer read them; for releases the `cdn`
+    service does not have (an older version, a broken one). `url` goes to `tilrd update
+    --cdn` and the installer's TILR_CDN."""
 
     def __init__(self, t: "T"):
         import functools
         import http.server
         self.t = t
         self.dir = t.scratch("cdn")
+        os.chmod(self.dir, 0o755)
         self.platform = t.manifest()["platform"]
+        # URL path -> bytes sent of it before the connection is closed (a cut download).
+        self.cut: dict[str, int] = {}
+        self.requests: list[str] = []
+        cdn = self
 
         class Quiet(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *args):
                 pass
+
+            def do_GET(self):
+                cdn.requests.append(self.path)
+                at = cdn.cut.get(self.path)
+                if at is None:
+                    return super().do_GET()
+                data = (cdn.dir / self.path.lstrip("/")).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data[:at])
+                self.wfile.flush()
+                self.close_connection = True
 
         handler = functools.partial(Quiet, directory=str(self.dir))
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -824,18 +849,42 @@ class LocalCdn:
                 names: tuple[str, ...] = ("tilrd",)) -> Path:
         """Offer `exe` as release `version` (with its checksum), and as the latest. `names`:
         the file names it is offered under, `tilr-server` as well for servers from before
-        the rename, which ask for that one (scripts/release.sh publishes both)."""
+        the rename, which ask for that one (scripts/release.sh publishes both); `tilr` for
+        the client."""
         import hashlib
         for n in names:
             name = f"{n}-{self.platform}"
             dest = self.dir / "releases" / version / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(exe, dest)
+            shutil.copy2(shutil.which(str(exe)) or exe, dest)
+            os.chmod(dest, 0o644)
             digest = hashlib.sha256(dest.read_bytes()).hexdigest()
             (dest.parent / f"{name}.sha256").write_text(f"{digest}  {name}\n")
         if latest:
             self.latest(version)
         return self.dir / "releases" / version / f"{names[0]}-{self.platform}"
+
+    def publish(self, version: str, server: Path | str = SERVER_EXE, client: Path | str | None = CLIENT_EXE,
+                latest: bool = True) -> dict[str, Path]:
+        """A whole release as scripts/release.sh lays it out: the server (as tilrd and
+        tilr-server) and the client (tilr; None: a release from before the client)."""
+        files = {"tilrd": self.release(version, server, latest=False, names=("tilrd", "tilr-server"))}
+        if client is not None:
+            files["tilr"] = self.release(version, client, latest=False, names=("tilr",))
+        if latest:
+            self.latest(version)
+        return files
+
+    def path(self, file: Path) -> str:
+        """The URL path of a file the CDN serves."""
+        return "/" + str(file.relative_to(self.dir))
+
+    def installer(self) -> str:
+        """Serve the installer as tilr.sh does; its URL."""
+        if not INSTALLER.exists():
+            raise Blocked(f"no installer at {INSTALLER}")
+        shutil.copy2(INSTALLER, self.dir / "install.sh")
+        return f"{self.url}/install.sh"
 
     def latest(self, version: str):
         path = self.dir / "releases" / self.platform / "latest"
@@ -844,6 +893,138 @@ class LocalCdn:
 
     def close(self):
         self.httpd.shutdown()
+
+
+# ---------------------------------------------------------------------------- users
+
+
+class User:
+    """A Unix user made for the case (useradd -m: a home from /etc/skel, no sudo, no
+    XDG_RUNTIME_DIR, no ~/.config), commands run as it with a clean login environment."""
+
+    def __init__(self, t: "T", name: str):
+        import pwd
+        self.t, self.name = t, name
+        t.run("useradd", "-m", "-s", "/bin/bash", name, check=True, quiet=True)
+        pw = pwd.getpwnam(name)
+        self.uid, self.gid, self.home = pw.pw_uid, pw.pw_gid, Path(pw.pw_dir)
+
+    def env(self, **extra) -> dict:
+        """What a login gives (no XDG_* variables), with `extra` (None removes)."""
+        env = {"HOME": str(self.home), "USER": self.name, "LOGNAME": self.name, "SHELL": "/bin/bash",
+               "PATH": USER_PATH, "LANG": "C.UTF-8", "TERM": "xterm-256color", "NO_COLOR": "1"}
+        env.update(extra)
+        return {k: str(v) for k, v in env.items() if v is not None}
+
+    def run(self, *argv, env: dict | None = None, input: str | None = None, timeout: float = 120,
+            check: bool = False, quiet: bool = False) -> R:
+        """argv as the user, in its home, with env(**env) and nothing else."""
+        full = self.env(**(env or {}))
+        return self.t.run("runuser", "-u", self.name, "--", "env", "-i", *[f"{k}={v}" for k, v in full.items()],
+                          *argv, cwd=self.home, input=input, timeout=timeout, check=check, quiet=quiet)
+
+    def sh(self, script: str, **kw) -> R:
+        return self.run("bash", "-c", script, **kw)
+
+    def prompt(self):
+        """A plain `$ ` prompt in its interactive shells, as root's (for Driver.shell_pane)."""
+        with open(self.home / ".bashrc", "a") as f:
+            f.write("PS1='$ '\nHISTFILE=/dev/null\nunset PROMPT_COMMAND\n")
+
+
+def snapshot(root: Path, skip: tuple[str, ...] = ()) -> dict[str, str]:
+    """Every file and directory under root: relative path -> kind, mode, owner and content
+    hash. `skip`: relative paths left out with what is under them."""
+    import hashlib
+    out = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        dirnames[:] = [d for d in dirnames if os.path.normpath(os.path.join(rel_dir, d)) not in skip]
+        for name in dirnames + filenames:
+            path = Path(dirpath) / name
+            rel = os.path.normpath(os.path.join(rel_dir, name))
+            if rel in skip:
+                continue
+            st = path.lstat()
+            if path.is_symlink():
+                what = f"link {os.readlink(path)}"
+            elif path.is_dir():
+                what = "dir"
+            elif path.is_file():
+                what = "file " + hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            else:
+                what = "other"
+            out[rel] = f"{what} {oct(st.st_mode & 0o7777)} {st.st_uid}"
+    return out
+
+
+def changes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """What differs between two snapshots, one line each."""
+    out = [f"+ {k}: {after[k]}" for k in sorted(after.keys() - before.keys())]
+    out += [f"- {k}" for k in sorted(before.keys() - after.keys())]
+    out += [f"~ {k}: {before[k]} -> {after[k]}" for k in sorted(before.keys() & after.keys()) if before[k] != after[k]]
+    return out
+
+
+class FakeServiceTools:
+    """systemctl, loginctl and crontab of a machine, played by scripts in `bin` (put it
+    first on PATH): every call is noted in `calls` (one line of arguments each); `systemd`
+    says whether a user manager answers, `linger` what `loginctl show-user` says and
+    `linger_ok` whether enable-linger is allowed; the crontab is the file `crontab_file`
+    (None: no crontab command at all)."""
+
+    def __init__(self, t: "T", owner: "User | None" = None, systemd: bool = True, linger: str = "no",
+                 linger_ok: bool = True, crontab: bool = True):
+        self.dir = t.scratch("fake-tools")
+        os.chmod(self.dir, 0o755)
+        self.bin = self.dir / "bin"
+        self.bin.mkdir(mode=0o755)
+        self.calls = self.dir / "calls"
+        self.crontab_file = self.dir / "crontab"
+        self.calls.write_text("")
+        os.chmod(self.calls, 0o666)
+        log = f'printf "%s\\n" "$(basename "$0") $*" >>{self.calls}'
+        self._script("systemctl", f"""{log}
+case "$*" in
+  "--user show-environment") {"echo PATH=/usr/bin; exit 0" if systemd else "echo 'Failed to connect to bus: No medium found' >&2; exit 1"} ;;
+esac
+{"exit 0" if systemd else "exit 1"}
+""")
+        self._script("loginctl", f"""{log}
+case "$1" in
+  show-user) echo {linger}; exit 0 ;;
+  enable-linger) {"exit 0" if linger_ok else "echo 'Could not enable linger: Access denied' >&2; exit 1"} ;;
+  disable-linger) exit 0 ;;
+esac
+exit 1
+""")
+        if crontab:
+            self._script("crontab", f"""{log}
+f={self.crontab_file}
+case "$1" in
+  -l) [ -f "$f" ] || {{ echo "no crontab for $(id -un)" >&2; exit 1; }}; cat "$f" ;;
+  -r) [ -f "$f" ] || {{ echo "no crontab for $(id -un)" >&2; exit 1; }}; rm -f "$f" ;;
+  -) cat >"$f" ;;
+  *) exit 2 ;;
+esac
+""")
+        if owner is not None:
+            os.chown(self.dir, owner.uid, owner.gid)
+            os.chown(self.calls, owner.uid, owner.gid)
+
+    def _script(self, name: str, body: str):
+        path = self.bin / name
+        path.write_text("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+
+    def path(self, base: str = USER_PATH) -> str:
+        return f"{self.bin}:{base}"
+
+    def called(self) -> list[str]:
+        return [l for l in self.calls.read_text().splitlines() if l]
+
+    def crontab(self) -> str | None:
+        return self.crontab_file.read_text() if self.crontab_file.exists() else None
 
 
 # ---------------------------------------------------------------------------- the context
@@ -1029,6 +1210,11 @@ class T:
         p = RemoteProxy(addr)
         self._cleanup.append(p.close)
         return p
+
+    def user(self, name: str = "alice") -> User:
+        """A Unix user of this container, made now (see User)."""
+        self.need("root", "container")
+        return User(self, name)
 
     def cdn(self) -> LocalCdn:
         """A CDN served from this container (see LocalCdn)."""

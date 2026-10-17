@@ -11,6 +11,7 @@ mod identity;
 mod link;
 mod local;
 mod metrics;
+mod notify;
 mod outbox;
 mod pane;
 mod ps;
@@ -43,26 +44,32 @@ pub const PLATFORM: &str = env!("TILR_PLATFORM");
         (`tilr token`, `tilr cloud login`, `tilr update`, `tilr ps`)."
 )]
 struct Cli {
-    /// Also listen for WebSocket clients on this TCP address, e.g.
-    /// 127.0.0.1:7890 (the Tilr app, remote clients; they present the access
-    /// token). Without it the server serves its Unix socket only.
+    /// The TCP address for WebSocket clients, which present the access
+    /// token: the Tilr app, remote clients through an SSH or Cloud tunnel.
+    /// Loopback unless told otherwise, e.g. 0.0.0.0:7890 or [::]:7890.
+    #[arg(long, env = "TILR_LISTEN", default_value = "127.0.0.1:7890")]
+    listen: SocketAddr,
+
+    /// No TCP port: serve the Unix socket only.
     #[arg(long)]
-    listen: Option<SocketAddr>,
+    no_listen: bool,
 
     /// The Unix socket for local clients (`tilr`), which need no token.
     /// Default: $TILR_SOCKET, else tilrd.sock in $XDG_RUNTIME_DIR/tilr, else
-    /// in tilr-<uid> in the temporary directory. With --listen and no
+    /// in tilr-<uid> in the temporary directory. With a TCP port and no
     /// --socket, a socket that cannot be taken (another tilrd serves it) is
     /// a warning, not an error.
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
 
-    /// Serve no Unix socket (needs --listen).
+    /// Serve no Unix socket (not with --no-listen).
     #[arg(long, conflicts_with = "socket")]
     no_socket: bool,
 
     /// Internal: the descriptor of the socket's lock file, locked by the
-    /// `tilr` that started this server.
+    /// `tilr` that started this server. Such a server goes on without TCP
+    /// when its port is taken (the Tilr app's server, another user's): the
+    /// socket is what `tilr` needs.
     #[arg(long, hide = true)]
     lock_fd: Option<i32>,
 
@@ -258,12 +265,16 @@ fn main() -> anyhow::Result<ExitCode> {
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
         Some(Command::Host(command)) => return Ok(host::run(command)),
         None => {
-            if cli.listen.is_none() && cli.no_socket {
-                anyhow::bail!("nothing to listen on: --no-socket needs --listen");
+            if cli.no_listen && cli.no_socket {
+                anyhow::bail!("nothing to listen on: --no-socket and --no-listen");
             }
+            let listen = (!cli.no_listen).then_some(supervisor::ListenOptions {
+                addr: cli.listen,
+                required: cli.lock_fd.is_none(),
+            });
             let local = (!cli.no_socket).then(|| supervisor::LocalOptions {
                 // A socket asked for by name, or the only way in, must work.
-                required: cli.socket.is_some() || cli.listen.is_none(),
+                required: cli.socket.is_some() || cli.no_listen,
                 path: cli.socket.unwrap_or_else(tilr_proto::local::socket_path),
                 lock_fd: cli.lock_fd,
             });
@@ -271,7 +282,7 @@ fn main() -> anyhow::Result<ExitCode> {
             let allow_origins = config::allow_origins(cli.allow_origins, &config);
             tracing::info!(origins = ?allow_origins, "browser origins allowed");
             supervisor::run(supervisor::Options {
-                listen: cli.listen,
+                listen,
                 local,
                 allow_origins,
                 clipboard: (!cli.no_clipboard).then(|| clipboard::Limits {

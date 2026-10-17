@@ -31,7 +31,7 @@ pub fn stored_token() -> Option<String> {
 pub fn token() -> Result<String> {
     let path = token_path()?;
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        identity::create_private_dir(dir)?;
     }
     let created = fs::OpenOptions::new()
         .write(true)

@@ -1,5 +1,6 @@
 """UC-016: tilrd run by hand in the foreground (as a service manager runs it): it logs to
-stderr, serves its Unix socket, and `tilr` attaches to it instead of starting another.
+stderr, serves its Unix socket and the TCP port 127.0.0.1:7890 (the Tilr app and
+tunnels), and `tilr` attaches to it instead of starting another.
 """
 
 import signal
@@ -15,7 +16,7 @@ def tilr_attaches_to_a_tilrd_running_in_the_foreground(t: T):
     log = t.scratch("fg") / "stderr"
     server = t.spawn(SERVER_EXE, env=env, log=log)
     t.eventually(lambda: "Unix socket for local clients" in log.read_text(), "tilrd says where it listens")
-    t.lacks(log.read_text(), "listening on ws://")
+    t.has(log.read_text(), "listening on ws://127.0.0.1:7890")
 
     client = t.session("tilr", env=env, name="tilr")
     client.prompt(timeout=15)

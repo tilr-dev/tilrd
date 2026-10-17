@@ -6,6 +6,7 @@ mod attach;
 mod conn;
 mod daemon;
 mod host;
+mod service;
 mod target;
 
 use std::path::PathBuf;
@@ -39,7 +40,7 @@ struct Cli {
     #[arg(long, env = "TILR_CONNECT", global = true, value_name = "URL")]
     connect: Option<String>,
 
-    /// The access token of the server at --connect (`tilrd token` there).
+    /// The access token of the server at --connect (`tilr token` there).
     #[arg(long, env = "TILR_TOKEN", global = true, hide_env_values = true)]
     token: Option<String>,
 
@@ -84,7 +85,7 @@ enum Command {
     /// Print the access token clients on the server's TCP port present.
     Token,
     /// Link this machine to tilr Cloud, which lists it among your machines
-    /// and gives the server a tunnel (needs its TCP port, --listen).
+    /// and gives the server a tunnel (to its TCP port).
     Cloud {
         #[command(subcommand)]
         command: CloudCommand,
@@ -95,6 +96,13 @@ enum Command {
         /// Where releases are fetched from.
         #[arg(long, env = "TILR_CDN")]
         cdn: Option<String>,
+    },
+    /// Start tilrd at boot, as a service of yours (systemd user unit, else
+    /// a crontab @reboot line; launchd on macOS), or stop doing so. Nothing
+    /// starts it at boot otherwise.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
     },
     /// In a pane: open a file in the tilr client watching it.
     Edit {
@@ -113,6 +121,14 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install the service and start it (unless a tilrd runs already).
+    Install,
+    /// Remove what install added; a running tilrd goes on.
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +158,20 @@ fn main() -> ExitCode {
         }
         Some(Command::Open { kind, target, args }) => {
             return host::open(kind.clone(), target, args);
+        }
+        Some(Command::Service { command }) => {
+            let socket = cli
+                .socket
+                .clone()
+                .unwrap_or_else(tilr_proto::local::socket_path);
+            let done = match command {
+                ServiceCommand::Install => service::install(&socket),
+                ServiceCommand::Uninstall => service::uninstall(),
+            };
+            return done.unwrap_or_else(|err| {
+                eprintln!("tilr: {err:#}");
+                ExitCode::FAILURE
+            });
         }
         _ => {}
     }
@@ -295,7 +325,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         | Command::Cloud { .. }
         | Command::Update { .. }
         | Command::Edit { .. }
-        | Command::Open { .. } => unreachable!(),
+        | Command::Open { .. }
+        | Command::Service { .. } => unreachable!(),
     }
 }
 

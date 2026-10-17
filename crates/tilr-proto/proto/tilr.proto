@@ -58,7 +58,7 @@ message Hello {
   string client_name = 2;
   // Optional capabilities the client supports.
   repeated string features = 3;
-  // The server's access token (`tilrd token`). A server that asks for
+  // The server's access token (`tilr token` on its machine). A server that asks for
   // one answers a Hello without it, or with another, with an Error and
   // closes the connection.
   string token = 4;

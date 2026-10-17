@@ -64,6 +64,11 @@ const PINGS_PER_TIMEOUT: u32 = 3;
 /// the client's answer coming back. A connection that does not close in time
 /// is reset, and whatever it still held for the client is thrown away.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a connection may take from accept to an open WebSocket (or a
+/// SOCKS or metrics request): one that connects and says nothing, or sends
+/// its request a byte at a time, is closed then, and holds no descriptor
+/// longer.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Unsent bytes the kernel holds for a client before the writer waits
 /// (`TCP_NOTSENT_LOWAT`): what a slow client is behind on stays in its queue,
 /// where frames can still be skipped, instead of in the socket. On a lossy
@@ -294,8 +299,8 @@ struct Starting {
 }
 
 pub struct Options {
-    /// The TCP address; `None`: the Unix socket only.
-    pub listen: Option<SocketAddr>,
+    /// The TCP port; `None`: the Unix socket only.
+    pub listen: Option<ListenOptions>,
     /// The Unix socket for local clients; `None`: none.
     pub local: Option<LocalOptions>,
     pub allow_origins: Vec<String>,
@@ -319,6 +324,13 @@ pub struct Options {
     pub agent: bool,
     /// Let clients run programs, see [`crate::exec`].
     pub exec: bool,
+}
+
+pub struct ListenOptions {
+    pub addr: SocketAddr,
+    /// A port that cannot be had stops the server; else it serves the Unix
+    /// socket alone.
+    pub required: bool,
 }
 
 pub struct LocalOptions {
@@ -353,17 +365,20 @@ pub fn run(options: Options) -> Result<()> {
             files::sweep();
             if state.is_some() {
                 crate::fail::point("supervisor-resume")?;
+            } else {
+                agent::sweep();
             }
-            let listener = match (&state, options.listen) {
-                (Some(state), _) if state.listener >= 0 => {
+            // A reload keeps what the previous image had: its TCP socket, or
+            // none.
+            let listener = match &state {
+                Some(state) if state.listener >= 0 => {
                     Some(inherit_listener(state.listener).context("take over listener")?)
                 }
-                (_, Some(listen)) => Some(
-                    TcpListener::bind(listen)
-                        .await
-                        .with_context(|| format!("bind {listen}"))?,
-                ),
-                (_, None) => None,
+                Some(_) => None,
+                None => match &options.listen {
+                    Some(listen) => bind_listener(listen).await?,
+                    None => None,
+                },
             };
             let listener = listener.map(Arc::new);
             let local = match state.as_ref().and_then(handed_over_socket) {
@@ -410,7 +425,7 @@ pub fn run(options: Options) -> Result<()> {
                     })
                 }
                 None => {
-                    tracing::info!("no TCP port (--listen): no tilr Cloud tunnel");
+                    tracing::info!("no TCP port: no tilr Cloud tunnel");
                     cloud::Tunnel::off()
                 }
             };
@@ -433,7 +448,7 @@ pub fn run(options: Options) -> Result<()> {
                 // 0.0.0.0 or :: is not a host a request names.
                 listen_host: options
                     .listen
-                    .map(|listen| listen.ip())
+                    .map(|listen| listen.addr.ip())
                     .filter(|ip| !ip.is_unspecified())
                     .map(|ip| ip.to_string())
                     .unwrap_or_default(),
@@ -549,6 +564,7 @@ pub fn run(options: Options) -> Result<()> {
             if let Some(state) = state {
                 supervisor.resume(state);
             }
+            crate::notify::ready();
             let local = supervisor.run(events_rx).await;
             // A reload does not get here: the successor binds the socket anew.
             if let Some(path) = host_socket {
@@ -587,6 +603,28 @@ fn set_up_local(options: LocalOptions) -> Result<Option<local::Local>> {
             Ok(None)
         }
     }
+}
+
+/// Bind the TCP port. One that cannot be had stops the server if it is
+/// `required`; otherwise the server goes on with its Unix socket alone.
+async fn bind_listener(options: &ListenOptions) -> Result<Option<TcpListener>> {
+    let addr = options.addr;
+    let err = match TcpListener::bind(addr).await {
+        Ok(listener) => return Ok(Some(listener)),
+        Err(err) => err,
+    };
+    let why = if err.kind() == std::io::ErrorKind::AddrInUse {
+        format!("{addr} is taken: another tilrd, or another program, listens there")
+    } else {
+        format!("cannot listen on {addr}: {err}")
+    };
+    if options.required {
+        anyhow::bail!("{why}; pick another port with --listen, or none with --no-listen");
+    }
+    tracing::warn!(
+        "{why}; serving the Unix socket only (no Tilr app, remote clients or tilr Cloud tunnel through this server)"
+    );
+    Ok(None)
 }
 
 /// Take over the listening socket the previous supervisor left open.
@@ -842,7 +880,14 @@ async fn serve_client(
     let _ = stream.set_nodelay(true);
     // An HTTP request starts with a letter; a SOCKS5 client with its version.
     let mut first = [0u8; 1];
-    if matches!(stream.peek(&mut first).await, Ok(1)) && first[0] == socks::VERSION {
+    let peeked = match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.peek(&mut first)).await {
+        Ok(peeked) => peeked,
+        Err(_) => {
+            tracing::debug!(%addr, "dropped a connection that said nothing in {HANDSHAKE_TIMEOUT:?}");
+            return;
+        }
+    };
+    if matches!(peeked, Ok(1)) && first[0] == socks::VERSION {
         if !door.socks {
             tracing::debug!(%addr, "raw SOCKS connection while the proxy is off");
             return;
@@ -932,14 +977,19 @@ async fn serve_websocket<S>(
         }
         Ok(response)
     };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, admit).await {
-        Ok(ws) => ws,
+    let handshake = tokio_tungstenite::accept_hdr_async(stream, admit);
+    let ws = match tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake).await {
+        Ok(Ok(ws)) => ws,
+        Err(_) => {
+            tracing::debug!(%addr, "dropped a connection whose handshake took over {HANDSHAKE_TIMEOUT:?}");
+            return;
+        }
         // `tilr` looks whether the socket is served by connecting to it.
-        Err(err) if local => {
+        Ok(Err(err)) if local => {
             tracing::debug!(%addr, "websocket handshake failed: {err}");
             return;
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             tracing::warn!(%addr, "websocket handshake failed: {err}");
             return;
         }

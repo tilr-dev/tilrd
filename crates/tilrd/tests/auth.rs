@@ -54,6 +54,15 @@ async fn the_token_is_kept_for_the_user_only_and_across_restarts() {
         std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
         0o600
     );
+    // In a directory of the user's alone, made by the server.
+    assert_eq!(
+        std::fs::metadata(server.dir.join("state"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
 
     // `tilrd token` prints the same one.
     let printed = Command::new(env!("CARGO_BIN_EXE_tilrd"))

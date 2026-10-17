@@ -8,6 +8,8 @@
 #   releases/<version>/tilrd-<platform>.sha256
 #   releases/<version>/tilr-server-<platform>          the same file, for servers
 #   releases/<version>/tilr-server-<platform>.sha256   from before the rename
+#   releases/<version>/tilr-<platform>           the client, which the installer
+#   releases/<version>/tilr-<platform>.sha256    puts next to tilrd
 #
 # A server from before the rename to tilrd asks for tilr-server-<platform> and
 # puts it in place under its own name; from then on it is tilrd and asks for
@@ -54,6 +56,9 @@ for platform in "$@"; do
         cp "dist/$name" "dist/cdn/releases/$version/$file"
         (cd "dist/cdn/releases/$version" && shasum -a 256 "$file" >"$file.sha256")
     done
+    client="tilr-$platform"
+    cp "dist/$client" "dist/cdn/releases/$version/$client"
+    (cd "dist/cdn/releases/$version" && shasum -a 256 "$client" >"$client.sha256")
     mkdir -p "dist/cdn/releases/$platform"
     printf '%s\n' "$version" >"dist/cdn/releases/$platform/latest"
 done
@@ -69,7 +74,8 @@ put() {
         --content-type "$2" --cache-control "$3" --remote
 }
 for platform in "$@"; do
-    for name in "releases/$version/tilrd-$platform" "releases/$version/tilr-server-$platform"; do
+    for name in "releases/$version/tilrd-$platform" "releases/$version/tilr-server-$platform" \
+        "releases/$version/tilr-$platform"; do
         put "$name" application/octet-stream "public, max-age=31536000, immutable"
         put "$name.sha256" "text/plain; charset=utf-8" "public, max-age=31536000, immutable"
     done

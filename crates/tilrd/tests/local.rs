@@ -26,9 +26,16 @@ impl Daemon {
     }
 
     fn spawn_exe(exe: &Path, dir: &Path, args: &[&str]) -> Self {
+        Self::spawn_env(exe, dir, args, &[])
+    }
+
+    /// With more variables in its environment.
+    fn spawn_env(exe: &Path, dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Self {
         let mut command = Command::new(exe);
-        command.args(args);
+        command.args(args).envs(env.iter().copied());
         Server::environment(&mut command, dir, "");
+        // The TCP port a server has by default: not the one of the machine.
+        command.env("TILR_LISTEN", "127.0.0.1:0");
         command.stdin(Stdio::null()).stderr(Stdio::piped());
         let mut child = command.spawn().expect("start tilrd");
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -247,8 +254,61 @@ async fn the_socket_is_the_users_alone_and_asks_no_token() {
     let ps = daemon.ps();
     assert!(ps.status.success(), "{ps:?}");
     assert!(String::from_utf8_lossy(&ps.stdout).contains(&pane));
-    // No TCP port without --listen.
-    assert!(!daemon.log_text().contains("listening on ws://"));
+    // And a TCP port, on loopback, by default.
+    assert!(daemon.log_text().contains("listening on ws://127.0.0.1:"));
+}
+
+#[test]
+fn a_service_manager_is_told_when_the_server_is_ready() {
+    // systemd's Type=notify: READY=1 on $NOTIFY_SOCKET once it listens.
+    let scratch = Scratch::new();
+    let notify = scratch.0.join("notify");
+    let manager = std::os::unix::net::UnixDatagram::bind(&notify).unwrap();
+    manager
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let mut daemon = Daemon::spawn_env(
+        Path::new(env!("CARGO_BIN_EXE_tilrd")),
+        &scratch.0,
+        &[],
+        &[("NOTIFY_SOCKET", &notify)],
+    );
+    let mut message = [0; 64];
+    let n = manager.recv(&mut message).expect("READY=1");
+    assert_eq!(&message[..n], b"READY=1");
+    daemon.wait_listening();
+}
+
+#[test]
+fn no_listen_serves_the_socket_alone() {
+    let scratch = Scratch::new();
+    let daemon = Daemon::start(&scratch.0, &["--no-listen"]);
+    assert!(daemon.ps().status.success());
+    let log = daemon.log_text();
+    assert!(!log.contains("listening on ws://"), "{log}");
+    assert!(log.contains("no TCP port"), "{log}");
+    let mut both = Daemon::spawn(&scratch.0, &["--no-listen", "--no-socket"]);
+    let (status, log) = both.exit();
+    assert!(!status.success());
+    assert!(log.contains("nothing to listen on"), "{log}");
+    daemon.signal(libc::SIGTERM);
+}
+
+#[test]
+fn a_tcp_port_that_is_taken_stops_the_server_with_a_clear_error() {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = taken.local_addr().unwrap().to_string();
+    let scratch = Scratch::new();
+    let mut daemon = Daemon::spawn(&scratch.0, &["--listen", &addr]);
+    let (status, log) = daemon.exit();
+    assert_eq!(status.code(), Some(1), "{log}");
+    assert!(
+        log.contains(&format!(
+            "{addr} is taken: another tilrd, or another program, listens there"
+        )) && log.contains("--no-listen"),
+        "{log}"
+    );
+    assert!(!daemon.socket.exists(), "the socket is not left behind");
 }
 
 #[test]
@@ -319,7 +379,7 @@ fn a_file_at_the_path_is_left_alone_with_a_clear_error() {
     let socket = scratch.0.join("runtime/tilrd.sock");
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     std::fs::write(&socket, "mine").unwrap();
-    let mut daemon = Daemon::spawn(&scratch.0, &[]);
+    let mut daemon = Daemon::spawn(&scratch.0, &["--no-listen"]);
     let (status, log) = daemon.exit();
     assert!(!status.success());
     assert!(
@@ -335,7 +395,7 @@ fn another_programs_listener_at_the_path_is_left_alone_with_a_clear_error() {
     let socket = scratch.0.join("runtime/tilrd.sock");
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let foreign = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    let mut daemon = Daemon::spawn(&scratch.0, &[]);
+    let mut daemon = Daemon::spawn(&scratch.0, &["--no-listen"]);
     let (status, log) = daemon.exit();
     assert!(!status.success());
     assert!(
@@ -363,7 +423,9 @@ fn a_socket_path_too_long_is_a_clear_error() {
 #[test]
 fn of_servers_started_at_once_one_serves_the_socket() {
     let scratch = Scratch::new();
-    let mut daemons: Vec<Daemon> = (0..8).map(|_| Daemon::spawn(&scratch.0, &[])).collect();
+    let mut daemons: Vec<Daemon> = (0..8)
+        .map(|_| Daemon::spawn(&scratch.0, &["--no-listen"]))
+        .collect();
     std::thread::sleep(Duration::from_millis(1500));
     let running: Vec<usize> = (0..daemons.len())
         .filter(|&i| daemons[i].running())
@@ -447,7 +509,7 @@ async fn a_reload_keeps_the_socket_and_its_lock() {
     let mut ws = connect(&daemon.socket).await;
     assert!(panes(&mut ws).await.iter().any(|p| p.pane_id == pane));
     // Still the one server: another cannot take the socket.
-    let mut other = Daemon::spawn(&scratch.0, &[]);
+    let mut other = Daemon::spawn(&scratch.0, &["--no-listen"]);
     let (status, log) = other.exit();
     assert!(!status.success());
     assert!(
@@ -540,7 +602,7 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
+    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
     daemon.wait_listening();
 
     let formats = Command::new(&exe).arg("state-formats").output().unwrap();

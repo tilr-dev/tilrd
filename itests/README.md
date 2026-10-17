@@ -121,6 +121,7 @@ itests/
     live.py              live software in panes for the update and reload cases (group F)
     cloud.py             tilr Cloud played by a case, the stand-in cloudflared
   fixtures/*.py          prepared states shared by cases
+  installer/install.sh   a copy of the installer of the sh repository (not edited here)
   scenarios/uc_NNN.py    the cases of one use case
   tools/                 report.html and the history page
 ```
@@ -133,6 +134,7 @@ itests/
 tilrd, tilr, tilr-driver  on PATH (tilr next to tilrd); root's login shell is bash with PS1='$ '
 /opt/tt/tilrd-next        the next release; /opt/tt/manifest.json its version and platform
 /opt/tt/tilr-server-previous  the last release named tilr-server, as 0.0.9 (UC-06A)
+/opt/tt/install.sh        the installer (installer/install.sh), group A
 $TT_SERVICE_CDN           http://cdn:8080, the fake CDN, for cases with services=["cdn"]
 ```
 
@@ -235,7 +237,10 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `Counter(t, driver, pane, period)` | a counter in a pane: `.last(d) .check_screen(d)` (moving, lines consecutive) `.check_log()` (the pane's own log: nothing skipped, longest gap as `counter_max_gap_ms`) |
 | driver extras | `.interrupt(pane)` (Ctrl-C until the prompt is back), `.viewers(pane)` (as the server counts them), `.latency(reset)`, `.connected()`, `.wait_event(("dead", "disconnected"), since=)` |
 | `service(name)` | URL of a service container named in `@case(services=[...])` |
-| `cdn()` | `LocalCdn`: releases served from the case's own container, `.release(version, exe)`, `.latest(version)`, `.url` for `update --cdn` (an older release, a broken one) |
+| `cdn()` | `LocalCdn`: releases served from the case's own container, `.release(version, exe, names=)`, `.publish(version, server=, client=)` (tilrd, tilr-server and tilr with checksums), `.latest(version)`, `.installer()` (serves the installer, its URL), `.cut[path] = n` (a download closed after n bytes), `.requests`, `.url` for `update --cdn` and `TILR_CDN` |
+| `user(name)` | a Unix user made for the case (`useradd -m`): `.run(*argv, env=)` / `.sh()` as it with a login's environment only (no `XDG_*`, `USER_PATH`), `.env()`, `.prompt()` (`PS1='$ '`), `.home .uid` |
+| `FakeServiceTools(t, owner, systemd=, linger=, linger_ok=, crontab=)` | `systemctl`, `loginctl`, `crontab` as scripts in `.bin` (`.path()`): `.called()` lists their calls, `.crontab()` the crontab file |
+| `snapshot(dir, skip=)`, `changes(a, b)` | every file and directory with mode, owner and hash; what differs |
 | `cloud()` | tilr Cloud played by the case (tt/cloud.py): `.link(state_dir)`, `.accept()` → a control connection: `.greet()`, `.send(msg)`, `.next()`, `.tunnel_is(state)`; `fake_cloudflared(dir)` notes `args`, `config`, `pid`, `ended` there |
 | `tmpfs(path, size)` | a small disk to fill (needs `net_admin=True`: mount wants the root capabilities) |
 | `tt.live` | `LivePanes(t, d, server, echo=)`: a shell with a variable and a job, a counter, vim (unsaved, mouse on), htop, less, a python REPL, `sleep 1000`, a TCP connection to the echo service; `.check(what)` after an update or reload (pids, screens and modes, no orphans), `.finish()` (`:wq`, `q`, Ctrl+C); `wait_reloads`, `reload_times`, `state_files` |
@@ -310,7 +315,8 @@ All of it is undone when the case ends.
 A case asks for a service container by name: `@case(services=["cdn"])`. The module
 builds it (`_service` in main.py), binds it under that hostname and passes its URL as
 `TT_SERVICE_<NAME>`. `cdn` serves `releases/<platform>/latest` and the next release with
-its checksum, as `tilrd update` reads them. `echo` is a TCP echo service on port
+its checksum, as `tilrd update` and the installer read them (the client `tilr-<platform>`
+too). `echo` is a TCP echo service on port
 7007 (`tcp://echo:7007`), the far end of a pane's connection that must outlive a reload.
 
 ## Gotchas

@@ -379,3 +379,25 @@ async fn the_panes_socket_works_after_a_reload() {
     program.read_exact(&mut got).await.unwrap();
     assert_eq!(&got, b"ok");
 }
+
+#[tokio::test]
+async fn the_sockets_a_killed_server_left_are_removed_when_the_next_starts() {
+    let mut server = Server::start(&[]);
+    let mut client = agent_client(&server).await;
+    let pane_id = client.open_pane().await;
+    let socket = pane_socket(&server, &mut client, pane_id).await;
+    // Another server of the user, alive, with its own pane's socket.
+    let other = Server::start(&[]);
+    let mut other_client = agent_client(&other).await;
+    let other_pane = other_client.open_pane().await;
+    let live = pane_socket(&other, &mut other_client, other_pane).await;
+    let dir = server.dir.clone();
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
+    drop(client);
+    assert!(socket.0.exists(), "SIGKILL leaves the socket");
+
+    let next = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+    assert!(!socket.0.exists(), "{:?}", next.log.lock().unwrap());
+    assert!(live.0.exists(), "the live server's socket stays");
+}

@@ -209,16 +209,18 @@ os.makedirs("/out")
 shutil.copy2("/target/debug/tilr-server", "/out/tilr-server-previous")
 '''
 
-# Lays out a CDN as crates/tilrd/src/update.rs reads it, offering the next release under
-# both names, as scripts/release.sh publishes it.
+# Lays out a CDN as crates/tilrd/src/update.rs and the installer read it, offering the
+# next release under both names and the client next to it, as scripts/release.sh
+# publishes it.
 CDN = r'''#!/usr/bin/env python3
 import hashlib, json, os, shutil
 m = json.load(open("/build/manifest.json"))
 version, platform = m["next_version"], m["platform"]
 os.makedirs(f"/cdn/releases/{platform}", exist_ok=True)
 os.makedirs(f"/cdn/releases/{version}", exist_ok=True)
-for name in (f"tilrd-{platform}", f"tilr-server-{platform}"):
-    shutil.copy2("/build/bin/tilrd-next", f"/cdn/releases/{version}/{name}")
+for name, exe in ((f"tilrd-{platform}", "tilrd-next"), (f"tilr-server-{platform}", "tilrd-next"),
+                  (f"tilr-{platform}", "tilr")):
+    shutil.copy2(f"/build/bin/{exe}", f"/cdn/releases/{version}/{name}")
     digest = hashlib.sha256(open(f"/cdn/releases/{version}/{name}", "rb").read()).hexdigest()
     open(f"/cdn/releases/{version}/{name}.sha256", "w").write(f"{digest}  {name}\n")
 open(f"/cdn/releases/{platform}/latest", "w").write(version + "\n")
@@ -543,6 +545,7 @@ class TilrItests:
                 except Exception:
                     return Result(rid, "scenario", "BLOCKED", 0, f"fixture {c['fixture']} failed to build")
             ctr = (self._with_binaries(self._tt(self.runtime(), c["module"]))
+                   .with_file("/opt/tt/install.sh", self.itests.file("installer/install.sh"))
                    .with_directory("/fx", fx)
                    .with_env_variable("TT_RUN", f"{run_id}-{k}")
                    .with_env_variable("TT_TIMEOUT", str(c["timeout"])))
