@@ -1,11 +1,10 @@
 """UC-010: `tilr` without a running tilrd starts it itself (setsid, detached from the
 terminal) and connects.
 
-Missing feature: there is no `tilr` client yet.
-The case is written against the intended model (the tilrd naming note): the client finds
-no socket in $XDG_RUNTIME_DIR/tilr, forks tilrd into a session of its own, and attaches
-to a pane over that socket. The server binary is installed as `tilrd` on PATH, as it
-will be named. Until the client exists this fails at the start.
+The client finds no socket in $XDG_RUNTIME_DIR/tilr, starts tilrd as a grandchild in a
+session of its own (stdin /dev/null, its log in tilrd.log next to the socket), and
+attaches to a new pane over that socket. The server binary is installed as `tilrd` on
+PATH.
 """
 
 import os
@@ -29,7 +28,7 @@ def tilr_without_a_running_daemon_starts_tilrd_detached_and_connects(t: T):
     t.eq(t.procs(r"(^|/)(tilrd|tilr-server)( |$)"), [], "no daemon runs before")
 
     client = t.session("tilr", env=env, name="tilr")
-    daemon = t.eventually(lambda: t.procs(r"^\S*tilrd( |$)"),
+    daemon = t.eventually(t.tilrd_daemons,
                           lambda: f"a tilrd process is started; the client's terminal:\n{client.read()}", timeout=10)
     t.eq(len(daemon), 1, "exactly one tilrd")
     d = daemon[0]
@@ -39,7 +38,7 @@ def tilr_without_a_running_daemon_starts_tilrd_detached_and_connects(t: T):
 
     sockets = [p for p in (xdg / "tilr").glob("*") if stat.S_ISSOCK(p.stat().st_mode)] if (xdg / "tilr").exists() else []
     t.ok(sockets, f"tilrd listens on a socket in {xdg}/tilr")
-    client.expect(r"\$ ", timeout=10)
+    client.prompt(timeout=10)
     print("  ok: the client shows a shell prompt from a pane")
 
     client.hangup()

@@ -29,8 +29,9 @@ use tilr_proto::{
     close, server_message,
 };
 use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::unix::pipe;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -45,7 +46,9 @@ use crate::link::FrameHead;
 use crate::metrics::{self, ClientDrop};
 use crate::outbox::{self, Outgoing, ToClient};
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
-use crate::{agent, auth, clipboard, cloud, exec, files, host, identity, link, pty, reload, socks};
+use crate::{
+    agent, auth, clipboard, cloud, exec, files, host, identity, link, local, pty, reload, socks,
+};
 
 const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
@@ -98,7 +101,9 @@ type ToPane = (Bytes, Option<Instant>);
 enum Event {
     ClientConnected {
         id: ClientId,
-        addr: SocketAddr,
+        addr: Peer,
+        /// Came in on the Unix socket: this user's, no token asked.
+        local: bool,
         tx: ToClient,
         /// Ends the connection.
         close: mpsc::UnboundedSender<Closing>,
@@ -171,10 +176,30 @@ enum Event {
     Shutdown,
 }
 
+/// Where a connection comes from.
+#[derive(Clone, Copy)]
+enum Peer {
+    Tcp(SocketAddr),
+    /// The Unix socket; the client's pid, if the system says.
+    Unix(Option<i32>),
+}
+
+impl std::fmt::Display for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(addr) => write!(f, "{addr}"),
+            Self::Unix(Some(pid)) => write!(f, "unix (pid {pid})"),
+            Self::Unix(None) => write!(f, "unix"),
+        }
+    }
+}
+
 struct Client {
     tx: ToClient,
     close: mpsc::UnboundedSender<Closing>,
-    addr: SocketAddr,
+    addr: Peer,
+    /// Came in on the Unix socket.
+    local: bool,
     subscriptions: HashSet<PaneId>,
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
@@ -224,6 +249,8 @@ struct Pane {
     title: String,
     cwd: String,
     created_at_ms: u64,
+    /// When a client last subscribed or sent input (`PaneInfo.used_at_ms`).
+    used_at_ms: u64,
     cols: u16,
     rows: u16,
     subscribers: HashSet<ClientId>,
@@ -267,7 +294,10 @@ struct Starting {
 }
 
 pub struct Options {
-    pub listen: SocketAddr,
+    /// The TCP address; `None`: the Unix socket only.
+    pub listen: Option<SocketAddr>,
+    /// The Unix socket for local clients; `None`: none.
+    pub local: Option<LocalOptions>,
     pub allow_origins: Vec<String>,
     /// Ask every client for the access token.
     pub auth: bool,
@@ -289,6 +319,16 @@ pub struct Options {
     pub agent: bool,
     /// Let clients run programs, see [`crate::exec`].
     pub exec: bool,
+}
+
+pub struct LocalOptions {
+    pub path: PathBuf,
+    /// A socket that cannot be taken stops the server; else it serves TCP
+    /// alone.
+    pub required: bool,
+    /// The lock file's descriptor, locked by the `tilr` that started the
+    /// server.
+    pub lock_fd: Option<RawFd>,
 }
 
 /// Who may come in through the listening port, and to what.
@@ -314,13 +354,30 @@ pub fn run(options: Options) -> Result<()> {
             if state.is_some() {
                 crate::fail::point("supervisor-resume")?;
             }
-            let listener = match &state {
-                Some(state) => inherit_listener(state.listener).context("take over listener")?,
-                None => TcpListener::bind(options.listen)
-                    .await
-                    .with_context(|| format!("bind {}", options.listen))?,
+            let listener = match (&state, options.listen) {
+                (Some(state), _) if state.listener >= 0 => {
+                    Some(inherit_listener(state.listener).context("take over listener")?)
+                }
+                (_, Some(listen)) => Some(
+                    TcpListener::bind(listen)
+                        .await
+                        .with_context(|| format!("bind {listen}"))?,
+                ),
+                (_, None) => None,
             };
-            let listener = Arc::new(listener);
+            let listener = listener.map(Arc::new);
+            let local = match state.as_ref().and_then(handed_over_socket) {
+                Some((fd, lock, path)) => {
+                    Some(local::inherit(fd, lock, path).context("take over the Unix socket")?)
+                }
+                None => match options.local {
+                    Some(options) => set_up_local(options)?,
+                    None => None,
+                },
+            };
+            if listener.is_none() && local.is_none() {
+                anyhow::bail!("nothing to listen on");
+            }
             let token = if options.auth {
                 Some(
                     auth::token()
@@ -339,16 +396,27 @@ pub fn run(options: Options) -> Result<()> {
                 tracing::info!("SOCKS proxy off");
             }
 
-            let mut local = listener.local_addr()?;
-            tracing::info!("listening on ws://{local}");
-            if local.ip().is_unspecified() {
-                local.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+            let tunnel = match &listener {
+                Some(listener) => {
+                    let mut addr = listener.local_addr()?;
+                    tracing::info!("listening on ws://{addr}");
+                    if addr.ip().is_unspecified() {
+                        addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+                    }
+                    cloud::spawn(cloud::Options {
+                        auth: token.is_some(),
+                        local: addr,
+                        cloudflared: options.cloudflared,
+                    })
+                }
+                None => {
+                    tracing::info!("no TCP port (--listen): no tilr Cloud tunnel");
+                    cloud::Tunnel::off()
+                }
+            };
+            if let Some(local) = &local {
+                tracing::info!(path = %local.path().display(), "Unix socket for local clients");
             }
-            let tunnel = cloud::spawn(cloud::Options {
-                auth: token.is_some(),
-                local,
-                cloudflared: options.cloudflared,
-            });
 
             let (events_tx, events_rx) = mpsc::unbounded_channel();
             let shared_metrics = Arc::new(metrics::Shared::default());
@@ -360,23 +428,38 @@ pub fn run(options: Options) -> Result<()> {
                     .map_or(0, |state| state.next_client_id)
                     .max(1),
             ));
-            tokio::spawn(accept_loop(
-                Arc::clone(&listener),
-                Arc::new(Door {
-                    allow_origins: options.allow_origins,
-                    // 0.0.0.0 or :: is not a host a request names.
-                    listen_host: Some(options.listen.ip())
-                        .filter(|ip| !ip.is_unspecified())
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    token: token.clone(),
-                    socks: options.socks,
-                }),
-                options.client_timeout,
-                Arc::clone(&shared_metrics),
-                Arc::clone(&next_client_id),
-                events_tx.clone(),
-            ));
+            let door = Arc::new(Door {
+                allow_origins: options.allow_origins,
+                // 0.0.0.0 or :: is not a host a request names.
+                listen_host: options
+                    .listen
+                    .map(|listen| listen.ip())
+                    .filter(|ip| !ip.is_unspecified())
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+                token: token.clone(),
+                socks: options.socks,
+            });
+            if let Some(listener) = &listener {
+                tokio::spawn(accept_loop(
+                    Arc::clone(listener),
+                    Arc::clone(&door),
+                    options.client_timeout,
+                    Arc::clone(&shared_metrics),
+                    Arc::clone(&next_client_id),
+                    events_tx.clone(),
+                ));
+            }
+            if let Some(local) = &local {
+                tokio::spawn(accept_local(
+                    Arc::clone(&local.listener),
+                    door,
+                    options.client_timeout,
+                    Arc::clone(&shared_metrics),
+                    Arc::clone(&next_client_id),
+                    events_tx.clone(),
+                ));
+            }
             tokio::spawn(lag_ticks(events_tx.clone()));
             tokio::spawn(shutdown_signal(events_tx.clone()));
             tokio::spawn(reload_signal(events_tx.clone()));
@@ -392,6 +475,13 @@ pub fn run(options: Options) -> Result<()> {
             let server_id = identity::server_id();
             let host_socket = set_up_host_socket(&server_id, events_tx.clone());
             let (clipboard, mut pane_env) = set_up_shims(options.clipboard, host_socket.is_some());
+            // `tilr` in a pane talks to this server.
+            if let Some(local) = &local {
+                pane_env.push((
+                    OsString::from(tilr_proto::local::SOCKET_ENV),
+                    local.path().as_os_str().to_owned(),
+                ));
+            }
             if let Some(path) = &host_socket {
                 pane_env.push((
                     OsString::from(host::SOCK_ENV),
@@ -425,19 +515,21 @@ pub fn run(options: Options) -> Result<()> {
             } else {
                 tracing::info!(target: "tilrd::agent", "SSH agent forwarding off");
             }
-            let execs = options.exec.then(|| {
+            // Server commands (`tilr token`) run as execs even with exec off.
+            let execs = {
                 let events = events_tx.clone();
-                exec::Execs::new(Arc::new(move |output| {
+                Some(exec::Execs::new(Arc::new(move |output| {
                     let _ = events.send(Event::Exec(output));
-                }))
-            });
-            if execs.is_none() {
+                })))
+            };
+            if !options.exec {
                 tracing::info!(target: "tilrd::exec", "exec off");
             }
 
             let mut supervisor = Supervisor {
                 events: events_tx,
                 listener,
+                local,
                 clients: HashMap::new(),
                 panes: HashMap::new(),
                 starting: HashMap::new(),
@@ -450,19 +542,51 @@ pub fn run(options: Options) -> Result<()> {
                 host_events: host_socket.is_some(),
                 agent,
                 execs,
+                exec: options.exec,
                 metrics: shared_metrics,
                 next_client_id,
             };
             if let Some(state) = state {
                 supervisor.resume(state);
             }
-            supervisor.run(events_rx).await;
+            let local = supervisor.run(events_rx).await;
             // A reload does not get here: the successor binds the socket anew.
             if let Some(path) = host_socket {
                 host::remove(&path);
             }
+            if let Some(local) = local {
+                local.remove();
+            }
             Ok(())
         })
+}
+
+/// The Unix socket the previous supervisor handed over, if it did.
+fn handed_over_socket(state: &SupervisorState) -> Option<(RawFd, RawFd, PathBuf)> {
+    match (state.local_listener, state.local_lock) {
+        (Some(fd), Some(lock)) if !state.local_path.is_empty() => {
+            Some((fd, lock, PathBuf::from(&state.local_path)))
+        }
+        _ => None,
+    }
+}
+
+/// Take the Unix socket. One that cannot be taken stops the server if it is
+/// `required`; otherwise the server goes on with its TCP port alone.
+fn set_up_local(options: LocalOptions) -> Result<Option<local::Local>> {
+    match local::claim(&options.path, options.lock_fd) {
+        Ok(local) => Ok(Some(local)),
+        Err(err) if options.required => {
+            anyhow::bail!("the Unix socket {}: {err}", options.path.display())
+        }
+        Err(err) => {
+            tracing::warn!(
+                path = %options.path.display(),
+                "no Unix socket for local clients: {err}"
+            );
+            Ok(None)
+        }
+    }
 }
 
 /// Take over the listening socket the previous supervisor left open.
@@ -630,6 +754,81 @@ async fn accept_loop(
     }
 }
 
+/// Accept local clients on the Unix socket: this user's processes only.
+async fn accept_local(
+    listener: Arc<UnixListener>,
+    door: Arc<Door>,
+    client_timeout: Option<Duration>,
+    metrics: Arc<metrics::Shared>,
+    next_id: Arc<AtomicU64>,
+    events: mpsc::UnboundedSender<Event>,
+) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let pid = match local::peer(&stream) {
+                    Ok(pid) => pid,
+                    Err(err) => {
+                        tracing::warn!("refused a connection on the Unix socket: {err:#}");
+                        continue;
+                    }
+                };
+                let id: ClientId = next_id.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(serve_local(
+                    id,
+                    stream,
+                    pid,
+                    Arc::clone(&door),
+                    client_timeout,
+                    Arc::clone(&metrics),
+                    events.clone(),
+                ));
+            }
+            Err(err) => {
+                tracing::warn!("accept on the Unix socket failed: {err}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// A connection on the Unix socket: the main protocol only, no token.
+async fn serve_local(
+    id: ClientId,
+    stream: UnixStream,
+    pid: Option<i32>,
+    door: Arc<Door>,
+    client_timeout: Option<Duration>,
+    shared_metrics: Arc<metrics::Shared>,
+    events: mpsc::UnboundedSender<Event>,
+) {
+    let peer = Peer::Unix(pid);
+    let socket = stream.as_raw_fd();
+    serve_websocket(
+        Connection {
+            id,
+            peer,
+            local: true,
+            socket,
+        },
+        stream,
+        &door,
+        client_timeout,
+        shared_metrics,
+        events,
+    )
+    .await;
+}
+
+/// One connection, as [`serve_websocket`] serves it.
+struct Connection {
+    id: ClientId,
+    peer: Peer,
+    /// On the Unix socket.
+    local: bool,
+    socket: RawFd,
+}
+
 async fn serve_client(
     id: ClientId,
     stream: TcpStream,
@@ -663,7 +862,41 @@ async fn serve_client(
     if metrics::is_request(&stream).await {
         return serve_metrics(stream, addr, &door, &shared_metrics, &events).await;
     }
+    let socket = stream.as_raw_fd();
+    let connection = Connection {
+        id,
+        peer: Peer::Tcp(addr),
+        local: false,
+        socket,
+    };
+    serve_websocket(
+        connection,
+        stream,
+        &door,
+        client_timeout,
+        shared_metrics,
+        events,
+    )
+    .await;
+}
 
+/// The WebSocket on a connection: the main protocol, or SOCKS on TCP.
+async fn serve_websocket<S>(
+    connection: Connection,
+    stream: S,
+    door: &Door,
+    client_timeout: Option<Duration>,
+    shared_metrics: Arc<metrics::Shared>,
+    events: mpsc::UnboundedSender<Event>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let Connection {
+        id,
+        peer: addr,
+        local,
+        socket,
+    } = connection;
     // What the handshake asked for; the callback tells.
     let mut route = Route::Main;
     #[expect(
@@ -677,7 +910,8 @@ async fn serve_client(
             refused
         };
         let socks = request.uri().path() == socks::PATH;
-        if socks && !door.socks {
+        // SOCKS is for the TCP port, where a browser elsewhere comes in.
+        if socks && (!door.socks || local) {
             return Err(refuse(StatusCode::NOT_FOUND, "not found"));
         }
         if !door.origin_allowed(request, addr) {
@@ -700,25 +934,33 @@ async fn serve_client(
     };
     let ws = match tokio_tungstenite::accept_hdr_async(stream, admit).await {
         Ok(ws) => ws,
+        // `tilr` looks whether the socket is served by connecting to it.
+        Err(err) if local => {
+            tracing::debug!(%addr, "websocket handshake failed: {err}");
+            return;
+        }
         Err(err) => {
             tracing::warn!(%addr, "websocket handshake failed: {err}");
             return;
         }
     };
     if route == Route::Socks {
+        let Peer::Tcp(addr) = addr else { return };
         tracing::debug!(%addr, "SOCKS WebSocket connected");
         socks::serve_websocket(ws, client_timeout, addr).await;
         return;
     }
     tracing::info!(client = id, %addr, "client connected");
-    let socket = ws.get_ref().as_raw_fd();
-    limit_unsent(socket);
+    if !local {
+        limit_unsent(socket);
+    }
     let (mut sink, mut source) = ws.split();
     let (tx, mut outbox) = outbox::channel();
     let (closer, mut closing) = mpsc::unbounded_channel();
     let connected = Event::ClientConnected {
         id,
         addr,
+        local,
         tx,
         close: closer.clone(),
     };
@@ -986,7 +1228,7 @@ impl Door {
     /// attaches the page's origin to every request, WebSocket handshakes
     /// included. With no other authentication, this check is what stops an
     /// arbitrary website from opening a shell on this machine.
-    fn origin_allowed(&self, request: &Request, addr: SocketAddr) -> bool {
+    fn origin_allowed(&self, request: &Request, addr: impl std::fmt::Display) -> bool {
         let Some(origin) = request.headers().get("origin") else {
             return true;
         };
@@ -1142,7 +1384,10 @@ async fn tick(interval: &mut Option<Interval>) {
 
 struct Supervisor {
     events: mpsc::UnboundedSender<Event>,
-    listener: Arc<TcpListener>,
+    /// `None`: no TCP port, the Unix socket only.
+    listener: Option<Arc<TcpListener>>,
+    /// The Unix socket for local clients.
+    local: Option<local::Local>,
     clients: HashMap<ClientId, Client>,
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
@@ -1164,6 +1409,9 @@ struct Supervisor {
     agent: Option<agent::Agent>,
     /// `None` when Exec is turned off.
     execs: Option<exec::Execs>,
+    /// Clients may run programs (the "exec" feature); server commands run
+    /// either way.
+    exec: bool,
     /// The measurements the routing tasks share.
     metrics: Arc<metrics::Shared>,
     /// The id the next connection gets; handed on in a reload.
@@ -1171,7 +1419,9 @@ struct Supervisor {
 }
 
 impl Supervisor {
-    async fn run(mut self, mut events: mpsc::UnboundedReceiver<Event>) {
+    /// Returns the Unix socket, for the caller to remove once the panes are
+    /// let go of.
+    async fn run(mut self, mut events: mpsc::UnboundedReceiver<Event>) -> Option<local::Local> {
         while let Some(event) = events.recv().await {
             match event {
                 Event::Reload => {
@@ -1192,6 +1442,7 @@ impl Supervisor {
         if let Some(execs) = &mut self.execs {
             execs.stop_all(exec::End::Shutdown).await;
         }
+        self.local.take()
     }
 
     fn on_event(&mut self, event: Event) {
@@ -1199,6 +1450,7 @@ impl Supervisor {
             Event::ClientConnected {
                 id,
                 addr,
+                local,
                 tx,
                 close,
             } => {
@@ -1208,6 +1460,7 @@ impl Supervisor {
                         tx,
                         close,
                         addr,
+                        local,
                         subscriptions: HashSet::new(),
                         greeted: false,
                         host_events: false,
@@ -1326,6 +1579,7 @@ impl Supervisor {
                     title: info.title,
                     cwd: info.cwd,
                     created_at_ms: info.created_at_ms,
+                    used_at_ms: info.used_at_ms.max(info.created_at_ms),
                     cols: info.cols.clamp(1, u32::from(u16::MAX)) as u16,
                     rows: info.rows.clamp(1, u32::from(u16::MAX)) as u16,
                     subscribers: HashSet::new(),
@@ -1355,9 +1609,25 @@ impl Supervisor {
             return false;
         }
         let exe = crate::exe();
-        if let Err(err) = reload::check_executable(exe).await {
-            tracing::error!("not reloading: {err:#}");
-            return false;
+        let hand_over_socket = match reload::check_executable(exe).await {
+            Ok(takes_socket) => takes_socket,
+            Err(err) => {
+                tracing::error!("not reloading: {err:#}");
+                return false;
+            }
+        };
+        if !hand_over_socket && self.local.is_some() {
+            if self.listener.is_none() {
+                tracing::error!(
+                    "not reloading: {} cannot take over the Unix socket, the only one this server listens on",
+                    exe.display()
+                );
+                return false;
+            }
+            tracing::warn!(
+                "{} cannot take over the Unix socket: it serves the TCP port alone",
+                exe.display()
+            );
         }
         tracing::info!(exe = %exe.display(), panes = self.panes.len(), "reloading");
 
@@ -1423,7 +1693,7 @@ impl Supervisor {
         // It is not carried over: the successor starts its own.
         self.tunnel.hold().await;
         let err = match crate::fail::point("reload-before-exec") {
-            Ok(()) => self.exec_successor(&handed_over),
+            Ok(()) => self.exec_successor(&handed_over, hand_over_socket),
             Err(err) => err,
         };
         tracing::error!("reload failed: {err:#}");
@@ -1448,11 +1718,31 @@ impl Supervisor {
     /// Exec the executable on disk, leaving it the listening socket, the
     /// pipes to the pane processes and a description of the panes. Returns
     /// only on failure, with every descriptor as it was.
-    fn exec_successor(&self, panes: &[(PaneId, pipe::Sender, Detached)]) -> anyhow::Error {
-        let listener = self.listener.as_raw_fd();
-        let mut inherited = vec![listener];
+    fn exec_successor(
+        &self,
+        panes: &[(PaneId, pipe::Sender, Detached)],
+        hand_over_socket: bool,
+    ) -> anyhow::Error {
+        let listener = self
+            .listener
+            .as_ref()
+            .map_or(-1, |listener| listener.as_raw_fd());
+        let mut inherited: Vec<RawFd> = self
+            .listener
+            .as_ref()
+            .map(|listener| listener.as_raw_fd())
+            .into_iter()
+            .collect();
+        let local = self.local.as_ref().filter(|_| hand_over_socket);
+        let (local_listener, local_lock) = local.map(local::Local::fds).unzip();
+        inherited.extend(local_listener.into_iter().chain(local_lock));
         let state = SupervisorState {
             listener,
+            local_listener,
+            local_lock,
+            local_path: local
+                .map(|local| local.path().to_string_lossy().into_owned())
+                .unwrap_or_default(),
             format: reload::STATE_FORMAT,
             next_client_id: self.next_client_id.load(Ordering::Relaxed),
             panes: panes
@@ -1521,6 +1811,12 @@ impl Supervisor {
                     ),
                 );
             }
+            // The Unix socket is this user's alone: no token there.
+            Msg::Hello(_)
+                if self
+                    .clients
+                    .get(&client_id)
+                    .is_some_and(|client| client.local) => {}
             Msg::Hello(hello) => match &self.token {
                 Some(_) if hello.token.is_empty() => {
                     return self.refuse(client_id, "this server asks for its access token");
@@ -1560,7 +1856,7 @@ impl Supervisor {
                     (FEATURE_FILES, fs_max_bytes.is_some()),
                     (FEATURE_HOST_EVENTS, self.host_events),
                     (FEATURE_AGENT, self.agent.is_some()),
-                    (FEATURE_EXEC, self.execs.is_some()),
+                    (FEATURE_EXEC, self.exec),
                 ];
                 self.send(
                     client_id,
@@ -1595,6 +1891,7 @@ impl Supervisor {
                     return self.send_no_pane(client_id, &named);
                 };
                 pane.subscribers.insert(client_id);
+                pane.used_at_ms = now_ms();
                 // The pane answers with a full frame.
                 let _ = pane.to_pane.send((packet, None));
                 if let Some(client) = self.clients.get_mut(&client_id) {
@@ -1668,6 +1965,36 @@ impl Supervisor {
                 Some(agent) => agent.on_close(client_id, close),
                 None => tracing::debug!(client = client_id, "stream close while the agent is off"),
             },
+            Msg::ExecStart(start) if start.server_command => {
+                let local = self
+                    .clients
+                    .get(&client_id)
+                    .is_some_and(|client| client.local);
+                let (Some(execs), Some(client), true) =
+                    (&mut self.execs, self.clients.get(&client_id), local)
+                else {
+                    let refused = tilr_proto::ExecStarted {
+                        request_id: start.request_id,
+                        error: "server commands are taken on the Unix socket only".into(),
+                        ..Default::default()
+                    };
+                    return self.send(client_id, server_message::Msg::ExecStarted(refused));
+                };
+                let mut argv = vec![crate::exe().to_string_lossy().into_owned()];
+                argv.extend(start.argv);
+                let start = tilr_proto::ExecStart { argv, ..start };
+                if let Some(reply) = execs.on_message(
+                    client_id,
+                    &client.client_id,
+                    &client.tx,
+                    Msg::ExecStart(start),
+                ) {
+                    self.send(client_id, reply);
+                }
+            }
+            Msg::ExecStart(_) if !self.exec => {
+                tracing::debug!(client = client_id, "exec request while exec is off");
+            }
             msg @ (Msg::ExecStart(_)
             | Msg::ExecInput(_)
             | Msg::ExecSignal(_)
@@ -1800,6 +2127,7 @@ impl Supervisor {
                 if input.is_some() {
                     pane.counters.input += 1;
                     pane.counters.input_bytes += packet.len() as u64;
+                    pane.used_at_ms = now_ms();
                 }
                 let _ = pane.to_pane.send((packet, input));
             }
@@ -1842,9 +2170,8 @@ impl Supervisor {
             command: create.command.clone(),
             title: String::new(),
             cwd,
-            created_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |since| since.as_millis() as u64),
+            created_at_ms: now_ms(),
+            used_at_ms: now_ms(),
             cols,
             rows,
             subscribers: HashSet::new(),
@@ -2117,12 +2444,16 @@ impl Supervisor {
         if client_id.is_empty() {
             return;
         }
+        // A connection on the Unix socket supersedes only those, and one on
+        // TCP only those: neither speaks for the other.
+        let local = self.clients.get(&new).is_some_and(|client| client.local);
         let old: Vec<ClientId> = self
             .clients
             .iter()
             .filter(|&(&id, client)| {
                 id != new
                     && client.greeted
+                    && client.local == local
                     && client.client_id == client_id
                     && auth::matches(&client.token, token)
             })
@@ -2264,11 +2595,18 @@ impl Pane {
             cwd: self.cwd.clone(),
             viewers: self.subscribers.len() as u32,
             created_at_ms: self.created_at_ms,
+            used_at_ms: self.used_at_ms,
             pid: self.pid,
             // Filled in by `Supervisor::pane_list`, which knows the clients.
             viewed_by: Vec::new(),
         }
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 /// Ask the pane for a full frame, for the clients that skipped its frames,

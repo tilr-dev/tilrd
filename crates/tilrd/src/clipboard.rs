@@ -32,23 +32,13 @@ pub const DIR_ENV: &str = "TILR_CLIPBOARD_DIR";
 /// may set PATH from scratch (Debian's /etc/profile, a `PATH=...` without
 /// `$PATH` in ~/.profile); `PATH="$TILR_SHIMS:$PATH"` there brings them back.
 pub const SHIMS_ENV: &str = "TILR_SHIMS";
-/// Overrides where the server keeps its per-user files.
-const RUNTIME_DIR_ENV: &str = "TILR_RUNTIME_DIR";
-
 const CONTENT_FILE: &str = "content";
 const MAX_MIME_LEN: usize = 127;
 
-/// Directory for the server's per-user files, private to the user.
+/// Directory for the server's per-user files, private to the user; see
+/// [`tilr_proto::local::runtime_dir`].
 pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV).filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir);
-    }
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        return Path::new(&dir).join("tilr");
-    }
-    // SAFETY: geteuid has no preconditions.
-    let uid = unsafe { libc::geteuid() };
-    std::env::temp_dir().join(format!("tilr-{uid}"))
+    tilr_proto::local::runtime_dir()
 }
 
 pub fn clipboard_dir(runtime_dir: &Path) -> PathBuf {

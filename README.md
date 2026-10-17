@@ -4,6 +4,11 @@ A terminal server. It runs shells in panes on a machine and serves them to
 clients over a WebSocket: a client gets the screen as a grid of cells and sends
 keys back. Panes keep running when clients disconnect.
 
+`tilrd` is the server, a service: `tilr` starts it, or a service manager, or
+the Tilr app; nobody runs it by hand. `tilr` is the command a user types: the
+[terminal client](#the-client-tilr) (tmux-style) and every other command
+(`tilr token`, `tilr update`, `tilr cloud login`, `tilr ps`).
+
 Status: early (see [TODO.md](TODO.md)).
 
 ## Layout
@@ -13,6 +18,8 @@ Status: early (see [TODO.md](TODO.md)).
 | `tilr-proto` | The wire protocol: `proto/tilr.proto` and packet framing |
 | `tilr-screen` | Terminal screen model (libghostty-vt) that produces frames |
 | `tilrd` | The server binary |
+| `tilr` | The client: attaches to panes from a terminal, and the user's commands |
+| `tilr-driver` | A scripted client for the black-box tests in `itests/` |
 
 One supervisor process accepts clients and routes packets. Each pane is its
 own process, a child of the supervisor, which owns the pty, the shell and the
@@ -37,22 +44,25 @@ this managed copy; separate installations retain their own updater.
 See [Mac release and lifecycle details](../apps/mac/PRODUCTION.md).
 
 Releases are built for Linux on aarch64 (glibc 2.36 or newer). There is no
-installer yet: download the binary and start it.
+installer yet: download the server (and `tilr`, built from this repository,
+next to it) and run `tilr`, which starts the server.
 
 ```sh
 version=$(curl -fsSL https://cdn.tilr.dev/releases/linux-aarch64/latest)
-curl -fsSLo tilrd "https://cdn.tilr.dev/releases/$version/tilrd-linux-aarch64"
-chmod +x tilrd
-./tilrd
+curl -fsSLo ~/.local/bin/tilrd "https://cdn.tilr.dev/releases/$version/tilrd-linux-aarch64"
+chmod +x ~/.local/bin/tilrd
+tilr
 ```
 
 To update, in any shell on that machine:
 
 ```sh
-tilrd update
+tilr update
 ```
 
-It asks the CDN which version is ready for its platform, downloads it, checks
+`tilr update` has the running server do it (it runs `tilrd update` as a child
+of the server, in its environment), then reconnects and prints the version the
+server reloaded into. It asks the CDN which version is ready for its platform, downloads it, checks
 it against its checksum and that it runs, and puts it in place of the
 executable. A running server then [reloads itself](#reloading-without-closing-shells)
 and keeps every shell. `--cdn URL` (or `TILR_CDN`) names another place to
@@ -67,8 +77,9 @@ asks for and puts it in place of its own executable, which keeps its file name
 `tilrd update` asks for `tilrd-<platform>`, and for `tilr-server-<platform>`
 when a release has only that name (rolling back past the rename).
 
-`tilrd --version` prints what a build is: the package version, the
-commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)`.
+`tilr version` prints what builds the client and the running server are: the
+package version, the commit and the platform, e.g. `0.1.0-26449dd
+(linux-aarch64)` (`tilr --version`, `tilrd --version`: one each).
 
 `scripts/release.sh --publish` builds a release and uploads it; the layout of
 releases on the CDN is described there. `scripts/update-test.sh HOST VERSION`
@@ -103,15 +114,120 @@ scripts/linux-build.sh            # release binary into dist/
 TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
 ```
 
-## Running
+## The client: tilr
 
 ```sh
-tilrd                       # listens on ws://127.0.0.1:7890
+tilr                        # attach to the pane used last, or make one
+tilr new [-d] [--cwd DIR] [-- CMD…]   # a new pane (-d: print its id, do not attach)
+tilr attach [PANE]          # a pane by its id or the start of it (tilr a)
+tilr ls [-q]                # the panes; * marks the one used last (-q: full ids)
+tilr kill [PANE]            # close a pane: the one this runs in, else the one used last
+tilr kill-server            # stop the server: shells end, socket and lock go
+tilr ps                     # the panes with the pids of their processes
+tilr version                # the client's and the server's builds
+tilr token | update | cloud login|status|logout   # run in the server, see below
+tilr edit FILE | open URL   # inside a pane: ask the clients watching it to open it
 ```
+
+**The tmux model.** `tilr` talks to the server of this user on this machine
+over a Unix socket. With no server running it starts one: `tilrd` next to the
+`tilr` executable, else on `PATH`, else `$TILRD`; detached (a grandchild in a
+session of its own, no controlling terminal, stdin from `/dev/null`, its log
+in `tilrd.log` next to the socket). Two `tilr` started at once on an empty
+machine start one server: the first to take the socket's lock starts it and
+hands it the lock (`--lock-fd`), the other waits for its socket. The server
+outlives the terminal: a hung-up SSH session takes `tilr` with it, not the
+server or its shells. `tilr ls`, `kill` and `attach PANE` start nothing.
+
+**Attached.** The terminal is in raw mode on the alternate screen and shows
+the pane, sized to the terminal (a resize follows). **Ctrl+] is the prefix**:
+Ctrl+] d detaches, Ctrl+] Ctrl+] sends Ctrl+] itself; another key after it is
+sent as it is. Keys go as `KeyInput`, with `code` (the physical key) for the
+keys a terminal names (Enter, Tab, the arrows, F1…F12); a character key comes
+from the terminal as the character the layout made, Ctrl folded in (Ctrl+С on
+a Russian layout arrives as ^C), so its `code` stays empty. Pastes go as
+`Paste` (bracketed), the mouse only while the program in the pane asks for it
+(else the wheel scrolls the history). The pane used last is the one with the
+latest `PaneInfo.used_at_ms` (a subscribe, or input).
+
+**Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as
+it runs. A connection that drops (a reload of the server, the network) is
+made again with it at once, then every 0.1 s doubling to 2 s; the bottom row
+says `disconnected …, reconnecting…` meanwhile, and what is typed then is
+dropped, not sent later. Over TCP it pings every 5 s and takes 15 s of silence
+as a dropped connection. A pane gone after the reconnect, or a local server
+that stopped (socket gone, lock free), ends the attach (`[tilrd stopped]`).
+
+**Which server.** `--socket PATH` / `TILR_SOCKET`, or `--connect ws://HOST:PORT`
+/ `TILR_CONNECT` with `--token` / `TILR_TOKEN` for a server's TCP port (not
+started from here; without a token, the one of this machine's server). Else
+`~/.config/tilr/client.toml` (`$XDG_CONFIG_HOME`, or `TILR_CONFIG_DIR`):
+
+```toml
+connect = "ws://10.0.0.5:7890"   # or: socket = "/path/tilrd.sock"
+token = "…"
+```
+
+**Commands run in the server.** `tilr token`, `tilr update [--cdn URL]` and
+`tilr cloud login|status|logout` work on what the server owns (its token, its
+executable, its link to Cloud): `tilr` asks the running server, starting it if
+needed, to run its own executable with those arguments (`ExecStart` with
+`server_command`, taken on the Unix socket only, with exec on or off) and
+shows the output as it comes; Ctrl+C cancels. There is no offline mode: a
+server is started for them. Over `--connect` they are refused: run `tilr` on
+that machine.
+
+**In a pane.** The server puts its own `tilr` first on the `PATH` of every
+pane (a link to `tilrd`, see [Pasting images](#pasting-images-the-shared-clipboard)):
+it answers `tilr edit` and `tilr open` (to the clients watching the pane, over
+`$TILR_SOCK`) and hands every other command to the next `tilr` on `PATH`, this
+client. The client answers `edit` and `open` the same way, for a pane whose
+profile reset `PATH`. Panes get `TILR_SOCKET`, so `tilr ls` in a pane lists its
+own server's panes; `tilr attach` refuses the pane it runs in.
+
+## Running
+
+`tilrd` is a service; `tilr` starts it as `tilrd --socket PATH --lock-fd N`.
+Run by hand or by a service manager it stays in the foreground and logs to
+stderr:
+
+```sh
+tilrd                                 # the Unix socket only
+tilrd --listen 127.0.0.1:7890         # and a TCP port (the Tilr app, remote clients)
+```
+
+**Sockets.** The Unix socket is always on unless `--no-socket` (which needs
+`--listen`); TCP only with `--listen`. The socket is `--socket PATH`, else
+`$TILR_SOCKET`, else `tilrd.sock` in the runtime directory: `$TILR_RUNTIME_DIR`,
+else `$XDG_RUNTIME_DIR/tilr`, else `tilr-<uid>` in the temporary directory
+(`$TMPDIR` on macOS, `/tmp` on Linux). The directory is made 0700 (and must be
+the user's), the socket 0600, and the server checks each connection's peer
+uid (`SO_PEERCRED`, `getpeereid`) is its own: on the socket no access token is
+asked. A path longer than a socket can be bound at (107 bytes on Linux, 103 on
+macOS) is an error that says so. One server per socket: it holds
+`tilrd.sock.lock` (`flock`, with its pid in it) for as long as it runs, a
+reload included. What is found at the path when it starts:
+
+- a socket nobody accepts on and whose lock is free (a server killed with
+  SIGKILL left it): removed and replaced;
+- a socket some other program listens on, a socket of another user, a file
+  that is not a socket: an error, nothing removed.
+
+A reload keeps the socket and the lock (their descriptors go to the successor
+as the TCP socket's does). Stopping removes the socket and the lock file.
+
+**The Tilr app is unaffected.** It runs `tilrd --listen 127.0.0.1:7890 --config …`
+and uses its TCP port and `tilrd token`, `ps --url`, `state-formats` and
+`--version`, which stay (hidden from `--help`). With `--listen` and no
+`--socket`, a socket that cannot be taken (another tilrd, `tilr`'s, serves it;
+the path is too long) is only a warning: that server serves TCP alone. If the
+app's server took the socket first, `tilr` attaches to it.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--listen ADDR` | `127.0.0.1:7890` | WebSocket address |
+| `--listen ADDR` | none | Also a WebSocket on this TCP address, e.g. `127.0.0.1:7890` |
+| `--socket PATH` | see above | The Unix socket; must work when named |
+| `--no-socket` | | No Unix socket (needs `--listen`) |
 | `--allow-origin ORIGIN` | the configuration file's list, else `tilr://app` (the Tilr app's page), `tilr://tilr` (its terminal app) and the web client's | Browser origins allowed to connect; repeatable |
 | `--config PATH` | `~/.config/tilr/server.toml` (`$XDG_CONFIG_HOME/tilr/server.toml`), if there | The [configuration file](#the-configuration-file) |
 | `--no-auth` | | Do not ask clients for the [access token](#who-may-connect) |
@@ -125,25 +241,27 @@ tilrd                       # listens on ws://127.0.0.1:7890
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
 | `--no-exec` | | Do not let clients [run programs](#running-programs-exec) outside a pane (also `exec = false`) |
 
-Signals: `SIGTERM` and `SIGINT` stop the server and end its shells; `SIGUSR1`
-[reloads](#reloading-without-closing-shells) it. `SIGHUP` is ignored: a server
-started from a terminal (`tilrd &` in an SSH session) outlives it, and so
-do its panes, each in a session of its own. Its log then goes nowhere; redirect
-stderr to keep it.
+Signals: `SIGTERM` and `SIGINT` stop the server and end its shells (`tilr
+kill-server` sends SIGTERM and waits for the server and its pane processes to
+be gone); `SIGUSR1` [reloads](#reloading-without-closing-shells) it. `SIGHUP`
+is ignored: a server started from a terminal (`tilrd &` in an SSH session)
+outlives it, and so do its panes, each in a session of its own. Its log then
+goes nowhere; redirect stderr to keep it.
 
 ## Who may connect
 
-A client must send the server's access token in `Hello.token`. The server
+On the Unix socket: the user, as above, without a token. On the TCP port a
+client must send the server's access token in `Hello.token`. The server
 makes the token the first time it runs and keeps it in
 `$XDG_STATE_HOME/tilr/token` (`~/.local/state/tilr`), readable by the user
 only. To see it, on that machine:
 
 ```sh
-tilrd token
+tilr token
 ```
 
 A client without the token, or with another, gets an `Error` and the
-connection is closed. `tilrd ps` reads the token itself.
+connection is closed.
 
 `--no-auth` turns the check off: then anyone who can reach the port gets a
 shell. A page in a browser must, with or without the token, come from an
@@ -155,7 +273,7 @@ the built-in one.
 What a machine's operator sets once lives in `~/.config/tilr/server.toml`
 (`$XDG_CONFIG_HOME/tilr/server.toml`, or `--config PATH` / `TILR_CONFIG`),
 read when the server starts (a reload starts it again, so a change takes
-effect on the next `tilrd update` or SIGUSR1). A missing file is an
+effect on the next `tilr update` or SIGUSR1). A missing file is an
 empty configuration; one that does not parse, or names a key the server does
 not know, stops it from starting.
 
@@ -178,14 +296,15 @@ exec = true
 ## tilr Cloud
 
 Optional. Cloud lists the machines of a user, says which are online, and gives
-each a tunnel: a name on the internet that leads to the server's port, so a
-phone can reach a machine that accepts no incoming connections. What goes
-through the tunnel does not pass through Cloud.
+each a tunnel: a name on the internet that leads to the server's TCP port
+(`--listen`; a server on its Unix socket alone gets no tunnel), so a phone can
+reach a machine that accepts no incoming connections. What goes through the
+tunnel does not pass through Cloud.
 
 ```sh
-tilrd cloud login      # prints a link and a code to confirm in a browser
-tilrd cloud status
-tilrd cloud logout     # Cloud forgets the machine and removes its tunnel
+tilr cloud login      # prints a link and a code to confirm in a browser
+tilr cloud status
+tilr cloud logout     # Cloud forgets the machine and removes its tunnel
 ```
 
 A linked server keeps one outgoing connection to Cloud. When Cloud tells it
@@ -243,7 +362,7 @@ Two ways in:
 
 ```sh
 ssh -L 1080:127.0.0.1:7890 my-server
-curl --socks5-hostname "x:$(ssh my-server tilrd token)@127.0.0.1:1080" http://pb.localhost:3000
+curl --socks5-hostname "x:$(ssh my-server tilr token)@127.0.0.1:1080" http://pb.localhost:3000
 ```
 
 The token gives what it gives through the main protocol: everything this
@@ -340,17 +459,18 @@ The id is the same everywhere a pane shows up:
   followed by how the pane was started (`--cols` and `--rows` unless 80×24,
   `--cwd`, the command), and the shell is its child;
 - inside the pane, as `$TILR_PANE`;
-- in `tilrd ps`, which asks a running server for its panes:
+- in `tilr ps`, which asks the running server for its panes (`tilr ls` shows
+  the first 8 characters, which `tilr attach` and `tilr kill` take):
 
 ```
-$ tilrd ps
+$ tilr ps
 PANE                                      PID     SIZE  VIEWERS  CWD  COMMAND
 3b750286-ae31-4cc4-9edd-3f314fb00d57     8193    80x24        1  /home/dan  (shell)
 d88b738a-fb48-41a5-bd4c-2050fdf33538     8219   120x40        0  /tmp  htop
 ```
 
-`PID` is the pane process. `--url` names a server listening elsewhere than
-`ws://127.0.0.1:7890`.
+`PID` is the pane process. `--connect ws://HOST:PORT` asks a server's TCP port
+instead.
 
 A server has an id of its own too, in `HelloAck.server_id`: a UUID made the
 first time it runs on a machine and kept in `$XDG_STATE_HOME/tilr/server-id`
@@ -534,7 +654,7 @@ with `Sec-Fetch-Site: cross-site` (a page of another site) is refused; 403
 otherwise. A response not read within 5 s is dropped.
 
 ```sh
-curl -H "Authorization: Bearer $(tilrd token)" http://127.0.0.1:7890/metrics
+curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 ```
 
 | Metric | Type | What |
@@ -622,7 +742,7 @@ The server picks up a new executable without ending any shell:
 - on `SIGUSR1`.
 
 The supervisor execs the new executable in place, keeping its pid, the
-listening socket and the pane processes, then has every pane process do the
+listening sockets (TCP, and the Unix socket with its lock) and the pane processes, then has every pane process do the
 same. Shells, their screens, scrollback and scroll position carry over.
 
 A process is exec'd with the arguments it was started with, so it looks the
@@ -648,7 +768,10 @@ What to know:
 - Before reloading, the server asks the new file which versions of the reload
   state it reads (`tilrd state-formats`). If it does not run, or reads
   another version than the server writes, the server logs `not reloading` and
-  carries on with the code it has. Such an upgrade needs a restart.
+  carries on with the code it has. Such an upgrade needs a restart. An
+  executable that does not say `unix-socket 1` there (one from before the
+  socket) is not handed the socket: a server with a TCP port reloads into it
+  without the socket, one on its socket alone does not reload.
 - A pane process that cannot take its queued input within 5 seconds is closed
   rather than carried over.
 
@@ -659,7 +782,8 @@ cargo test --workspace --features tilrd/failpoints
 ```
 
 The tests in `crates/tilrd/tests/` start the real server and drive it as
-a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
+a client would; `crates/tilr/tests/` run `tilr` against the `tilrd` built next
+to it (so the tests of the workspace, not of `tilr` alone). [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
 connecting, reconnecting, scrolling, reloading, updating, the clipboard, the SSH agent, metrics — and
 what is not covered yet.
 

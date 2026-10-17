@@ -6,15 +6,46 @@ pty as controlling terminal. Hanging it up closes the pty (the kernel sends SIGH
 bash) and sends SIGHUP to bash's process group; bash, as an interactive shell does,
 passes SIGHUP on to its jobs.
 
-Until `tilr` starts tilrd detached (UC-010), a user starts the server the way the README
-says, from the login shell: `tilrd &`. tilrd ignores SIGHUP and runs each pane
-process in a session of its own, so the first case checks that nothing of it goes with
-the session. The second case starts it with setsid, the way scripts/update-test.sh does.
+The first case is the tmux model: `tilr` typed in the SSH session starts tilrd (detached,
+UC-010) and attaches; the session drops, taking `tilr` with it; a `tilr` in a new
+session finds the same shell. The others start the server by hand from the login shell,
+as a service script might: `tilrd &` (tilrd ignores SIGHUP and runs each pane process in
+a session of its own, so nothing of it goes with the session), and with setsid, the way
+scripts/update-test.sh does.
 """
 
 import time
 
 from tt import T, case
+
+
+@case()
+def tilr_in_an_ssh_session_leaves_tilrd_and_its_shell_when_the_session_drops(t: T):
+    """UC-013: `tilr` in an SSH login shell; the connection drops; a new tilr finds the same shell."""
+    t.need("linux", "procfs")
+    env = t.user_env()
+    ssh = t.session("bash", "--login", "-i", env=env, name="ssh")
+    ssh.expect(r"\$ $")
+    ssh.write("tilr\r")
+    t.eventually(t.tilrd_daemons, "tilr started a tilrd", timeout=15)
+    ssh.write('export MARK=survived; sleep 9999 & echo "shell-$$-ok"\r')
+    shell = int(ssh.expect(r"shell-(\d+)-ok").group(1))
+    daemon = t.tilrd_daemons()[0]
+
+    ssh.hangup()
+    t.eventually(lambda: ssh.p.poll() is not None, "the login shell exits with its terminal", timeout=5)
+    t.eventually(lambda: not t.procs(r"(^|/)tilr( |$)"), "tilr goes with the session", timeout=5)
+    time.sleep(2)
+    t.ok(t.proc(daemon.pid) and t.proc(daemon.pid).alive, "tilrd is still running")
+    t.ok(t.proc(shell) and t.proc(shell).alive, f"the pane's shell (pid {shell}) is still running")
+
+    again = t.session("tilr", env=env, name="again")
+    again.prompt(timeout=15)
+    again.write('echo "back-$MARK-$$-$(jobs -r | grep -c sleep)"\r')
+    m = again.expect(r"back-(\w+)-(\d+)-(\d)")
+    t.eq((m.group(1), int(m.group(2)), m.group(3)), ("survived", shell, "1"),
+         "the same shell, with its variable and its job")
+    t.eq([p.pid for p in t.tilrd_daemons()], [daemon.pid], "the same tilrd, no other")
 
 
 def prepare(t: T, start: str):

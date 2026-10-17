@@ -8,18 +8,43 @@ use tilr_proto::{
     ClientMessage, Hello, ListPanes, PROTOCOL_VERSION, PaneInfo, ServerMessage,
     client_message::Msg, server_message,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-pub fn run(url: &str, server_version: bool) -> Result<()> {
+/// `url`: the server's TCP address; `None`: its Unix socket.
+pub fn run(url: Option<&str>, server_version: bool) -> Result<()> {
+    let socket = tilr_proto::local::socket_path();
+    let what = url.map_or_else(|| socket.display().to_string(), str::to_owned);
     let (panes, version) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            tokio::time::timeout(TIMEOUT, list_panes(url))
+            let listed = async {
+                match url {
+                    Some(url) => {
+                        let (ws, _) = tokio_tungstenite::connect_async(url)
+                            .await
+                            .with_context(|| format!("connect to {url}"))?;
+                        list_panes(ws, &what).await
+                    }
+                    None => {
+                        let stream = tokio::net::UnixStream::connect(&socket)
+                            .await
+                            .with_context(|| format!("connect to {what}"))?;
+                        let (ws, _) =
+                            tokio_tungstenite::client_async(tilr_proto::local::URL, stream)
+                                .await
+                                .with_context(|| format!("connect to {what}"))?;
+                        list_panes(ws, &what).await
+                    }
+                }
+            };
+            tokio::time::timeout(TIMEOUT, listed)
                 .await
-                .with_context(|| format!("{url} did not answer"))?
+                .with_context(|| format!("{what} did not answer"))?
         })?;
     if server_version {
         println!("{version}");
@@ -29,16 +54,17 @@ pub fn run(url: &str, server_version: bool) -> Result<()> {
     Ok(())
 }
 
-async fn list_panes(url: &str) -> Result<(Vec<PaneInfo>, String)> {
-    let (mut ws, _) = tokio_tungstenite::connect_async(url)
-        .await
-        .with_context(|| format!("connect to {url}"))?;
+async fn list_panes<S>(mut ws: WebSocketStream<S>, url: &str) -> Result<(Vec<PaneInfo>, String)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     for msg in [
         Msg::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
             client_name: "tilrd ps".into(),
             features: Vec::new(),
-            // The server on this machine is this user's: its token is at hand.
+            // The server on this machine is this user's: its token is at hand
+            // (and not asked for on the Unix socket).
             token: crate::auth::stored_token().unwrap_or_default(),
             // A one-off look: no client instance to come back as.
             client_id: String::new(),

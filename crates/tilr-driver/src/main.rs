@@ -834,6 +834,10 @@ async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
             env: strings("env"),
             stdin,
             timeout_ms: number(c, "limit_ms", 0) as u32,
+            server_command: c
+                .get("server_command")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         }))
         .await?;
     let deadline = Instant::now() + millis(c, "start_timeout_ms", 10_000);

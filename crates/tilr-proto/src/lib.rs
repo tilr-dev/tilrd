@@ -9,6 +9,8 @@ use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/tilr.v1.rs"));
 
+pub mod local;
+
 pub const PROTOCOL_VERSION: u32 = 2;
 
 /// WebSocket close codes the server ends a connection with, besides the

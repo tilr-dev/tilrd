@@ -72,13 +72,19 @@ pub const STATE_FORMAT: u32 = 2;
 /// this executable reads, one `name version` per line.
 pub fn formats() -> String {
     format!(
-        "{SUPERVISOR_STATE} {STATE_FORMAT}\n{PANE_STATE} {}\n",
+        "{SUPERVISOR_STATE} {STATE_FORMAT}\n{PANE_STATE} {}\n{UNIX_SOCKET} 1\n",
         crate::pane::STATE_FORMAT
     )
 }
 
 const SUPERVISOR_STATE: &str = "supervisor-state";
 const PANE_STATE: &str = "pane-state";
+/// Said by an executable that takes over the Unix socket for local clients
+/// (`SupervisorState.local_*`). One that does not say it ignores those
+/// fields: the socket is then not handed over to it (the descriptors close
+/// with the exec and the lock with them), and a server that has no TCP port
+/// does not reload into it.
+const UNIX_SOCKET: &str = "unix-socket";
 
 /// Whether state written as version `written` can be read as version
 /// `read`. Version 0 is state from before versions were recorded, which has
@@ -88,8 +94,8 @@ pub fn format_matches(written: u32, read: u32) -> bool {
 }
 
 /// Check what another executable printed for `state-formats` against the
-/// state this one writes.
-fn check_formats(printed: &str) -> Result<()> {
+/// state this one writes. `Ok(true)` if it also takes over the Unix socket.
+fn check_formats(printed: &str) -> Result<bool> {
     for (name, written) in [
         (SUPERVISOR_STATE, STATE_FORMAT),
         (PANE_STATE, crate::pane::STATE_FORMAT),
@@ -105,12 +111,16 @@ fn check_formats(printed: &str) -> Result<()> {
             bail!("it reads {name} format {read}, this server writes {written}");
         }
     }
-    Ok(())
+    Ok(printed
+        .lines()
+        .filter_map(|line| line.strip_prefix(UNIX_SOCKET))
+        .any(|version| version.trim() == "1"))
 }
 
 /// Make sure the executable on disk runs and reads the state this server
-/// would leave it, before betting every pane on it.
-pub async fn check_executable(exe: &Path) -> Result<()> {
+/// would leave it, before betting every pane on it. `Ok(true)` if it also
+/// takes over the Unix socket.
+pub async fn check_executable(exe: &Path) -> Result<bool> {
     let output = tokio::process::Command::new(exe)
         .arg("state-formats")
         .stdin(Stdio::null())

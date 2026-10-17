@@ -153,8 +153,9 @@ if not os.path.exists(".git/logs/HEAD"):
 def cargo(*args, env=None, **kw):
     return subprocess.run(["cargo", *args], check=True, env=dict(os.environ, **(env or {})), **kw)
 
-cargo("build", "--locked", "-p", "tilrd")
+cargo("build", "--locked", "-p", "tilrd", "-p", "tilr")
 shutil.copy2("/target/debug/tilrd", f"{out}/bin/tilrd")
+shutil.copy2("/target/debug/tilr", f"{out}/bin/tilr")
 # The driver plays a real client, which is an optimized build: a debug one hashes, decodes
 # and writes files at ~30 MB/s, and what it is slow to read queues in its receive buffer.
 cargo("build", "--locked", "--release", "-p", "tilr-driver")
@@ -177,8 +178,10 @@ for line in p.stdout.splitlines():
     listed = subprocess.run([exe, "--list", "--format", "terse"], stdout=subprocess.PIPE, check=True, text=True)
     names = [l[: -len(": test")] for l in listed.stdout.splitlines() if l.endswith(": test")]
     suites.append({"suite": suite, "exe": exe, "manifest_dir": os.path.dirname(m["manifest_path"]), "tests": names})
-# What CARGO_BIN_EXE_tilrd of the tests points at: the failpoints build.
+# What CARGO_BIN_EXE_tilrd of the tests points at: the failpoints build; and the tilr
+# next to it, which crates/tilr/tests run and which starts that tilrd.
 shutil.copy2("/target/debug/tilrd", f"{out}/bin/tilrd-failpoints")
+shutil.copy2("/target/debug/tilr", f"{out}/bin/tilr-tests")
 
 cargo("build", "--locked", "-p", "tilrd",
       env={"CARGO_TARGET_DIR": "/target-next", "TILR_BUILD_VERSION": os.environ["TT_NEXT_PACKAGE_VERSION"]})
@@ -309,7 +312,7 @@ class TilrItests:
 
     @function
     def build(self) -> dagger.Directory:
-        """bin/ (tilrd, tilrd-failpoints, tilrd-next, tilr-driver), tests/ and
+        """bin/ (tilrd, tilr, tilrd-failpoints, tilr-tests, tilrd-next, tilr-driver), tests/ and
         manifest.json (test suites, versions, platform)."""
         return (
             self._rust("tt-target")
@@ -347,6 +350,7 @@ class TilrItests:
     def _with_binaries(self, ctr: dagger.Container) -> dagger.Container:
         out = self.build()
         ctr = (ctr.with_file("/usr/local/bin/tilrd", out.file("bin/tilrd"))
+                .with_file("/usr/local/bin/tilr", out.file("bin/tilr"))
                 .with_file("/usr/local/bin/tilr-driver", out.file("bin/tilr-driver"))
                 .with_file("/opt/tt/tilrd-next", out.file("bin/tilrd-next"))
                 .with_file("/opt/tt/manifest.json", out.file("manifest.json")))
@@ -378,6 +382,7 @@ class TilrItests:
             .with_directory(SRC, self.source)
             .with_directory("/out/tests", out.directory("tests"))
             .with_file(f"{TARGET}/debug/tilrd", out.file("bin/tilrd-failpoints"))
+            .with_file(f"{TARGET}/debug/tilr", out.file("bin/tilr-tests"))
         )
         jobs = []
         for s in manifest["suites"]:

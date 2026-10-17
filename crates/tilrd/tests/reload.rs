@@ -154,7 +154,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let formats = Command::new(&exe).arg("state-formats").output().unwrap();
     assert_eq!(
         String::from_utf8(formats.stdout).unwrap(),
-        "supervisor-state 2\npane-state 3\n"
+        "supervisor-state 2\npane-state 3\nunix-socket 1\n"
     );
 
     // A version that runs fine but keeps its state differently, first for

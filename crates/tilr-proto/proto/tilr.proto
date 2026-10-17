@@ -490,6 +490,11 @@ message ExecStart {
   // The program and its process group are killed (SIGKILL) after this long,
   // and its ExecExit says timed_out. 0 = no limit.
   uint32 timeout_ms = 6;
+  // A server command: `argv` are arguments of the server's own executable
+  // (`token`, `cloud login`, `update`), run as a child of the server, in its
+  // environment, as `tilr token` and the like do. Taken on the Unix socket
+  // only (refused on TCP), whether or not the "exec" feature is on.
+  bool server_command = 7;
 }
 
 // Bytes for the program's stdin, of an exec started with `stdin`; `eof`
@@ -598,6 +603,10 @@ message PaneInfo {
   // The clients subscribed to the pane, one per connection (`viewers` of
   // them), in no particular order.
   repeated Viewer viewed_by = 10;
+  // Unix time in milliseconds when a client last subscribed to the pane or
+  // sent it input; `created_at_ms` until then. `tilr` attaches to the pane
+  // used last. PaneList is not pushed when only this changes.
+  uint64 used_at_ms = 11;
 }
 
 // A connection watching a pane.
@@ -1010,7 +1019,9 @@ message PaneStatus {
 // ---------------------------------------------------------------------------
 
 message SupervisorState {
-  // Descriptor of the listening socket.
+  // Descriptor of the listening TCP socket; -1 for a server that listens on
+  // its Unix socket only (an executable that cannot take that over is not
+  // reloaded into, see `tilrd state-formats`).
   int32 listener = 1;
   reserved 2;
   repeated PaneState panes = 3;
@@ -1021,6 +1032,12 @@ message SupervisorState {
   // The id the next connection gets, so ids (and HelloAck.seq_base) are not
   // given out twice across a reload. 0 = not recorded: start from 1.
   uint64 next_client_id = 5;
+  // The Unix socket for local clients (see tilr_proto::local), if the
+  // server serves one: the listening socket, the lock file held for it, and
+  // its path. Unset: the successor sets one up as a server starting does.
+  optional int32 local_listener = 6;
+  optional int32 local_lock = 7;
+  string local_path = 8;
 }
 
 message PaneState {

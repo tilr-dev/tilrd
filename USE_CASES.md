@@ -2,7 +2,9 @@
 
 Каждый сценарий — тест, который поднимает настоящий сервер, подключается к нему
 по WebSocket как клиент и смотрит, что видит шелл в панели. Тесты лежат в
-`crates/tilrd/tests/`, общая обвязка — в `tests/common/mod.rs`.
+`crates/tilrd/tests/`, общая обвязка — в `tests/common/mod.rs`; тесты клиента
+`tilr` — в `crates/tilr/tests/` (запускают `tilr`, а он — `tilrd`, собранный
+рядом).
 
 Запуск: `cargo test --workspace --features tilrd/failpoints`, на Linux —
 `scripts/linux.sh`. Сценарии со сбоем посередине (помечены †) устраивают сбой
@@ -31,8 +33,39 @@
 | Битый пакет — ошибка, соединение остаётся | `a_malformed_packet_gets_an_error_and_the_connection_stays` |
 | Обращение к несуществующей панели — ошибка; имя, которое не UUID, — тоже | `asking_for_a_pane_that_does_not_exist_gets_an_error` |
 | У панели свой UUID: шелл видит его в `$TILR_PANE`, процесс панели — в командной строке (`pane --id <uuid>`), размер там указан, только если он не 80×24 | `a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps` |
-| `tilrd ps` показывает панели работающего сервера: id, pid, размер, команду | `ps_lists_the_panes_of_a_running_server` |
+| `tilrd ps` (у пользователя — `tilr ps`) показывает панели работающего сервера: id, pid, размер, команду | `ps_lists_the_panes_of_a_running_server` |
 | У сервера свой id, после перезапуска тот же; у другого сервера — другой | `a_server_keeps_its_id_when_it_restarts` |
+
+## Unix-сокет для локальных клиентов — `tests/local.rs`
+
+| Сценарий | Тест |
+|---|---|
+| Без `--listen` сервер слушает только Unix-сокет: каталог 0700, сокет и lock 0600, в lock — pid; `Hello` без токена принят, `tilrd ps` ходит через сокет | `the_socket_is_the_users_alone_and_asks_no_token` |
+| Другой uid не подключается: сначала его не пускают права, а открытые руками права не помогают — сервер сверяет uid собеседника (только под root) | `another_user_is_turned_away_even_where_the_permissions_let_it_in` |
+| Сокет, оставленный убитым (SIGKILL) сервером, следующий сервер убирает и слушает на его месте | `a_socket_left_by_a_killed_server_is_replaced` |
+| Обычный файл на месте сокета — внятная ошибка, файл цел | `a_file_at_the_path_is_left_alone_with_a_clear_error` |
+| Чужая программа слушает на месте сокета — внятная ошибка, её сокет цел и работает | `another_programs_listener_at_the_path_is_left_alone_with_a_clear_error` |
+| Путь длиннее `sun_path` — внятная ошибка с выходом (`TILR_SOCKET`) | `a_socket_path_too_long_is_a_clear_error` |
+| Восемь серверов стартуют разом на один сокет — остаётся ровно один, остальные говорят «another tilrd» | `of_servers_started_at_once_one_serves_the_socket` |
+| С `--listen` занятый сокет — только предупреждение, сервер работает по TCP (как приложение Tilr); сокет, названный `--socket`, обязан работать | `with_a_tcp_port_a_socket_in_use_is_only_a_warning` |
+| Перезагрузка сохраняет сокет и lock (тот же pid, панели на месте, второй сервер сокет не получает) | `a_reload_keeps_the_socket_and_its_lock` |
+| Остановка убирает сокет и lock | `a_server_that_stops_removes_its_socket_and_lock` |
+| Команды сервера (`tilr token`) идут только по Unix-сокету, даже с `--no-exec`; по TCP — отказ | `server_commands_run_for_local_clients_only` |
+| Сервер только на сокете не перезагружается в исполняемый файл, который сокет не принимает (`state-formats` без `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
+
+## Клиент `tilr` — `crates/tilr/tests/client.rs`
+
+| Сценарий | Тест |
+|---|---|
+| Первый `tilr` поднимает сервер отвязанным (своя сессия, не ребёнок), следующий подключается к нему же; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
+| Шесть `tilr` разом на пустой машине — один сервер, второй даже не запускался | `tilr_started_many_times_at_once_starts_one_server` |
+| `tilr kill-server`: сервер и процессы панелей завершены, сокет и lock убраны | `kill_server_ends_the_shells_and_removes_the_socket` |
+| Сокет после SIGKILL: `ls` ничего не поднимает, `new` поднимает новый сервер | `a_socket_left_by_a_killed_server_is_replaced_by_the_next_tilr` |
+| Файл на месте сокета — внятная ошибка, файл цел | `a_file_in_the_way_is_left_alone_with_a_clear_error` |
+| Слишком длинный путь сокета — внятная ошибка | `a_socket_path_too_long_is_a_clear_error` |
+| `tilr token`, `tilr cloud status` выполняются в сервере; через `--connect` — отказ | `server_commands_run_in_the_server` |
+| `tilr edit` в панели шлёт запрос на `$TILR_SOCK` с абсолютным путём | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
+| В терминале (pty): ввод доходит, после перезагрузки сервера клиент возвращается сам, Ctrl+] d отключает, панель остаётся | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
 
 ## Доступ — `tests/auth.rs`
 
@@ -288,7 +321,7 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
   AZERTY, где решает латинский символ, и базовая клавиша в протоколе kitty);
   сквозные сценарии — itests UC-079.
 - Прокрутка при изменении размера панели.
-- tilr Cloud: `tilrd cloud login` / `logout` проверены только руками
+- tilr Cloud: `tilr cloud login` / `logout` проверены только руками
   против локального Cloud (`wrangler dev`). Настоящий `cloudflared` и настоящий
   туннель Cloudflare не проверялись ни разу.
 - `cloudflared`, оставшийся после аварийной смерти сервера (SIGKILL), никто не
@@ -299,6 +332,10 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
   ставит заново, как и подписки.
 - `tilr edit` доставляется и старому клиенту, который `HostEvent` не знает и
   молча игнорирует: сервер считает его получателем.
+- `tilr` в терминале: отрисовка проверена только тем, что видно в pty (текст,
+  приглашение); цвета, мышь, вставка и раскладки через настоящий терминал не
+  гонялись. Отрисовка рассчитана на то, что размер панели равен размеру
+  терминала (второй клиент другого размера её меняет).
 - SSH-агент: сокеты панелей, оставшиеся после аварийной смерти сервера
   (SIGKILL), никто не убирает. Настоящий `ssh` с настоящим агентом сквозь
   клиент не проверялся: тесты играют роль и программы, и клиента.

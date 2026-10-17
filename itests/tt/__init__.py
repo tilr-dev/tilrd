@@ -12,6 +12,7 @@ Layout of a container (backend `dagger`, see src/tilr_itests/main.py):
     /fx                    the fixture snapshot; the case's working directory
     /tmp/tt                scratch: servers' runtime/state/config dirs, logs
     tilrd                  the server under test, on PATH (no failpoints)
+    tilr                   its terminal client, next to it
     tilr-driver            the scripted client, on PATH
     /opt/tt/tilrd-next     the same source built as the next version
     /opt/tt/tilr-server-previous  the last release named tilr-server (0.0.9)
@@ -40,6 +41,7 @@ BACKEND = os.environ.get("TT_BACKEND", "dagger")
 METRICS = Path(os.environ.get("TT_METRICS", "/tt-metrics.json"))
 SERVER_EXE = os.environ.get("TT_SERVER", "tilrd")
 DRIVER_EXE = os.environ.get("TT_DRIVER", "tilr-driver")
+CLIENT_EXE = os.environ.get("TT_CLIENT", "tilr")
 NEXT_EXE = os.environ.get("TT_SERVER_NEXT", "/opt/tt/tilrd-next")
 # The last release named tilr-server (src/tilr_itests/main.py builds it from ./dt's --previous).
 PREVIOUS_EXE = os.environ.get("TT_SERVER_PREVIOUS", "/opt/tt/tilr-server-previous")
@@ -557,14 +559,19 @@ class Session:
     """A terminal login session, as SSH gives one: a pty, a shell as session leader with
     the pty as its controlling terminal. hangup() is the SSH connection dropping."""
 
-    def __init__(self, t: "T", argv: list[str], env: dict, name: str):
+    def __init__(self, t: "T", argv: list[str], env: dict, name: str, user: int | None = None):
+        import fcntl
         import pty
+        import struct
+        import termios
         self.t, self.name = t, name
         self.master, slave = pty.openpty()
+        # A terminal of 100x30, as a window has.
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
         os.set_blocking(self.master, False)
         # setsid -c: a new session whose controlling terminal is stdin (the pty).
         self.p = subprocess.Popen(["setsid", "-c", *argv], stdin=slave, stdout=slave, stderr=slave,
-                                  env=env, close_fds=True)
+                                  env=env, close_fds=True, user=user)
         os.close(slave)
         self.pid = self.p.pid
         self.output = b""
@@ -579,6 +586,24 @@ class Session:
 
     def write(self, text: str):
         os.write(self.master, text.encode())
+
+    def prompt(self, timeout: float = 15) -> re.Match:
+        """Wait for a shell prompt `$ `: as a shell prints it, or as `tilr` draws a pane's
+        screen (the `$`, then the cursor put after the blank, which a frame does not send)."""
+        return self.expect(r"\$ |\$(?:\x1b\[[0-9;? ]*[A-Za-z])*\x1b\[\d+;3H", timeout)
+
+    def screen(self) -> str:
+        """What was written to the terminal, escape sequences taken out (roughly: a
+        line of the pane drawn by `tilr` is still on one line)."""
+        return re.sub(r"\x1b(\[[0-9;?<=> ]*[A-Za-z@~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][0-9A-Za-z]|[=>78DEHM])",
+                      "", self.read())
+
+    def wait_exit(self, timeout: float = 10) -> int:
+        """Wait for the program to exit; its exit status."""
+        try:
+            return self.p.wait(timeout)
+        except subprocess.TimeoutExpired:
+            raise Failure(f"{self.name}: still running after {timeout}s; terminal:\n{self.screen()[-3000:]}")
 
     def expect(self, regex: str, timeout: float = 10) -> re.Match:
         deadline = time.monotonic() + timeout
@@ -914,6 +939,24 @@ class T:
             "NO_COLOR": "1",
         }
 
+    def user_env(self, name: str = "user") -> dict:
+        """The environment of a user who runs no tilrd yet, for `tilr`: a runtime
+        directory of its own (XDG_RUNTIME_DIR, 0700), state and config directories."""
+        home = self.scratch(name)
+        xdg = home / "run"
+        xdg.mkdir(mode=0o700)
+        return {"XDG_RUNTIME_DIR": str(xdg), "XDG_STATE_HOME": str(home / "state"),
+                "XDG_CONFIG_HOME": str(home / "config"), "TERM": "xterm-256color", "NO_COLOR": "1"}
+
+    def tilr(self, *args, env: dict, **kw) -> R:
+        """Run `tilr ARGS` (not attaching: no terminal)."""
+        return self.run(CLIENT_EXE, *args, env=env, **kw)
+
+    def tilrd_daemons(self) -> list[Proc]:
+        """Running servers: tilrd processes that are not pane processes (`tilrd pane`)."""
+        return [p for p in self.procs(r"(^|/)tilrd( |$)") if not re.search(r"(^|/)tilrd pane ", p.cmdline)
+                and "state-formats" not in p.cmdline]
+
     def install(self, exe: str = SERVER_EXE, name: str = "tilrd") -> Path:
         """A copy of the server in a directory of its own, where an update may replace it."""
         dest = self.scratch("install") / name
@@ -946,10 +989,10 @@ class T:
         self._cleanup.append(d.quit)
         return d
 
-    def session(self, *argv, env: dict | None = None, name: str = "ssh") -> Session:
+    def session(self, *argv, env: dict | None = None, name: str = "ssh", user: int | None = None) -> Session:
         """A terminal login session running argv (an interactive shell, typically)."""
         self.need("linux")
-        s = Session(self, list(argv), dict(os.environ, **(env or {})), name)
+        s = Session(self, list(argv), dict(os.environ, **(env or {})), name, user)
         self._cleanup.append(lambda: s.p.poll() is None and s.p.kill())
         return s
 

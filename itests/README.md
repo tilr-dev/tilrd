@@ -50,7 +50,8 @@ root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scrip
 `src/tilr_itests/main.py`:
 
 1. **build** — one Rust container (rust 1.94 bookworm, zig 0.15.2, protoc; `CARGO_HOME`
-   and the target dirs are cache volumes on pb) builds the server (debug), `tilr-driver`
+   and the target dirs are cache volumes on pb) builds the server and its client `tilr`
+   (debug), `tilr-driver`
    (release: it plays a real client, and a debug one reads at ~30 MB/s), the test executables with failpoints (listing their tests), and the *next release*: the
    same source with `TILR_BUILD_VERSION=0.1.1`, in a target dir of its own so the two
    version strings never rebuild each other. Cached by Dagger until the source changes.
@@ -61,7 +62,9 @@ root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scrip
    BLOCKED.
 2. **rust** — one runtime container per test, running the copied executable with
    `--exact NAME --test-threads=1`. Sources sit at `/src/tilrd`, the failpoints server at
-   `/target/debug/tilrd`: the paths the tests baked in at compile time.
+   `/target/debug/tilrd` and `tilr` next to it (`crates/tilr/tests` run that `tilr`,
+   which starts that `tilrd`): the paths the tests baked in at compile time. They run as
+   root, so `crates/tilrd/tests/local.rs` also acts as another user (uid 65534).
 3. **fixtures** — each fixture is a Dagger layer: parents' `/fx` merged, then
    `python3 -m tt fixture MODULE:NAME` (build, then its mandatory check). *Source tier*
    fixtures have no binaries in the container and survive any code change; *tilr tier*
@@ -127,7 +130,7 @@ itests/
 ```
 /fx                       fixture snapshot, the case's working directory
 /tmp/tt                   scratch: each server's runtime/state/config dirs and log, driver stderr
-tilrd, tilr-driver        on PATH; root's login shell is bash with PS1='$ '
+tilrd, tilr, tilr-driver  on PATH (tilr next to tilrd); root's login shell is bash with PS1='$ '
 /opt/tt/tilrd-next        the next release; /opt/tt/manifest.json its version and platform
 /opt/tt/tilr-server-previous  the last release named tilr-server, as 0.0.9 (UC-06A)
 $TT_SERVICE_CDN           http://cdn:8080, the fake CDN, for cases with services=["cdn"]
@@ -223,7 +226,8 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `found_server(log, dir, env)` | a tilrd started some other way (from a session), found by its log |
 | `install(exe=)` | a copy of the server in a writable dir (for updates) |
 | `driver(name)` | a tilr-driver: `.cmd(name, **args)`, `.connect(server)`, `.shell_pane()`, `.line()`, `.key()`, `.wait_for()`, `.screen()`, `.text()`, `.value(pane, "$X")`, `.run(pane, cmd)` → exit status, `.list()`, `.wait_event(ev, since=d.mark())`; events carry `_at` (the case's clock) |
-| `session(*argv, env=)` | a terminal login session (pty, setsid, controlling tty): `.write() .expect(re) .hangup()` |
+| `session(*argv, env=, user=)` | a terminal login session (pty of 100×30, setsid, controlling tty): `.write() .expect(re) .prompt()` (a `$ ` from a shell, or as `tilr` draws it: `$` and the cursor after the blank) `.screen()` (escapes taken out) `.wait_exit() .hangup()`; `t.session("tilr", env=t.user_env())` is a user attached with the real client |
+| `user_env(name)`, `tilr(*args, env=)`, `tilrd_daemons()` | a user with no daemon yet (own `XDG_RUNTIME_DIR` 0700, state, config; the socket is `$XDG_RUNTIME_DIR/tilr/tilrd.sock`); `tilr ARGS` without a terminal; running tilrd that are not pane processes |
 | `proxy(port)` | the layer-1 fault proxy in front of a port (below): `.url .freeze() .resume() .cut() .set() .stats()` |
 | `proxy_service()` | the same proxy in a container of its own (`services=["proxy"]`); `.target(host, port)` first |
 | `host(name)` | a host container (`hosts=[...]`): `.ip .peer_ip` (the case container as the host reaches it) `.run() .sh() .driver(name) .net` |

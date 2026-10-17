@@ -1,7 +1,7 @@
 # tilrd-tests — сценарии (черновик)
 
-Чёрный ящик: настоящий бинарь tilrd в Linux-контейнере, клиент (`test-client`) в
-соседнем, сеть между ними портит прокси или netem. Гоняется на Dagger Engine в pb
+Чёрный ящик: настоящий бинарь tilrd в Linux-контейнере, клиент (`tilr-driver`, для
+группы B — сам `tilr`) в соседнем, сеть между ними портит прокси или netem. Гоняется на Dagger Engine в pb
 по образцу `pm-dagger`: каждый кейс — свой набор контейнеров, всё параллельно,
 отчёт PASS / FAIL / BLOCKED.
 
@@ -39,14 +39,19 @@
 
 ## B. Модель как у tmux — жизнь демона
 
-- UC-010. `tilr` без работающего tilrd поднимает его сам (setsid, отвязан от терминала) и подключается. **[нет фичи]**
-- UC-011. Второй `tilr` подключается к тому же tilrd, второй демон не появляется.
-- UC-012. Два `tilr` стартуют одновременно на пустой машине — демон ровно один.
-- UC-013. «SSH оборвался»: сессия/терминал клиента убиты (SIGHUP группе) — tilrd и шеллы живы, новый `tilr` видит панели как были.
-- UC-014. Протухший сокет (tilrd убит SIGKILL) — следующий `tilr` убирает его и поднимает новый демон.
-- UC-015. Чужой процесс слушает сокет / файл не сокет — внятная ошибка, ничего не удалено.
-- UC-016. tilrd запущен вручную в foreground (как под сервисом) — лог в stderr, `tilr` к нему цепляется.
-- UC-017. `tilr kill-server` / остановка — шеллы завершены, сокеты и state убраны, сирот нет (`ps`).
+Реализовано (2026-10-17): все UC-010…017, `scenarios/uc_0NN.py::<кейс>`. Клиент — `tilr`
+(`crates/tilr`) рядом с `tilrd` в `/usr/local/bin`; интерактивный `tilr` гоняется в pty
+(`t.session("tilr")`, окно 100×30), приглашение — `Session.prompt()`; пользователь без
+демона — `t.user_env()` (свой `XDG_RUNTIME_DIR` 0700). Сокет — `$XDG_RUNTIME_DIR/tilr/tilrd.sock`.
+
+- UC-010. `tilr` без работающего tilrd поднимает его сам (setsid, отвязан от терминала) и подключается. → `uc_010.py::tilr_without_a_running_daemon_starts_tilrd_detached_and_connects`
+- UC-011. Второй `tilr` подключается к тому же tilrd, второй демон не появляется. → `uc_011.py::a_second_tilr_attaches_to_the_same_daemon_and_pane` (та же панель, ввод одного виден другому)
+- UC-012. Два `tilr` стартуют одновременно на пустой машине — демон ровно один. → `uc_012.py::tilr_started_eight_times_at_once_starts_one_daemon, ::two_terminals_running_tilr_at_once_share_one_daemon` (второй tilrd даже не запускается: lock берёт `tilr` и передаёт демону)
+- UC-013. «SSH оборвался»: сессия/терминал клиента убиты (SIGHUP группе) — tilrd и шеллы живы, новый `tilr` видит панели как были. → `uc_013.py::tilr_in_an_ssh_session_leaves_tilrd_and_its_shell_when_the_session_drops` (+ `::tilrd_started_from_an_ssh_login_shell_survives_the_session_dropping`, `::tilrd_started_with_setsid_keeps_its_panes_when_the_ssh_session_drops`: сервер, запущенный руками)
+- UC-014. Протухший сокет (tilrd убит SIGKILL) — следующий `tilr` убирает его и поднимает новый демон. → `uc_014.py::after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon` (подключённый `tilr` пишет `[tilrd stopped]`, `tilr ls` ничего не поднимает)
+- UC-015. Чужой процесс слушает сокет / файл не сокет — внятная ошибка, ничего не удалено. → `uc_015.py::another_programs_listener_at_the_socket_is_left_alone, ::a_file_that_is_not_a_socket_is_left_alone` (и `tilr`, и `tilrd`)
+- UC-016. tilrd запущен вручную в foreground (как под сервисом) — лог в stderr, `tilr` к нему цепляется. → `uc_016.py::tilr_attaches_to_a_tilrd_running_in_the_foreground`
+- UC-017. `tilr kill-server` / остановка — шеллы завершены, сокеты и state убраны, сирот нет (`ps`). → `uc_017.py::kill_server_leaves_no_process_and_no_socket` (шелл, игнорирующий SIGHUP, — UC-086)
 
 ## C. Сервис — опционально, только файлы
 
@@ -61,10 +66,10 @@
 - UC-031. `--listen 0.0.0.0` / `[::]` — доступен снаружи, токен обязателен.
 - UC-032. IPv6 loopback и dual-stack.
 - UC-033. Порт занят — ошибка с понятным текстом, код выхода не 0.
-- UC-034. Клиентский unix-сокет демона (B): права 0600, каталог 0700; другой uid подключиться не может.
+- UC-034. Клиентский unix-сокет демона (B): права 0600, каталог 0700; другой uid подключиться не может. → `uc_034.py::another_user_cannot_use_the_socket` (uid 65534 через `setpriv`: сначала не пускают права, с открытыми руками правами — сервер по uid собеседника)
 - UC-035. Unix-сокет `$TILR_SOCK` панели: другой uid не может слать `tilr edit`.
 - UC-036. Сокеты агента `agent/<pane>.sock` после SIGKILL сервера — следующий старт убирает. (Сейчас не убираются — FAIL.)
-- UC-037. Длинный путь к сокету (>108 байт `sun_path`) — внятная ошибка или обход.
+- UC-037. Длинный путь к сокету (>108 байт `sun_path`) — внятная ошибка или обход. → `uc_037.py::a_socket_path_longer_than_sun_path_is_a_clear_error` (ошибка с подсказкой `TILR_SOCKET`; с ним — работает)
 - UC-038. Много соединений сразу (1000 TCP), лимит соединений, медленный handshake (slowloris) — сервер жив, остальные клиенты работают.
 - UC-039. Полуоткрытый TCP от клиента (connect и тишина) — отваливается по таймауту handshake.
 

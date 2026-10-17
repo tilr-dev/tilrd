@@ -201,7 +201,7 @@ pub fn logout() -> Result<()> {
 pub fn status() -> Result<()> {
     match read_link() {
         Some(link) => println!("Linked to {} as machine {}.", link.url, link.machine_id),
-        None => println!("This machine is not linked. Link it with: tilrd cloud login"),
+        None => println!("This machine is not linked. Link it with: tilr cloud login"),
     }
     Ok(())
 }
@@ -234,6 +234,12 @@ enum Control {
 }
 
 impl Tunnel {
+    /// No tunnel: a server without a TCP port has nothing for one to lead to.
+    pub fn off() -> Self {
+        let (control, _) = mpsc::unbounded_channel();
+        Self { control }
+    }
+
     /// Stop `cloudflared` and wait until it has exited and been waited for,
     /// before a server replaces itself, which starts another: a child that
     /// exits after the exec stays a zombie of the successor, which knows
@@ -296,7 +302,7 @@ async fn stay_connected(
                 // Unless it was unlinked from here, a moment ago.
                 if read_link().is_some() {
                     tracing::warn!(
-                        "{} does not know this machine; link it again with: tilrd cloud login",
+                        "{} does not know this machine; link it again with: tilr cloud login",
                         link.url
                     );
                 }

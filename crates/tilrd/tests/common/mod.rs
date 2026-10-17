@@ -141,7 +141,10 @@ impl Server {
             // Nor an SSH agent of the machine running the tests, nor the
             // clipboard of a Tilr pane the tests may run in.
             .env_remove("SSH_AUTH_SOCK")
-            .env_remove("TILR_CLIPBOARD_DIR");
+            .env_remove("TILR_CLIPBOARD_DIR")
+            // Nor the Unix socket of the server whose pane the tests may
+            // run in: each server's goes in its own runtime directory.
+            .env_remove("TILR_SOCKET");
     }
 
     pub fn logged(&self, needle: &str) -> bool {
