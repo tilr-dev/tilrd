@@ -317,7 +317,7 @@ async fn the_configuration_file_turns_the_proxy_on() {
     let dir = Server::scratch_dir();
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(dir.join("config/server.toml"), "socks = true\n").unwrap();
-    let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilr-server")), &[]);
+    let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
     assert!(server.logged("SOCKS proxy on"));
     let mut wire = open_with_token(&server).await;
     assert_eq!(greet(&mut wire, &[NO_AUTH]).await, NO_AUTH);

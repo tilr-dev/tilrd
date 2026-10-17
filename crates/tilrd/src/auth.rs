@@ -1,6 +1,6 @@
 //! The access token: a secret the server makes the first time it runs and
 //! keeps on disk, readable by the user only. A client proves it may use the
-//! server by sending the token in `Hello`. `tilr-server token` prints it.
+//! server by sending the token in `Hello`. `tilrd token` prints it.
 
 use std::fs;
 use std::io::Write;
@@ -65,7 +65,7 @@ pub fn matches(token: &str, given: &str) -> bool {
             == 0
 }
 
-/// `tilr-server token`.
+/// `tilrd token`.
 pub fn print() -> Result<()> {
     println!("{}", token()?);
     Ok(())

@@ -55,8 +55,8 @@ async fn the_token_is_kept_for_the_user_only_and_across_restarts() {
         0o600
     );
 
-    // `tilr-server token` prints the same one.
-    let printed = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
+    // `tilrd token` prints the same one.
+    let printed = Command::new(env!("CARGO_BIN_EXE_tilrd"))
         .arg("token")
         .env("TILR_STATE_DIR", server.dir.join("state"))
         .output()
@@ -68,7 +68,7 @@ async fn the_token_is_kept_for_the_user_only_and_across_restarts() {
     server.child.wait().unwrap();
     // Dropping the server would remove its directory.
     std::mem::forget(server);
-    let again = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilr-server")), &[]);
+    let again = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
     assert_eq!(again.token(), token);
 }
 

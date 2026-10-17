@@ -1,7 +1,7 @@
 """UC-010: `tilr` without a running tilrd starts it itself (setsid, detached from the
 terminal) and connects.
 
-Missing feature: there is no `tilr` client yet, and the server is still `tilr-server`.
+Missing feature: there is no `tilr` client yet.
 The case is written against the intended model (the tilrd naming note): the client finds
 no socket in $XDG_RUNTIME_DIR/tilr, forks tilrd into a session of its own, and attaches
 to a pane over that socket. The server binary is installed as `tilrd` on PATH, as it
@@ -22,7 +22,7 @@ def tilr_without_a_running_daemon_starts_tilrd_detached_and_connects(t: T):
     xdg = t.scratch("xdg")
     os.chmod(xdg, 0o700)
     bin = t.scratch("bin")
-    shutil.copy2(shutil.which("tilr-server"), bin / "tilrd")
+    shutil.copy2(shutil.which("tilrd"), bin / "tilrd")
     home = t.scratch("home")
     env = {"PATH": f"{bin}:{os.environ['PATH']}", "XDG_RUNTIME_DIR": str(xdg), "XDG_STATE_HOME": str(home / "state"),
            "XDG_CONFIG_HOME": str(home / "config"), "TERM": "xterm-256color"}

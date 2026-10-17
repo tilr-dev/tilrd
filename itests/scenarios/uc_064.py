@@ -10,7 +10,7 @@ works on the new server:
 * a program talking to $SSH_AUTH_SOCK reads the end of its stream, and the next agent
   stream (the socket made again at the same path) works.
 
-The update is the new executable renamed over the installed one, as `tilr-server
+The update is the new executable renamed over the installed one, as `tilrd
 update` finishes; the server notices it and reloads (auto reload). The panes' shells
 survive all of it.
 
@@ -18,7 +18,7 @@ Was red until 2026-10-17: the write cut by the reload left its temporary file
 (.doc.txt.tilr-write-*) for good, its task dying with the exec. Now each write notes its
 temporary file in `writes/` of the runtime directory, and a server that starts or has just
 reloaded removes those of writes whose process is gone or was itself
-(crates/tilr-server/src/files.rs `note_write`, `sweep_writes`).
+(crates/tilrd/src/files.rs `note_write`, `sweep_writes`).
 """
 
 import hashlib
@@ -36,7 +36,7 @@ WRITE = {"path": "~/doc.txt", "size": 8 * 1024 * 1024, "fill": "new content\n", 
 
 
 def install_next(exe: Path):
-    """What `tilr-server update` does last: the new executable renamed over the old."""
+    """What `tilrd update` does last: the new executable renamed over the old."""
     staged = exe.with_name(exe.name + ".new.tt")
     shutil.copy2(NEXT_EXE, staged)
     staged.rename(exe)

@@ -421,9 +421,9 @@ pub fn run(options: Options) -> Result<()> {
                 }))
             });
             if agent.is_some() {
-                tracing::info!(target: "tilr_server::agent", "SSH agent forwarding on");
+                tracing::info!(target: "tilrd::agent", "SSH agent forwarding on");
             } else {
-                tracing::info!(target: "tilr_server::agent", "SSH agent forwarding off");
+                tracing::info!(target: "tilrd::agent", "SSH agent forwarding off");
             }
             let execs = options.exec.then(|| {
                 let events = events_tx.clone();
@@ -432,7 +432,7 @@ pub fn run(options: Options) -> Result<()> {
                 }))
             });
             if execs.is_none() {
-                tracing::info!(target: "tilr_server::exec", "exec off");
+                tracing::info!(target: "tilrd::exec", "exec off");
             }
 
             let mut supervisor = Supervisor {
@@ -1406,20 +1406,28 @@ impl Supervisor {
                     unsafe {
                         libc::kill(pane.pid as libc::pid_t, libc::SIGKILL);
                     }
+                    // Waited for here if it goes at once: a child that
+                    // exits after the exec is a zombie nobody waits for.
                     let mut process = reader.process;
-                    tokio::spawn(async move { process.wait().await });
+                    if tokio::time::timeout(DETACH_TIMEOUT, process.wait())
+                        .await
+                        .is_err()
+                    {
+                        tokio::spawn(async move { process.wait().await });
+                    }
                     self.on_pane_link_closed(pane_id, None, None);
                 }
             }
         }
 
         // It is not carried over: the successor starts its own.
-        self.tunnel.stop();
+        self.tunnel.hold().await;
         let err = match crate::fail::point("reload-before-exec") {
             Ok(()) => self.exec_successor(&handed_over),
             Err(err) => err,
         };
         tracing::error!("reload failed: {err:#}");
+        self.tunnel.release();
         // Carry on as before.
         for (pane_id, to_pane, reader) in handed_over {
             let (sender, link) = attach(

@@ -14,7 +14,7 @@
 //! "error": "no tilr client attached"}` when nobody would hear it.
 //!
 //! The program is this executable under the name `tilr` (put on the PATH of
-//! the panes, see [`shim`]) or `tilr-server edit` / `tilr-server open`.
+//! the panes, see [`shim`]) or `tilrd edit` / `tilrd open`.
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};

@@ -5,7 +5,7 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p dist
 scripts/linux.sh sh -c '
-    cargo build --release -p tilr-server &&
-    cp /target/release/tilr-server "/src/dist/tilr-server-linux-$(uname -m)"
+    cargo build --release -p tilrd &&
+    cp /target/release/tilrd "/src/dist/tilrd-linux-$(uname -m)"
 '
 ls -l dist

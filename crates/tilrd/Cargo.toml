@@ -1,5 +1,5 @@
 [package]
-name = "tilr-server"
+name = "tilrd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

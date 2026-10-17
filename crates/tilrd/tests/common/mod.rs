@@ -43,7 +43,7 @@ pub struct Server {
 
 impl Server {
     pub fn start(args: &[&str]) -> Self {
-        Self::start_exe(Path::new(env!("CARGO_BIN_EXE_tilr-server")), args)
+        Self::start_exe(Path::new(env!("CARGO_BIN_EXE_tilrd")), args)
     }
 
     pub fn scratch_dir() -> PathBuf {
@@ -244,7 +244,7 @@ pub struct Client {
     pub acks: VecDeque<ClipboardAck>,
     /// Host events seen while waiting for something else.
     pub host_events: VecDeque<HostEvent>,
-    /// The server's access token, as `tilr-server token` prints it.
+    /// The server's access token, as `tilrd token` prints it.
     pub token: String,
     /// What `hello` says as `Hello.client_id`; empty: none.
     pub client_id: String,

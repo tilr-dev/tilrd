@@ -233,14 +233,14 @@ async fn a_client_can_tell_that_the_server_vanished_without_closing() {
 
 #[tokio::test]
 async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
-    // `tilr-server &` typed into an SSH login; the dir goes to `Server`,
+    // `tilrd &` typed into an SSH login; the dir goes to `Server`,
     // which removes it.
     let dir = Server::scratch_dir();
     let mut shell = Command::new("/bin/sh");
     shell
         .arg("-c")
         .arg("\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait")
-        .arg(env!("CARGO_BIN_EXE_tilr-server"));
+        .arg(env!("CARGO_BIN_EXE_tilrd"));
     Server::environment(&mut shell, &dir, "");
     let mut login = Login::start(shell);
     let addr = login.wait_output(|output| {

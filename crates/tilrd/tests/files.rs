@@ -15,7 +15,7 @@ fn start_with_config(config: &str, args: &[&str]) -> Server {
     let dir = Server::scratch_dir();
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(dir.join("config/server.toml"), config).unwrap();
-    Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilr-server")), args)
+    Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), args)
 }
 
 /// The server's home directory as it names it: without links (on macOS the
@@ -985,7 +985,7 @@ async fn tilr_edit_fails_with_no_client_watching_or_outside_a_pane() {
     while client.pushed_pane_list().await[0].viewers != 1 {}
 
     let tilr = |env: &[(&str, &str)]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tilr-server"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tilrd"));
         command
             .args(["edit", "notes.md"])
             .env_remove("TILR_PANE")

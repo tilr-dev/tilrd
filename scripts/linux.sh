@@ -17,7 +17,7 @@ suffix=$(printf '%s' "$platform" | tr -c 'a-z0-9' '-')
 docker build ${platform:+--platform "$platform"} -t "$image$suffix" -f scripts/linux.Dockerfile scripts
 
 if [ "$#" -eq 0 ]; then
-    set -- cargo test --workspace --features tilr-server/failpoints
+    set -- cargo test --workspace --features tilrd/failpoints
 fi
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi

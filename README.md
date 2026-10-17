@@ -12,7 +12,7 @@ Status: early (see [TODO.md](TODO.md)).
 |---|---|
 | `tilr-proto` | The wire protocol: `proto/tilr.proto` and packet framing |
 | `tilr-screen` | Terminal screen model (libghostty-vt) that produces frames |
-| `tilr-server` | The server binary |
+| `tilrd` | The server binary |
 
 One supervisor process accepts clients and routes packets. Each pane is its
 own process, a child of the supervisor, which owns the pty, the shell and the
@@ -29,7 +29,7 @@ with a command runs it as given, without a shell.
 ## Installing and updating
 
 **macOS application distribution.** The Mac app bundles a pinned bootstrap
-`tilr-server`, without the JavaScript `tilr` CLI. It installs a user LaunchAgent,
+`tilrd`, without the JavaScript `tilr` CLI. It installs a user LaunchAgent,
 then updates the managed server through its own signed server feed, separately
 from the application's Sparkle updates. A newer compatible server survives app
 upgrades with older bundled copies. Use **Tilr > Check for Server Updates** for
@@ -41,15 +41,15 @@ installer yet: download the binary and start it.
 
 ```sh
 version=$(curl -fsSL https://cdn.tilr.dev/releases/linux-aarch64/latest)
-curl -fsSLo tilr-server "https://cdn.tilr.dev/releases/$version/tilr-server-linux-aarch64"
-chmod +x tilr-server
-./tilr-server
+curl -fsSLo tilrd "https://cdn.tilr.dev/releases/$version/tilrd-linux-aarch64"
+chmod +x tilrd
+./tilrd
 ```
 
 To update, in any shell on that machine:
 
 ```sh
-tilr-server update
+tilrd update
 ```
 
 It asks the CDN which version is ready for its platform, downloads it, checks
@@ -58,7 +58,16 @@ executable. A running server then [reloads itself](#reloading-without-closing-sh
 and keeps every shell. `--cdn URL` (or `TILR_CDN`) names another place to
 fetch releases from.
 
-`tilr-server --version` prints what a build is: the package version, the
+The server was called `tilr-server` before (`tilrd` is the server, `tilr` the
+client that talks to it). Releases are published under both names, the same
+file as `tilrd-<platform>` and `tilr-server-<platform>`: `tilr-server update`
+on a server from before the rename finds the new release under the name it
+asks for and puts it in place of its own executable, which keeps its file name
+(and whatever starts it, a systemd unit, say) and is `tilrd` from then on.
+`tilrd update` asks for `tilrd-<platform>`, and for `tilr-server-<platform>`
+when a release has only that name (rolling back past the rename).
+
+`tilrd --version` prints what a build is: the package version, the
 commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)`.
 
 `scripts/release.sh --publish` builds a release and uploads it; the layout of
@@ -97,7 +106,7 @@ TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
 ## Running
 
 ```sh
-tilr-server                       # listens on ws://127.0.0.1:7890
+tilrd                       # listens on ws://127.0.0.1:7890
 ```
 
 | Flag | Default | Meaning |
@@ -118,7 +127,7 @@ tilr-server                       # listens on ws://127.0.0.1:7890
 
 Signals: `SIGTERM` and `SIGINT` stop the server and end its shells; `SIGUSR1`
 [reloads](#reloading-without-closing-shells) it. `SIGHUP` is ignored: a server
-started from a terminal (`tilr-server &` in an SSH session) outlives it, and so
+started from a terminal (`tilrd &` in an SSH session) outlives it, and so
 do its panes, each in a session of its own. Its log then goes nowhere; redirect
 stderr to keep it.
 
@@ -130,11 +139,11 @@ makes the token the first time it runs and keeps it in
 only. To see it, on that machine:
 
 ```sh
-tilr-server token
+tilrd token
 ```
 
 A client without the token, or with another, gets an `Error` and the
-connection is closed. `tilr-server ps` reads the token itself.
+connection is closed. `tilrd ps` reads the token itself.
 
 `--no-auth` turns the check off: then anyone who can reach the port gets a
 shell. A page in a browser must, with or without the token, come from an
@@ -146,7 +155,7 @@ the built-in one.
 What a machine's operator sets once lives in `~/.config/tilr/server.toml`
 (`$XDG_CONFIG_HOME/tilr/server.toml`, or `--config PATH` / `TILR_CONFIG`),
 read when the server starts (a reload starts it again, so a change takes
-effect on the next `tilr-server update` or SIGUSR1). A missing file is an
+effect on the next `tilrd update` or SIGUSR1). A missing file is an
 empty configuration; one that does not parse, or names a key the server does
 not know, stops it from starting.
 
@@ -174,9 +183,9 @@ phone can reach a machine that accepts no incoming connections. What goes
 through the tunnel does not pass through Cloud.
 
 ```sh
-tilr-server cloud login      # prints a link and a code to confirm in a browser
-tilr-server cloud status
-tilr-server cloud logout     # Cloud forgets the machine and removes its tunnel
+tilrd cloud login      # prints a link and a code to confirm in a browser
+tilrd cloud status
+tilrd cloud logout     # Cloud forgets the machine and removes its tunnel
 ```
 
 A linked server keeps one outgoing connection to Cloud. When Cloud tells it
@@ -234,7 +243,7 @@ Two ways in:
 
 ```sh
 ssh -L 1080:127.0.0.1:7890 my-server
-curl --socks5-hostname "x:$(ssh my-server tilr-server token)@127.0.0.1:1080" http://pb.localhost:3000
+curl --socks5-hostname "x:$(ssh my-server tilrd token)@127.0.0.1:1080" http://pb.localhost:3000
 ```
 
 The token gives what it gives through the main protocol: everything this
@@ -327,14 +336,14 @@ is restarted, when a number would be handed out again.
 The id is the same everywhere a pane shows up:
 
 - in the protocol, as `pane_id`;
-- in the process list: the pane process runs as `tilr-server pane --id <id>`,
+- in the process list: the pane process runs as `tilrd pane --id <id>`,
   followed by how the pane was started (`--cols` and `--rows` unless 80×24,
   `--cwd`, the command), and the shell is its child;
 - inside the pane, as `$TILR_PANE`;
-- in `tilr-server ps`, which asks a running server for its panes:
+- in `tilrd ps`, which asks a running server for its panes:
 
 ```
-$ tilr-server ps
+$ tilrd ps
 PANE                                      PID     SIZE  VIEWERS  CWD  COMMAND
 3b750286-ae31-4cc4-9edd-3f314fb00d57     8193    80x24        1  /home/dan  (shell)
 d88b738a-fb48-41a5-bd4c-2050fdf33538     8219   120x40        0  /tmp  htop
@@ -525,14 +534,14 @@ with `Sec-Fetch-Site: cross-site` (a page of another site) is refused; 403
 otherwise. A response not read within 5 s is dropped.
 
 ```sh
-curl -H "Authorization: Bearer $(tilr-server token)" http://127.0.0.1:7890/metrics
+curl -H "Authorization: Bearer $(tilrd token)" http://127.0.0.1:7890/metrics
 ```
 
 | Metric | Type | What |
 |---|---|---|
-| `tilr_server_info{version,server_id}` | gauge | Always 1 |
-| `tilr_server_clients` | gauge | Connected clients |
-| `tilr_server_panes` | gauge | Running panes |
+| `tilrd_info{version,server_id}` | gauge | Always 1 |
+| `tilrd_clients` | gauge | Connected clients |
+| `tilrd_panes` | gauge | Running panes |
 | `tilr_pane_frames_total{pane}` | counter | Frames the pane produced |
 | `tilr_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
 | `tilr_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
@@ -575,7 +584,7 @@ The server gives that machine a clipboard the client can fill:
 
 So the program pastes as it would on a desktop. Verified against the commands
 Claude Code 2.1.289 runs on Linux; they are spelled out in
-`crates/tilr-server/tests/common/mod.rs`.
+`crates/tilrd/tests/common/mod.rs`.
 
 Rules:
 
@@ -637,7 +646,7 @@ What to know:
   place (`install`, `mv`). The server reloads from the path it was started
   from; a version switch done by repointing a symlink is not noticed.
 - Before reloading, the server asks the new file which versions of the reload
-  state it reads (`tilr-server state-formats`). If it does not run, or reads
+  state it reads (`tilrd state-formats`). If it does not run, or reads
   another version than the server writes, the server logs `not reloading` and
   carries on with the code it has. Such an upgrade needs a restart.
 - A pane process that cannot take its queued input within 5 seconds is closed
@@ -646,15 +655,15 @@ What to know:
 ## Tests
 
 ```sh
-cargo test --workspace --features tilr-server/failpoints
+cargo test --workspace --features tilrd/failpoints
 ```
 
-The tests in `crates/tilr-server/tests/` start the real server and drive it as
+The tests in `crates/tilrd/tests/` start the real server and drive it as
 a client would. [USE_CASES.md](USE_CASES.md) lists the use cases they cover —
 connecting, reconnecting, scrolling, reloading, updating, the clipboard, the SSH agent, metrics — and
 what is not covered yet.
 
 The `failpoints` feature compiles in the places where a test can make an
 update or a reload go wrong halfway: fail a step, crash or kill the process
-there (`crates/tilr-server/src/fail.rs`). Without it those tests are left out
+there (`crates/tilrd/src/fail.rs`). Without it those tests are left out
 and the rest runs. A release is built without it.

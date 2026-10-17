@@ -1,4 +1,4 @@
-"""UC-060: `tilr-server update` from a fake CDN (a service container) while the panes run
+"""UC-060: `tilrd update` from a fake CDN (a service container) while the panes run
 live software: a shell with a variable and a background job, a counter, vim with an
 unsaved buffer and the mouse on, htop, less on a big file, a python REPL holding x = 42,
 a foreground `sleep 1000`, and a program keeping a TCP connection to an echo service (a
@@ -6,8 +6,8 @@ container of its own) busy. The version changes, the server keeps its pid, and e
 program is alive, answers, and looks as it did (screens, alternate screen, mouse
 tracking, hidden cursor); nothing is left orphaned and no descriptor leaks.
 
-The CDN serves the layout of crates/tilr-server/src/update.rs; its release is the same
-source built with another version string (/opt/tt/tilr-server-next). The update runs
+The CDN serves the layout of crates/tilrd/src/update.rs; its release is the same
+source built with another version string (/opt/tt/tilrd-next). The update runs
 outside the panes, as `scripts/update-test.sh` runs it on a real host. Each outcome is a
 separate check (tt/live.py), so one broken program does not hide the others.
 """
@@ -39,7 +39,7 @@ def update_from_the_cdn_keeps_every_program_in_the_panes_alive(t: T):
 
     started = time.monotonic()
     r = server.cmd("update", "--cdn", cdn, timeout=180)
-    t.eq(r.code, 0, "tilr-server update exits 0")
+    t.eq(r.code, 0, "tilrd update exits 0")
     t.has(r.out, manifest["next_version"])
     t.eventually(lambda: server.logged(RELOADED), "the server reloads", timeout=30)
     t.metric("update_to_reload_ms", round((time.monotonic() - started) * 1000))

@@ -6,7 +6,7 @@ concurrently. The catalog of use cases is [USE_CASES.md](USE_CASES.md) (decision
 
 | Kind | What | Id |
 | --- | --- | --- |
-| rust | each libtest test of the workspace (`crates/*/tests`, unit tests), built with `--features tilr-server/failpoints` | `rust:<package>/<target>::<test>` |
+| rust | each libtest test of the workspace (`crates/*/tests`, unit tests), built with `--features tilrd/failpoints` | `rust:<package>/<target>::<test>` |
 | lint | `cargo clippy --workspace --all-targets -D warnings` (with failpoints), `cargo fmt --check` | `lint:clippy`, `lint:fmt` |
 | fixture | building a prepared state (a cached snapshot) and checking it | `fixture:<name>` |
 | scenario | each case of `scenarios/uc_*.py` | `scenario:uc_040:<case>` |
@@ -26,7 +26,7 @@ cd itests
 ./dt --cached                          # rerun only tests whose inputs changed
 ./dt fixtures                          # fixture graph and how many cases use each
 ./dt fixture server_state              # export a snapshot to results/fixture-server_state
-./dt call server export --path ./tilr-server   # the Linux binary (also: driver, build)
+./dt call server export --path ./tilrd   # the Linux binary (also: driver, build)
 ```
 
 Results go to `results/<timestamp>-<pid>/` (`results/latest` links the last run):
@@ -54,9 +54,14 @@ root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scrip
    (release: it plays a real client, and a debug one reads at ~30 MB/s), the test executables with failpoints (listing their tests), and the *next release*: the
    same source with `TILR_BUILD_VERSION=0.1.1`, in a target dir of its own so the two
    version strings never rebuild each other. Cached by Dagger until the source changes.
+   Every build runs through `tt-fresh` (see [Fresh builds](#fresh-builds)). The last
+   release named `tilr-server` is built once, from the tree of `PREVIOUS` in `dt`
+   (`git archive` into `.previous/`, passed as `--previous`), in a target dir of its
+   own, for the update across the rename (UC-06A); without that commit the case is
+   BLOCKED.
 2. **rust** — one runtime container per test, running the copied executable with
    `--exact NAME --test-threads=1`. Sources sit at `/src/tilrd`, the failpoints server at
-   `/target/debug/tilr-server`: the paths the tests baked in at compile time.
+   `/target/debug/tilrd`: the paths the tests baked in at compile time.
 3. **fixtures** — each fixture is a Dagger layer: parents' `/fx` merged, then
    `python3 -m tt fixture MODULE:NAME` (build, then its mandatory check). *Source tier*
    fixtures have no binaries in the container and survive any code change; *tilr tier*
@@ -73,6 +78,31 @@ Statuses: **PASS**; **FAIL** — the product disagrees with the use case, or the
 does not exist yet; **BLOCKED** (exit 77) — the case needs something this backend does
 not have, or its fixture failed. A test is never weakened to pass: a product defect stays
 red and is described at the top of the case's module.
+
+## Fresh builds
+
+The target dirs are cache volumes on pb, shared by every run, worktree and commit, and
+cargo decides what is up to date by mtimes: a source file newer than what was built
+from it, or than the last run of a build script for its `rerun-if-changed` files. A tree
+whose files are older than the last build of another tree (a worktree checked out
+earlier, a commit built after a newer one) was taken as built: the run tested the other
+tree's code, down to code generated from another `tilr.proto` (build.rs not rerun), and
+a tree could fail to compile against it.
+
+`tt-fresh DIR... -- CMD` (main.py `FRESH`) wraps every cargo call on a shared target
+dir (`build`, the next release, the previous release, clippy and fmt): it takes the
+dir's lock (concurrent runs of other trees wait), compares the sha256 of every source
+file with `DIR/.tt-sources.json` (the tree the dir was last given), sets the mtime of
+each file that differs to now, records the new tree and runs CMD. A changed file is
+then always newer than anything built before it; an unchanged one is rebuilt only if
+cargo thinks so. The record is written before CMD, so a build that fails halfway still
+counts as given that tree.
+
+Checked by building three trees in a row with `./dt call --commit X --source DIR server`:
+A, then B (A with one more value in `enum FsChange` of tilr.proto and nothing else),
+then A again; the debug binary of each has `TtCacheProbe` in its debug info only from B
+(A: 0, B: 1, A: 0). Without `tt-fresh` the shared cache already held code generated
+from an older proto and A did not compile (`no variant ExecCancel`).
 
 ## Layout
 
@@ -97,8 +127,9 @@ itests/
 ```
 /fx                       fixture snapshot, the case's working directory
 /tmp/tt                   scratch: each server's runtime/state/config dirs and log, driver stderr
-tilr-server, tilr-driver  on PATH; root's login shell is bash with PS1='$ '
-/opt/tt/tilr-server-next  the next release; /opt/tt/manifest.json its version and platform
+tilrd, tilr-driver        on PATH; root's login shell is bash with PS1='$ '
+/opt/tt/tilrd-next        the next release; /opt/tt/manifest.json its version and platform
+/opt/tt/tilr-server-previous  the last release named tilr-server, as 0.0.9 (UC-06A)
 $TT_SERVICE_CDN           http://cdn:8080, the fake CDN, for cases with services=["cdn"]
 ```
 
@@ -217,7 +248,7 @@ from tt import T, fixture
 @fixture(requires=["files"], tilr=True)
 def server_state(t: T):
     """/fx/state: TILR_STATE_DIR with the access token."""
-    t.run("tilr-server", "token", env={"TILR_STATE_DIR": str(t.root / "state")}, check=True)
+    t.run("tilrd", "token", env={"TILR_STATE_DIR": str(t.root / "state")}, check=True)
 
 @server_state.check
 def _(t: T):
@@ -275,7 +306,7 @@ All of it is undone when the case ends.
 A case asks for a service container by name: `@case(services=["cdn"])`. The module
 builds it (`_service` in main.py), binds it under that hostname and passes its URL as
 `TT_SERVICE_<NAME>`. `cdn` serves `releases/<platform>/latest` and the next release with
-its checksum, as `tilr-server update` reads them. `echo` is a TCP echo service on port
+its checksum, as `tilrd update` reads them. `echo` is a TCP echo service on port
 7007 (`tcp://echo:7007`), the far end of a pane's connection that must outlive a reload.
 
 ## Gotchas
@@ -286,7 +317,7 @@ its checksum, as `tilr-server update` reads them. `echo` is a TCP echo service o
   copied into the container's writable layer before a case.
 * Parallel cargo in different containers: the whole `CARGO_HOME` is one cache volume.
 * Test executables bake paths in: `/src/tilrd`, `/target` are the same everywhere.
-* `build.rs` reruns when `.git/logs/HEAD` is missing, which rebuilds tilr-server on every
+* `build.rs` reruns when `.git/logs/HEAD` is missing, which rebuilds tilrd on every
   cargo call; the build makes an empty one with an old mtime.
 * The runner writes the test's output to a file, not a pipe: a daemon the case leaves
   running would hold a pipe open until the timeout.

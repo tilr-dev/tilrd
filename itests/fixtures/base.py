@@ -23,8 +23,8 @@ def _(t: T):
 
 @fixture(requires=["files"], tilr=True)
 def server_state(t: T):
-    """/fx/state: TILR_STATE_DIR with the access token made by `tilr-server token`."""
-    t.run("tilr-server", "token", env={"TILR_STATE_DIR": str(t.root / "state")}, check=True)
+    """/fx/state: TILR_STATE_DIR with the access token made by `tilrd token`."""
+    t.run("tilrd", "token", env={"TILR_STATE_DIR": str(t.root / "state")}, check=True)
 
 
 @server_state.check
@@ -32,5 +32,5 @@ def _(t: T):
     token = (t.root / "state" / "token").read_text().strip()
     t.ok(re.fullmatch(r"[0-9a-f]{64}", token), "the token is 64 hex digits")
     t.eq(oct(os.stat(t.root / "state" / "token").st_mode & 0o777), "0o600", "token mode")
-    printed = t.run("tilr-server", "token", env={"TILR_STATE_DIR": str(t.root / "state")}, check=True).out.strip()
-    t.eq(printed, token, "tilr-server token prints the stored token")
+    printed = t.run("tilrd", "token", env={"TILR_STATE_DIR": str(t.root / "state")}, check=True).out.strip()
+    t.eq(printed, token, "tilrd token prints the stored token")

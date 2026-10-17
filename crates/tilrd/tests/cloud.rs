@@ -128,7 +128,7 @@ fn linked_server(url: &str, args: &[&str]) -> Server {
 
     let mut all = vec!["--cloudflared", cloudflared.to_str().unwrap()];
     all.extend(args);
-    Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilr-server")), &all)
+    Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &all)
 }
 
 fn tunnel(hostname: &str) -> Value {

@@ -1,4 +1,4 @@
-//! Use cases: `tilr-server update` installs the latest release.
+//! Use cases: `tilrd update` installs the latest release.
 
 mod common;
 
@@ -61,9 +61,9 @@ fn serve_files(root: PathBuf) -> String {
 }
 
 /// Version and platform of the executable under test, as `--version` prints
-/// them: `tilr-server 0.1.0-26449dd (linux-aarch64)`.
+/// them: `tilrd 0.1.0-26449dd (linux-aarch64)`.
 fn version_and_platform() -> (String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
         .arg("--version")
         .output()
         .unwrap();
@@ -77,9 +77,22 @@ fn version_and_platform() -> (String, String) {
 /// Lay out a release of `binary` as `version` for `platform` under `cdn`,
 /// and name it the latest one.
 fn publish(cdn: &Path, platform: &str, version: &str, binary: &[u8], checksum_of: &[u8]) {
+    publish_as("tilrd", cdn, platform, version, binary, checksum_of);
+}
+
+/// The same under the file name `executable`: `tilr-server` for a release
+/// from before the rename.
+fn publish_as(
+    executable: &str,
+    cdn: &Path,
+    platform: &str,
+    version: &str,
+    binary: &[u8],
+    checksum_of: &[u8],
+) {
     let dir = cdn.join("releases").join(version);
     std::fs::create_dir_all(&dir).unwrap();
-    let name = format!("tilr-server-{platform}");
+    let name = format!("{executable}-{platform}");
     std::fs::write(dir.join(&name), binary).unwrap();
     let checksum: String = Sha256::digest(checksum_of)
         .iter()
@@ -98,8 +111,8 @@ fn publish(cdn: &Path, platform: &str, version: &str, binary: &[u8], checksum_of
 /// A copy of the server in a directory of its own, and that directory.
 fn installed() -> (PathBuf, PathBuf) {
     let dir = Server::scratch_dir();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     (dir, exe)
 }
 
@@ -171,6 +184,27 @@ async fn update_installs_the_latest_release_and_the_running_server_keeps_its_she
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
 }
 
+#[test]
+fn a_release_from_before_the_rename_is_found_under_its_old_name() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let release = new_version(&exe);
+    let cdn = dir.join("cdn");
+    publish_as(
+        "tilr-server",
+        &cdn,
+        &platform,
+        "0.0.9-old",
+        &release,
+        &release,
+    );
+
+    let output = update(&exe, &serve_files(cdn));
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("-> 0.0.9-old"));
+    assert_eq!(std::fs::read(&exe).unwrap(), release);
+}
+
 #[tokio::test]
 async fn update_does_nothing_when_the_latest_release_is_the_one_installed() {
     let (dir, exe) = installed();
@@ -223,7 +257,7 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
 
     // The installed executable is untouched, and nothing is left next to it.
     assert_eq!(std::fs::read(&exe).unwrap(), original);
-    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+    assert_eq!(files_in(&dir), ["cdn", "tilrd"]);
 }
 
 #[tokio::test]
@@ -237,7 +271,7 @@ async fn update_installs_nothing_when_the_cdn_misbehaves() {
     let latest = cdn.join("releases").join(&platform).join("latest");
     let binary = cdn
         .join("releases/9.9.9-test")
-        .join(format!("tilr-server-{platform}"));
+        .join(format!("tilrd-{platform}"));
 
     // The download breaks off halfway.
     publish(&cdn, &platform, "9.9.9-test", &release, &release);
@@ -262,7 +296,7 @@ async fn update_installs_nothing_when_the_cdn_misbehaves() {
     assert!(!update(&exe, "http://127.0.0.1:9").status.success());
 
     assert_eq!(std::fs::read(&exe).unwrap(), original);
-    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+    assert_eq!(files_in(&dir), ["cdn", "tilrd"]);
 }
 
 #[tokio::test]
@@ -276,8 +310,8 @@ async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
     let scratch = Server::scratch_dir();
     let dir = scratch.join("bin");
     std::fs::create_dir(&dir).unwrap();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
     let release = new_version(&exe);
@@ -292,7 +326,7 @@ async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("write"));
     assert_eq!(std::fs::read(&exe).unwrap(), original);
-    assert_eq!(files_in(&dir), ["tilr-server"]);
+    assert_eq!(files_in(&dir), ["tilrd"]);
 }
 
 #[cfg(feature = "failpoints")]
@@ -317,7 +351,7 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
     let output = update(&exe, &url);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(std::fs::read(&exe).unwrap(), release);
-    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+    assert_eq!(files_in(&dir), ["cdn", "tilrd"]);
 }
 
 #[cfg(feature = "failpoints")]
@@ -349,5 +383,5 @@ async fn two_updates_at_once_install_the_release_once() {
     assert_eq!(said("-> 9.9.9-test"), 1, "{outputs:?}");
     assert_eq!(said("is already installed"), 1, "{outputs:?}");
     assert_eq!(std::fs::read(&exe).unwrap(), release);
-    assert_eq!(files_in(&dir), ["cdn", "tilr-server"]);
+    assert_eq!(files_in(&dir), ["cdn", "tilrd"]);
 }

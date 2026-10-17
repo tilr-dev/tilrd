@@ -47,7 +47,7 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
 
     pane_pids = sorted(p.pid for p in server.panes())
     tree_before = {p.pid: p.cmdline for p in descendants(server.pid)
-                   if re.search(r"tilr-server.* pane --id |^(\S*/)?-?bash|^python3|^sleep 9999", p.cmdline)}
+                   if re.search(r"tilrd.* pane --id |^(\S*/)?-?bash|^python3|^sleep 9999", p.cmdline)}
     runtime = Path(server.env["TILR_RUNTIME_DIR"])
     samples, returns, typed = {}, [], 0
     # Before any reload, as each one after it must be: exactly as many descriptors.
@@ -97,7 +97,7 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
     def same_tree():
         # The candidates first, the tree after: a `seq` of the noisy pane started in between
         # is in the tree, one that ended in between is gone by then (not an orphan).
-        candidates = t.procs(r"tilr-server.* pane --id |^python3 -q|^seq |^sleep 9999")
+        candidates = t.procs(r"tilrd.* pane --id |^python3 -q|^seq |^sleep 9999")
         now = {p.pid: p.cmdline for p in descendants(server.pid)}
         gone = {pid: c for pid, c in tree_before.items() if pid not in now}
         t.eq(gone, {}, "long-lived processes gone")

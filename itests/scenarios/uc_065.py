@@ -13,7 +13,7 @@ clipboard), filled up with a file of zeros.
 Was red until 2026-10-17: a reload that could not write its state left the half-written
 `server-<pid>.state` or `panes/<id>.state` behind. Now a state file is written to a
 temporary file next to it, synced and renamed, and the temporary file is removed on any
-error (crates/tilr-server/src/reload.rs `write_file`).
+error (crates/tilrd/src/reload.rs `write_file`).
 """
 
 import hashlib
@@ -76,7 +76,7 @@ def an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_break
     manifest = t.manifest()
     size = Path(os.path.realpath(t.run("which", SERVER_EXE, quiet=True).out.strip())).stat().st_size
     disk = t.tmpfs(t.root / "small-disk", f"{size // 1024 + 512}k")
-    exe = disk / "tilr-server"
+    exe = disk / "tilrd"
     exe.write_bytes(Path(os.path.realpath(t.run("which", SERVER_EXE, quiet=True).out.strip())).read_bytes())
     exe.chmod(0o755)
     installed = digest(exe)
@@ -90,7 +90,7 @@ def an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_break
     t.ok(r.code != 0, f"the update fails (exit {r.code})")
     t.ok("space" in r.text.lower(), f"and says the disk is full: {r.text.strip()[-300:]}")
     t.eq(digest(exe), installed, "the installed executable is as it was")
-    t.eq(sorted(p.name for p in disk.iterdir()), ["tilr-server"], "nothing is left beside it")
+    t.eq(sorted(p.name for p in disk.iterdir()), ["tilrd"], "nothing is left beside it")
     time.sleep(3)
     t.eq(server.logged("reloading"), 0, "the server did not reload")
     all_well(t, server, d, shell, before, counter, pids, "after the failed update")
@@ -168,7 +168,7 @@ def a_reload_with_room_for_the_servers_state_but_not_the_panes_keeps_every_pane(
     time.sleep(3)
     if any(e.get("ev") == "disconnected" for e in d.events[since:]):
         d.cmd("reconnect", timeout_ms=20_000)
-    t.metric("panes_reloaded", server.logged("tilr_server::pane: resumed after reload"))
+    t.metric("panes_reloaded", server.logged("tilrd::pane: resumed after reload"))
     all_well(t, server, d, shell, before, counter, pids, "after the reload with no room for the panes")
     t.check("no half-written state file is left", lambda: t.eq(state_files(server), [], "state files"))
     room_again_and_reload(t, runtime, server, d, shell, before, counter, vim, notes, pids,

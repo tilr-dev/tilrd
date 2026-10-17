@@ -158,23 +158,19 @@ pub fn render(
     usage: impl Fn(u32) -> Option<Usage>,
 ) -> String {
     let mut out = Exposition::default();
-    out.family(
-        "tilr_server_info",
-        "gauge",
-        "Version and id of this server.",
-    );
+    out.family("tilrd_info", "gauge", "Version and id of this server.");
     out.sample(
-        "tilr_server_info",
+        "tilrd_info",
         &[
             ("version", &snapshot.version),
             ("server_id", &snapshot.server_id),
         ],
         1,
     );
-    out.family("tilr_server_clients", "gauge", "Clients connected.");
-    out.sample("tilr_server_clients", &[], snapshot.clients);
-    out.family("tilr_server_panes", "gauge", "Panes running.");
-    out.sample("tilr_server_panes", &[], snapshot.panes.len());
+    out.family("tilrd_clients", "gauge", "Clients connected.");
+    out.sample("tilrd_clients", &[], snapshot.clients);
+    out.family("tilrd_panes", "gauge", "Panes running.");
+    out.sample("tilrd_panes", &[], snapshot.panes.len());
 
     type Counter = fn(&PaneCounters) -> u64;
     let per_pane: [(&str, &str, Counter); 6] = [
@@ -552,9 +548,9 @@ mod tests {
         shared.count_drop(ClientDrop::Superseded);
         let text = rendered(&shared);
         for (name, kind) in [
-            ("tilr_server_info", "gauge"),
-            ("tilr_server_clients", "gauge"),
-            ("tilr_server_panes", "gauge"),
+            ("tilrd_info", "gauge"),
+            ("tilrd_clients", "gauge"),
+            ("tilrd_panes", "gauge"),
             ("tilr_pane_frames_total", "counter"),
             ("tilr_pane_frame_bytes_total", "counter"),
             ("tilr_pane_frames_sent_total", "counter"),
@@ -575,9 +571,9 @@ mod tests {
             );
         }
         for line in [
-            "tilr_server_info{version=\"0.1.0-abc \\\"x\\\"\",server_id=\"s1\"} 1",
-            "tilr_server_clients 2",
-            "tilr_server_panes 1",
+            "tilrd_info{version=\"0.1.0-abc \\\"x\\\"\",server_id=\"s1\"} 1",
+            "tilrd_clients 2",
+            "tilrd_panes 1",
             "tilr_pane_frames_total{pane=\"p1\"} 3",
             "tilr_pane_frame_bytes_total{pane=\"p1\"} 300",
             "tilr_pane_frames_sent_total{pane=\"p1\"} 6",

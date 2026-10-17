@@ -1,4 +1,4 @@
-//! `tilr-server ps`: the panes of a running server, one per line.
+//! `tilrd ps`: the panes of a running server, one per line.
 
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ async fn list_panes(url: &str) -> Result<(Vec<PaneInfo>, String)> {
     for msg in [
         Msg::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
-            client_name: "tilr-server ps".into(),
+            client_name: "tilrd ps".into(),
             features: Vec::new(),
             // The server on this machine is this user's: its token is at hand.
             token: crate::auth::stored_token().unwrap_or_default(),

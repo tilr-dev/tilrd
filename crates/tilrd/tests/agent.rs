@@ -13,7 +13,7 @@ fn start_with_config(config: &str, args: &[&str]) -> Server {
     let dir = Server::scratch_dir();
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(dir.join("config/server.toml"), config).unwrap();
-    Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilr-server")), args)
+    Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), args)
 }
 
 /// Connect and say hello as a client that serves the agent.

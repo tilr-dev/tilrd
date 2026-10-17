@@ -2,7 +2,7 @@
 order, a big stream, and back pressure when the receiving side is slow.
 
 The stream is the one kind there is: a program in a pane connects to $SSH_AUTH_SOCK and
-the server carries its bytes to the client that announced "agent" (crates/tilr-server/
+the server carries its bytes to the client that announced "agent" (crates/tilrd/
 src/agent.rs). The client is tilr-driver: echoing (a toy agent), taking and hashing
 (sink), or sending (stream_send). The program (STREAMER below) sends random bytes, reads
 them back, or reads slowly, and writes what it did as JSON.
@@ -15,7 +15,7 @@ it keeps reading, answering pings, and watching a counter, so it must not be dro
 
 Was red until 2026-10-17: the slow client's queue was counted in packets, so 64 MiB were
 buffered for it and the program never held back. Now stream data goes by the client's
-bulk lane, which holds at most 4 MiB (crates/tilr-server/src/outbox.rs BULK_BYTES), and
+bulk lane, which holds at most 4 MiB (crates/tilrd/src/outbox.rs BULK_BYTES), and
 the agent's pump waits for room in it.
 """
 

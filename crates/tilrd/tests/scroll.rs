@@ -10,6 +10,12 @@ use common::*;
 async fn pane_with_history(server: &Server) -> (Client, PaneId) {
     let mut client = Client::connect(server).await;
     let pane_id = client.open_pane().await;
+    // Typed before the shell prints its prompt, the command is echoed first
+    // and the prompt lands at the start of the row of `line-1`: wait for the
+    // prompt (`$` or, for root, `#`).
+    while client.screen.text().trim().is_empty() {
+        client.next().await.expect("connection closed");
+    }
     client.print_lines(pane_id, 200).await;
     client.wait_row("line-200").await;
     assert!(!client.screen.has_row("line-100"));

@@ -1,12 +1,17 @@
-//! `tilr-server update`: replace this executable with the latest release.
+//! `tilrd update`: replace this executable with the latest release.
 //!
 //! Releases are files under one base URL:
 //!
 //! ```text
 //! releases/<platform>/latest                         the version ready for the platform
-//! releases/<version>/tilr-server-<platform>
-//! releases/<version>/tilr-server-<platform>.sha256
+//! releases/<version>/tilrd-<platform>
+//! releases/<version>/tilrd-<platform>.sha256
 //! ```
+//!
+//! Releases before the rename to `tilrd` are named `tilr-server-<platform>`,
+//! and those after it are published under that name too, for the servers
+//! still called `tilr-server`, which ask for it: they update to `tilrd` in
+//! place, under the name they were installed as.
 //!
 //! The download is renamed over this executable. A server running from it
 //! notices and reloads, keeping its shells; nothing is restarted here.
@@ -49,12 +54,11 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
         "{cdn} names a release that is not a version: {latest:?}"
     );
     if latest == VERSION {
-        println!("tilr-server {VERSION} ({PLATFORM}) is the latest release");
+        println!("tilrd {VERSION} ({PLATFORM}) is the latest release");
         return Ok(());
     }
 
-    let url = format!("{cdn}/releases/{latest}/tilr-server-{PLATFORM}");
-    let checksum = fetch_text(&format!("{url}.sha256")).context("fetch the checksum")?;
+    let (url, checksum) = find_release(cdn, latest)?;
     let expected = checksum
         .split_whitespace()
         .next()
@@ -74,11 +78,11 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
     staged_name.push(".new.");
     remove_leftovers(dir, &staged_name.to_string_lossy());
     if fs::read(exe).is_ok_and(|installed| sha256(&installed) == expected) {
-        println!("tilr-server {latest} ({PLATFORM}) is already installed");
+        println!("tilrd {latest} ({PLATFORM}) is already installed");
         return Ok(());
     }
 
-    println!("downloading tilr-server {latest} ({PLATFORM})");
+    println!("downloading tilrd {latest} ({PLATFORM})");
     let binary = ureq::get(&url)
         .call()
         .and_then(|mut response| {
@@ -111,7 +115,7 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
         .status()
         .is_ok_and(|status| status.success());
     if !runs {
-        bail!("tilr-server {latest} does not run on this system, nothing was installed");
+        bail!("tilrd {latest} does not run on this system, nothing was installed");
     }
     crate::fail::point("update-before-rename")?;
     fs::rename(&staged.0, exe).with_context(|| format!("replace {}", exe.display()))?;
@@ -136,6 +140,29 @@ fn remove_leftovers(dir: &Path, prefix: &str) {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+/// What a release is called, newest name first.
+const NAMES: [&str; 2] = ["tilrd", "tilr-server"];
+
+/// The URL of release `version` and its checksum file, under whichever name
+/// it was published: one from before the rename has only the old one.
+fn find_release(cdn: &str, version: &str) -> Result<(String, String)> {
+    for name in NAMES {
+        let url = format!("{cdn}/releases/{version}/{name}-{PLATFORM}");
+        match ureq::get(&format!("{url}.sha256")).call() {
+            Ok(mut response) => {
+                let checksum = response
+                    .body_mut()
+                    .read_to_string()
+                    .context("fetch the checksum")?;
+                return Ok((url, checksum));
+            }
+            Err(ureq::Error::StatusCode(404)) => {}
+            Err(err) => return Err(err).context("fetch the checksum"),
+        }
+    }
+    bail!("{cdn} has no release {version} for {PLATFORM}")
 }
 
 fn fetch_text(url: &str) -> Result<String> {

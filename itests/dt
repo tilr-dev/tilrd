@@ -5,7 +5,7 @@
 #                                 --open: show report.html in the browser afterwards
 #   ./dt fixtures                 fixture graph
 #   ./dt fixture NAME             export one fixture snapshot to results/fixture-NAME
-#   ./dt call FUNCTION [ARGS]     any module function, e.g. ./dt call server export --path ./tilr-server
+#   ./dt call FUNCTION [ARGS]     any module function, e.g. ./dt call server export --path ./tilrd
 #   ./dt history                  open results/index.html (all runs)
 #   ./dt clear [--keep N]         delete local run reports (all, or all but the N newest)
 #
@@ -16,9 +16,21 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 ENGINE=${DT_ENGINE:-dagger-pb}
 DISTRO=${DT_DISTRO:-ubuntu}
 COMMIT=$(git -C "$HERE/.." rev-parse --short HEAD 2>/dev/null || echo itest)
+# The last commit whose server is named tilr-server: the old server of the update across
+# the rename (UC-06A), built from its own tree, kept in .previous/.
+PREVIOUS=72af51d
 export DAGGER_NO_NAG=1
 
-call() { "$ENGINE" -m "$HERE" call --commit "$COMMIT" --distro "$DISTRO" "$@"; }
+previous=$HERE/.previous/$PREVIOUS
+if [ ! -f "$previous/Cargo.toml" ] && git -C "$HERE/.." cat-file -e "$PREVIOUS^{commit}" 2>/dev/null; then
+  rm -rf "$previous" && mkdir -p "$previous"
+  git -C "$HERE/.." archive "$PREVIOUS" Cargo.toml Cargo.lock crates | tar -x -C "$previous"
+fi
+prev_args=
+[ -f "$previous/Cargo.toml" ] && prev_args="--previous $previous --previous-commit $PREVIOUS"
+
+# shellcheck disable=SC2086 # prev_args is two options or none; the path has no spaces
+call() { "$ENGINE" -m "$HERE" call --commit "$COMMIT" --distro "$DISTRO" $prev_args "$@"; }
 
 cmd=test
 case "${1:-}" in

@@ -7,7 +7,7 @@ bash) and sends SIGHUP to bash's process group; bash, as an interactive shell do
 passes SIGHUP on to its jobs.
 
 Until `tilr` starts tilrd detached (UC-010), a user starts the server the way the README
-says, from the login shell: `tilr-server &`. tilrd ignores SIGHUP and runs each pane
+says, from the login shell: `tilrd &`. tilrd ignores SIGHUP and runs each pane
 process in a session of its own, so the first case checks that nothing of it goes with
 the session. The second case starts it with setsid, the way scripts/update-test.sh does.
 """
@@ -63,11 +63,11 @@ def after_hangup(t: T, ssh, server, d, shell, before, panes):
 
 @case(fixture="server_state")
 def tilrd_started_from_an_ssh_login_shell_survives_the_session_dropping(t: T):
-    """UC-013: `tilr-server &` in an SSH login shell; the connection drops; panes live on."""
-    after_hangup(t, *prepare(t, "tilr-server --listen 127.0.0.1:0"))
+    """UC-013: `tilrd &` in an SSH login shell; the connection drops; panes live on."""
+    after_hangup(t, *prepare(t, "tilrd --listen 127.0.0.1:0"))
 
 
 @case(fixture="server_state")
 def tilrd_started_with_setsid_keeps_its_panes_when_the_ssh_session_drops(t: T):
     """UC-013: tilrd detached by hand (setsid) from an SSH session; the session drops; panes live on."""
-    after_hangup(t, *prepare(t, "setsid tilr-server --listen 127.0.0.1:0"))
+    after_hangup(t, *prepare(t, "setsid tilrd --listen 127.0.0.1:0"))

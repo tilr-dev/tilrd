@@ -3,7 +3,7 @@ server's machine and gets its stdout and stderr apart, its exit code or the sign
 killed it; a time limit, cancelling, a large output, stdin, several at once; what a
 reload and a client that goes do to running execs.
 
-The messages are tilr.proto's (crates/tilr-server/src/exec.rs): ExecStart {argv, cwd,
+The messages are tilr.proto's (crates/tilrd/src/exec.rs): ExecStart {argv, cwd,
 env, stdin, timeout_ms} -> ExecStarted, ExecOutput per stream, ExecExit {code, signal,
 timed_out, cancelled, reason}; ExecInput (acknowledged by ExecInputAck, at most 4 MiB
 ahead of the program), ExecSignal (to the program's process group), ExecCancel. The

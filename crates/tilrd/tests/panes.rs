@@ -190,7 +190,7 @@ async fn a_browser_page_connects_only_from_an_allowed_origin() {
 async fn the_configuration_file_names_the_allowed_origins() {
     // ~/.config/tilr/server.toml (here: the scratch directory's) sets the
     // list; --allow-origin on the command line replaces it.
-    let exe = Path::new(env!("CARGO_BIN_EXE_tilr-server"));
+    let exe = Path::new(env!("CARGO_BIN_EXE_tilrd"));
     let configured = |text: &str| {
         let dir = Server::scratch_dir();
         std::fs::create_dir_all(dir.join("config")).unwrap();
@@ -319,7 +319,7 @@ async fn ps_lists_the_panes_of_a_running_server() {
     let pane_id = client.open_pane().await;
     let pid = client.list_panes().await[0].pid;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
         .args(["ps", "--url", &server.addr])
         // Where the server keeps its access token.
         .env("TILR_STATE_DIR", server.dir.join("state"))
@@ -335,7 +335,7 @@ async fn ps_lists_the_panes_of_a_running_server() {
     assert_eq!(fields[2], "100x30");
     assert!(lines[1].ends_with("/bin/sh"), "{listed}");
 
-    let version = Command::new(env!("CARGO_BIN_EXE_tilr-server"))
+    let version = Command::new(env!("CARGO_BIN_EXE_tilrd"))
         .args(["ps", "--url", &server.addr, "--server-version"])
         .env("TILR_STATE_DIR", server.dir.join("state"))
         .output()
@@ -361,7 +361,7 @@ async fn a_server_keeps_its_id_when_it_restarts() {
     server.child.wait().unwrap();
     let again = Server::start_in(
         server.dir.clone(),
-        Path::new(env!("CARGO_BIN_EXE_tilr-server")),
+        Path::new(env!("CARGO_BIN_EXE_tilrd")),
         &[],
     );
     let ack = Client::connect_silent(&again).await.hello().await;

@@ -2,9 +2,9 @@
 
 Каждый сценарий — тест, который поднимает настоящий сервер, подключается к нему
 по WebSocket как клиент и смотрит, что видит шелл в панели. Тесты лежат в
-`crates/tilr-server/tests/`, общая обвязка — в `tests/common/mod.rs`.
+`crates/tilrd/tests/`, общая обвязка — в `tests/common/mod.rs`.
 
-Запуск: `cargo test --workspace --features tilr-server/failpoints`, на Linux —
+Запуск: `cargo test --workspace --features tilrd/failpoints`, на Linux —
 `scripts/linux.sh`. Сценарии со сбоем посередине (помечены †) устраивают сбой
 в заданном месте кода через точки отказа (`src/fail.rs`) и собираются только
 с этой фичей.
@@ -31,7 +31,7 @@
 | Битый пакет — ошибка, соединение остаётся | `a_malformed_packet_gets_an_error_and_the_connection_stays` |
 | Обращение к несуществующей панели — ошибка; имя, которое не UUID, — тоже | `asking_for_a_pane_that_does_not_exist_gets_an_error` |
 | У панели свой UUID: шелл видит его в `$TILR_PANE`, процесс панели — в командной строке (`pane --id <uuid>`), размер там указан, только если он не 80×24 | `a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps` |
-| `tilr-server ps` показывает панели работающего сервера: id, pid, размер, команду | `ps_lists_the_panes_of_a_running_server` |
+| `tilrd ps` показывает панели работающего сервера: id, pid, размер, команду | `ps_lists_the_panes_of_a_running_server` |
 | У сервера свой id, после перезапуска тот же; у другого сервера — другой | `a_server_keeps_its_id_when_it_restarts` |
 
 ## Доступ — `tests/auth.rs`
@@ -39,7 +39,7 @@
 | Сценарий | Тест |
 |---|---|
 | Клиент без токена доступа или с чужим получает ошибку и отключается; с токеном — проходит | `a_client_needs_the_access_token` |
-| Токен лежит в файле, доступном только пользователю, переживает перезапуск; `tilr-server token` печатает его же | `the_token_is_kept_for_the_user_only_and_across_restarts` |
+| Токен лежит в файле, доступном только пользователю, переживает перезапуск; `tilrd token` печатает его же | `the_token_is_kept_for_the_user_only_and_across_restarts` |
 | Сервер с `--no-auth` токен не спрашивает и предупреждает об этом в журнале | `a_server_started_without_authentication_asks_for_no_token` |
 
 ## tilr Cloud — `tests/cloud.rs`
@@ -71,7 +71,7 @@ Cloud в этих тестах играет сам тест, `cloudflared` — �
 | Сервер пропал молча: клиент шлёт `Ping`, ответа `Pong` нет — клиент это видит; сервер ожил — ответ приходит | `a_client_can_tell_that_the_server_vanished_without_closing` |
 | Тот же клиент (`Hello.client_id`, тот же токен) пришёл по новому соединению, старое ещё открыто: старое закрывается сразу, кодом 4000 `superseded`, до `HelloAck` нового, без ожидания таймаута; две вкладки (разные `client_id`) живут обе; `PaneInfo.viewed_by` — `client_id` и адрес каждого зрителя | `a_client_back_on_a_new_connection_supersedes_its_old_one_at_once` |
 | Тот же `client_id` с чужим токеном: на сервере с токеном — отказ, старое соединение живо; на сервере без токена (`--no-auth`) другой токен — другой пользователь, вытеснения нет | `the_same_client_id_under_another_token_supersedes_nobody` |
-| Сервер запущен из SSH-сессии (`tilr-server &`), соединение оборвалось: терминал закрыт, группе процессов пришёл SIGHUP — сервер, процессы панелей и шеллы живы, клиент подключается к той же панели; остановка сервера по-прежнему завершает шеллы | `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` |
+| Сервер запущен из SSH-сессии (`tilrd &`), соединение оборвалось: терминал закрыт, группе процессов пришёл SIGHUP — сервер, процессы панелей и шеллы живы, клиент подключается к той же панели; остановка сервера по-прежнему завершает шеллы | `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` |
 
 ## Прокрутка — `tests/scroll.rs`
 
@@ -92,7 +92,7 @@ Cloud в этих тестах играет сам тест, `cloudflared` — �
 
 | Сценарий | Тест |
 |---|---|
-| `tilr-server update` ставит последний релиз для своей платформы; работающий сервер сам перезагружается, шелл цел | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
+| `tilrd update` ставит последний релиз для своей платформы; работающий сервер сам перезагружается, шелл цел | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
 | Последний релиз уже стоит — ничего не скачивается, файл не тронут | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
 | Скачанное не сходится с контрольной суммой, не запускается или релиза для платформы нет — ничего не установлено, мусора рядом нет | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
 | CDN подводит: скачивание оборвалось посередине, релиз назван, а файлов ещё нет, вместо CDN отвечает чужая страница, никто не отвечает — ничего не установлено | `update_installs_nothing_when_the_cdn_misbehaves` |
@@ -288,7 +288,7 @@ scripts/update-test.sh ubu-test 0.1.0-7b5740b
   AZERTY, где решает латинский символ, и базовая клавиша в протоколе kitty);
   сквозные сценарии — itests UC-079.
 - Прокрутка при изменении размера панели.
-- tilr Cloud: `tilr-server cloud login` / `logout` проверены только руками
+- tilr Cloud: `tilrd cloud login` / `logout` проверены только руками
   против локального Cloud (`wrangler dev`). Настоящий `cloudflared` и настоящий
   туннель Cloudflare не проверялись ни разу.
 - `cloudflared`, оставшийся после аварийной смерти сервера (SIGKILL), никто не

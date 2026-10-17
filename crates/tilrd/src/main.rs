@@ -34,7 +34,7 @@ pub const PLATFORM: &str = env!("TILR_PLATFORM");
 
 #[derive(Parser)]
 #[command(
-    name = "tilr-server",
+    name = "tilrd",
     version = concat!(env!("TILR_VERSION"), " (", env!("TILR_PLATFORM"), ")"),
     about = "Terminal server: ptys behind a WebSocket"
 )]

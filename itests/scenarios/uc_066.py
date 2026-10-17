@@ -1,6 +1,6 @@
 """UC-066: roll back to the old version and forward again with panes open: the current
 release updates to the next (the CDN container), back to the current one (a CDN of the
-case's own that names it the latest: `tilr-server update` installs whatever the CDN
+case's own that names it the latest: `tilrd update` installs whatever the CDN
 calls latest), and forward again. Each step is a reload into another executable; after
 each the server says its version, keeps its pid and every program in its panes.
 """

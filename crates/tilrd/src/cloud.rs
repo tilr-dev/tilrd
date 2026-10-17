@@ -19,8 +19,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -29,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{self, Message};
@@ -105,7 +103,7 @@ fn write_link(link: &Link) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// tilr-server cloud login | logout | status
+// tilrd cloud login | logout | status
 // ---------------------------------------------------------------------------
 
 fn post(url: &str, body: &Value) -> Result<Value, ureq::Error> {
@@ -175,7 +173,7 @@ pub fn login(url: &str, name: Option<String>) -> Result<()> {
             machine_id: field("machine_id").context("no machine id in the answer")?,
             token: field("machine_token").context("no token in the answer")?,
         })?;
-        println!("\nLinked. A running tilr-server connects on its own.");
+        println!("\nLinked. A running tilrd connects on its own.");
         return Ok(());
     }
 }
@@ -203,7 +201,7 @@ pub fn logout() -> Result<()> {
 pub fn status() -> Result<()> {
     match read_link() {
         Some(link) => println!("Linked to {} as machine {}.", link.url, link.machine_id),
-        None => println!("This machine is not linked. Link it with: tilr-server cloud login"),
+        None => println!("This machine is not linked. Link it with: tilrd cloud login"),
     }
     Ok(())
 }
@@ -225,40 +223,51 @@ pub struct Options {
 /// that runs it.
 #[derive(Clone)]
 pub struct Tunnel {
-    pid: Arc<AtomicI32>,
+    control: mpsc::UnboundedSender<Control>,
+}
+
+enum Control {
+    /// Stop `cloudflared`, wait until it is gone, say so, and start none
+    /// until `Release`.
+    Hold(oneshot::Sender<()>),
+    Release,
 }
 
 impl Tunnel {
-    /// Stop `cloudflared` now. It would outlive a server that replaces
-    /// itself, which starts another; a server that carries on gets it back
-    /// after a moment.
-    pub fn stop(&self) {
-        let pid = self.pid.load(Ordering::Relaxed);
-        if pid > 0 {
-            // SAFETY: kill has no memory-safety preconditions.
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
+    /// Stop `cloudflared` and wait until it has exited and been waited for,
+    /// before a server replaces itself, which starts another: a child that
+    /// exits after the exec stays a zombie of the successor, which knows
+    /// nothing of it, and one that is slow to exit would run alongside the
+    /// new one. None is started again until [`Tunnel::release`].
+    pub async fn hold(&self) {
+        let (done, stopped) = oneshot::channel();
+        if self.control.send(Control::Hold(done)).is_ok() {
+            // `stop` kills it after TUNNEL_STOP; this bound is for a task
+            // that is somehow stuck, not for cloudflared.
+            let _ = tokio::time::timeout(TUNNEL_STOP + Duration::from_secs(1), stopped).await;
         }
+    }
+
+    /// A server that carries on after all gets its `cloudflared` back.
+    pub fn release(&self) {
+        let _ = self.control.send(Control::Release);
     }
 }
 
 /// Keep this server connected to Cloud for as long as it is linked.
 pub fn spawn(options: Options) -> Tunnel {
-    let tunnel = Tunnel {
-        pid: Arc::new(AtomicI32::new(0)),
-    };
+    let (control, controlled) = mpsc::unbounded_channel();
     let (want, wanted) = watch::channel(None);
     let (report, state) = watch::channel(State::down(""));
     tokio::spawn(run_tunnel(
         wanted,
+        controlled,
         report,
         options.local,
         options.cloudflared,
-        Arc::clone(&tunnel.pid),
     ));
     tokio::spawn(stay_connected(options.auth, want, state));
-    tunnel
+    Tunnel { control }
 }
 
 enum End {
@@ -287,7 +296,7 @@ async fn stay_connected(
                 // Unless it was unlinked from here, a moment ago.
                 if read_link().is_some() {
                     tracing::warn!(
-                        "{} does not know this machine; link it again with: tilr-server cloud login",
+                        "{} does not know this machine; link it again with: tilrd cloud login",
                         link.url
                     );
                 }
@@ -537,10 +546,10 @@ fn prepare(spec: &Spec, local: SocketAddr, cloudflared: &Path) -> Result<Command
 /// Run `cloudflared` whenever a tunnel is wanted, and say how it is doing.
 async fn run_tunnel(
     mut wanted: watch::Receiver<Option<Spec>>,
+    mut control: mpsc::UnboundedReceiver<Control>,
     report: watch::Sender<State>,
     local: SocketAddr,
     cloudflared: PathBuf,
-    pid: Arc<AtomicI32>,
 ) {
     let say = |state: State| {
         report.send_if_modified(|current| {
@@ -549,11 +558,24 @@ async fn run_tunnel(
             changed
         });
     };
+    let mut held = false;
     loop {
+        if held {
+            match control.recv().await {
+                Some(order) => obey(order, &mut held),
+                None => return,
+            }
+            continue;
+        }
         let Some(spec) = wanted.borrow_and_update().clone() else {
             say(State::down(""));
-            if wanted.changed().await.is_err() {
-                return;
+            tokio::select! {
+                changed = wanted.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                Some(order) = control.recv() => obey(order, &mut held),
             }
             continue;
         };
@@ -571,11 +593,11 @@ async fn run_tunnel(
                 tokio::select! {
                     _ = wanted.changed() => {}
                     () = tokio::time::sleep(TUNNEL_RETRY) => {}
+                    Some(order) = control.recv() => obey(order, &mut held),
                 }
                 continue;
             }
         };
-        pid.store(child.id().map_or(0, |pid| pid as i32), Ordering::Relaxed);
         tracing::info!(hostname = spec.hostname, "tunnel starting");
         let stderr = child.stderr.take().expect("cloudflared stderr is piped");
         let mut lines = BufReader::new(stderr).lines();
@@ -583,9 +605,13 @@ async fn run_tunnel(
             tokio::select! {
                 changed = wanted.changed() => {
                     if changed.is_err() || wanted.borrow().as_ref() != Some(&spec) {
-                        break None;
+                        break Ended::Unwanted;
                     }
                 }
+                Some(order) = control.recv() => match order {
+                    Control::Hold(done) => break Ended::Held(done),
+                    Control::Release => {}
+                },
                 line = lines.next_line() => match line {
                     Ok(Some(line)) => {
                         if line.contains("Registered tunnel connection") {
@@ -594,19 +620,26 @@ async fn run_tunnel(
                         }
                         tracing::debug!("cloudflared: {line}");
                     }
-                    _ => break Some(child.wait().await),
+                    _ => break Ended::Exited(child.wait().await),
                 },
             }
         };
-        pid.store(0, Ordering::Relaxed);
         match ended {
             // Not wanted any more, or another one is.
-            None => {
+            Ended::Unwanted => {
                 stop(&mut child).await;
                 let _ = fs::remove_dir_all(tunnel_dir());
                 tracing::info!(hostname = spec.hostname, "tunnel closed");
             }
-            Some(exit) => {
+            // The server is about to replace itself; the tunnel stays as
+            // Cloud knows it, and the successor starts its own.
+            Ended::Held(done) => {
+                stop(&mut child).await;
+                tracing::info!(hostname = spec.hostname, "tunnel held");
+                held = true;
+                let _ = done.send(());
+            }
+            Ended::Exited(exit) => {
                 let why = match exit {
                     Ok(status) => format!("cloudflared stopped: {status}"),
                     Err(err) => format!("cloudflared stopped: {err}"),
@@ -616,10 +649,30 @@ async fn run_tunnel(
                 tokio::select! {
                     _ = wanted.changed() => {}
                     () = tokio::time::sleep(TUNNEL_RETRY) => {}
+                    Some(order) = control.recv() => obey(order, &mut held),
                 }
             }
         }
     }
+}
+
+/// An order to the tunnel task while no `cloudflared` runs: a hold is
+/// answered at once.
+fn obey(order: Control, held: &mut bool) {
+    match order {
+        Control::Hold(done) => {
+            *held = true;
+            let _ = done.send(());
+        }
+        Control::Release => *held = false,
+    }
+}
+
+/// How a running `cloudflared` came to an end.
+enum Ended {
+    Unwanted,
+    Held(oneshot::Sender<()>),
+    Exited(std::io::Result<std::process::ExitStatus>),
 }
 
 /// Ask `cloudflared` to exit, so it signs off at Cloudflare; kill it if it

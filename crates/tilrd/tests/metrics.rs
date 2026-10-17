@@ -407,10 +407,10 @@ async fn metrics_ask_for_the_access_token() {
 
     let (status, body) = http_get(&server, "/metrics", &[("Authorization", &bearer)]).await;
     assert_eq!(status, 200);
-    assert_eq!(sample(&body, "tilr_server_panes"), Some(0.0), "{body}");
+    assert_eq!(sample(&body, "tilrd_panes"), Some(0.0), "{body}");
     let (status, body) = http_get(&server, &format!("/metrics?token={token}"), &[]).await;
     assert_eq!(status, 200);
-    assert!(body.contains("# TYPE tilr_server_panes gauge"), "{body}");
+    assert!(body.contains("# TYPE tilrd_panes gauge"), "{body}");
 
     // The main protocol is where it was.
     let mut client = Client::connect(&server).await;
@@ -422,7 +422,7 @@ async fn metrics_need_no_token_on_a_server_without_one() {
     let server = Server::start(&["--no-auth"]);
     let (status, body) = http_get(&server, "/metrics", &[]).await;
     assert_eq!(status, 200);
-    assert_eq!(sample(&body, "tilr_server_panes"), Some(0.0), "{body}");
+    assert_eq!(sample(&body, "tilrd_panes"), Some(0.0), "{body}");
     let port = server.addr.rsplit(':').next().unwrap();
     for host in [
         "localhost".to_owned(),
@@ -474,7 +474,7 @@ async fn a_metrics_request_may_come_in_pieces() {
     let rest = format!("rics?token={token} HTTP/1.1\r\nHost: {addr}\r");
     let (status, body) = http_request(&server, &["GET /met", &rest, "\n\r", "\n"]).await;
     assert_eq!(status, 200);
-    assert!(body.contains("# TYPE tilr_server_panes gauge"), "{body}");
+    assert!(body.contains("# TYPE tilrd_panes gauge"), "{body}");
 }
 
 #[tokio::test]
@@ -494,8 +494,8 @@ async fn metrics_count_frames_input_and_routing() {
         let value = sample(&text, series).unwrap_or_else(|| panic!("no {series}:\n{text}"));
         assert!(value >= min, "{series} = {value}:\n{text}");
     };
-    at_least("tilr_server_panes", 1.0);
-    at_least("tilr_server_clients", 1.0);
+    at_least("tilrd_panes", 1.0);
+    at_least("tilrd_clients", 1.0);
     at_least(&format!("tilr_pane_frames_total{pane}"), 1.0);
     at_least(&format!("tilr_pane_frame_bytes_total{pane}"), 1.0);
     at_least(&format!("tilr_pane_frames_sent_total{pane}"), 1.0);
@@ -522,7 +522,7 @@ async fn metrics_count_frames_input_and_routing() {
     );
     assert!(
         text.lines()
-            .any(|line| line.starts_with("tilr_server_info{version=\"")),
+            .any(|line| line.starts_with("tilrd_info{version=\"")),
         "{text}"
     );
 }

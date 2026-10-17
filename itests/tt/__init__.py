@@ -11,9 +11,10 @@ Layout of a container (backend `dagger`, see src/tilr_itests/main.py):
 
     /fx                    the fixture snapshot; the case's working directory
     /tmp/tt                scratch: servers' runtime/state/config dirs, logs
-    tilr-server            the server under test, on PATH (no failpoints)
+    tilrd                  the server under test, on PATH (no failpoints)
     tilr-driver            the scripted client, on PATH
-    /opt/tt/tilr-server-next   the same source built as the next version
+    /opt/tt/tilrd-next     the same source built as the next version
+    /opt/tt/tilr-server-previous  the last release named tilr-server (0.0.9)
     /opt/tt/manifest.json  versions and platform of both builds
     $TT_SERVICE_<NAME>     URL of a service container the case asked for (cdn)
 """
@@ -37,9 +38,11 @@ FX = Path(os.environ.get("TT_FX", "/fx"))
 TMP = Path(os.environ.get("TT_TMP", "/tmp/tt"))
 BACKEND = os.environ.get("TT_BACKEND", "dagger")
 METRICS = Path(os.environ.get("TT_METRICS", "/tt-metrics.json"))
-SERVER_EXE = os.environ.get("TT_SERVER", "tilr-server")
+SERVER_EXE = os.environ.get("TT_SERVER", "tilrd")
 DRIVER_EXE = os.environ.get("TT_DRIVER", "tilr-driver")
-NEXT_EXE = os.environ.get("TT_SERVER_NEXT", "/opt/tt/tilr-server-next")
+NEXT_EXE = os.environ.get("TT_SERVER_NEXT", "/opt/tt/tilrd-next")
+# The last release named tilr-server (src/tilr_itests/main.py builds it from ./dt's --previous).
+PREVIOUS_EXE = os.environ.get("TT_SERVER_PREVIOUS", "/opt/tt/tilr-server-previous")
 MANIFEST = Path(os.environ.get("TT_MANIFEST", "/opt/tt/manifest.json"))
 
 # What each backend can give a case; t.need() turns a missing one into BLOCKED.
@@ -247,7 +250,7 @@ class Server:
         return self.t.run(self.exe, "token", env=self.env, quiet=True, check=True).out.strip()
 
     def cmd(self, *args, **kw) -> R:
-        """Run a tilr-server subcommand with this server's environment."""
+        """Run a tilrd subcommand with this server's environment."""
         return self.t.run(self.exe, *args, env={**self.env, **kw.pop("env", {})}, **kw)
 
     def version(self) -> str:
@@ -267,7 +270,7 @@ class Server:
         return bool(p and p.alive)
 
     def panes(self) -> list[Proc]:
-        """Pane processes (`tilr-server pane --id ...`) under the supervisor."""
+        """Pane processes (`tilrd pane --id ...`) under the supervisor."""
         return [p for p in descendants(self.pid) if " pane --id " in f" {p.cmdline} "]
 
     def signal(self, sig: int):
@@ -773,8 +776,8 @@ class Net:
 
 class LocalCdn:
     """Releases served from the case's own container (http.server in a thread), laid out
-    as crates/tilr-server/src/update.rs reads them; for releases the `cdn` service does
-    not have (an older version, a broken one). `url` goes to `tilr-server update --cdn`."""
+    as crates/tilrd/src/update.rs reads them; for releases the `cdn` service does
+    not have (an older version, a broken one). `url` goes to `tilrd update --cdn`."""
 
     def __init__(self, t: "T"):
         import functools
@@ -792,18 +795,22 @@ class LocalCdn:
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
-    def release(self, version: str, exe: Path | str, latest: bool = True) -> Path:
-        """Offer `exe` as release `version` (with its checksum), and as the latest."""
+    def release(self, version: str, exe: Path | str, latest: bool = True,
+                names: tuple[str, ...] = ("tilrd",)) -> Path:
+        """Offer `exe` as release `version` (with its checksum), and as the latest. `names`:
+        the file names it is offered under, `tilr-server` as well for servers from before
+        the rename, which ask for that one (scripts/release.sh publishes both)."""
         import hashlib
-        name = f"tilr-server-{self.platform}"
-        dest = self.dir / "releases" / version / name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(exe, dest)
-        digest = hashlib.sha256(dest.read_bytes()).hexdigest()
-        (dest.parent / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+        for n in names:
+            name = f"{n}-{self.platform}"
+            dest = self.dir / "releases" / version / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(exe, dest)
+            digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+            (dest.parent / f"{name}.sha256").write_text(f"{digest}  {name}\n")
         if latest:
             self.latest(version)
-        return dest
+        return self.dir / "releases" / version / f"{names[0]}-{self.platform}"
 
     def latest(self, version: str):
         path = self.dir / "releases" / self.platform / "latest"
@@ -907,7 +914,7 @@ class T:
             "NO_COLOR": "1",
         }
 
-    def install(self, exe: str = SERVER_EXE, name: str = "tilr-server") -> Path:
+    def install(self, exe: str = SERVER_EXE, name: str = "tilrd") -> Path:
         """A copy of the server in a directory of its own, where an update may replace it."""
         dest = self.scratch("install") / name
         shutil.copy2(shutil.which(exe) or exe, dest)

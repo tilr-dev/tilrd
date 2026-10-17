@@ -77,14 +77,14 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
     // Run a copy of the server, then install a "new version" over it the
     // way an upgrade does: write next to it, rename into place.
     let dir = Server::scratch_dir();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
-    let staged = dir.join("tilr-server.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &staged).unwrap();
+    let staged = dir.join("tilrd.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
     std::fs::rename(&staged, &exe).unwrap();
 
     // Nobody tells the server: it notices on its own.
@@ -96,14 +96,14 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
 #[tokio::test]
 async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
     let dir = Server::scratch_dir();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let server = Server::start_in(dir.clone(), &exe, &["--no-auto-reload"]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
 
-    let staged = dir.join("tilr-server.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &staged).unwrap();
+    let staged = dir.join("tilrd.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
     std::fs::rename(&staged, &exe).unwrap();
 
     tokio::time::sleep(Duration::from_secs(4)).await;
@@ -115,14 +115,14 @@ async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
 #[tokio::test]
 async fn a_broken_executable_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
 
     // An upgrade gone wrong: the new file does not run.
-    let staged = dir.join("tilr-server.new");
+    let staged = dir.join("tilrd.new");
     std::fs::write(&staged, "#!/bin/sh\nexit 1\n").unwrap();
     let mut mode = std::fs::metadata(&staged).unwrap().permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
@@ -144,8 +144,8 @@ async fn a_broken_executable_is_not_reloaded_into() {
 #[tokio::test]
 async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
@@ -170,7 +170,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
             "reads pane-state format 2, this server writes 3",
         ),
     ] {
-        let staged = dir.join("tilr-server.new");
+        let staged = dir.join("tilrd.new");
         std::fs::write(&staged, format!("#!/bin/sh\necho '{formats}'\n")).unwrap();
         let mut mode = std::fs::metadata(&staged).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
@@ -190,8 +190,8 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     }
 
     // A version that reads this server's state is then reloaded into.
-    let staged = dir.join("tilr-server.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &staged).unwrap();
+    let staged = dir.join("tilrd.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
     std::fs::rename(&staged, &exe).unwrap();
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
@@ -410,8 +410,8 @@ async fn stopping_the_server_after_a_reload_ends_the_shells() {
 #[cfg(feature = "failpoints")]
 fn failing_server(failpoints: &str) -> (Server, PathBuf) {
     let dir = Server::scratch_dir();
-    let exe = dir.join("tilr-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilr-server"), &exe).unwrap();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     (Server::start_failing(dir, &exe, &[], failpoints), exe)
 }
 

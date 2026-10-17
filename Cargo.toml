@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilr-server"]
+members = ["crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilrd"]
 
 [workspace.package]
 version = "0.1.0"

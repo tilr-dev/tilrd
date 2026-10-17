@@ -1,5 +1,5 @@
 """tilr Cloud as a case plays it: the WebSocket a linked server keeps open to Cloud
-(the control connection, see crates/tilr-server/src/cloud.rs), and a stand-in
+(the control connection, see crates/tilrd/src/cloud.rs), and a stand-in
 `cloudflared` that notes how it was started and stopped.
 
     cloud = t.cloud()                      # listens on 127.0.0.1, cloud.url is http://...
@@ -174,7 +174,7 @@ class Cloud:
         self.connections.put(control)
 
     def link(self, state_dir: Path, token: str = "tilr_m_test"):
-        """Link the server whose TILR_STATE_DIR this is to this Cloud (as `tilr-server
+        """Link the server whose TILR_STATE_DIR this is to this Cloud (as `tilrd
         cloud login` leaves it)."""
         state_dir.mkdir(parents=True, exist_ok=True)
         path = state_dir / "cloud.json"

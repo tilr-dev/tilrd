@@ -68,7 +68,7 @@ pub async fn watch_executable(exe: &Path, mut changed: impl FnMut() -> bool) {
 /// Raise it with any change an older or newer supervisor would misread.
 pub const STATE_FORMAT: u32 = 2;
 
-/// What `tilr-server state-formats` prints: the versions of the state files
+/// What `tilrd state-formats` prints: the versions of the state files
 /// this executable reads, one `name version` per line.
 pub fn formats() -> String {
     format!(
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn an_executable_that_names_no_formats_cannot_take_over() {
         assert!(check_formats("").is_err());
-        assert!(check_formats("tilr-server 0.1.0\n").is_err());
+        assert!(check_formats("tilrd 0.1.0\n").is_err());
         assert!(check_formats("supervisor-state 1\n").is_err());
         assert!(check_formats("supervisor-state one\npane-state 1\n").is_err());
     }

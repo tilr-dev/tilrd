@@ -1,10 +1,10 @@
 """UC-07A: tilr Cloud over the control channel: `tunnel_open` starts `cloudflared`, aimed at
 this server's port and nowhere else, and `tunnel_close` stops it; nothing else Cloud
 sends is acted on: Cloud does not touch panes (the trust model of
-crates/tilr-server/src/cloud.rs: no message from Cloud reaches a pane).
+crates/tilrd/src/cloud.rs: no message from Cloud reaches a pane).
 
 The case plays Cloud (tt/cloud.py: the WebSocket the linked server keeps open, JSON
-messages) and links the server to it with the file `tilr-server cloud login` leaves
+messages) and links the server to it with the file `tilrd cloud login` leaves
 (state/cloud.json). `cloudflared` is a stand-in script (--cloudflared) that notes its
 arguments, its config, its pid and how it ended, says it registered and runs until
 stopped.
