@@ -61,7 +61,8 @@ root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scrip
    fixtures have no binaries in the container and survive any code change; *tilr tier*
    (`tilr=True`) ones are rebuilt once per binary change.
 4. **scenarios** — one container per case: the fixture snapshot copied into the writable
-   layer at `/fx`, the binaries, the case's module and the services it names.
+   layer at `/fx`, the binaries, the case's module, the services it names and its hosts
+   (see Topology).
 5. Every test gets a fresh `TT_RUN` id, so nothing is served from Dagger's cache unless
    `--cached`; the `test` function itself is `cache="never"`. A red test is data: the
    runner (`tt-run`) records exit code, duration, log and metrics in `/tt-result.json`,
@@ -81,7 +82,8 @@ itests/
   tt/                    the helper (stdlib only, Python 3.12 in the containers)
     __init__.py          @fixture, @case, T, Server, Driver, Session, Proc
     __main__.py          python3 -m tt list | fixture M:NAME | case uc_NNN:NAME
-    proxy.py             the layer-1 fault proxy (also a standalone process)
+    proxy.py             the layer-1 fault proxy (also a standalone process / service)
+    host.py              the agent of a host container (commands, a driver over TCP)
   fixtures/*.py          prepared states shared by cases
   scenarios/uc_NNN.py    the cases of one use case
   tools/                 report.html and the history page
@@ -117,15 +119,25 @@ every subscribed pane's screen from the frames.
 | `wait_for` | `pane`, `regex` (on the screen text, rows joined by `\n`), `timeout_ms` | `matched` with `groups`, or an error with the screen |
 | `list` | | `panes` |
 | `ping` | `timeout_ms` | `pong` with `rtt_ms` |
-| `keepalive` | `interval_ms` (0 = off), `timeout_ms`, `auto_reconnect`, `reconnect_timeout_ms` | `ok` |
+| `keepalive` | `interval_ms` (0 = off), `timeout_ms`, `auto_reconnect`, `reconnect_timeout_ms`, `attempt_timeout_ms` (one reconnect attempt, 3000), `mode` (`any`: any data is a sign of life; `pong`: only answers to its pings), `abandon` (`close`; `leak`: a dead connection is left open and unread, like a suspended app) | `ok` |
 | `reconnect` | `timeout_ms` | `reconnected` with `ms`, `attempts`, `server_version` |
 | `drop` / `disconnect` | | `ok` (drop: socket gone without a close, like the network) |
 | `sleep` | `ms` (keeps reading meanwhile) | `ok` |
+| `status` | | `connected`, `subscribed` |
+| `fs_write` | `path`, content (`text`, or `size` bytes of `fill` repeated), `chunk` (65536), `pause_ms` between chunks, `create`, `truncate` (both true), `wait` (true), `timeout_ms` | `fs_ack` with `error` ("" = done), `sent`, `chunks`, `ms`; an error if the connection is lost on the way (needs `features` with `files`) |
+| `agent` | `echo` (true: the driver is a toy SSH agent that echoes every byte back) | `ok` |
+| `streams` / `stream_close` | `stream` | the open streams (`stream`, `kind`, `pane`, bytes) / `ok` |
+| `socks_open` | `host`, `port` on the server's machine, `url` (default: the connection's `/socks?token=`), `timeout_ms` | `socks_open` with `socks` (an id) |
+| `socks_send` / `socks_recv` / `socks_close` | `socks`; send: content as `fs_write`; recv: `bytes` wanted, `timeout_ms` | recv: `socks_data` with `received`, `text`, `ended` |
+| `latency` | `reset` | `latency`: `count`, `pending`, `unanswered`, `p50_ms` `p90_ms` `p99_ms` `max_ms` of input → first frame carrying its seq (`Frame.last_input_seq`) |
+| `frames` | `since` (index), `pane`, `reset` | `frames`: the last 20000 frames (`t`, `pane`, `seq`, `full`, `rows`, `bytes`, `input_seq`, the pane's `FrameTiming`), `seen`, `bytes`, `max_gap_ms` |
 | `quit` | | `bye` |
 
 Unsolicited events: `disconnected` (reason), `dead` (keepalive saw `timeout_ms` of
 silence), `reconnected` / `reconnect_failed` (auto reconnect; resubscribes), `pane_exited`,
-`server_error`, `protocol_error`.
+`server_error`, `protocol_error`, `stream_open` / `stream_closed` / `stream_lost` (agent
+streams; a stream is lost with its connection). Screens go stale when the connection is
+lost: `screen` and `wait_for` wait for the full frame of the next connection.
 
 ## Writing a case
 
@@ -165,7 +177,12 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `install(exe=)` | a copy of the server in a writable dir (for updates) |
 | `driver(name)` | a tilr-driver: `.cmd(name, **args)`, `.connect(server)`, `.shell_pane()`, `.line()`, `.key()`, `.wait_for()`, `.screen()`, `.text()`, `.value(pane, "$X")`, `.run(pane, cmd)` → exit status, `.list()`, `.wait_event(ev, since=d.mark())`; events carry `_at` (the case's clock) |
 | `session(*argv, env=)` | a terminal login session (pty, setsid, controlling tty): `.write() .expect(re) .hangup()` |
-| `proxy(port)` | the fault proxy in front of a port: `.freeze(dir) .resume() .cut() .set(delay_ms=, jitter_ms=, cut_after_ws_messages=) .stats()` |
+| `proxy(port)` | the layer-1 fault proxy in front of a port (below): `.url .freeze() .resume() .cut() .set() .stats()` |
+| `proxy_service()` | the same proxy in a container of its own (`services=["proxy"]`); `.target(host, port)` first |
+| `host(name)` | a host container (`hosts=[...]`): `.ip .peer_ip` (the case container as the host reaches it) `.run() .sh() .driver(name) .net` |
+| `net()` | `Net` of the case's own container (`net_admin=True`) |
+| `Counter(t, driver, pane, period)` | a counter in a pane: `.last(d) .check_screen(d)` (moving, lines consecutive) `.check_log()` (the pane's own log: nothing skipped, longest gap as `counter_max_gap_ms`) |
+| driver extras | `.viewers(pane)` (as the server counts them), `.latency(reset)`, `.connected()`, `.wait_event(("dead", "disconnected"), since=)` |
 | `service(name)` | URL of a service container named in `@case(services=[...])` |
 | `run(*argv)`, `sh(script)`, `spawn(*argv)` | processes (missing executable = exit 127) |
 | `procs(regex)`, `proc(pid)`, `listener_pid(port)` | /proc: pid, ppid, pgid, sid, tty, state, cmdline, rss_kb, fds |
@@ -189,6 +206,49 @@ def _(t: T):
 
 Every fixture must have a check (the registry refuses one without). A failed fixture
 marks its cases BLOCKED. Add a fixture only when two or more cases need the state.
+
+### The fault proxy (layer 1)
+
+`tt/proxy.py`, a TCP relay that understands WebSocket framing, in the case's process
+(`t.proxy(port)`) or as a service (`services=["proxy"]`, `t.proxy_service()`, JSON lines on
+its control port). Connections are numbered from 1 as accepted.
+
+| | |
+| --- | --- |
+| `freeze(direction="both", conn=None)` | stop reading and passing on (`up` client → server, `down`, `both`): the silent DROP of a network; held bytes go on at `resume`, as TCP retransmits. `conn`: one connection (`1`), or `"open"` (those open now, not later ones); default: all, new ones included |
+| `resume(direction, conn)` | the same choice |
+| `cut(conn=None)` | RST both ways |
+| `set(dir="both", **knobs)` | `delay_ms`, `jitter_ms` (per chunk, order kept); `loss_pct`, `loss_stall_ms` (packet loss as a TCP stream shows it: the chunk waits a retransmission timeout, 200 ms doubling per loss in a row; nothing dropped, doubled or reordered — real loss, duplicates and reordering are netem's); `rate_bps`, `buffer_bytes` (bandwidth; 64 KiB held at most); `cut_after_ws_messages`, `cut_after_bytes`, `cut_mid_ws_message` (RST, once). The protocol compresses: cut by messages, not bytes |
+| `stats()` | per connection: `peer`, `closed`, `read_*` and `bytes_*` (written) per direction, `ws_up` / `ws_down` messages |
+
+### Topology
+
+By default a case is one container: tilrd, the drivers and the proxy talk over loopback.
+A case that needs other IPs or real network faults declares them:
+
+* `hosts=["wifi", "lte"]` — a container per name (Dagger service, the binaries, root with
+  NET_ADMIN), running `tt/host.py`; `t.host(name)` drives it: commands, and drivers whose
+  stdin/stdout cross a TCP connection. The server listens on `0.0.0.0` and a host reaches
+  the case's container by IP (`host.peer_ip`): Dagger containers share a bridge. The
+  case's services are bound into its hosts too (one instance: equal services run once).
+* `services=["proxy"]` — the proxy as a container of its own: client, proxy and tilrd in
+  three containers (UC-042).
+* `net_admin=True` — the case's own exec gets NET_ADMIN (insecure root capabilities), for
+  `t.net()`.
+
+Layer 2, `Net` (`host.net`, `t.net()`), on the container's own interface (`eth1` in
+Dagger, found from the default route):
+
+| | |
+| --- | --- |
+| `netem(spec, dst=None, port=None)` | `tc qdisc ... netem <spec>` on egress, e.g. `"delay 150ms 20ms loss 1% reorder 10% 50%"`; with `dst` and `port`, only the TCP packets to `dst` of connections with that port at either end (a prio qdisc and u32 filters), so control traffic is not shaped. Both directions: one on the host, one on the case (`net_admin`). `ifb` for ingress also works on pb |
+| `drop(peer, port, direction="both")` | `iptables -j DROP` in a chain `TT`, `in` (from the peer's port) / `out` / both: half-open |
+| `reject(peer, port)` | `REJECT --reject-with tcp-reset` |
+| `restore()` | flush the chain: the network is back |
+| `kill_sockets(peer, port)` | `ss -K`: the kernel destroys the sockets and resets the peer |
+| `clear_netem()` | |
+
+All of it is undone when the case ends.
 
 ### Services
 
@@ -215,3 +275,14 @@ its checksum, as `tilr-server update` reads them.
 * UC-040's server-side drop time varies between `client-timeout − ping interval` and
   `client-timeout`: the server counts silence from the client's last message (its last
   pong), not from the moment the network froze.
+* The interface of a Dagger container is `eth1`, not `eth0`.
+* `ss -K dst <case>` and `iptables` rules on the case's whole address also kill the
+  host agent's own control connection: match the server's port.
+* Dagger runs equal service definitions once per session: a stateful service (the proxy,
+  a host) carries the case run's id in its environment (`TT_OWNER`).
+* `FsWrite` chunks and frames are compressed: 4 MB of a repeated pattern is 3.5 KB on the
+  wire, so cut a transfer by messages, not bytes.
+* Text typed while a pane's foreground program runs waits in the tty, and Ctrl-C flushes
+  it: input whose effect a case counts goes to an idle shell pane.
+* TCP at 30% loss each way: retransmission backoff stalls for tens of seconds and a
+  reconnect can take a minute; UC-043 asserts what the server owes and records the rest.

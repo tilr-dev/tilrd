@@ -78,18 +78,22 @@
 Во всех: в панели идёт непрерывный счётчик; после восстановления экран без
 потерь и дублей; меряем миллисекунды до обнаружения и до возврата.
 
-- UC-040. Чистый half-open: DROP в обе стороны посреди вывода — обе стороны замечают за N пингов, клиент возвращается в ту же панель.
-- UC-041. Асимметричный обрыв: только сервер→клиент. Отдельно — только клиент→сервер.
-- UC-042. Зомби-сессия: старое соединение висит half-open, клиент пришёл с нового IP — сервер схлопывает старое, «призрачного» зрителя нет.
-- UC-043. Деградация без обрыва: 30–40% потерь + 500 мс ± 200 — сессию не рвут на каждом лаге, но и не висят вечно.
-- UC-044. Воскрешение: DROP 10 с, клиент уже переподключился, старое соединение ожило — живо ровно одно.
-- UC-045. RST посреди кадра — клиент переподключается сразу, сервер чистит зрителя.
-- UC-046. Обрыв посреди передачи файла (запись кусками) — файл прежний, временного нет; повтор проходит.
-- UC-047. Обрыв посреди потока агента / SOCKS — программа получает конец, следующий поток работает.
-- UC-048. Ввод, отправленный в момент обрыва, может потеряться, но никогда не доходит дважды; после возврата ввод снова работает.
-- UC-049. Медленный клиент (полоса 10 КБ/с) при большом выводе — сервер его не копит бесконечно: отбрасывает кадры / отключает, остальные клиенты не тормозят.
-- UC-050. Тысяча циклов обрыв/возврат — зрителей не копится, память сервера не растёт.
-- UC-051. netem: 3G-профиль (delay 300, loss 2%, reorder) — интерактив работает, задержка ввода в метриках.
+Реализовано (2026-10-17): все UC-040…051, `scenarios/uc_0NN.py::<кейс>`; ручки прокси,
+хосты, netem/iptables — в README. Пороги H ещё не заданы: метрики пишутся в report.json,
+проверяются инварианты и щедрые верхние границы.
+
+- UC-040. Чистый half-open: DROP в обе стороны посреди вывода — обе стороны замечают за N пингов, клиент возвращается в ту же панель. → `uc_040.py::a_frozen_connection_is_dropped_by_both_sides_and_the_client_returns_to_the_same_pane`
+- UC-041. Асимметричный обрыв: только сервер→клиент. Отдельно — только клиент→сервер. → `uc_041.py::a_cut_of_server_to_client_only_is_noticed_by_the_client_and_both_sides_let_go, ::a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server (FAIL: сервер не замечает), ::a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs`
+- UC-042. Зомби-сессия: старое соединение висит half-open, клиент пришёл с нового IP — сервер схлопывает старое, «призрачного» зрителя нет. → `uc_042.py::a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection (iptables), ::a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_proxy (3 контейнера)`
+- UC-043. Деградация без обрыва: 30–40% потерь + 500 мс ± 200 — сессию не рвут на каждом лаге, но и не висят вечно. → `uc_043.py::a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it (netem), ::a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect (прокси)`
+- UC-044. Воскрешение: DROP 10 с, клиент уже переподключился, старое соединение ожило — живо ровно одно. → `uc_044.py::a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connection, ::a_revived_connection_left_open_by_the_client_is_dropped_by_the_server_timeout`
+- UC-045. RST посреди кадра — клиент переподключается сразу, сервер чистит зрителя. → `uc_045.py::a_reset_in_the_middle_of_a_frame_makes_the_client_reconnect_at_once, ::a_socket_reset_by_the_clients_kernel_is_cleaned_up_by_the_server_at_once (ss -K)`
+- UC-046. Обрыв посреди передачи файла (запись кусками) — файл прежний, временного нет; повтор проходит. → `uc_046.py::a_write_cut_by_a_reset_leaves_the_file_as_it_was_and_no_temporary_file, ::a_write_cut_by_a_silent_network_leaves_the_file_as_it_was_and_no_temporary_file`
+- UC-047. Обрыв посреди потока агента / SOCKS — программа получает конец, следующий поток работает. → `uc_047.py::an_agent_stream_cut_by_a_reset_ends_for_the_program_and_the_next_one_works, ::an_agent_stream_on_a_silent_connection_…, ::a_socks_stream_cut_by_a_reset_…, ::a_socks_stream_on_a_silent_connection_…`
+- UC-048. Ввод, отправленный в момент обрыва, может потеряться, но никогда не доходит дважды; после возврата ввод снова работает. → `uc_048.py::input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled, ::input_typed_into_a_silent_connection_is_lost_but_never_doubled, ::input_held_in_a_connection_that_revives_arrives_once_at_most`
+- UC-049. Медленный клиент (полоса 10 КБ/с) при большом выводе — сервер его не копит бесконечно: отбрасывает кадры / отключает, остальные клиенты не тормозят. → `uc_049.py::a_slow_client_under_heavy_output_is_let_go_without_slowing_the_others (FAIL: брошенный клиент остаётся подключён)`
+- UC-050. Тысяча циклов обрыв/возврат — зрителей не копится, память сервера не растёт. → `uc_050.py::a_thousand_resets_leave_one_viewer_and_flat_server_memory_and_descriptors`
+- UC-051. netem: 3G-профиль (delay 300, loss 2%, reorder) — интерактив работает, задержка ввода в метриках. → `uc_051.py::a_shell_stays_usable_on_a_3g_network_and_input_latency_is_recorded`
 
 ## F. Обновление и перезагрузка с живым софтом в панелях
 

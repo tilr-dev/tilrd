@@ -49,7 +49,8 @@ def registry() -> dict:
         "fixtures": {f.name: {"module": f.module, "requires": f.requires, "tilr": f.tilr, "doc": f.doc}
                      for f in fixtures.values()},
         "cases": [{"id": c.id, "module": c.module, "fixture": c.fixture, "services": c.services,
-                   "timeout": c.timeout, "title": c.title} for c in tt.CASES],
+                   "timeout": c.timeout, "title": c.title, "hosts": c.hosts, "net_admin": c.net_admin}
+                  for c in tt.CASES],
     }
 
 

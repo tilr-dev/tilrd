@@ -29,7 +29,7 @@ ZIG_VERSION = "0.15.2"
 # Runtime images of the distributions the scenarios run on; one for now.
 DISTROS = {"ubuntu": "ubuntu:24.04"}
 RUNTIME_APT = ["python3", "procps", "psmisc", "util-linux", "bash", "ca-certificates", "curl",
-               "vim", "htop", "less", "iproute2", "lsof"]
+               "vim", "htop", "less", "iproute2", "lsof", "iptables"]
 
 # Same paths in every container: test executables bake CARGO_MANIFEST_DIR and
 # CARGO_BIN_EXE_* at compile time.
@@ -251,10 +251,11 @@ class TilrItests:
                 .with_file("/opt/tt/manifest.json", out.file("manifest.json")))
 
     async def _run(self, sem: asyncio.Semaphore, ctr: dagger.Container, argv: list[str],
-                   rid: str, kind: str) -> Result:
+                   rid: str, kind: str, net_admin: bool = False) -> Result:
         async with sem:
             try:
-                raw = await ctr.with_exec(["tt-run", *argv]).file("/tt-result.json").contents()
+                raw = await (ctr.with_exec(["tt-run", *argv], insecure_root_capabilities=net_admin)
+                             .file("/tt-result.json").contents())
             except dagger.ExecError as e:
                 return Result(rid, kind, "FAIL", 0, f"[tt] runner failed:\n{e.stdout}\n{e.stderr}")
             except dagger.QueryError as e:
@@ -364,8 +365,18 @@ class TilrItests:
 
     # ---------------------------------------------------------------- services
 
-    def _service(self, name: str) -> tuple[dagger.Service, str]:
-        """A service container a case asks for by name, and the URL it is reached at."""
+    def _service(self, name: str, owner: str) -> tuple[dagger.Service, str]:
+        """A service container a case asks for by name, and the URL it is reached at.
+        `owner` makes a stateful service (the proxy) the case's own: Dagger shares
+        services whose definitions are equal."""
+        if name == "proxy":
+            svc = (self._tt(self.runtime())
+                   .with_env_variable("TT_OWNER", owner)
+                   .with_exposed_port(9000)
+                   .with_exposed_port(9001)
+                   .as_service(args=["python3", "-m", "tt.proxy", "--listen", "0.0.0.0:9000",
+                                     "--control", "0.0.0.0:9001"]))
+            return svc, "tcp://proxy:9000"
         if name == "cdn":
             out = self.build()
             cdn = (self.runtime()
@@ -379,6 +390,17 @@ class TilrItests:
                    .as_service(args=["python3", "-m", "http.server", "8080", "--directory", "/cdn"]))
             return svc, "http://cdn:8080"
         raise ValueError(f"unknown service {name}")
+
+    def _host(self, owner: str, services: dict[str, dagger.Service]) -> dagger.Service:
+        """A container of its own a case drives (tt/host.py): the binaries, root with
+        NET_ADMIN for netem and iptables on its own interface, the case's services bound
+        (the same instances: Dagger runs equal services once)."""
+        ctr = self._with_binaries(self._tt(self.runtime()))
+        for name, svc in services.items():
+            ctr = ctr.with_service_binding(name, svc)
+        return (ctr.with_env_variable("TT_OWNER", owner)
+                .with_exposed_port(7000)
+                .as_service(args=["python3", "-m", "tt.host", "--port", "7000"], insecure_root_capabilities=True))
 
     # --------------------------------------------------------------- scenarios
 
@@ -408,11 +430,20 @@ class TilrItests:
                    .with_directory("/fx", fx)
                    .with_env_variable("TT_RUN", f"{run_id}-{k}")
                    .with_env_variable("TT_TIMEOUT", str(c["timeout"])))
+            owner = f"{run_id}-{k}-{c['id']}"
+            services = {}
             for name in c["services"]:
-                svc, url = self._service(name)
+                svc, url = self._service(name, owner)
+                services[name] = svc
                 ctr = (ctr.with_service_binding(name, svc)
                        .with_env_variable(f"TT_SERVICE_{name.upper()}", url))
-            return await self._run(sem, ctr, ["python3", "-m", "tt", "case", c["id"]], rid, "scenario")
+            for name in c.get("hosts", []):
+                ctr = (ctr.with_service_binding(name, self._host(f"{owner}-{name}", services))
+                       .with_env_variable(f"TT_HOST_{name.upper()}", f"{name}:7000"))
+            net_admin = bool(c.get("net_admin"))
+            if net_admin:
+                ctr = ctr.with_env_variable("TT_NET_ADMIN", "1")
+            return await self._run(sem, ctr, ["python3", "-m", "tt", "case", c["id"]], rid, "scenario", net_admin)
 
         results = list(await asyncio.gather(*(one(c, k) for c in cases for k in range(1, repeat + 1))))
         return await self._fixture_results(get, registry, sorted(needed)) + results

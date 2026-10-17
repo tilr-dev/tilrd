@@ -44,7 +44,7 @@ MANIFEST = Path(os.environ.get("TT_MANIFEST", "/opt/tt/manifest.json"))
 
 # What each backend can give a case; t.need() turns a missing one into BLOCKED.
 CAPABILITIES = {
-    "dagger": {"linux", "procfs", "container", "services", "root"},
+    "dagger": {"linux", "procfs", "container", "services", "root", "hosts", "netem"},
     "local": set(),
 }
 
@@ -72,6 +72,8 @@ class Case:
     timeout: int
     fn: Callable
     title: str
+    hosts: list[str] = dataclasses.field(default_factory=list)
+    net_admin: bool = False
 
 
 def fixture(*, requires: tuple[str, ...] | list[str] = (), tilr: bool = False):
@@ -91,13 +93,17 @@ def fixture(*, requires: tuple[str, ...] | list[str] = (), tilr: bool = False):
     return deco
 
 
-def case(*, fixture: str | None = None, services: tuple[str, ...] | list[str] = (), timeout: int = 300):
+def case(*, fixture: str | None = None, services: tuple[str, ...] | list[str] = (), timeout: int = 300,
+         hosts: tuple[str, ...] | list[str] = (), net_admin: bool = False):
     """Register a scenario case: a fresh container (copy of the fixture snapshot), the
-    services it names bound by hostname, killed after `timeout` seconds."""
+    services it names bound by hostname, killed after `timeout` seconds. `hosts`: containers
+    of their own the case drives (t.host(name)); `net_admin`: the case's own container may
+    change its network (t.net())."""
     def deco(fn):
         short = fn.__module__.rsplit(".", 1)[-1]
         title = (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else ""
-        CASES.append(Case(f"{short}:{fn.__name__}", fn.__module__, fixture, list(services), timeout, fn, title))
+        CASES.append(Case(f"{short}:{fn.__name__}", fn.__module__, fixture, list(services), timeout, fn, title,
+                          list(hosts), net_admin))
         return fn
     return deco
 
@@ -290,11 +296,18 @@ class Server:
 class Driver:
     """A tilr-driver process: one client, commands in, events out."""
 
-    def __init__(self, t: "T", name: str):
-        self.t, self.name = t, name
-        self.stderr = TMP / f"{name}.stderr"
-        self.p = subprocess.Popen([DRIVER_EXE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=open(self.stderr, "wb"), text=True, bufsize=1)
+    def __init__(self, t: "T", name: str, host: "Host | None" = None):
+        self.t, self.name, self.host = t, name, host
+        self.stderr = TMP / (f"{host.name}-{name}.stderr" if host else f"{name}.stderr")
+        if host is None:
+            self.p = subprocess.Popen([DRIVER_EXE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=open(self.stderr, "wb"), text=True, bufsize=1)
+            self._w, self._r = self.p.stdin, self.p.stdout
+        else:
+            self.p = None
+            self.sock = host.attach_driver(name)
+            self._w = self.sock.makefile("w", buffering=1, encoding="utf-8")
+            self._r = self.sock.makefile("r", encoding="utf-8")
         self.events: list[dict] = []
         self.cond = threading.Condition()
         self.next_id = 0
@@ -303,7 +316,7 @@ class Driver:
         self.wait_event("ready", timeout=10)
 
     def _read(self):
-        for line in self.p.stdout:
+        for line in self._r:
             try:
                 ev = json.loads(line)
             except ValueError:
@@ -318,14 +331,16 @@ class Driver:
             self.events.append({"ev": "exited"})
             self.cond.notify_all()
 
-    def wait_event(self, ev: str, timeout: float = 10, since: int = 0,
+    def wait_event(self, ev: str | tuple[str, ...], timeout: float = 10, since: int = 0,
                    pred: Callable[[dict], bool] = lambda e: True) -> dict:
-        """The first event named `ev` at or after index `since` that `pred` accepts."""
+        """The first event named `ev` (or any of several) at or after index `since` that
+        `pred` accepts."""
+        names = ev if isinstance(ev, tuple) else (ev,)
         deadline = time.monotonic() + timeout
         with self.cond:
             while True:
                 for e in self.events[since:]:
-                    if e.get("ev") == ev and pred(e):
+                    if e.get("ev") in names and pred(e):
                         return e
                 left = deadline - time.monotonic()
                 if left <= 0:
@@ -344,8 +359,8 @@ class Driver:
         line = json.dumps({"id": cid, "cmd": name, **args})
         if not quiet:
             print(f"{stamp()} {self.name} -> {_short(line, 200)}")
-        self.p.stdin.write(line + "\n")
-        self.p.stdin.flush()
+        self._w.write(line + "\n")
+        self._w.flush()
         reply = self._answer(cid, timeout or (args.get("timeout_ms", 0) / 1000 + 30))
         if not quiet:
             print(f"{stamp()} {self.name} <- {_short({k: v for k, v in reply.items() if k != '_at'})}")
@@ -361,7 +376,7 @@ class Driver:
                     if e.get("id") == cid:
                         return e
                 if self.events and self.events[-1].get("ev") == "exited":
-                    raise Failure(f"{self.name} exited:\n{self.stderr.read_text(errors='replace')}")
+                    raise Failure(f"{self.name} exited:\n{self.stderr_text()}")
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise Failure(f"{self.name}: no answer to command {cid} within {timeout}s")
@@ -407,6 +422,18 @@ class Driver:
     def list(self) -> list[dict]:
         return self.cmd("list")["panes"]
 
+    def viewers(self, pane: str) -> int:
+        """How many clients the server says watch the pane."""
+        return next((p["viewers"] for p in self.cmd("list", quiet=True)["panes"] if p["pane"] == pane), -1)
+
+    def latency(self, reset: bool = False) -> dict:
+        """Input latency so far, as the driver measured it (send -> first frame carrying the
+        input's seq): count, pending, unanswered, p50_ms, p90_ms, p99_ms, max_ms."""
+        return self.cmd("latency", reset=reset, quiet=True)
+
+    def connected(self) -> bool:
+        return self.cmd("status", quiet=True)["connected"]
+
     _n = 0
 
     def run(self, pane: str, command: str, timeout: float = 20) -> int:
@@ -424,14 +451,84 @@ class Driver:
         self.line(pane, f'echo "<v""{n}>{expr}</v{n}>"')
         return self.wait_for(pane, rf"<v{n}>(.*?)</v{n}>", timeout)["groups"][1]
 
+    def stderr_text(self) -> str:
+        if self.host:
+            text = self.host.run("cat", f"/tmp/tt/{self.name}.stderr", quiet=True).out
+            self.stderr.write_text(text)
+            return text
+        return self.stderr.read_text(errors="replace")
+
     def quit(self):
-        if self.p.poll() is None:
+        if self.p is None:
+            import socket
+            try:
+                self._w.write(json.dumps({"cmd": "quit"}) + "\n")
+                self._w.flush()
+                self.wait_event("bye", timeout=5)
+                self.sock.shutdown(socket.SHUT_WR)
+                self.wait_event("exited", timeout=2)
+            except (OSError, ValueError, Failure):
+                pass
+            self.sock.close()
+            try:
+                self.stderr_text()
+            except Exception:
+                pass
+        elif self.p.poll() is None:
             try:
                 self.p.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
                 self.p.stdin.flush()
                 self.p.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired, ValueError):
                 self.p.kill()
+
+
+# ---------------------------------------------------------------------------- a counter in a pane
+
+
+class Counter:
+    """A counter running in a pane's shell: `tick N` on the screen every `period` seconds,
+    and `N <unix time>` appended to `log`, a file on the server's machine (this container)
+    the case reads directly: what the pane did, whatever reached the client."""
+
+    def __init__(self, t: "T", driver: Driver, pane: str, period: float = 0.1, name: str = "ticks"):
+        self.t, self.pane = t, pane
+        self.log = t.scratch("counter") / name
+        driver.line(pane, f"i=0; while :; do i=$((i+1)); echo \"tick $i\"; echo \"$i $(date +%s.%N)\" >>{self.log}; "
+                          f"sleep {period}; done")
+
+    @staticmethod
+    def on_screen(text: str) -> list[int]:
+        return [int(m) for m in re.findall(r"(?m)^tick (\d+)$", text)]
+
+    def last(self, driver: Driver) -> int:
+        """The highest tick on the driver's screen; 0 while it has no screen (reconnecting)."""
+        screen = driver.cmd("screen", pane=self.pane, ok=False, quiet=True, timeout_ms=1000)
+        seen = self.on_screen(screen.get("text", ""))
+        return max(seen) if seen else 0
+
+    def check_screen(self, driver: Driver, ahead: int = 5, timeout: float = 20, what: str = "the screen"):
+        """The counter moves on the driver's screen, whose tick lines are consecutive:
+        nothing lost, nothing doubled."""
+        start = self.t.eventually(lambda: self.last(driver), f"a counter on {what}", timeout=timeout)
+        self.t.eventually(lambda: self.last(driver) >= start + ahead, f"the counter moving on {what}",
+                          timeout=timeout, interval=0.05)
+        seen = self.on_screen(driver.text(self.pane))
+        self.t.eq(seen, list(range(seen[0], seen[0] + len(seen))), f"counter lines on {what} are consecutive")
+
+    def written(self) -> list[tuple[int, float]]:
+        return [(int(n), float(s)) for n, s in (line.split() for line in self.log.read_text().splitlines() if line)]
+
+    def check_log(self, max_gap: float = 1.0) -> float:
+        """The pane's counter skipped nothing and never stalled longer than max_gap (it
+        does not wait for a client); the longest gap, recorded as counter_max_gap_ms."""
+        written = self.written()
+        numbers = [n for n, _ in written]
+        self.t.eq(numbers, list(range(1, len(numbers) + 1)), "the counter skipped nothing")
+        gap = max((b - a for (_, a), (_, b) in zip(written, written[1:])), default=0.0)
+        self.t.metric("counter_max_gap_ms", round(gap * 1000))
+        self.t.ok(gap < max_gap, f"the counter never stalled (longest gap {gap:.2f}s, limit {max_gap}s)")
+        return gap
 
 
 # ---------------------------------------------------------------------------- terminal session
@@ -484,6 +581,175 @@ class Session:
         except OSError:
             pass
         print(f"{stamp()} {self.name}: hung up (pty closed, SIGHUP to group {pgid})")
+
+
+# ---------------------------------------------------------------------------- hosts and the network
+
+
+class Host:
+    """A container of its own the case drives (tt/host.py): another IP, its own network
+    stack, root with NET_ADMIN. Bound under its name; the agent listens on port 7000."""
+
+    def __init__(self, t: "T", name: str, addr: str):
+        self.t, self.name = t, name
+        host, _, port = addr.rpartition(":")
+        self.addr = (host, int(port))
+        info = self._request({"op": "info"}, timeout=10)
+        self.ip, self.peer_ip = info["ip"], info["peer"]
+        self.net = Net(t, self.run, name)
+
+    def _connect(self, timeout: float):
+        import socket
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                return socket.create_connection(self.addr, timeout=timeout)
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.2)
+
+    def _request(self, req: dict, timeout: float) -> dict:
+        with self._connect(timeout) as sock:
+            sock.sendall((json.dumps(req) + "\n").encode())
+            answer = sock.makefile("rb").readline()
+        return json.loads(answer)
+
+    def run(self, *argv, timeout: float = 60, quiet: bool = False, check: bool = False) -> R:
+        argv = [str(a) for a in argv]
+        out = self._request({"op": "run", "argv": argv, "timeout": timeout}, timeout + 10)
+        r = R(argv, out.get("code", 1), out.get("out", ""), out.get("err", out.get("error", "")))
+        if not quiet:
+            print(f"{stamp()} {self.name}$ {shlex.join(argv)}")
+            if r.out:
+                print(_indent(r.out), end="")
+            if r.err:
+                print("  stderr:\n" + _indent(r.err), end="")
+            print(f"  -> exit {r.code}")
+        if check and r.code != 0:
+            raise Failure(f"{self.name}: {shlex.join(argv)} exited {r.code}\n{r.text}")
+        return r
+
+    def sh(self, script: str, **kw) -> R:
+        return self.run("bash", "-c", script, **kw)
+
+    def attach_driver(self, name: str):
+        sock = self._connect(None)
+        sock.settimeout(None)
+        sock.sendall((json.dumps({"op": "driver", "name": name}) + "\n").encode())
+        # The agent's answer is one line; read it byte by byte so nothing of the
+        # driver's own output is swallowed by a buffer.
+        line = b""
+        while not line.endswith(b"\n"):
+            b = sock.recv(1)
+            if not b:
+                raise Failure(f"{self.name}: the host closed the driver connection")
+            line += b
+        if not json.loads(line).get("ok"):
+            raise Failure(f"{self.name}: no driver: {line!r}")
+        return sock
+
+    def driver(self, name: str = "driver") -> "Driver":
+        d = Driver(self.t, name, host=self)
+        self.t._cleanup.append(d.quit)
+        return d
+
+
+class Net:
+    """Layer 2 faults on a container's own network stack: netem on its egress, iptables
+    DROP / REJECT of a peer, killing sockets. `run` runs a command there as root."""
+
+    CHAIN = "TT"
+
+    def __init__(self, t: "T", run: Callable, where: str):
+        self.t, self._run, self.where = t, run, where
+        self._dev = ""
+        self._chain = False
+
+    def sh(self, script: str, check: bool = True) -> R:
+        return self._run("sh", "-c", script, check=check)
+
+    @property
+    def dev(self) -> str:
+        """The interface of the default route (eth0 in a container)."""
+        if not self._dev:
+            out = self._run("ip", "-4", "route", "show", "default", quiet=True).out
+            m = re.search(r"\bdev (\S+)", out)
+            self._dev = m.group(1) if m else "eth0"
+        return self._dev
+
+    def ip(self) -> str:
+        out = self._run("ip", "-4", "-o", "addr", "show", "dev", self.dev, quiet=True).out
+        return re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out).group(1)
+
+    def netem(self, spec: str, dst: str | None = None, port: int | None = None):
+        """Shape what leaves this container (`spec` as `tc qdisc ... netem` takes it, e.g.
+        "delay 300ms 50ms loss 2% reorder 25% 50%"). With `dst`, only packets to that IP;
+        with `port` too, only those of TCP connections with that port at either end (the
+        server's), so the case's own control traffic to a host is left alone."""
+        self.clear_netem()
+        dev = self.dev
+        if dst is None:
+            self.sh(f"tc qdisc add dev {dev} root netem {spec}")
+        else:
+            # A prio qdisc whose third band (unused by the default priomap) gets the
+            # filtered packets and holds the netem.
+            match = f"match ip dst {dst}/32"
+            filters = [f"{match} match ip dport {port} 0xffff", f"{match} match ip sport {port} 0xffff"] \
+                if port else [match]
+            self.sh(f"tc qdisc add dev {dev} root handle 1: prio && "
+                    f"tc qdisc add dev {dev} parent 1:3 handle 30: netem {spec} && " +
+                    " && ".join(f"tc filter add dev {dev} protocol ip parent 1:0 prio 3 u32 {f} flowid 1:3"
+                                for f in filters))
+        self.t._cleanup.append(self.clear_netem)
+        print(f"{stamp()} {self.where}: netem {spec}" + (f" to {dst}" if dst else "") + (f" port {port}" if port else ""))
+
+    def clear_netem(self):
+        self.sh(f"tc qdisc del dev {self.dev} root 2>/dev/null || true")
+
+    def _ensure_chain(self):
+        if not self._chain:
+            self.sh(f"iptables -N {self.CHAIN} 2>/dev/null || iptables -F {self.CHAIN}; "
+                    f"iptables -C INPUT -j {self.CHAIN} 2>/dev/null || iptables -I INPUT -j {self.CHAIN}; "
+                    f"iptables -C OUTPUT -j {self.CHAIN} 2>/dev/null || iptables -I OUTPUT -j {self.CHAIN}")
+            self._chain = True
+            self.t._cleanup.append(self.restore)
+
+    @staticmethod
+    def _rules(peer: str, port: int | None, direction: str, target: str) -> list[str]:
+        """iptables matches for TCP to and from the peer's `port` (any traffic with the
+        peer without one): "in" what the peer sends, "out" what goes to it."""
+        rules = []
+        if direction in ("both", "in"):
+            rules.append(f"-s {peer}" + (f" -p tcp --sport {port}" if port else "") + f" -j {target}")
+        if direction in ("both", "out"):
+            rules.append(f"-d {peer}" + (f" -p tcp --dport {port}" if port else "") + f" -j {target}")
+        return rules
+
+    def drop(self, peer: str, port: int | None = None, direction: str = "both"):
+        """Silently drop packets of the connections to the peer's `port`: "in" from the
+        peer, "out" to it, or both. Nothing tells either side: a half-open connection."""
+        self._ensure_chain()
+        self.sh(" && ".join(f"iptables -A {self.CHAIN} {r}" for r in self._rules(peer, port, direction, "DROP")))
+        print(f"{stamp()} {self.where}: DROP {direction} {peer}" + (f":{port}" if port else ""))
+
+    def reject(self, peer: str, port: int):
+        """Answer every TCP packet of the connections to the peer's port with a reset."""
+        self._ensure_chain()
+        self.sh(f"iptables -A {self.CHAIN} -p tcp -d {peer} --dport {port} -j REJECT --reject-with tcp-reset && "
+                f"iptables -A {self.CHAIN} -p tcp -s {peer} --sport {port} -j REJECT --reject-with tcp-reset")
+        print(f"{stamp()} {self.where}: REJECT (RST) {peer}:{port}")
+
+    def restore(self):
+        """Remove every DROP and REJECT: the network is back."""
+        if self._chain:
+            self.sh(f"iptables -F {self.CHAIN}")
+            print(f"{stamp()} {self.where}: iptables rules removed")
+
+    def kill_sockets(self, peer: str, port: int) -> R:
+        """Destroy this container's TCP sockets to the peer's port (ss -K): the kernel
+        resets them."""
+        return self._run("ss", "-K", "dst", peer, "dport", "=", f":{port}", check=False)
 
 
 # ---------------------------------------------------------------------------- the context
@@ -624,6 +890,32 @@ class T:
         p = Proxy(target_host, target_port)
         self._cleanup.append(p.close)
         print(f"{stamp()} proxy 127.0.0.1:{p.port} -> {target_host}:{target_port}")
+        return p
+
+    def host(self, name: str) -> Host:
+        """A host the case declared in @case(hosts=...), once its agent answers."""
+        self.need("hosts")
+        addr = os.environ.get(f"TT_HOST_{name.upper()}")
+        if not addr:
+            raise Blocked(f"host {name} is not available on backend {self.backend}")
+        h = Host(self, name, addr)
+        print(f"{stamp()} host {name} at {h.ip} (sees this container as {h.peer_ip})")
+        return h
+
+    def net(self) -> Net:
+        """Layer 2 faults on this container's own network (needs @case(net_admin=True))."""
+        self.need("netem")
+        if os.environ.get("TT_NET_ADMIN") != "1":
+            raise Blocked("the case's container has no NET_ADMIN: declare @case(net_admin=True)")
+        return Net(self, lambda *argv, **kw: self.run(*argv, **{"quiet": True, **kw}), "case")
+
+    def proxy_service(self, name: str = "proxy"):
+        """The fault proxy running in a service container of its own (services=["proxy"]);
+        point it somewhere with .target(host, port)."""
+        from .proxy import RemoteProxy
+        addr = self.service(name)
+        p = RemoteProxy(addr)
+        self._cleanup.append(p.close)
         return p
 
     def service(self, name: str) -> str:
