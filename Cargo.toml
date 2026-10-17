@@ -18,7 +18,7 @@ anyhow = "1"
 bytes = "1"
 prost = "0.14"
 prost-build = "0.14"
-zstd = "0.13"
+zstd = "0.14"
 
 [profile.release]
 lto = "thin"
