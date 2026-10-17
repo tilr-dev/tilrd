@@ -14,10 +14,11 @@ The update is the new executable renamed over the installed one, as `tilr-server
 update` finishes; the server notices it and reloads (auto reload). The panes' shells
 survive all of it.
 
-Red (2026-10-17): the write broken by the reload leaves its temporary file
-(.doc.txt.tilr-write-*) for good. The task writing it dies with the exec, so its cleanup
-(crates/tilr-server/src/files.rs:557) never runs, and nothing removes files with
-TEMP_MARK (files.rs:43) when the new server starts. The other two cases pass.
+Was red until 2026-10-17: the write cut by the reload left its temporary file
+(.doc.txt.tilr-write-*) for good, its task dying with the exec. Now each write notes its
+temporary file in `writes/` of the runtime directory, and a server that starts or has just
+reloaded removes those of writes whose process is gone or was itself
+(crates/tilr-server/src/files.rs `note_write`, `sweep_writes`).
 """
 
 import hashlib

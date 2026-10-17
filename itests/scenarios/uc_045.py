@@ -28,7 +28,7 @@ def check_after_reset(t: T, observer, client, pane: str, counter: Counter, cut_a
     t.eq(observer.viewers(pane), 1, "still one viewer")
     counter.check_screen(client)
     counter.check_log()
-    client.key(pane, "ctrl-c")
+    client.interrupt(pane)
     t.eq(client.run(pane, "echo typed-after"), 0, "input works after the reset")
 
 

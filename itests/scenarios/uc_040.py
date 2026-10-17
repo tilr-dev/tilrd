@@ -87,6 +87,7 @@ def a_frozen_connection_is_dropped_by_both_sides_and_the_client_returns_to_the_s
     t.metric("counter_max_gap_ms", round(gap * 1000))
     t.ok(gap < 1.0, f"the counter never stalled while the client was frozen (longest gap {gap:.2f}s)")
 
-    client.key(pane, "ctrl-c")
+    # Until the prompt is back: what is typed before the counter dies is flushed with it.
+    client.interrupt(pane)
     t.eq(client.run(pane, "echo typed-after-return"), 0, "input works after the return")
     t.eq(len(re.findall(r"(?m)^typed-after-return$", client.text(pane))), 1, "the output appears once")

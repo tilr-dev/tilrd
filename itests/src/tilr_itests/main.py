@@ -102,9 +102,12 @@ if not os.path.exists(".git/logs/HEAD"):
 def cargo(*args, env=None, **kw):
     return subprocess.run(["cargo", *args], check=True, env=dict(os.environ, **(env or {})), **kw)
 
-cargo("build", "--locked", "-p", "tilr-server", "-p", "tilr-driver")
+cargo("build", "--locked", "-p", "tilr-server")
 shutil.copy2("/target/debug/tilr-server", f"{out}/bin/tilr-server")
-shutil.copy2("/target/debug/tilr-driver", f"{out}/bin/tilr-driver")
+# The driver plays a real client, which is an optimized build: a debug one hashes, decodes
+# and writes files at ~30 MB/s, and what it is slow to read queues in its receive buffer.
+cargo("build", "--locked", "--release", "-p", "tilr-driver")
+shutil.copy2("/target/release/tilr-driver", f"{out}/bin/tilr-driver")
 
 p = cargo("test", "--no-run", "--locked", "--workspace", "--features", "tilr-server/failpoints",
           "--message-format=json-render-diagnostics", stdout=subprocess.PIPE, text=True)

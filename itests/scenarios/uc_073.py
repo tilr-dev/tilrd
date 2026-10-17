@@ -13,12 +13,10 @@ growing"; the other way, a client that runs more than about 4 MiB ahead of the p
 loses the stream. A slow client is one behind the layer-1 proxy limited to 1 MB/s down;
 it keeps reading, answering pings, and watching a counter, so it must not be dropped.
 
-Red (2026-10-17): a slow client is buffered for, not held to. Its queue is counted in
-packets, not bytes (crates/tilr-server/src/outbox.rs:15, CLIENT_QUEUE = 1024), and the
-agent's pump waits only for room in it (agent.rs:373): 1024 StreamData of 64 KiB is
-64 MiB. The program got all 64 MiB out in under a second at 1 MB/s down and the server
-grew by 64 MB. The client is not dropped and the stream arrives whole. The other cases
-pass.
+Was red until 2026-10-17: the slow client's queue was counted in packets, so 64 MiB were
+buffered for it and the program never held back. Now stream data goes by the client's
+bulk lane, which holds at most 4 MiB (crates/tilr-server/src/outbox.rs BULK_BYTES), and
+the agent's pump waits for room in it.
 """
 
 import json
@@ -145,7 +143,9 @@ def a_big_stream_to_the_client_arrives_whole_and_in_order(t: T):
     since = d.mark()
     d.line(pane, f"python3 {program} send {size} {out}")
     closed = d.wait_event("stream_closed", since=since, timeout=300)
-    r = result(out)
+    # The program writes its result after it closed the stream: the client may hear of the
+    # close first.
+    r = t.eventually(lambda: result(out).get("done") and result(out), "the program is done", timeout=30)
     t.eq(r.get("sent"), size, "the program sent it all")
     t.eq((closed["bytes_in"], closed["sha256_in"]), (size, r["sent_sha256"]),
          "the client got every byte, in order (sha256)")
@@ -185,7 +185,7 @@ def a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for
 
     def all_arrives():
         closed = d.wait_event("stream_closed", since=since, timeout=120)
-        r = result(out)
+        r = t.eventually(lambda: result(out).get("done") and result(out), "the program is done", timeout=30)
         t.eq((closed["bytes_in"], closed["sha256_in"]), (size, r["sent_sha256"]), "everything, in order")
     t.check("once the client is fast again the whole stream arrives in order", all_arrives)
     t.check("the counter kept going on the slow client's screen", lambda: counter.check_screen(d))

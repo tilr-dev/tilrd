@@ -14,11 +14,11 @@ through (the link stays a link), refused when they lead out of the shared direct
 Modes: a write over a file keeps its mode (0750, 0600, setgid), a new file gets 0666
 less the umask, FsEntry.mode says the same as stat.
 
-Red (2026-10-17): a name that is not UTF-8 is listed lossily (U+FFFD for each bad byte,
-crates/tilr-server/src/files.rs:782 `to_string_lossy`), and the listed name leads to no
-file ("no such file or directory"): such a file can be seen but not read, written or
-removed over the protocol. Paths are `string` in tilr.proto; fixing it needs bytes (or
-an escape) on the wire. The other cases pass.
+Was red until 2026-10-17: a name that is not UTF-8 was listed lossily and the listed name
+led to no file. Now tilr.proto carries such names as raw bytes beside the string
+(FsEntry.name_bytes, `path_bytes` and the like in every request and answer), and
+tilr-driver writes them in its JSON as Python's surrogateescape (`\\udcXX`), so the name the
+case gets from the listing is the file's exact bytes when it is sent back.
 """
 
 import os

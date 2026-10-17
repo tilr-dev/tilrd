@@ -12,12 +12,14 @@ transfers' throughput. Asserted: generous bounds (no tuned thresholds yet, see g
 p99 under transfers within 250 ms or 5x the baseline (whichever is more), no keystroke
 over a second, every keystroke echoed, every hash equal.
 
-Red (2026-10-17): reads stall the terminal. Three 32 MiB reads (8 MiB parts) put a
-keystroke's echo up to 1.6 s behind (p50 0.6 s; baseline 1 ms); with writes too, up to
-5 s. A part is answered as fast as the disk gives it (crates/tilr-server/src/files.rs:458,
-256 KiB FsData in a loop) into the client's one FIFO queue (outbox.rs), where the frames
-wait behind it: nothing puts the screen ahead of file data. Writes alone are fine (p99
-53 ms).
+Was red until 2026-10-17: three 32 MiB reads put a keystroke's echo up to 1.6 s behind,
+with writes too up to 5 s: the frames waited behind file data in the client's one queue.
+Now the client's queue has an interactive lane and a bulk lane (FsData, StreamData) that
+is written only when the other is empty, and bulk data out on the network and not yet read
+by the client is held to 1 MiB, measured by pings (crates/tilr-server/src/outbox.rs).
+With the debug-built driver the echo then took p99 ~350 ms both ways: that driver reads
+at ~30 MB/s, and its own uploads queue its keys; the driver is now built for release
+(a real client is), and both ways stay within tens of ms.
 """
 
 import hashlib

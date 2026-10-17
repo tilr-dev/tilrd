@@ -50,8 +50,8 @@ root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scrip
 `src/tilr_itests/main.py`:
 
 1. **build** — one Rust container (rust 1.94 bookworm, zig 0.15.2, protoc; `CARGO_HOME`
-   and the target dirs are cache volumes on pb) builds the server and `tilr-driver`, the
-   test executables with failpoints (listing their tests), and the *next release*: the
+   and the target dirs are cache volumes on pb) builds the server (debug), `tilr-driver`
+   (release: it plays a real client, and a debug one reads at ~30 MB/s), the test executables with failpoints (listing their tests), and the *next release*: the
    same source with `TILR_BUILD_VERSION=0.1.1`, in a target dir of its own so the two
    version strings never rebuild each other. Cached by Dagger until the source changes.
 2. **rust** — one runtime container per test, running the copied executable with

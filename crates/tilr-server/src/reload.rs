@@ -146,18 +146,34 @@ fn pane_state_dir() -> PathBuf {
 
 /// Write a state file only the user can read. It holds what is on a screen
 /// and what was typed but not yet delivered.
+///
+/// The file appears whole or not at all: the bytes go to a temporary file
+/// next to it (`.<name>.tmp`), synced, then renamed over it. A write that
+/// fails (a full disk) removes the temporary file, so nothing half-written
+/// is left for a successor or for the sweep.
 pub fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        clipboard::private_dir(dir)?;
-    }
-    File::options()
+    let dir = path.parent().unwrap_or(Path::new("."));
+    clipboard::private_dir(dir)?;
+    let temp = dir.join(format!(
+        ".{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let written = File::options()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(path)
-        .and_then(|mut file| file.write_all(bytes))
-        .with_context(|| format!("write {}", path.display()))
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temp, path));
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err).with_context(|| format!("write {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Read a state file and remove it: it is for one successor, once. `None`
@@ -211,8 +227,10 @@ pub fn sweep_stale() {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let stale = name.starts_with(prefix)
-                && name.ends_with(".state")
+            // A state file, or the temporary file of one whose writer died.
+            let state = name.starts_with(prefix) && name.ends_with(".state")
+                || name.starts_with(&format!(".{prefix}")) && name.ends_with(".state.tmp");
+            let stale = state
                 && entry
                     .metadata()
                     .and_then(|meta| meta.modified())
@@ -260,6 +278,53 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tilr-reload-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_state_file_is_replaced_whole_and_nothing_else_is_left() {
+        let dir = scratch("whole");
+        let path = dir.join("server-1.state");
+        write_file(&path, b"first").unwrap();
+        write_file(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(names(&dir), ["server-1.state"]);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().mode() & 0o777,
+            0o600,
+            "only the user reads it"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_state_file_that_cannot_be_written_leaves_nothing_behind() {
+        let dir = scratch("fails");
+        // A directory where the file would go: the rename fails, as a
+        // write to a full disk would.
+        let path = dir.join("server-1.state");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("inside"), b"x").unwrap();
+        assert!(write_file(&path, b"state").is_err());
+        assert_eq!(names(&dir), ["server-1.state"], "no temporary file");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

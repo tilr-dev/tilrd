@@ -105,9 +105,14 @@ impl Upload {
             request_id: self.request_id,
             transfer_id: self.transfer_id,
             path: if first {
-                self.path.clone()
+                crate::names::to_request(&self.path).0
             } else {
                 String::new()
+            },
+            path_bytes: if first {
+                crate::names::to_request(&self.path).1
+            } else {
+                Vec::new()
             },
             total_size: if first { self.total } else { 0 },
             create: first && self.create,
@@ -217,7 +222,8 @@ impl Download {
         self.ask_next = false;
         FsRead {
             request_id,
-            path: self.path.clone(),
+            path: crate::names::to_request(&self.path).0,
+            path_bytes: crate::names::to_request(&self.path).1,
             offset: self.start + self.received,
             length: asked,
         }

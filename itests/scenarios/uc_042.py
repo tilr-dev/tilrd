@@ -52,7 +52,7 @@ def move_to_lte(t: T, server, observer, wifi, lte, lte_url: str, pane: str, coun
     dead = wifi.wait_event("dead", since=since, timeout=30)
     t.metric("old_client_detect_ms", round((dead["_at"] - cut_at) * 1000))
 
-    lte.key(pane, "ctrl-c")
+    lte.interrupt(pane)
     t.eq(lte.run(pane, "echo from-lte"), 0, "input from the new network works")
     t.eq(len(re.findall(r"(?m)^from-lte$", lte.text(pane))), 1, "the output appears once")
 

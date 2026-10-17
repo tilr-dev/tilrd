@@ -25,6 +25,7 @@
 
 mod exec;
 mod keys;
+mod names;
 mod relay;
 mod screen;
 mod session;
@@ -63,7 +64,7 @@ pub fn emit(mut event: Value) {
         map.insert("t".into(), json!(t));
     }
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{event}");
+    let _ = writeln!(out, "{}", names::encode_line(&event.to_string()));
     let _ = out.flush();
 }
 
@@ -94,7 +95,7 @@ async fn main() {
         if line.trim().is_empty() {
             continue;
         }
-        let command: Value = match serde_json::from_str(&line) {
+        let command: Value = match serde_json::from_str(&names::decode_line(&line)) {
             Ok(command) => command,
             Err(err) => {
                 emit(
@@ -282,13 +283,11 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
         }
         "key" => {
             let pane = string(c, "pane")?;
+            let layout = opt_string(c, "layout");
             let mut seqs = Vec::new();
             for spec in string(c, "key")?.split_whitespace() {
-                seqs.push(
-                    session
-                        .send_input(Msg::Key(keys::parse(&pane, spec)?))
-                        .await?,
-                );
+                let key = keys::parse(&pane, spec, layout.as_deref())?;
+                seqs.push(session.send_input(Msg::Key(key)).await?);
             }
             Ok(json!({"seq": seqs.last()}))
         }
@@ -410,15 +409,20 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
         }
         "fs_list" => {
             let request_id = session.request_id();
-            let path = string(c, "path")?;
+            let (path, path_bytes) = names::to_request(&string(c, "path")?);
             session
-                .send(Msg::FsList(FsList { request_id, path }))
+                .send(Msg::FsList(FsList {
+                    request_id,
+                    path,
+                    path_bytes,
+                }))
                 .await?;
             wait_msg(session, millis(c, "timeout_ms", 10_000), |msg| match msg {
                 server_message::Msg::FsEntries(list) if list.request_id == request_id => {
                     let entries: Vec<Value> = list.entries.iter().map(entry_json).collect();
+                    let path = names::from_answer(&list.path, &list.path_bytes);
                     Some(Ok(json!({
-                        "ev": "fs_entries", "path": list.path, "entries": entries, "error": list.error,
+                        "ev": "fs_entries", "path": path, "entries": entries, "error": list.error,
                     })))
                 }
                 _ => None,
@@ -427,14 +431,19 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
         }
         "fs_stat" => {
             let request_id = session.request_id();
-            let path = string(c, "path")?;
+            let (path, path_bytes) = names::to_request(&string(c, "path")?);
             session
-                .send(Msg::FsStat(FsStat { request_id, path }))
+                .send(Msg::FsStat(FsStat {
+                    request_id,
+                    path,
+                    path_bytes,
+                }))
                 .await?;
             wait_msg(session, millis(c, "timeout_ms", 10_000), |msg| match msg {
                 server_message::Msg::FsInfo(info) if info.request_id == request_id => {
                     Some(Ok(json!({
-                        "ev": "fs_info", "path": info.path, "error": info.error,
+                        "ev": "fs_info", "path": names::from_answer(&info.path, &info.path_bytes),
+                        "error": info.error,
                         "entry": info.entry.as_ref().map(entry_json),
                     })))
                 }
@@ -896,7 +905,7 @@ fn entry_json(entry: &tilr_proto::FsEntry) -> Value {
         _ => "other",
     };
     json!({
-        "name": entry.name, "kind": kind(entry.kind), "target": kind(entry.target),
+        "name": names::from_answer(&entry.name, &entry.name_bytes), "kind": kind(entry.kind), "target": kind(entry.target),
         "size": entry.size, "mtime_ms": entry.mtime_ms, "mode": entry.mode,
     })
 }

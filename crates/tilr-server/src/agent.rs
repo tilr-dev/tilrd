@@ -48,8 +48,9 @@ const MAX_STREAMS_PER_CLIENT: usize = 64;
 /// program, at most 64 KiB each as a client should send them: about 4 MiB.
 /// A client that runs that far ahead of the program loses the stream
 /// (`StreamClose`). The other way, the socket is read only as fast as the
-/// client's own queue takes packets, so a slow client holds the program up
-/// rather than memory growing.
+/// client's bulk lane has room (`outbox::BULK_BYTES` for all its streams
+/// and file reads), so a slow client holds the program up rather than
+/// memory growing.
 const SOCKET_QUEUE: usize = 64;
 
 /// What the tasks hand back to the supervisor's actor.
@@ -370,15 +371,16 @@ async fn pump(
                         stream_id,
                         data: Bytes::copy_from_slice(&buf[..n]),
                     }));
-                    if to_client.send(packet.into()).await.is_err() {
+                    if to_client.send_bulk(packet).await.is_err() {
                         return;
                     }
                 }
             },
         }
     }
+    // By the bulk lane too: after the stream's last bytes.
     let close = encode(server_message::Msg::StreamClose(StreamClose { stream_id }));
-    let _ = to_client.send(close.into()).await;
+    let _ = to_client.send_bulk(close).await;
     sink(Output::Ended { stream_id });
 }
 

@@ -259,7 +259,7 @@ async fn serve(args: Args) -> Result<()> {
         tracing::info!(pane = id, "resumed after reload");
         (
             master,
-            pty::Process::Inherited(handover.shell_pid),
+            pty::Process::inherited(handover.shell_pid),
             screen,
             handover.seq,
         )

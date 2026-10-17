@@ -10,12 +10,10 @@ size of the executable plus a little for its directory, one of a few MB for the
 server's runtime directory (TILR_RUNTIME_DIR: reload state, pane state, sockets, the
 clipboard), filled up with a file of zeros.
 
-Red (2026-10-17): a reload that cannot write its state leaves the half-written file
-behind: crates/tilr-server/src/reload.rs:149 `write_file` opens with truncate and fails
-on write_all, and neither the supervisor (reload.rs:179, `write_state` -> supervisor.rs
-exec_successor returns the error without removing it) nor a pane process (pane.rs:511)
-removes it: `server-<pid>.state` or `panes/<id>.state` stays until the hourly sweep. The
-server, its panes and the later reload are fine; the download case passes.
+Was red until 2026-10-17: a reload that could not write its state left the half-written
+`server-<pid>.state` or `panes/<id>.state` behind. Now a state file is written to a
+temporary file next to it, synced and renamed, and the temporary file is removed on any
+error (crates/tilr-server/src/reload.rs `write_file`).
 """
 
 import hashlib

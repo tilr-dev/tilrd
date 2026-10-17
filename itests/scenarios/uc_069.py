@@ -4,8 +4,10 @@ The load: a counter every 50 ms, a pane printing without pause (`seq` in a loop)
 python REPL and a shell, watched by a client that reconnects on its own and types into
 the shell between reloads. Each round sends SIGUSR1 and waits for the server to resume
 and the client to be back. Measured: each reload (the log's `reloading` to the last pane
-resumed), each client return, the descriptors and memory of the supervisor and of every
-pane process from the fifth reload (warmed up) to the last. Afterwards: the same pids
+resumed), each client return, the descriptors of the supervisor and of every pane process
+before the first reload and after the last (exactly as many: a child is watched through a
+pidfd whether the process spawned it or got it from a reload), the memory from the fifth
+reload (warmed up) to the last. Afterwards: the same pids
 everywhere, no process outside the server's tree, no state file left, as many agent
 sockets as panes, and every program still answers.
 """
@@ -48,6 +50,8 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
                    if re.search(r"tilr-server.* pane --id |^(\S*/)?-?bash|^python3|^sleep 9999", p.cmdline)}
     runtime = Path(server.env["TILR_RUNTIME_DIR"])
     samples, returns, typed = {}, [], 0
+    # Before any reload, as each one after it must be: exactly as many descriptors.
+    samples[0] = {pid: (proc(pid).fds, proc(pid).rss_kb) for pid in [server.pid, *pane_pids] if proc(pid)}
     for n in range(1, RELOADS + 1):
         since = d.mark()
         sent = time.monotonic()
@@ -72,10 +76,12 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
     t.eq(server.logged("resumed after reload with 4 pane"), RELOADS, "every reload resumed with the four panes")
 
     def descriptors_flat():
-        grew = {pid: (samples[WARM][pid][0], samples[RELOADS][pid][0]) for pid in samples[WARM]
-                if samples[RELOADS].get(pid, (0, 0))[0] != samples[WARM][pid][0]}
-        t.metric("supervisor_fds", [samples[WARM][server.pid][0], samples[RELOADS][server.pid][0]])
-        t.eq(grew, {}, f"descriptors that changed between reload {WARM} and {RELOADS} (pid: before, after)")
+        changed = {pid: (samples[0][pid][0], samples[RELOADS][pid][0]) for pid in samples[0]
+                   if samples[RELOADS].get(pid, (0, 0))[0] != samples[0][pid][0]}
+        t.metric("supervisor_fds", [samples[0][server.pid][0], samples[WARM][server.pid][0],
+                                    samples[RELOADS][server.pid][0]])
+        t.eq(changed, {}, f"descriptors that changed between before the first reload and after the "
+                          f"{RELOADS}th (pid: before, after)")
     t.check("no descriptor leaks in the supervisor or the pane processes", descriptors_flat)
 
     def memory_flat():
@@ -89,12 +95,15 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
                      t.eq(sorted(p.pid for p in server.panes()), pane_pids, "pane pids")))
 
     def same_tree():
+        # The candidates first, the tree after: a `seq` of the noisy pane started in between
+        # is in the tree, one that ended in between is gone by then (not an orphan).
+        candidates = t.procs(r"tilr-server.* pane --id |^python3 -q|^seq |^sleep 9999")
         now = {p.pid: p.cmdline for p in descendants(server.pid)}
         gone = {pid: c for pid, c in tree_before.items() if pid not in now}
         t.eq(gone, {}, "long-lived processes gone")
         mine = set(now)
-        strays = [f"{p.pid} {p.cmdline}" for p in t.procs(r"tilr-server.* pane --id |^python3 -q|^seq |^sleep 9999")
-                  if p.pid not in mine]
+        strays = [f"{p.pid} {p.cmdline}" for p in candidates
+                  if p.pid not in mine and Path(f"/proc/{p.pid}").exists()]
         t.eq(strays, [], "processes of the server's outside its tree (orphans)")
     t.check("no orphans: the same processes, all under the server", same_tree)
     t.check("no reload state is left behind", lambda: t.eq(state_files(server), [], "state files"))

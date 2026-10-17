@@ -58,12 +58,13 @@ def update_from_the_cdn_keeps_every_program_in_the_panes_alive(t: T):
     live.check("the update")
 
     def descriptors_kept():
-        # A reload may hold fewer (what a process had only for having started its
-        # children, say), never more.
+        # Exactly as many: a process holds the same descriptors whichever executable
+        # runs in it (each child is watched through a pidfd, spawned or inherited).
         now = live.descriptors()
         t.metric("descriptors_before_after", {pid: [live.fds.get(pid), n] for pid, n in now.items()})
-        grew = {pid: (live.fds.get(pid), n) for pid, n in now.items() if n > live.fds.get(pid, n)}
-        t.eq(grew, {}, "processes holding more descriptors than before the update (pid: before, after)")
+        changed = {pid: (live.fds.get(pid), n) for pid, n in now.items() if n != live.fds.get(pid)}
+        t.eq(changed, {}, "processes holding another number of descriptors than before the update "
+                          "(pid: before, after)")
     t.check("no descriptor leaks in the supervisor or the pane processes", descriptors_kept)
 
     live.finish()

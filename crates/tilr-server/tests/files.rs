@@ -49,6 +49,7 @@ async fn list(
         .send(Msg::FsList(FsList {
             request_id,
             path: path.into(),
+            ..Default::default()
         }))
         .await;
     match answer(client, request_id).await {
@@ -67,6 +68,7 @@ async fn stat(
         .send(Msg::FsStat(FsStat {
             request_id,
             path: path.into(),
+            ..Default::default()
         }))
         .await;
     match answer(client, request_id).await {
@@ -90,6 +92,7 @@ async fn read(
             path: path.into(),
             offset,
             length,
+            ..Default::default()
         }))
         .await;
     let mut data = Vec::new();
@@ -137,6 +140,7 @@ async fn send_write(
                 truncate: first && truncate,
                 data: Bytes::copy_from_slice(chunk),
                 last: index + 1 == chunks.len(),
+                ..Default::default()
             }))
             .await;
     }
@@ -165,7 +169,11 @@ async fn write(
 async fn mkdir(client: &mut Client, request_id: u64, path: &str) -> String {
     let path = path.into();
     client
-        .send(Msg::FsMkdir(FsMkdir { request_id, path }))
+        .send(Msg::FsMkdir(FsMkdir {
+            request_id,
+            path,
+            ..Default::default()
+        }))
         .await;
     ack(client, request_id).await
 }
@@ -176,6 +184,7 @@ async fn rename(client: &mut Client, request_id: u64, from: &str, to: &str) -> S
             request_id,
             from: from.into(),
             to: to.into(),
+            ..Default::default()
         }))
         .await;
     ack(client, request_id).await
@@ -187,6 +196,7 @@ async fn delete(client: &mut Client, request_id: u64, path: &str, recursive: boo
             request_id,
             path: path.into(),
             recursive,
+            ..Default::default()
         }))
         .await;
     ack(client, request_id).await
@@ -283,6 +293,94 @@ async fn a_client_lists_a_directory_and_looks_at_its_entries() {
     assert!(error.contains("not a directory"), "{error}");
     let error = stat(&mut client, 8, "docs").await.unwrap_err();
     assert!(error.contains("not an absolute path"), "{error}");
+}
+
+/// Linux allows any bytes but '/' and NUL in a name (macOS file systems
+/// take UTF-8 only).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_name_that_is_not_utf8_is_listed_with_its_bytes_and_named_by_them() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let server = Server::start(&[]);
+    let dir = server.dir.join("odd");
+    std::fs::create_dir_all(&dir).unwrap();
+    let raw = b"bin\xff\xfe-\xc3(name.dat";
+    let name = std::ffi::OsStr::from_bytes(raw);
+    std::fs::write(dir.join(name), "odd content").unwrap();
+    std::fs::write(dir.join("plain.txt"), "plain").unwrap();
+    let mut client = Client::connect_silent(&server).await;
+    client.hello().await;
+
+    let (_, entries) = list(&mut client, 1, "~/odd").await.unwrap();
+    let odd = entries.iter().find(|e| e.name != "plain.txt").unwrap();
+    assert_eq!(
+        odd.name, "bin\u{fffd}\u{fffd}-\u{fffd}(name.dat",
+        "shown lossily"
+    );
+    assert_eq!(odd.name_bytes, raw, "and named exactly by its bytes");
+    let plain = entries.iter().find(|e| e.name == "plain.txt").unwrap();
+    assert!(
+        plain.name_bytes.is_empty(),
+        "a UTF-8 name has no bytes twin"
+    );
+
+    let mut path = home(&server).join("odd").as_os_str().as_bytes().to_vec();
+    path.extend_from_slice(b"/");
+    path.extend_from_slice(raw);
+    client
+        .send(Msg::FsRead(FsRead {
+            request_id: 2,
+            path: odd.name.clone(),
+            path_bytes: path.clone(),
+            ..Default::default()
+        }))
+        .await;
+    let server_message::Msg::FsData(data) = answer(&mut client, 2).await else {
+        panic!("not an FsData");
+    };
+    assert_eq!(
+        (data.error.as_str(), &data.data[..]),
+        ("", &b"odd content"[..])
+    );
+
+    client
+        .send(Msg::FsStat(FsStat {
+            request_id: 3,
+            path: String::new(),
+            path_bytes: path.clone(),
+        }))
+        .await;
+    let server_message::Msg::FsInfo(info) = answer(&mut client, 3).await else {
+        panic!("not an FsInfo");
+    };
+    assert_eq!(info.error, "");
+    assert_eq!(info.path_bytes, path, "the path answered has its bytes too");
+    assert_eq!(info.entry.unwrap().name_bytes, raw);
+
+    let mut renamed = path.clone();
+    renamed.extend_from_slice(b"\xff");
+    client
+        .send(Msg::FsRename(FsRename {
+            request_id: 4,
+            from_bytes: path.clone(),
+            to_bytes: renamed.clone(),
+            ..Default::default()
+        }))
+        .await;
+    assert_eq!(ack(&mut client, 4).await, "");
+    assert!(Path::new(std::ffi::OsStr::from_bytes(&renamed)).exists());
+    client
+        .send(Msg::FsDelete(FsDelete {
+            request_id: 5,
+            path_bytes: renamed.clone(),
+            ..Default::default()
+        }))
+        .await;
+    assert_eq!(ack(&mut client, 5).await, "");
+    let (_, entries) = list(&mut client, 6, "~/odd").await.unwrap();
+    let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["plain.txt"]);
 }
 
 #[tokio::test]
@@ -543,6 +641,7 @@ async fn a_watched_directory_reports_what_changes_in_it() {
         .send(Msg::FsWatch(FsWatch {
             request_id: 1,
             path: "~/watched".into(),
+            ..Default::default()
         }))
         .await;
     assert_eq!(ack(&mut client, 1).await, "");
@@ -580,6 +679,7 @@ async fn a_watched_directory_reports_what_changes_in_it() {
         .send(Msg::FsUnwatch(FsUnwatch {
             request_id: 3,
             path: "~/watched".into(),
+            ..Default::default()
         }))
         .await;
     assert_eq!(ack(&mut client, 3).await, "");
@@ -587,6 +687,7 @@ async fn a_watched_directory_reports_what_changes_in_it() {
         .send(Msg::FsUnwatch(FsUnwatch {
             request_id: 4,
             path: "~/watched".into(),
+            ..Default::default()
         }))
         .await;
     assert_eq!(ack(&mut client, 4).await, "~/watched: not watched");
@@ -611,6 +712,7 @@ async fn a_watched_directory_reports_what_changes_in_it() {
         .send(Msg::FsWatch(FsWatch {
             request_id: 5,
             path: "~/watched/old.txt".into(),
+            ..Default::default()
         }))
         .await;
     assert!(ack(&mut client, 5).await.contains("not a directory"));
@@ -689,6 +791,7 @@ async fn nothing_outside_the_shared_directories_is_served() {
         .send(Msg::FsWatch(FsWatch {
             request_id: 17,
             path: "~/shared/door".into(),
+            ..Default::default()
         }))
         .await;
     refused(ack(&mut client, 17).await, "~/shared/door");
@@ -755,6 +858,7 @@ async fn files_can_be_turned_off() {
             .send(Msg::FsList(FsList {
                 request_id: 1,
                 path: "~".into(),
+                ..Default::default()
             }))
             .await;
         send_write(&mut client, 2, "~/a.txt", b"x", true, true).await;

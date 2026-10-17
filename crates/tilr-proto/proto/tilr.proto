@@ -77,6 +77,14 @@ message Hello {
 //   4001 "too slow"   - the client did not take what it was sent
 //   4002 "timeout"    - the client went silent, or stopped answering the
 //                       server's WebSocket pings (it no longer hears it)
+//
+// A client answers the server's WebSocket pings, as browsers and WebSocket
+// libraries do on their own, in the order it reads. Besides telling the
+// client is there, they pace data in quantity (FsData, StreamData): the
+// server keeps at most about 1 MiB of it written but not yet read by the
+// client, which it knows by the pongs to pings it sends between the chunks,
+// so that a frame never waits behind megabytes of file in the network. A
+// client that does not answer pings stalls its file reads and streams.
 
 // Panes are named by `pane_id`: a UUID in its usual text form
 // ("6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4") that the server makes up when the
@@ -172,6 +180,27 @@ message KeyInput {
   uint32 codepoint = 5;
   // Text the key produced, if any ("A" for Shift+A).
   string text = 6;
+  // The physical key, as W3C KeyboardEvent.code names it: "KeyC", "Digit1",
+  // "BracketLeft", "Semicolon", ... (the name of the key at that place on a
+  // US keyboard, whatever the layout). A browser has it as event.code; on
+  // macOS it comes from NSEvent.keyCode (kVK_ANSI_C -> "KeyC"), on iPad from
+  // UIKey.keyCode (the HID usage, UIKeyboardHIDUsageKeyboardC -> "KeyC").
+  //
+  // It matters with Ctrl or Alt on a layout that is not Latin: Ctrl+C on a
+  // Russian layout is the key that types "с" (U+0441), and a terminal sends
+  // ^C for it, as for Ctrl+C on a US layout. So when Ctrl or Alt is held and
+  // the key's character (`codepoint`, or `text`) is not ASCII, the server
+  // encodes the key as its US-layout character: Ctrl+С is 0x03, Ctrl+Я is
+  // 0x1A (the Z key), Alt+Ф is ESC a. A character that is ASCII is taken as
+  // it is, whatever the physical key: Ctrl+C on Dvorak (the I key) is 0x03,
+  // Ctrl+A on AZERTY (the Q key) is 0x01. With the kitty keyboard protocol
+  // the physical key is also the "base layout key" it reports. Typing
+  // without Ctrl or Alt is the text, as ever.
+  //
+  // Empty: unknown (an older client); the key is then taken from
+  // `codepoint` as if the layout were US, and Ctrl or Alt with a character
+  // that is not ASCII sends nothing (Alt: the text alone).
+  string code = 7;
 }
 
 enum MouseAction {
@@ -268,18 +297,35 @@ message Ping {
 // default): a path that leads elsewhere, through ".." or a symbolic link,
 // gets an error. A server that is read-only (`[files] readonly`) answers
 // FsWrite, FsMkdir, FsRename and FsDelete with an error.
+//
+// Names that are not UTF-8. A file name on Linux is any bytes but '/' and
+// NUL, which a `string` cannot hold. Every path in a request has a `bytes`
+// twin (`path_bytes`, `from_bytes`, `to_bytes`): the path as the raw bytes
+// of the server's file system. When it is not empty the server goes by it
+// and ignores the string, which is then only for showing. In answers, a
+// name or path that is not UTF-8 comes with its raw bytes the same way
+// (FsEntry.name_bytes, FsEntries/FsInfo/FsChanged.path_bytes), its string
+// then being the bytes made UTF-8 with U+FFFD for what is not, for showing
+// only. A client that keeps the bytes of what it was given and sends them
+// back can name any file; one that ignores the bytes fields works as before
+// for every name that is UTF-8. The `bytes` fields are empty for UTF-8
+// names.
 // ---------------------------------------------------------------------------
 
 // What is in a directory. Answered with FsEntries.
 message FsList {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // One entry, not followed if it is a symbolic link. Answered with FsInfo.
 message FsStat {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // The content of a file, or a part of it. Answered with FsData chunks.
@@ -291,6 +337,8 @@ message FsRead {
   // How much to read; 0 = to the end. A read of more than
   // HelloAck.fs_max_bytes is refused: a larger file is read in parts.
   uint64 length = 4;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 5;
 }
 
 // Replace the content of a file. Answered with one FsAck, after the last
@@ -320,12 +368,17 @@ message FsWrite {
   bool truncate = 6;
   bytes data = 7;
   bool last = 8;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above). First
+  // chunk only.
+  bytes path_bytes = 9;
 }
 
 // Make a directory; its parent must exist. Answered with FsAck.
 message FsMkdir {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // Move or rename an entry; `to` must not exist. Answered with FsAck.
@@ -333,6 +386,10 @@ message FsRename {
   uint64 request_id = 1;
   string from = 2;
   string to = 3;
+  // `from` and `to` as raw bytes, for names that are not UTF-8 (see above);
+  // each one on its own.
+  bytes from_bytes = 4;
+  bytes to_bytes = 5;
 }
 
 // Remove a file, a symbolic link (not what it points to) or a directory.
@@ -342,6 +399,8 @@ message FsDelete {
   string path = 2;
   // A directory goes with everything in it. Without: only an empty one.
   bool recursive = 3;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 4;
 }
 
 // Hear about changes to the entries of a directory (not of its
@@ -350,12 +409,16 @@ message FsDelete {
 message FsWatch {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // Stop watching a directory, named as in its FsWatch. Answered with FsAck.
 message FsUnwatch {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +601,9 @@ message FsEntry {
   // FILE_KIND_OTHER (a broken link, or anything else). A link is listed as a
   // link; a request naming it follows it.
   FileKind target = 6;
+  // The name's raw bytes when it is not UTF-8, `name` then being for
+  // showing only (see "Names that are not UTF-8"). Empty otherwise.
+  bytes name_bytes = 7;
 }
 
 message FsEntries {
@@ -548,6 +614,8 @@ message FsEntries {
   // Sorted by name.
   repeated FsEntry entries = 3;
   string error = 4;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
 }
 
 message FsInfo {
@@ -556,6 +624,8 @@ message FsInfo {
   string path = 2;
   FsEntry entry = 3;
   string error = 4;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
 }
 
 // Part of a file, in answer to FsRead. Chunks come in order, the last one
@@ -596,6 +666,8 @@ message FsChanged {
   // the directory itself (removed, say).
   string path = 3;
   FsChange kind = 4;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
 }
 
 // Something a program in a pane asks the client to do: `tilr edit <file>`

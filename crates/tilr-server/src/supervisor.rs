@@ -301,6 +301,7 @@ pub fn run(options: Options) -> Result<()> {
         .block_on(async move {
             let state = reload::take_state()?;
             reload::sweep_stale();
+            files::sweep();
             if state.is_some() {
                 crate::fail::point("supervisor-resume")?;
             }
@@ -718,19 +719,31 @@ async fn serve_client(
     // Ends when the connection is to close (see `Closing`), with whether the
     // close went out.
     let drained = events.clone();
+    let (mut window, acks) = outbox::BulkWindow::new();
     let mut writer = tokio::spawn(async move {
         let how = loop {
-            let (message, read_at) = tokio::select! {
+            let open = window.open();
+            let (message, outgoing) = tokio::select! {
                 // The supervisor says why before it lets go of the queue.
                 biased;
                 how = closing.recv() => break how,
-                packet = outbox.recv() => match packet {
-                    Some(Outgoing { packet, read_at }) => (Message::Binary(packet), read_at),
+                packet = outbox.recv(open) => match packet {
+                    Some(mut outgoing) => {
+                        let packet = std::mem::take(&mut outgoing.packet);
+                        (Message::Binary(packet), Some(outgoing))
+                    }
                     None => break closing.try_recv().ok(),
                 },
                 () = tick(&mut ping) => (Message::Ping(Bytes::new()), None),
+                // The client read more: bulk data may go again.
+                () = window.moved(), if !open => continue,
             };
-            let packet = matches!(message, Message::Binary(_));
+            let mark = match (&message, &outgoing) {
+                (Message::Binary(packet), Some(outgoing)) if outgoing.bulk() => {
+                    window.wrote(packet.len())
+                }
+                _ => None,
+            };
             let send = sink.send(message);
             tokio::pin!(send);
             tokio::select! {
@@ -746,11 +759,20 @@ async fn serve_client(
                     break how;
                 }
             }
-            if let Some(read_at) = read_at {
-                shared_metrics.route.observe(read_at.elapsed());
+            // A ping after the bulk data it marks, whose pong says the client
+            // has read that far.
+            if let Some(mark) = mark
+                && sink.send(Message::Ping(mark)).await.is_err()
+            {
+                return false;
             }
-            if packet && outbox.written() {
-                let _ = drained.send(Event::ClientDrained { id });
+            if let Some(outgoing) = outgoing {
+                if let Some(read_at) = outgoing.read_at {
+                    shared_metrics.route.observe(read_at.elapsed());
+                }
+                if outbox.written(outgoing) {
+                    let _ = drained.send(Event::ClientDrained { id });
+                }
             }
         };
         let close = async {
@@ -808,7 +830,10 @@ async fn serve_client(
                     break None;
                 }
             }
-            Message::Pong(_) => answered = heard,
+            Message::Pong(payload) => {
+                answered = heard;
+                acks.pong(&payload);
+            }
             Message::Close(_) => break None,
             _ => {}
         }
@@ -1247,7 +1272,7 @@ impl Supervisor {
                 }
             };
             let detached = Detached {
-                process: pty::Process::Inherited(pane.pid),
+                process: pty::Process::inherited(pane.pid),
                 from_pane,
                 unparsed: BytesMut::from(pane.unparsed.as_slice()),
             };
@@ -1577,7 +1602,11 @@ impl Supervisor {
             | Msg::FsDelete(_)
             | Msg::FsWatch(_)
             | Msg::FsUnwatch(_)) => match &mut self.files {
-                Some(files) => files.on_message(client_id, msg),
+                Some(files) => {
+                    if let Some(client) = self.clients.get(&client_id) {
+                        files.on_message(client_id, &client.tx, msg);
+                    }
+                }
                 // Not offered, so not asked for by a client that listens.
                 None => tracing::debug!(client = client_id, "files request while files are off"),
             },
@@ -1863,10 +1892,7 @@ impl Supervisor {
                     None => {}
                 }
             }
-            let outgoing = Outgoing {
-                packet,
-                read_at: Some(read_at),
-            };
+            let outgoing = Outgoing::new(packet, Some(read_at));
             if client.tx.try_send(outgoing).is_ok() {
                 pane.counters.frames_sent += 1;
             } else {

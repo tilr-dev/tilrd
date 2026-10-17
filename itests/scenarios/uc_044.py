@@ -74,7 +74,7 @@ def a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connect
     t.ok(held <= 1, f"input held in the dead connection arrives at most once ({held})")
     counter.check_screen(client)
     counter.check_log()
-    client.key(pane, "ctrl-c")
+    client.interrupt(pane)
     t.eq(client.run(pane, "echo typed-after"), 0, "input works on the live connection")
     t.eq(len(re.findall(r"(?m)^typed-after$", client.text(pane))), 1, "its output appears once")
 
@@ -94,5 +94,5 @@ def a_revived_connection_left_open_by_the_client_was_superseded_by_its_reconnect
     t.ok(held <= 1, f"input held in the dead connection arrives at most once ({held})")
     counter.check_screen(client)
     counter.check_log()
-    client.key(pane, "ctrl-c")
+    client.interrupt(pane)
     t.eq(client.run(pane, "echo typed-after"), 0, "input works on the live connection")

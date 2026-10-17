@@ -16,14 +16,29 @@ pub struct Spawned {
 /// in which case it is a child all the same but tokio does not know it.
 pub enum Process {
     Spawned(Child),
-    Inherited(u32),
+    /// With a pidfd for it where there is one (Linux 5.3+), opened when it is
+    /// taken over: tokio holds one for each child it spawns, so a process
+    /// holds the same descriptors before and after a reload, and waiting for
+    /// the child holds no thread.
+    Inherited(u32, Option<Pidfd>),
 }
 
+#[cfg(target_os = "linux")]
+pub type Pidfd = tokio::io::unix::AsyncFd<OwnedFd>;
+#[cfg(not(target_os = "linux"))]
+pub type Pidfd = std::convert::Infallible;
+
 impl Process {
+    /// A child this process got from the one it replaced. Call inside the
+    /// runtime.
+    pub fn inherited(pid: u32) -> Self {
+        Self::Inherited(pid, open_pidfd(pid))
+    }
+
     pub fn pid(&self) -> Option<u32> {
         match self {
             Self::Spawned(child) => child.id(),
-            Self::Inherited(pid) => Some(*pid),
+            Self::Inherited(pid, _) => Some(*pid),
         }
     }
 
@@ -31,13 +46,42 @@ impl Process {
     pub async fn wait(&mut self) -> Option<i32> {
         match self {
             Self::Spawned(child) => child.wait().await.ok()?.code(),
-            Self::Inherited(pid) => {
+            Self::Inherited(pid, pidfd) => {
                 let pid = *pid;
+                #[cfg(target_os = "linux")]
+                if let Some(pidfd) = pidfd
+                    && pidfd.readable().await.is_ok()
+                {
+                    // It has exited: the wait does not block.
+                    return wait_pid(pid).ok();
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = pidfd;
                 let code = tokio::task::spawn_blocking(move || wait_pid(pid)).await;
                 code.ok()?.ok()
             }
         }
     }
+}
+
+/// A pidfd for child `pid`, watched by tokio's reactor; readable once the
+/// child has exited. `None` where there is none to be had.
+#[cfg(target_os = "linux")]
+fn open_pidfd(pid: u32) -> Option<Pidfd> {
+    use tokio::io::Interest;
+
+    // SAFETY: pidfd_open takes a pid and flags; it returns a new descriptor,
+    // close-on-exec, or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    let fd = RawFd::try_from(fd).ok().filter(|&fd| fd >= 0)?;
+    // SAFETY: the descriptor was just made and is owned by nobody else.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    Pidfd::with_interest(fd, Interest::READABLE).ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_pidfd(_pid: u32) -> Option<Pidfd> {
+    None
 }
 
 /// Name of the variable that tells what runs in a pane which pane it is in.

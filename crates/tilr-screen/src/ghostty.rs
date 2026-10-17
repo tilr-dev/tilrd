@@ -451,7 +451,7 @@ impl Screen for GhosttyScreen {
     }
 
     fn encode_key(&mut self, input: &KeyInput, out: &mut Vec<u8>) -> Result<()> {
-        let (key, unshifted) = map_key(input);
+        let (mut key, mut unshifted) = map_key(input);
         let mods = map_mods(input.mods);
         let action = match input.action() {
             KeyAction::Press => key::Action::Press,
@@ -460,8 +460,38 @@ impl Screen for GhosttyScreen {
         };
         // The encoder derives control sequences from key + mods; text must be
         // printable only.
-        let text = (!input.text.is_empty() && !input.text.chars().any(char::is_control))
-            .then_some(input.text.as_str());
+        let mut text = (!input.text.is_empty() && !input.text.chars().any(char::is_control))
+            .then(|| input.text.clone());
+        if let Some((physical, us)) = physical_key(&input.code)
+            && input.named() == NamedKey::Unspecified
+        {
+            let kitty = self
+                .term
+                .kitty_keyboard_flags()
+                .is_ok_and(|flags| flags.bits() != 0);
+            let character = unshifted.or_else(|| text.as_deref()?.chars().next());
+            let ascii = character.is_none_or(|ch| ch.is_ascii());
+            if kitty {
+                // The key as the layout has it, and where it is: the kitty
+                // protocol reports the physical key as the base layout key.
+                key = physical;
+                unshifted =
+                    unshifted.or(character.map(|ch| ch.to_lowercase().next().unwrap_or(ch)));
+            } else if !ascii && input.mods & (mods::CTRL | mods::ALT) != 0 {
+                // Ctrl or Alt on a layout that is not Latin: what terminals
+                // send is the key's on a US layout (Ctrl+С is ^C).
+                key = physical;
+                unshifted = Some(us);
+                text = (input.mods & mods::CTRL == 0).then(|| {
+                    if input.mods & mods::SHIFT != 0 {
+                        us.to_ascii_uppercase().to_string()
+                    } else {
+                        us.to_string()
+                    }
+                });
+            }
+        }
+        let text = text.as_deref();
         // Shift that already produced the text ("A" for Shift+a) is consumed.
         let consumed = if text.is_some() {
             mods & key::Mods::SHIFT
@@ -1327,6 +1357,41 @@ fn map_mods(bits: u32) -> key::Mods {
     out
 }
 
+/// The physical key `code` names (W3C `KeyboardEvent.code`, see
+/// `KeyInput.code`), with its character on a US layout: the keys that type
+/// characters.
+fn physical_key(code: &str) -> Option<(key::Key, char)> {
+    use key::Key;
+
+    if let Some(letter) = code.strip_prefix("Key")
+        && let [byte @ b'A'..=b'Z'] = letter.as_bytes()
+    {
+        let key = Key::try_from(Key::A as u32 + u32::from(byte - b'A')).ok()?;
+        return Some((key, char::from(byte.to_ascii_lowercase())));
+    }
+    if let Some(digit) = code.strip_prefix("Digit")
+        && let [byte @ b'0'..=b'9'] = digit.as_bytes()
+    {
+        let key = Key::try_from(Key::Digit0 as u32 + u32::from(byte - b'0')).ok()?;
+        return Some((key, char::from(*byte)));
+    }
+    Some(match code {
+        "Backquote" => (Key::Backquote, '`'),
+        "Backslash" => (Key::Backslash, '\\'),
+        "BracketLeft" => (Key::BracketLeft, '['),
+        "BracketRight" => (Key::BracketRight, ']'),
+        "Comma" => (Key::Comma, ','),
+        "Equal" => (Key::Equal, '='),
+        "Minus" => (Key::Minus, '-'),
+        "Period" => (Key::Period, '.'),
+        "Quote" => (Key::Quote, '\''),
+        "Semicolon" => (Key::Semicolon, ';'),
+        "Slash" => (Key::Slash, '/'),
+        "Space" => (Key::Space, ' '),
+        _ => return None,
+    })
+}
+
 /// Map a protocol key to a physical key plus its unshifted codepoint.
 fn map_key(input: &KeyInput) -> (key::Key, Option<char>) {
     use key::Key;
@@ -1414,6 +1479,15 @@ mod tests {
             named: named as i32,
             codepoint: codepoint as u32,
             text: text.to_owned(),
+            code: String::new(),
+        }
+    }
+
+    /// A key with the physical key it is (`KeyInput.code`).
+    fn at(code: &str, codepoint: char, mods: u32, text: &str) -> KeyInput {
+        KeyInput {
+            code: code.to_owned(),
+            ..key(NamedKey::Unspecified, codepoint, mods, text)
         }
     }
 
@@ -1798,6 +1872,93 @@ mod tests {
         assert_eq!(
             encoded(&mut screen, key(none, '\u{44f}', 0, "\u{44f}")),
             "\u{44f}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn ctrl_and_alt_on_a_layout_that_is_not_latin_go_by_the_physical_key() {
+        let mut screen = screen();
+        let (ctrl, alt, shift) = (mods::CTRL, mods::ALT, mods::SHIFT);
+        // Russian: the C key types "с", the Z key "я", the A key "ф".
+        for text in ["\u{441}", ""] {
+            assert_eq!(
+                encoded(&mut screen, at("KeyC", '\u{441}', ctrl, text)),
+                b"\x03",
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            encoded(&mut screen, at("KeyZ", '\u{44f}', ctrl, "\u{44f}")),
+            b"\x1a"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyA", '\u{444}', alt, "\u{444}")),
+            b"\x1ba"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyA", '\u{444}', alt | shift, "\u{424}")),
+            b"\x1bA"
+        );
+        // The ] key ("ъ"), as Ctrl+] on a US layout.
+        assert_eq!(
+            encoded(&mut screen, at("BracketRight", '\u{44a}', ctrl, "")),
+            b"\x1d"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("Digit5", '5', ctrl | alt, "")),
+            encoded(&mut screen, key(NamedKey::Unspecified, '5', ctrl | alt, ""))
+        );
+        // Greek: Ctrl+ψ is the C key.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{3c8}', ctrl, "\u{3c8}")),
+            b"\x03"
+        );
+        // Typing goes by the text, as ever.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', 0, "\u{441}")),
+            "\u{441}".as_bytes()
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', shift, "\u{421}")),
+            "\u{421}".as_bytes()
+        );
+        // Without the physical key (an older client): nothing to go by.
+        assert_eq!(
+            encoded(&mut screen, key(NamedKey::Unspecified, '\u{441}', ctrl, "")),
+            b""
+        );
+    }
+
+    #[test]
+    fn a_latin_character_wins_over_the_physical_key() {
+        let mut screen = screen();
+        let (ctrl, alt) = (mods::CTRL, mods::ALT);
+        // Dvorak: "c" is on the I key; AZERTY: "a" is on the Q key, "w" on Z.
+        assert_eq!(encoded(&mut screen, at("KeyI", 'c', ctrl, "")), b"\x03");
+        assert_eq!(encoded(&mut screen, at("KeyI", 'c', ctrl, "c")), b"\x03");
+        assert_eq!(encoded(&mut screen, at("KeyQ", 'a', ctrl, "a")), b"\x01");
+        assert_eq!(encoded(&mut screen, at("KeyZ", 'w', ctrl, "")), b"\x17");
+        assert_eq!(encoded(&mut screen, at("KeyQ", 'a', alt, "a")), b"\x1ba");
+        assert_eq!(encoded(&mut screen, at("KeyI", 'c', 0, "c")), b"c");
+    }
+
+    #[test]
+    fn the_kitty_protocol_gets_the_physical_key_as_the_base_layout_key() {
+        let mut screen = screen();
+        // Disambiguate, report alternate keys.
+        screen.feed(b"\x1b[>5u");
+        let ctrl = mods::CTRL;
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', ctrl, "\u{441}")),
+            b"\x1b[1089::99;5u"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyI", 'c', ctrl, "")),
+            b"\x1b[99::105;5u"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", 'c', ctrl, "")),
+            b"\x1b[99;5u"
         );
     }
 

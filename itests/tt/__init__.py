@@ -407,7 +407,11 @@ class Driver:
     def line(self, pane: str, text: str) -> dict:
         return self.input(pane, text + "\r")
 
-    def key(self, pane: str, key: str) -> dict:
+    def key(self, pane: str, key: str, layout: str | None = None) -> dict:
+        """`layout` (us, ru, dvorak, azerty): send it as a client on that layout does, with
+        the physical key (KeyInput.code) and the character as text."""
+        if layout:
+            return self.cmd("key", pane=pane, key=key, layout=layout)
         return self.cmd("key", pane=pane, key=key)
 
     def interrupt(self, pane: str, timeout: float = 30) -> None:

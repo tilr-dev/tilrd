@@ -67,5 +67,5 @@ def a_thousand_resets_leave_one_viewer_and_flat_server_memory_and_descriptors(t:
     t.eq(len(server.panes()), 1, "one pane process")
     counter.check_screen(client)
     counter.check_log()
-    client.key(pane, "ctrl-c")
+    client.interrupt(pane)
     t.eq(client.run(pane, "echo typed-after"), 0, "input works after the cycles")

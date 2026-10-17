@@ -8,16 +8,14 @@ log the case reads: what the pty delivered, nothing interpreted. The expected by
 what xterm sends (the TERM of the panes is xterm-256color): normal cursor-key mode,
 CSI ~ for the editing and F5-F12 keys, SS3 for F1-F4.
 
-Ctrl+C on a Russian layout: the key under C is "с" (U+0441) there, so a client sends
-KeyInput {codepoint 'с', mods ctrl} (codepoint is the key's unshifted character, as
-tilr.proto says). A terminal sends ^C for it, as for the same physical key on a Latin
-layout; tilrd has no notion of the physical key (TODO.md: "KeyInput: физическая клавиша
-для не-латинских раскладок"), so this is expected to fail until it has one.
-
-Red (2026-10-17): only the Russian layout: Ctrl+'с' and Ctrl+'я' produce nothing at all
-(crates/tilr-screen/src/ghostty.rs:1370 map_key knows Latin letters, digits and
-punctuation only; anything else is Key::Unidentified, which the encoder sends nothing
-for). KeyInput has no physical key to go by.
+Ctrl+C on a Russian layout: the key under C is "с" (U+0441) there. A client sends what
+the layout makes of the key and which physical key it is, as a browser's KeyboardEvent
+has them (key and code): KeyInput {codepoint 'с', text 'с', code "KeyC", mods ctrl}
+(tilr-driver's `layout`). A terminal sends ^C for it, as for the same physical key on a
+Latin layout: Ctrl or Alt with a key whose character is not ASCII goes by the physical
+key's US character (Ctrl+С ^C, Ctrl+Я ^Z, Alt+Ф ESC a). A character that is ASCII goes
+by itself, wherever its key is: Ctrl+C on Dvorak (the I key) is ^C, Ctrl+A on AZERTY
+(the Q key) is ^A; plain Cyrillic typing is the text.
 """
 
 import time
@@ -163,18 +161,34 @@ def the_mouse_reaches_an_application_that_asked_for_it_and_no_other(t: T):
 
 @case(fixture="server_state")
 def ctrl_c_on_a_russian_layout_is_ctrl_c(t: T):
-    """UC-079: KeyInput ctrl + 'с' (Cyrillic, the C key on a Russian layout) reads as ^C and interrupts sleep."""
+    """UC-079: Ctrl+С on a Russian layout (text 'с', code KeyC) reads as ^C and interrupts sleep; Dvorak, AZERTY too."""
     server, d = start(t)
     log = Keylog(t, d)
-    t.check("the program reads ^C for Ctrl+С", lambda: t.eq(log.after(lambda: d.key(log.pane, "ctrl-с")), b"\x03",
-                                                             "bytes"))
-    t.check("and ^Z for Ctrl+Я (the Z key)", lambda: t.eq(log.after(lambda: d.key(log.pane, "ctrl-я")), b"\x1a",
-                                                            "bytes"))
+    cases = {
+        ("ru", "ctrl-с"): b"\x03",  # the C key
+        ("ru", "ctrl-я"): b"\x1a",  # the Z key
+        ("ru", "ctrl-ц"): b"\x17",  # the W key
+        ("ru", "alt-ф"): b"\x1ba",  # the A key
+        ("ru", "с"): "с".encode(),  # typing is the text
+        ("ru", "shift-я"): "Я".encode(),
+        ("dvorak", "ctrl-c"): b"\x03",  # on the I key: the character wins
+        ("dvorak", "ctrl-x"): b"\x18",  # on the B key
+        ("azerty", "ctrl-a"): b"\x01",  # on the Q key
+        ("azerty", "ctrl-w"): b"\x17",  # on the Z key
+        ("us", "ctrl-c"): b"\x03",
+    }
+    wrong = {}
+    for (layout, key), want in cases.items():
+        got = log.after(lambda layout=layout, key=key: d.key(log.pane, key, layout=layout))
+        if got != want:
+            wrong[f"{layout} {key}"] = f"{got!r} (expected {want!r})"
+    t.metric("keys_checked", len(cases))
+    t.eq(wrong, {}, "keys on other layouts whose bytes differ from what the same key sends on a US layout")
 
     def interrupts_sleep():
         pane = d.shell_pane()
         d.line(pane, "sleep 1000")
         t.eventually(lambda: t.procs(r"^sleep 1000$"), "sleep runs")
-        d.key(pane, "ctrl-с")
+        d.key(pane, "ctrl-с", layout="ru")
         t.eventually(lambda: not t.procs(r"^sleep 1000$"), "Ctrl+С on a Russian layout stops sleep", timeout=3)
     t.check("Ctrl+С interrupts a foreground program", interrupts_sleep)

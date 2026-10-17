@@ -264,8 +264,9 @@ keys never leave it. On unless the server runs with `--no-agent` (or
   finds an agent with no keys and goes on to its other ways in. A client
   that goes away takes its streams with it; so does a reload.
 - A client has at most 64 streams open; a program sending faster than the
-  client takes is held up, a client sending faster than the program reads
-  loses the stream.
+  client takes is held up (the server reads from it only as its client's
+  [queue](#protocol) has room, 4 MiB for all its streams and file reads), a
+  client sending faster than the program reads loses the stream.
 
 As with `ssh -A`: while a client with the feature watches a pane, every
 process of the user on the server's machine that finds a socket can use the
@@ -355,10 +356,60 @@ a growing backlog of stale ones; other clients are not slowed. A client whose
 queue fills up all the same (1024 packets) is dropped (`client too slow`, close
 code 4001), and its connection closed at once, whatever was queued.
 
+Data in quantity does not wait in that queue. A client's queue has two lanes:
+frames, answers and acknowledgements in one, and in the other file content
+(`FsData`) and the bytes of [streams](#ssh-agent-forwarding) (`StreamData`, and
+the `StreamClose` after them). The connection writes from the second only when
+the first is empty, so a keystroke's echo waits behind at most the one chunk
+being written, not behind megabytes of files being read. Nor behind what the
+network holds: of the second lane's data, at most 1 MiB is out on the way to
+the client and not yet read by it (its receive buffer can hold several MB). The
+server knows how far the client has read by WebSocket pings it sends between
+the chunks, which the client's WebSocket answers as it reads; a client must
+answer pings, as browsers and WebSocket libraries do on their own. The second
+lane holds at most 4 MiB per client: a file read, or a program sending to a
+stream, waits for room, so a client that takes data slowly holds the read or
+the program back, while the server's memory stays flat, and is not dropped for
+being slow.
+
 A page in a browser cannot see those pings, so for the other direction there
 is `Ping` (feature `"ping"`): the server answers `Pong` with the same nonce at
 once. A client that pings regularly and gets no answer in time knows the
 server is out of reach, and reconnects.
+
+### Keys
+
+`KeyInput` names a key by what the layout makes of it (`codepoint`, the
+unshifted character, and `text`, what it typed) and, in `code`, by the
+physical key: the name W3C `KeyboardEvent.code` gives it (`"KeyC"`,
+`"Digit1"`, `"BracketLeft"`, ...). A client sends both. In a browser they are
+`event.key` and `event.code`; on macOS `NSEvent.charactersIgnoringModifiers`
+and `NSEvent.keyCode` mapped to the code name (`kVK_ANSI_C` is `"KeyC"`); on
+iPad `UIKey.charactersIgnoringModifiers` and `UIKey.keyCode`, a HID usage
+(`UIKeyboardHIDUsageKeyboardC` is `"KeyC"`).
+
+The physical key is what Ctrl and Alt go by on a layout that is not Latin,
+as in other terminals: Ctrl+C on a Russian layout is the key that types "с",
+and the program gets `^C` for it. When Ctrl or Alt is held and the key's
+character is not ASCII, the server encodes the key as its character on a US
+layout (Ctrl+С `^C`, Ctrl+Я `^Z`, Alt+Ф `ESC a`). A character that is ASCII
+goes by itself wherever its key is: Ctrl+C on Dvorak (the I key) is `^C`,
+Ctrl+A on AZERTY (the Q key) `^A`. Typing without Ctrl or Alt is the text.
+With the kitty keyboard protocol on, the physical key is the base layout key
+it reports. A client that sends no `code` gets what it did before: keys taken
+as on a US layout, and nothing for Ctrl with a character that is not ASCII.
+
+### File names that are not UTF-8
+
+The files protocol (feature `"files"`) carries paths as strings, and a name
+on Linux can be any bytes. A name that is not UTF-8 comes with its raw bytes
+as well (`FsEntry.name_bytes`, `path_bytes` in `FsEntries`, `FsInfo`,
+`FsChanged`), its string being for showing only (U+FFFD for each bad byte);
+every request has the same `bytes` twin of its path (`path_bytes`, `from_bytes`,
+`to_bytes`), which the server goes by when it is not empty. A client that
+keeps the bytes it was given and sends them back can read, write, rename and
+delete such a file; one that ignores them works as before for every other
+name.
 
 ### Measuring input latency
 
@@ -525,12 +576,18 @@ same in `ps` before and after. What it hands to its successor goes into a file
 in the runtime directory that the successor finds by name: `server-<pid>.state`
 for the supervisor (an exec keeps the pid), `panes/<pane id>.state` for a pane.
 The successor removes the file as it reads it. The files are readable by the
-user only: a pane's holds its screen and the input not yet delivered.
+user only: a pane's holds its screen and the input not yet delivered. A state
+file is written whole or not at all (a temporary file next to it, synced and
+renamed): on a full disk the reload does not happen, that process carries on
+as it was, and nothing half-written is left.
 
 What to know:
 
 - Client connections are dropped by a reload. Clients reconnect and find the
-  panes as they were.
+  panes as they were. A file write (`FsWrite`) cut by it fails and leaves the
+  file as it was: each write notes its temporary file in `writes/` of the
+  runtime directory, and a server that starts (or has just reloaded) removes
+  the temporary files of writes whose process is gone or was itself.
 - Install a new version by writing it next to the old one and renaming it into
   place (`install`, `mv`). The server reloads from the path it was started
   from; a version switch done by repointing a symlink is not noticed.

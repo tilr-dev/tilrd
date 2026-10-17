@@ -34,6 +34,7 @@ def ctrl_c_after_a_reload_interrupts_a_foreground_sleep(t: T):
     d.line(pane, "sleep 1000")
     t.eventually(lambda: t.procs(r"^sleep 1000$"), "sleep 1000 runs")
     d.key(pane, "ctrl-c")
+    d.wait_for(pane, r"(?m)^\$ ?$")  # the prompt: what is typed before sleep dies is flushed
     t.eq(d.value(pane, "$?"), "130", "sleep's exit status (SIGINT)")
     t.eventually(lambda: not t.procs(r"^sleep 1000$"), "sleep 1000 is gone", timeout=5)
 
@@ -54,6 +55,7 @@ def a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c(t: T):
     d.cmd("reconnect", timeout_ms=20_000)
     t.ok(t.procs(r"^sleep 1000$"), "sleep 1000 still runs after the reload")
     d.key(pane, "ctrl-c")
+    d.wait_for(pane, r"(?m)^\$ ?$")  # the prompt: what is typed before sleep dies is flushed
     t.eq(d.value(pane, "$?"), "130", "sleep's exit status (SIGINT)")
 
 
@@ -70,5 +72,6 @@ def ctrl_z_and_fg_after_a_reload_stop_and_resume_a_job(t: T):
     d.line(pane, "fg")
     t.eventually(lambda: t.proc(sleep.pid).state in ("S", "R"), "fg runs the job again", timeout=5)
     d.key(pane, "ctrl-c")
+    d.wait_for(pane, r"(?m)^\$ ?$")  # the prompt: what is typed before sleep dies is flushed
     t.eq(d.value(pane, "$?"), "130", "sleep's exit status after fg and Ctrl+C")
     t.eventually(lambda: not t.procs(r"^sleep 1000$"), "sleep 1000 is gone", timeout=5)
