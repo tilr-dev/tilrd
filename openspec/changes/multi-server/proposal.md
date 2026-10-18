@@ -1,28 +1,32 @@
-# Proposal: Joining several servers behind one client connection
+# Proposal: Joining several machines in the client
 
-Блокер: Who joins the machines? Options: (a) the client keeps one connection per server and merges lists (no server change); (b) one tilrd relays other tilrds' panes (server-to-server links, one client connection); (c) Cloud relays. Recommendation: (a) first — no new trust paths; consider (b) only if mobile clients need one connection.
+Client-side work: no tilrd change. The Tilr apps' part belongs in their repositories; a multi-machine `tilr` (crates/tilr, this repo) would be its own change.
 
 ## Why
 
-"The client holds one connection, the system joins machines": the mechanism for combining cores is undecided; `server_id` is the base (Basic Memory `main/projects/tilr/tilr-vs-herdr-0.9-razbor-connecting-the-machines-i-sravnenie-arkhitektur`, `main/projects/tilr/tilr-udalionnyi-dostup-k-core-cherez-cloudflare-tunnel-access-akkaunt-polzovatelia`). A related idea is a direct LAN connection over the tunnels (Plex-style certificates on `192-168-1-5.<id>.domain`) (`main/projects/tilr/tilr-ideia-priamoe-soedinenie-po-lokalnoi-seti-poverkh-tunnelei`).
+"The client holds one connection, the system joins machines": the mechanism for combining cores was undecided; `server_id` is the base (Basic Memory `main/projects/tilr/tilr-vs-herdr-0.9-razbor-connecting-the-machines-i-sravnenie-arkhitektur`, `main/projects/tilr/tilr-udalionnyi-dostup-k-core-cherez-cloudflare-tunnel-access-akkaunt-polzovatelia`). A related idea is a direct LAN connection over the tunnels (Plex-style certificates on `192-168-1-5.<id>.domain`) (`main/projects/tilr/tilr-ideia-priamoe-soedinenie-po-lokalnoi-seti-poverkh-tunnelei`).
+
+## Decision (2026-10-18)
+
+- The client joins machines: one connection per tilrd, pane lists merged in the client, the machine list from the client's configuration or Cloud discovery. No server change, no new trust paths.
+- Rejected: tilrd relaying other tilrds' panes (server-to-server links and routing state).
+- Rejected: Cloud relaying (contradicts "Cloud does not see session traffic").
 
 ## What Changes
 
-- To be designed: one server relays the panes of others (pane ids are UUIDs, so they do not clash), or the client multiplexes several connections and Cloud only lists machines.
+- Nothing in tilrd. What a client needs is already there: `HelloAck.server_id` (a lasting UUID per machine, `panes::a_server_keeps_its_id_when_it_restarts`) tells machines apart and finds the same machine reached by two addresses; pane ids are UUIDs, so merged lists do not clash. A display name comes from the client's configuration or Cloud, not from the server.
 
 ## Capabilities
 
 ### Modified Capabilities
-- `protocol`
-- `panes`
-- `cloud-tunnels`
+- None (`skip_specs: true`).
 
-Spec deltas are not written yet (`skip_specs: true`).
+## Non-goals
 
-## Out of scope
-
-- The client UI for several machines.
+- The client UI for several machines; Cloud discovery API.
+- A server-provided machine name in `HelloAck` (add later, by its own change, if a client needs it).
+- Direct LAN connections over tunnels.
 
 ## Impact
 
-Depends on the design; a relay would add routing state that must survive a reload.
+None in this repository. Nothing crosses a reload.

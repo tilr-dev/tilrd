@@ -1,12 +1,12 @@
 # Tasks
 
-## 0. Decision
+Deferred: security design to be done.
 
-- [ ] 0.1 Owner provides or approves the design; write design.md and the deltas; drop `skip_specs`; verify with `openspec validate end-to-end-encryption --strict`
+## 1. Security design
 
-## 1. Implementation
-
-- [ ] 1.1 Per the design; verify with a cargo test where a proxy sees no plaintext and itests UC-07A through an encrypted tunnel
+- [ ] 1.1 Find Dan's earlier E2E thinking (the note that says it is worked out) or confirm there is none; verify by a Basic Memory link in proposal.md
+- [ ] 1.2 Write design.md: threat model, candidate approaches compared, key distribution and pinning, reload and reconnect; verify by owner review
+- [ ] 1.3 Owner decides; open the implementation change with deltas; verify `openspec validate --all --strict`
 
 ## 2. Checks
 

@@ -1,28 +1,35 @@
 # Proposal: End-to-end encryption between client and server
 
-Блокер: Which E2E scheme? Options: (a) Noise (XX/IK) inside the WebSocket with a server key pair in the state directory and keys pinned by the client on first use or via Cloud; (b) TLS with a self-signed server certificate pinned by the client (tunnel passes TCP through); (c) postpone and accept Cloudflare TLS termination for v1. Recommendation: (a), with pinning via the existing `server_id` and Cloud as the key directory; a note says you already worked it out — please link it.
+Deferred: security design to be done.
 
 ## Why
 
 End-to-end encryption was recorded as a requirement on 2026-10-03 with details deliberately left open ("обсудим позже"); Cloud v1 terminates TLS at Cloudflare, so the tunnel provider sees the traffic. One note says E2E "is already worked out" (Dan) but no design is recorded (Basic Memory `main/projects/tilr/tilr-zhurnal-reshenii`, `main/projects/tilr/tilr-cloud-v1-control-plane-tunneli-token-dostupa-realizatsiia`, `main/projects/tilr/tilr-cloud-besplatno-dlia-vsekh-premium-optsionalno-1`).
 
+## Decision (2026-10-18)
+
+- Not now: v1 relies on TLS of the WSS connection, terminated at Cloudflare.
+- This change becomes a security design task: work out how to do E2E properly, then propose the implementation as its own change.
+- Rejected: implementing a scheme now (no recorded design to build on).
+
 ## What Changes
 
-- To be designed: a key exchange bound to the server's identity (`server_id` plus a key pair) and the client, encrypting packets inside the WebSocket, so a tunnel sees only ciphertext.
+- No code. A design document (design.md, to be written) covering:
+  - Threat model: Cloudflare (the tunnel) and Tilr Cloud must not read or alter session traffic; the client and the server machine are trusted; the local unix socket is excluded (same user, same machine).
+  - Candidate approaches, compared neutrally: Noise (XX / IK) inside the WebSocket with a server key pair in the state directory and the key pinned by the client; TLS end to end with a pinned self-signed server certificate (the tunnel passes TCP through); others found while designing.
+  - Key distribution and pinning (first use, `server_id`, Cloud as a directory without trusting it), rotation, multiple clients, and what a reload and a reconnect do to session keys.
+  - Protocol impact per `protocol-v3` (a version bump if every client must speak it).
 
 ## Capabilities
 
 ### Modified Capabilities
-- `protocol`
-- `access-control`
-- `cloud-tunnels`
+- `protocol`, `access-control`, `cloud-tunnels`: none until the design is decided.
 
-Spec deltas are not written yet (`skip_specs: true`).
+## Non-goals
 
-## Out of scope
-
-- TLS on the listen port itself.
+- Implementation in this change.
+- TLS on the listen port itself; the local unix socket.
 
 ## Impact
 
-**BREAKING** or a feature flag depending on the design; key material in the state directory; a reload must keep session keys or force a re-handshake (clients reconnect on a reload anyway).
+None now. The later implementation will likely be **BREAKING** (PROTOCOL_VERSION bump) and keep key material in the state directory.

@@ -1,4 +1,4 @@
 schema: spec-driven
 created: 2026-10-18
-# No requirement can be stated before the open questions are decided.
+# Deferred; deltas are written after the quarantine experiment.
 skip_specs: true

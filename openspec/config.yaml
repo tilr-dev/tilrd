@@ -26,11 +26,13 @@ context: |
 
   Protocol: the schema is crates/tilr-proto/proto/tilr.proto; clients copy it from here (the
   Tilr app's `server` plugin via `npm run proto`, crates/tilr-driver, the test client), so any
-  change there is a protocol change. The protocol grows by adding message types and fields;
-  both sides ignore what they do not know and advertise support in Hello.features /
-  HelloAck.features. An incompatible change bumps PROTOCOL_VERSION
-  (crates/tilr-proto/src/lib.rs, now 2); a server answers a Hello with another version with
-  an Error and closes. A packet is one binary WebSocket message: flag byte (0 plain, 1 zstd)
+  change there is a protocol change. Both sides ignore message types and fields they do not
+  know. Rule (owner, 2026-10-18, change protocol-v3): PROTOCOL_VERSION
+  (crates/tilr-proto/src/lib.rs; 2 in code until protocol-v3 lands, then 3) is the mandatory
+  wire contract: a change a peer cannot ignore bumps it, with no compatibility for older
+  clients or servers; HelloAck.features lists only capabilities a server can be run without
+  (clipboard, files, host-events, agent, exec), never a flag for a mandatory part. A server
+  answers a Hello with another version with an Error and closes. A packet is one binary WebSocket message: flag byte (0 plain, 1 zstd)
   plus a protobuf ClientMessage / ServerMessage. Close codes 4000/4001/4002 are part of the
   contract.
 

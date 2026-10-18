@@ -1,4 +1,4 @@
 schema: spec-driven
 created: 2026-10-18
-# No requirement can be stated before the open questions are decided.
+# Client-side work; no tilrd behavior change.
 skip_specs: true

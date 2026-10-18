@@ -1,8 +1,13 @@
 # Proposal: Make the repository ready to go public
 
-Блокер: When should tilr-dev/tilrd go public? Options: (a) right after itests merges into main and the first tilrd release; (b) after Cloud production is complete; (c) not planned yet. Recommendation: (a) — the arm64 release build and vulnerability reporting both need it, and gitleaks already guards the history.
+Deferred: decided when the project is complete.
 
 Зависит от: readme-code-reconciliation
+
+## Decision (2026-10-18)
+
+- Not decided yet: the repository (and the whole project) goes public only when everything is fully working; there is no plan or date. The checklist below is kept for that moment.
+- Rejected for now: going public right after the itests merge and the first tilrd release; going public after Cloud production.
 
 ## Why
 
@@ -19,9 +24,10 @@ Before going public: read through README, TODO and USE_CASES; set topics; set `R
 
 No spec delta: tests, docs or process only; `skip_specs: true`.
 
-## Out of scope
+## Non-goals
 
-- The decision to go public itself (the owner's).
+- The decision to go public itself (the owner's, when the project is complete).
+- A date or plan for going public.
 
 ## Impact
 
