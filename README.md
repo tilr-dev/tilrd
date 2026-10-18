@@ -687,7 +687,8 @@ The server does not hoard frames for a client that cannot keep up. Unsent data t
 holds for a client is kept small (`TCP_NOTSENT_LOWAT`, 16 KiB), so what it is behind on
 waits in its queue. A client whose queue has held a packet for longer than 250 ms lags: its
 frames of a pane are skipped until its queue is written out, then it gets a full frame of
-the screen as it is then (the pane is asked for one; the other viewers get it too), whose
+the screen as it is then (the pane is asked for one, within a second even if the pane
+prints nothing more; the other viewers get it too), whose
 `last_input_seq` carries the client's own latest input if a skipped frame echoed it. A
 client that skips gets fewer frames, each up to date, instead of a growing backlog of stale
 ones; other clients are not slowed. A client whose queue fills up all the same (1024
@@ -704,7 +705,11 @@ behind what the network holds: of the second lane's data, at most 1 MiB is out o
 the client and not yet read by it (its receive buffer can hold several MB). The server knows
 how far the client has read by WebSocket pings it sends between the chunks, which the
 client's WebSocket answers as it reads; a client must answer pings, as browsers and
-WebSocket libraries do on their own. The second lane holds at most 4 MiB per client: a file
+WebSocket libraries do on their own. Every ping the server sends on the connection, the
+liveness ones above included, carries how far it is (`tilr-bulk:` and the position as a
+big-endian u64), so a client that answers only the latest of several pings, as RFC 6455
+allows, moves the window on all the same; a pong that claims more than was sent counts as
+what was sent. The second lane holds at most 4 MiB per client: a file
 read, a program sending to a stream, or an exec's program writing output, waits for room, so
 a client that takes data slowly holds the read or the program back, while the server's
 memory stays flat, and is not dropped for being slow.

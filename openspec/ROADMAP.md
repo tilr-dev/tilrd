@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| bulk-window-stall | every ping carries the bulk position so the window cannot stall; a lagging client gets its last screen (#13); acked position capped at sent (#17) | M | - | no | ready |
 | exec-escaped-descendants | an exec always ends and `ExecExit` is its last message; exec replies never silently lost; no kill after reap | M | - | no | ready |
 | hello-deadline | a connection that says no `Hello` 10 s after its handshake is closed (4002), whatever `--client-timeout` | S | - | no | ready |
 | host-socket-per-process | two tilrd of one user keep separate host-events sockets | S | - | no | ready |
@@ -115,6 +114,7 @@ the answer shapes `quic-transport`, `directory-sync` and possibly `port-forwardi
 | openspec-setup | 27be1ea, 40d6057, 552dcd9 |
 | reload-rollback | 4298b15 |
 | reload-signals-and-socket | a0f1ae9 |
+| bulk-window-stall | recorded in the next commit |
 | client-socket-peer-check | 8274039 |
 
 Older work is in `openspec/changes/archive/`.

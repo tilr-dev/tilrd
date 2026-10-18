@@ -537,3 +537,56 @@ async fn the_same_client_id_under_another_token_supersedes_nobody() {
     assert_eq!(first.list_panes().await[0].viewers, 2);
     assert!(!server.logged("superseded"));
 }
+
+#[tokio::test]
+async fn a_lagging_client_gets_the_last_screen_without_new_output() {
+    let server = Server::start(&[]);
+    let mut fast = Client::connect(&server).await;
+    let pane_id = fast.open_pane_with(300, 100, "").await;
+    // A client on a slow network: a small receive buffer fills at once.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let addr = server.addr.trim_start_matches("ws://").parse().unwrap();
+    let stream = socket.connect(addr).await.unwrap();
+    let (ws, _) = tokio_tungstenite::client_async(&server.addr, MaybeTlsStream::Plain(stream))
+        .await
+        .unwrap();
+    let mut slow = Client::connect_silent(&server).await;
+    slow.ws = ws;
+    slow.hello().await;
+    slow.subscribe(pane_id).await;
+    while !next_frame(&mut slow).await.full {}
+
+    // Heavy output `slow` does not read, then the pane goes quiet.
+    fast.type_line(
+        pane_id,
+        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"",
+    )
+    .await;
+    fast.wait_screen("<done>").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let last = fast.screen.text();
+
+    // `slow` reads again: with nothing more printed, the screen it ends up
+    // with is the pane's last one, brought whole after the lag.
+    let mut full_after_lag = false;
+    let caught_up = async {
+        while slow.screen.text() != last {
+            full_after_lag |= next_frame(&mut slow).await.full;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), caught_up)
+        .await
+        .unwrap_or_else(|_| panic!("stale screen:\n{}", slow.screen.text()));
+    assert!(full_after_lag, "no full frame after the lag");
+}
+
+/// The next frame the pane sends.
+async fn next_frame(client: &mut Client) -> Frame {
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) => Some(frame.clone()),
+            _ => None,
+        })
+        .await
+}

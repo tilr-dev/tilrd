@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Bulk data in the network is bounded by pongs
-Of the bulk lane's data, the server SHALL keep at most 1 MiB written to a client and not yet read by it. It MUST learn how far the client has read from WebSocket pings whose payload is `tilr-bulk:` followed by the bulk byte position as a big-endian u64: one after every 128 KiB of bulk data and whenever the window fills, and every liveness ping SHALL carry the current position too, so that a pong to any ping the server sent moves the window. A position beyond the bulk bytes written to that client MUST count as the bytes written. A client that answers no pings MUST stall its bulk data (file reads, streams, execs) while its frames still flow.
+The server SHALL keep at most 1 MiB of bulk data written to a client and not yet read by it. Every WebSocket ping it sends (one per 128 KiB of bulk data, one when the window fills, and the liveness pings) MUST carry `tilr-bulk:` and the bulk byte position as a big-endian u64; a pong's position moves the window, capped at the bytes written. A client that answers no pings MUST stall its bulk data (file reads, streams, execs) while its frames still flow.
 
 **Verified by**: the unit tests `the_bulk_window_closes_until_the_client_has_read_its_marks` and `a_pong_beyond_what_was_sent_opens_no_more_than_the_window` in crates/tilrd/src/outbox.rs, `files::a_client_answering_only_the_latest_ping_gets_the_whole_file`, and itests UC-072 (`uc_072.py::parallel_reads_leave_the_terminal_responsive`).
 
@@ -18,7 +18,7 @@ Of the bulk lane's data, the server SHALL keep at most 1 MiB written to a client
 - **THEN** the server writes it at most 1 MiB of bulk data more before a later pong
 
 ### Requirement: A lagging client skips to the latest screen
-The server SHALL set `TCP_NOTSENT_LOWAT` to 4 KiB on TCP clients, so a backlog waits in its queue. A client whose interactive lane has held a packet over 250 ms lags: its frames of a pane MUST be skipped (see `metrics`) until its queue is written out; then the pane MUST be asked for a full frame, sent to all its viewers, whose `last_input_seq` carries the client's own latest seq a skipped frame echoed. The full frame MUST be asked for even when the queue was written out before the lag was recorded and the pane prints nothing more. A lagging client MUST NOT be dropped for it, nor slow other clients.
+The server SHALL set `TCP_NOTSENT_LOWAT` to 4 KiB on TCP clients. A client whose interactive lane has held a packet over 250 ms lags: its frames of a pane MUST be skipped (see `metrics`) until its queue is written out, then the pane MUST be asked for a full frame (also when the queue emptied before the lag was recorded), sent to all its viewers, with `last_input_seq` the client's latest seq a skipped frame echoed. A lagging client MUST NOT be dropped for it, nor slow other clients.
 
 **Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo`, `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`, the unit test `a_packet_held_too_long_is_lag_and_an_empty_queue_is_reported_once` in crates/tilrd/src/outbox.rs, and itests UC-049 (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`) and UC-043 (`uc_043.py::a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it`, `uc_043.py::a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect`).
 

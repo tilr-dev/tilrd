@@ -13,7 +13,9 @@ The liveness ping's payload becomes `BulkWindow::position()` (`tilr-bulk:` + `se
 In `on_pane_output`'s "starts lagging" branch, after `want_drained()` the supervisor checks `client.tx.drained()` and, if the lane is already empty, sets `ask_full`. The `Tick` handler (every `LAG_TICK`, 1 s) also asks for a full frame for each pane in a client's `lagging` map when that client's lane is drained; `ask_full_frame` is idempotent per pane (`full_asked`), so this costs nothing in the common case.
 
 ### D3. Cap the acknowledged position
-`BulkWindow::open()` uses `min(read, sent)`; `BulkAcks` stays lock-free. A lying pong can then at most acknowledge everything written so far, which is the honest maximum.
+`BulkAcks` shares the bytes written (`sent`, an atomic the writer stores in `BulkWindow::wrote`), and `BulkAcks::pong` caps the position at it before its `fetch_max`; `BulkAcks` stays lock-free. A lying pong can then at most acknowledge everything written so far, which is the honest maximum; an honest pong is never ahead, because its ping goes out after the data it marks.
+
+Corrected during implementation: the prepared design capped in `BulkWindow::open()` with `min(read, sent)` at the moment of the check. That does not bound anything: a pong far ahead keeps `read` above `sent` while `sent` grows, so the window stays open for ever (the unit test `a_pong_beyond_what_was_sent_opens_no_more_than_the_window` showed 100 MiB written). The cap has to apply when the pong arrives.
 
 ## Backpressure and memory
 

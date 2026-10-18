@@ -1109,7 +1109,9 @@ async fn serve_websocket<S>(
                     }
                     None => break closing.try_recv().ok(),
                 },
-                () = tick(&mut ping) => (Message::Ping(Bytes::new()), None),
+                // It carries the bulk position, so that its pong moves the
+                // window even if the client answers only the latest ping.
+                () = tick(&mut ping) => (Message::Ping(window.position()), None),
                 // The client read more: bulk data may go again.
                 () = window.moved(), if !open => continue,
             };
@@ -1628,7 +1630,10 @@ impl Supervisor {
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
             }
-            Event::Tick(due) => self.metrics.loop_lag.observe(due.elapsed()),
+            Event::Tick(due) => {
+                self.metrics.loop_lag.observe(due.elapsed());
+                self.ask_lagging_for_full_frames();
+            }
             Event::Metrics { reply } => {
                 let _ = reply.send(self.metrics_snapshot());
             }
@@ -2470,6 +2475,9 @@ impl Supervisor {
                             },
                         );
                         client.tx.want_drained();
+                        // The writer may have emptied the lane before the
+                        // ask: then no `ClientDrained` comes, so ask now.
+                        ask_full |= client.tx.drained();
                         pane.counters.frames_skipped += 1;
                         continue;
                     }
@@ -2502,6 +2510,22 @@ impl Supervisor {
         for pane_id in client.lagging.keys() {
             if let Some(pane) = self.panes.get_mut(pane_id) {
                 ask_full_frame(*pane_id, pane);
+            }
+        }
+    }
+
+    /// Every tick: a lagging client whose queue is written out gets the full
+    /// frames it waits for, even if its `ClientDrained` was missed and the
+    /// pane prints nothing more. Asking twice costs nothing (`full_asked`).
+    fn ask_lagging_for_full_frames(&mut self) {
+        for client in self.clients.values() {
+            if client.lagging.is_empty() || !client.tx.drained() {
+                continue;
+            }
+            for pane_id in client.lagging.keys() {
+                if let Some(pane) = self.panes.get_mut(pane_id) {
+                    ask_full_frame(*pane_id, pane);
+                }
             }
         }
     }

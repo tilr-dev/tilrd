@@ -1043,3 +1043,100 @@ async fn tilr_edit_fails_with_no_client_watching_or_outside_a_pane() {
     assert!(!server.is_running());
     assert!(!Path::new(&sock).exists());
 }
+
+/// A way to `server` for a client that answers only the latest of the
+/// pings it has read, as RFC 6455 allows: of the pongs the client sends, the
+/// proxy holds the newest and lets it through every 300 ms, dropping the
+/// others. Returns the address to connect to.
+async fn latest_pong_only(server: &Server) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let upstream = server.addr.trim_start_matches("ws://").to_owned();
+    tokio::spawn(async move {
+        let (client, _) = listener.accept().await.unwrap();
+        let server = TcpStream::connect(upstream).await.unwrap();
+        let (mut from_client, mut to_client) = client.into_split();
+        let (mut from_server, mut to_server) = server.into_split();
+        tokio::spawn(async move {
+            let _ = tokio::io::copy(&mut from_server, &mut to_client).await;
+        });
+        // The handshake request goes as it is.
+        let mut buf = Vec::new();
+        let mut read = [0; 16 << 10];
+        let end = loop {
+            if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break end + 4;
+            }
+            match from_client.read(&mut read).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&read[..n]),
+            }
+        };
+        if to_server.write_all(&buf[..end]).await.is_err() {
+            return;
+        }
+        buf.drain(..end);
+        // Then frames from the client, whole: a client masks every frame.
+        let mut held: Option<Vec<u8>> = None;
+        let mut flush = tokio::time::interval(Duration::from_millis(300));
+        loop {
+            tokio::select! {
+                n = from_client.read(&mut read) => match n {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => buf.extend_from_slice(&read[..n]),
+                },
+                _ = flush.tick() => {
+                    if let Some(pong) = held.take()
+                        && to_server.write_all(&pong).await.is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
+            }
+            while buf.len() >= 2 {
+                let (len, head) = match buf[1] & 0x7f {
+                    126 if buf.len() >= 4 => (u16::from_be_bytes([buf[2], buf[3]]) as usize, 4),
+                    127 if buf.len() >= 10 => (
+                        u64::from_be_bytes(buf[2..10].try_into().unwrap()) as usize,
+                        10,
+                    ),
+                    126 | 127 => break,
+                    len => (len as usize, 2),
+                };
+                let size = head + 4 + len;
+                if buf.len() < size {
+                    break;
+                }
+                let frame: Vec<u8> = buf.drain(..size).collect();
+                if frame[0] & 0x0f == 0xa {
+                    held = Some(frame);
+                } else if to_server.write_all(&frame).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn a_client_answering_only_the_latest_ping_gets_the_whole_file() {
+    // Liveness pings every third of a second, among the bulk window's marks.
+    let server = Server::start(&["--client-timeout", "1"]);
+    let data = image(16 << 20);
+    std::fs::write(server.dir.join("big.bin"), &data).unwrap();
+    let stream = TcpStream::connect(latest_pong_only(&server).await)
+        .await
+        .unwrap();
+    let (ws, _) = tokio_tungstenite::client_async(&server.addr, MaybeTlsStream::Plain(stream))
+        .await
+        .unwrap();
+    let mut client = Client::connect_silent(&server).await;
+    client.ws = ws;
+    client.hello().await;
+
+    let (got, _) = read(&mut client, 1, "~/big.bin", 0, 0).await.unwrap();
+    assert!(got == data, "the file arrived changed");
+}

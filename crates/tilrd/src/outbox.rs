@@ -26,7 +26,8 @@
 //! [`BULK_WINDOW`] bytes written but not yet read by the client, known by
 //! WebSocket pings ([`BulkWindow`]): every [`BULK_MARK`] bytes of bulk the
 //! writer sends a ping carrying how far it is, and the client's pong, which
-//! comes once the client has read up to it, moves the window on.
+//! comes once the client has read up to it, moves the window on. Its
+//! liveness pings carry the position too, so a pong to any ping does.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -275,6 +276,9 @@ pub struct BulkWindow {
 #[derive(Clone, Default)]
 pub struct BulkAcks {
     read: Arc<AtomicU64>,
+    /// Bulk bytes written, as the writer last said: no pong acknowledges
+    /// more.
+    sent: Arc<AtomicU64>,
     moved: Arc<tokio::sync::Notify>,
 }
 
@@ -308,13 +312,22 @@ impl BulkWindow {
     /// so that its pong opens it again).
     pub fn wrote(&mut self, bytes: usize) -> Option<Bytes> {
         self.sent += bytes as u64;
+        self.acks.sent.store(self.sent, Ordering::Relaxed);
         if self.sent - self.marked < BULK_MARK && self.open() {
             return None;
         }
         self.marked = self.sent;
+        Some(self.position())
+    }
+
+    /// The payload of a ping that marks the bulk data written so far. Every
+    /// ping the writer sends carries it, the liveness ones too: a client may
+    /// answer only the latest of several pings (RFC 6455 allows it), and a
+    /// mark it never answers must not keep the window closed.
+    pub fn position(&self) -> Bytes {
         let mut payload = MARK.to_vec();
         payload.extend_from_slice(&self.sent.to_be_bytes());
-        Some(payload.into())
+        payload.into()
     }
 }
 
@@ -328,8 +341,11 @@ impl BulkAcks {
         else {
             return;
         };
-        self.read
-            .fetch_max(u64::from_be_bytes(position), Ordering::Relaxed);
+        // A pong is read after the data it marks was written, so an honest
+        // one is never ahead of `sent`; one that is (a client that lies or
+        // errs) acknowledges everything written so far, not more.
+        let position = u64::from_be_bytes(position).min(self.sent.load(Ordering::Relaxed));
+        self.read.fetch_max(position, Ordering::Relaxed);
         self.moved.notify_one();
     }
 }
@@ -407,6 +423,41 @@ mod tests {
         acks.pong(&pings[pings.len() - 1]);
         acks.pong(&pings[1]);
         assert_eq!(acks.read.load(Ordering::Relaxed), window.sent, "never back");
+    }
+
+    #[test]
+    fn any_pong_moves_the_window() {
+        let (mut window, acks) = BulkWindow::new();
+        let mut marks = 0;
+        while window.open() {
+            marks += usize::from(window.wrote(64 << 10).is_some());
+        }
+        assert!(marks > 0);
+        // The client answers none of the marks, only a later liveness ping.
+        acks.pong(&window.position());
+        assert!(
+            window.open(),
+            "the liveness ping's pong acknowledged it all"
+        );
+        assert_eq!(acks.read.load(Ordering::Relaxed), window.sent);
+    }
+
+    #[test]
+    fn a_pong_beyond_what_was_sent_opens_no_more_than_the_window() {
+        let (mut window, acks) = BulkWindow::new();
+        window.wrote(1000);
+        let mut ahead = MARK.to_vec();
+        ahead.extend_from_slice(&(100 * BULK_WINDOW).to_be_bytes());
+        acks.pong(&ahead);
+        let mut written = 0;
+        while window.open() {
+            window.wrote(64 << 10);
+            written += 64 << 10;
+        }
+        assert_eq!(
+            written, BULK_WINDOW,
+            "the window, not what the pong claimed"
+        );
     }
 
     #[tokio::test]
