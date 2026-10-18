@@ -36,7 +36,7 @@
 - [ ] 5.8 itests `uc_033`: give the case a port no other case or container takes (or wait for 7890 to be free) with the cause recorded; verify `./itests/dt --filter uc_033` green 10 times in a row inside a full scenarios run
 - [ ] 5.9 (TILR-112) `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`: find why the lagging client does not reach the last screen within 10 s under full-suite load (log the bulk window's marks and the frames sent to it); fix the server if the last full frame is not sent, else widen the wait with the cause recorded; verify 10 consecutive green full `cargo test --workspace --features tilrd/failpoints --locked` runs on macOS
 - [ ] 5.10 (TILR-113) `files::two_servers_of_one_user_keep_their_host_sockets`: start the second server only after the first logs `host events on` (wait in the test or in `common::start_second`); verify `scripts/linux.sh cargo test --features tilrd/failpoints --test files` green 20 times in a row
-- `local::a_server_that_stops_removes_its_socket_and_lock` is not a test bug: its fix is `startup-signal-window` (TILR-106), whose tasks include the run under load.
+- `local::a_server_that_stops_removes_its_socket_and_lock` is not a test bug: its fix is `startup-signal-window` (TILR-106, f8fb63b); after it, 400 runs in a row were green, 200 of them under full-suite load, so nothing is left to do here.
 
 ## 6. Checks and archive
 
