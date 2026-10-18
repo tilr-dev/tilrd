@@ -678,7 +678,9 @@ The supervisor execs the new executable in place, keeping its pid, the listening
 (TCP, and the Unix socket with its lock) and the pane processes, then has every pane process
 do the same. Shells, their screens, scrollback and scroll position carry over: a line
 soft-wrapped from the history onto the screen stays one line, a cursor waiting to wrap at
-the last column still wraps with the next character, and kitty images keep their places,
+the last column still wraps with the next character, the cursor of a program using a
+scrolling region or left and right margins with origin mode is on the same cell, and kitty
+images keep their places,
 those scrolled into the history too. A pane being closed (`ClosePane`, its program not
 gone yet) is still killed at its deadline, 2 s after the close, by the successor.
 

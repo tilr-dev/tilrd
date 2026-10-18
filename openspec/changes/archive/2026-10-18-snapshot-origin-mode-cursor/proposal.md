@@ -7,6 +7,7 @@ Found while implementing `reload-screen-fidelity` (TILR-74); the loss is older t
 ## What Changes
 
 - The snapshot places the cursor so that it lands on the same cell whether or not origin mode is on: either the final CUP is translated by the margins when DECOM is on (design choice to confirm in the implementation: row minus the top margin, column minus the left margin), or the cursor is placed before DECOM is enabled and the modes are enabled without moving it (setting DECOM homes the cursor, so the order matters: this is why the translation is the likelier fix).
+- The left and right margins themselves carry over: the snapshot turns `?69` on before the state's DECSLRM, which without the mode reads as a cursor save (SCOSC) and was lost (found by the unit test).
 - A unit test and a reload test show the cursor on the same cell.
 
 ## Capabilities
@@ -20,4 +21,4 @@ Found while implementing `reload-screen-fidelity` (TILR-74); the loss is older t
 
 ## Impact
 
-`crates/tilr-screen/src/ghostty.rs` (`snapshot`, `cursor_position`) and its unit tests, `crates/tilrd/tests/reload.rs`, USE_CASES.md. No wire, protocol or state format change (the snapshot stays a VT byte stream); size S.
+`crates/tilr-screen/src/ghostty.rs` (`snapshot`, `cursor_position`) and its unit tests, `crates/tilrd/tests/reload.rs`, USE_CASES.md, README "Reloading without closing shells". No wire, protocol or state format change (the snapshot stays a VT byte stream); size S.

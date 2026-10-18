@@ -420,6 +420,53 @@ async fn a_closing_pane_is_still_killed_after_a_reload() {
 }
 
 #[tokio::test]
+async fn the_cursor_under_origin_mode_is_where_it_was_after_a_reload() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    // A scrolling region on rows 3 to 8 and origin mode: the cursor at 2;5
+    // is on screen row 4. After a line (not echoed) the program prints the
+    // rest of the word where the cursor is.
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 40,
+            rows: 12,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "stty -echo; printf '\\033[3;8r\\033[?6h\\033[2;5Hmar'; read line; printf 'ker'; \
+                 sleep 1000"
+                    .into(),
+            ],
+            cwd: String::new(),
+            request_id: 7,
+        }))
+        .await;
+    let pane_id: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) if created.request_id == 7 => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane_id).await;
+    client.wait_row("    mar").await;
+    assert_eq!(client.screen.rows[3].trim_end(), "    mar");
+
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    client.wait_row("    mar").await;
+    client.type_line(pane_id, "go").await;
+    client.wait_screen("ker").await;
+    assert_eq!(
+        client.screen.rows[3].trim_end(),
+        "    marker",
+        "screen:\n{}",
+        client.screen.text()
+    );
+}
+
+#[tokio::test]
 async fn the_title_and_directory_of_a_pane_are_kept_across_a_reload() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;

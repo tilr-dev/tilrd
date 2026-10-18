@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T15:27:08.694785+00:00",
+   "started": "2026-10-18T16:07:56.706589+00:00",
    "commit": null,
    "counts": {
-    "PASS": 498,
+    "PASS": 500,
     "FAIL": 1,
     "BLOCKED": 0
    },
    "args": "",
-   "path": "itests/results/20261018T172650-8399"
+   "path": "itests/results/20261018T180739-73141"
   }
  },
  "capabilities": [
@@ -7105,6 +7105,35 @@
        "slug": "image-scrolled-partly-off-the-screen",
        "title": "Image scrolled partly off the screen",
        "tag": "reload/images-in-the-history-carry-over#image-scrolled-partly-off-the-screen",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "the-cursor-is-where-it-was-under-origin-mode",
+     "title": "The cursor is where it was under origin mode",
+     "tag": "reload/the-cursor-is-where-it-was-under-origin-mode",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "ghostty::tests::snapshot_keeps_the_cursor_under_origin_mode",
+      "reload::the_cursor_under_origin_mode_is_where_it_was_after_a_reload"
+     ],
+     "scenarios": [
+      {
+       "slug": "region-and-origin-mode",
+       "title": "Region and origin mode",
+       "tag": "reload/the-cursor-is-where-it-was-under-origin-mode#region-and-origin-mode",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "left-and-right-margins",
+       "title": "Left and right margins",
+       "tag": "reload/the-cursor-is-where-it-was-under-origin-mode#left-and-right-margins",
        "cases": [],
        "covered": false
       }

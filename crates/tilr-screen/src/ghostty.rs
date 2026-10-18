@@ -610,7 +610,6 @@ impl Screen for GhosttyScreen {
                 modes.extend(format!("\x1b[{private}{}{set}", mode.value()).bytes());
             }
         }
-        let cursor = cursor_position(&self.term, Extras::Pen)?;
         let cursor_shape = {
             let snapshot = self.render.update(&self.term)?;
             let steady = u8::from(!snapshot.cursor_blinking()?);
@@ -628,7 +627,32 @@ impl Screen for GhosttyScreen {
             .collect();
         // The formatter only emits terminal state around some content, so it
         // is given the top-left cell, which is then printed onto itself.
-        let state = format_range(&self.term, Point::Active, (0, 0), (0, 0), Extras::All)?;
+        let mut state = Vec::new();
+        if self.term.mode(Mode::LEFT_RIGHT_MARGIN)? {
+            // Without the mode the left and right margins of the state
+            // (DECSLRM) would read as a cursor save (SCOSC).
+            state.extend(b"\x1b[?69h");
+        }
+        state.extend(format_range(
+            &self.term,
+            Point::Active,
+            (0, 0),
+            (0, 0),
+            Extras::All,
+        )?);
+        // Under origin mode the final cursor position counts from the top
+        // left corner of the margins. That corner is where turning origin
+        // mode on puts the cursor, so it is read from a terminal given the
+        // same state and modes as the restored one.
+        let origin = if self.term.mode(Mode::ORIGIN)? {
+            let mut probe = new_terminal(cols, rows, 0)?;
+            probe.vt_write(&state);
+            probe.vt_write(&modes);
+            (probe.cursor_x()?, probe.cursor_y()?)
+        } else {
+            (0, 0)
+        };
+        let cursor = cursor_position(&self.term, Extras::Pen, origin)?;
 
         let alternate = if self.term.active_screen()? == ActiveScreen::Alternate {
             let mut content = format_range(
@@ -680,7 +704,8 @@ impl Screen for GhosttyScreen {
         out.extend(b"\x1b[0m");
         out.extend(images.screen);
         // The pen is left as it is: the end of the snapshot sets it.
-        out.extend(cursor_position(&self.term, Extras::None)?);
+        // Origin mode is set at the end, after this.
+        out.extend(cursor_position(&self.term, Extras::None, (0, 0))?);
         if let Some((mode, content)) = alternate {
             out.extend(format!("\x1b[?{mode}h\x1b[H").bytes());
             out.extend(content);
@@ -1285,11 +1310,15 @@ fn base64(data: &[u8]) -> String {
 /// waiting to wrap after the last column (a character printed there) cannot
 /// be moved there: the cell is printed again, in its own style, as the
 /// program left it, followed by `extras` ([`Extras::Pen`] sets the pen as
-/// it is).
-fn cursor_position(term: &Terminal<'_, '_>, extras: Extras) -> Result<Vec<u8>> {
+/// it is). The position is written relative to `origin`, the cell a cursor
+/// position of 1;1 means (the top left margin under origin mode).
+fn cursor_position(term: &Terminal<'_, '_>, extras: Extras, origin: (u16, u16)) -> Result<Vec<u8>> {
     let (x, y) = (term.cursor_x()?, term.cursor_y()?);
+    // A cursor above or left of the margins under origin mode cannot be put
+    // back there; it goes to the margin.
+    let (col, row) = (x.saturating_sub(origin.0), y.saturating_sub(origin.1));
     if !term.is_cursor_pending_wrap()? {
-        return Ok(format!("\x1b[{};{}H", y + 1, x + 1).into_bytes());
+        return Ok(format!("\x1b[{};{}H", row + 1, col + 1).into_bytes());
     }
     let cell = term
         .grid_ref(Point::Active(PointCoordinate { x, y: u32::from(y) }))?
@@ -1302,7 +1331,12 @@ fn cursor_position(term: &Terminal<'_, '_>, extras: Extras) -> Result<Vec<u8>> {
     };
     // Printed with the default pen (the formatter leaves out a default
     // style) and character sets (the cell is mapped already).
-    let mut out = format!("\x1b[{};{}H\x1b[0m\x1b(B\x0f", y + 1, from + 1).into_bytes();
+    let mut out = format!(
+        "\x1b[{};{}H\x1b[0m\x1b(B\x0f",
+        row + 1,
+        from.saturating_sub(origin.0) + 1
+    )
+    .into_bytes();
     out.extend(format_range(
         term,
         Point::Active,
@@ -2510,6 +2544,53 @@ mod tests {
             let expected = original.frame(true).unwrap().unwrap();
             assert_eq!(frame.changed, expected.changed);
             assert_eq!(frame.styles, expected.styles);
+        }
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_under_origin_mode() {
+        // Under origin mode a cursor position counts from the margins: the
+        // restored cursor is on the same cell, waiting to wrap as it was,
+        // and the text after it wraps at the same margins.
+        for bytes in [
+            // A scrolling region, the cursor on its second row.
+            &b"\x1b[3;8r\x1b[?6h\x1b[2;5H"[..],
+            // Left and right margins too.
+            b"\x1b[?69h\x1b[5;15s\x1b[3;8r\x1b[?6h\x1b[2;3H",
+            // A pending wrap at the last column under origin mode.
+            b"\x1b[3;8r\x1b[?6h\x1b[2;19H\x1b[31mab",
+            // A pending wrap at the right margin.
+            b"\x1b[?69h\x1b[5;15s\x1b[3;8r\x1b[?6h\x1b[2;10H\x1b[31mab",
+            // Left and right margins without origin mode.
+            b"\x1b[?69h\x1b[5;15s\x1b[3;8r\x1b[4;7H",
+        ] {
+            let new = || {
+                let mut screen = GhosttyScreen::new(20, 10).unwrap();
+                screen.feed(bytes);
+                screen
+            };
+            let mut original = new();
+            let snapshot = new().snapshot().unwrap();
+            let mut restored = GhosttyScreen::restore(20, 10, DEFAULT_CELL_PX, &snapshot).unwrap();
+            let cursor = |screen: &GhosttyScreen| {
+                (
+                    screen.term.cursor_x().unwrap(),
+                    screen.term.cursor_y().unwrap(),
+                    screen.term.is_cursor_pending_wrap().unwrap(),
+                    screen.term.mode(Mode::ORIGIN).unwrap(),
+                )
+            };
+            assert_eq!(
+                cursor(&restored),
+                cursor(&original),
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+            for screen in [&mut original, &mut restored] {
+                screen.feed(b"x0123456789abcdef\x1b[Hy");
+            }
+            assert_eq!(cursor(&restored), cursor(&original));
+            assert_eq!(view(&mut restored), view(&mut original));
         }
     }
 
