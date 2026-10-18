@@ -32,7 +32,7 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 ## Phase 1: correctness and security
 
-All of phase 1 but `reload-exec-signal-followups` is done (see "Done").
+All of phase 1 is done (see "Done").
 `agent-socket-per-server` (TILR-118) joined it on 2026-10-18: a bug in what the first release
 ships (the agent socket sweep is on dev only).
 `reload-signal-storm` (TILR-121) joined it on 2026-10-18: a signal during a reload's exec
@@ -42,10 +42,6 @@ user starting takes `tilr` and the other pane tools away from the first one's pa
 moment (exit 127), in what the first release ships.
 `reload-exec-signal-followups` (TILR-124) joined it on 2026-10-18: after a failed reload exec
 a broken pipe kills the server, and a SIGTERM while a reload prepares its exec is lost.
-
-| change | goal | size | depends on | blocker | status |
-|---|---|---|---|---|---|
-| reload-exec-signal-followups | SIGPIPE ignored again after a failed reload exec; a SIGTERM/SIGINT while a reload prepares its exec is not lost; `spawn_unblocked` guarded; the SIGTERM test made deterministic | S | - | no | ready |
 
 ## Phase 2: protocol v3 and input
 
@@ -135,5 +131,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | agent-socket-per-server | 5e0f703 |
 | reload-signal-storm | 060c7e4 |
 | shared-runtime-races | 72b0422 |
+| reload-exec-signal-followups | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

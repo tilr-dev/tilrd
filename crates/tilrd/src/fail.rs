@@ -8,7 +8,8 @@
 //! - `error` — the step fails, as if the system had refused it;
 //! - `panic`, `exit` — the process ends there on its own;
 //! - `kill` — the process is killed there, as by `kill -9` or a power cut;
-//! - `sleep:MS` — the process stops there for a while.
+//! - `sleep:MS` — the process stops there for a while, logging
+//!   `failpoint NAME: sleeping MS ms` first.
 //!
 //! A test that only learns the name of a point once the server runs (the id of
 //! a pane, say) puts more of the same into the file `TILR_FAILPOINTS_FILE`
@@ -48,6 +49,8 @@ pub fn point(name: &str) -> Result<()> {
         }
         Some(action) => match action.strip_prefix("sleep:").map(str::parse) {
             Some(Ok(ms)) => {
+                // A test waits for this line to act while the process sleeps.
+                tracing::info!("failpoint {name}: sleeping {ms} ms");
                 std::thread::sleep(std::time::Duration::from_millis(ms));
                 Ok(())
             }

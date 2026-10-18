@@ -116,6 +116,7 @@ Cloud repository.
 | `cloudflared` runs in a process group of its own, not the server's | `cloudflared_is_not_in_the_servers_process_group` |
 | A server killed with SIGKILL leaves a `cloudflared` (one that ignores SIGTERM, so even Linux's parent-death signal leaves it): the next server on the runtime directory stops it before it starts its own, and says so | `a_cloudflared_left_by_a_killed_server_is_stopped` |
 | A `cloudflared` that ignores SIGTERM is killed 3 s into a reload, which then completes; only the successor's runs | `a_cloudflared_ignoring_sigterm_does_not_hold_back_a_reload` |
+| † Starting `cloudflared` panics (failpoint `spawn-unblocked`): the next reload is not held up by it and goes through; the successor starts its own | `a_panic_starting_cloudflared_does_not_hold_up_the_next_reload` |
 | Unit: only a process running this runtime directory's `config.yml` is taken for a leftover `cloudflared` (`src/cloud.rs`) | `cloud::tests::only_a_process_running_this_configuration_is_taken_for_a_leftover` |
 
 ## Reconnecting — `tests/reconnect.rs`
@@ -231,7 +232,9 @@ state format; platforms other than `linux-aarch64`.
 | † SIGHUP and SIGUSR1 while the successor starts, before its handlers: held for it; SIGHUP ignored, one more reload; a shell started afterwards has no signal blocked | `signals_arriving_while_the_successor_starts_are_held_for_it` |
 | † SIGTERM while the successor starts: a clean shutdown (exit 0), the shells end | `a_sigterm_while_the_successor_starts_stops_the_server_cleanly` |
 | † SIGINT while the successor starts: held across the exec like SIGTERM, a clean shutdown (exit 0), the shells end, socket and lock removed | `a_sigint_while_the_successor_starts_stops_the_server_cleanly` |
-| † SIGTERM right before the supervisor's exec (failpoint `reload-exec`): no thread of the old image takes it; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_supervisor_execs_waits_for_the_successor` |
+| † SIGTERM right before the supervisor's exec (once failpoint `reload-exec` logs that it sleeps): no thread of the old image takes it; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_supervisor_execs_waits_for_the_successor` |
+| † SIGTERM after the supervisor read its events a last time, before the panes detach and the exec (failpoint `reload-after-drain`): raised again before the exec; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_reload_prepares_its_exec_stops_the_server` |
+| † The supervisor's exec fails in `execvp` (failpoint `reload-exec-missing`), then its stderr reader goes away: the next log line does not end it (SIGPIPE ignored again), the same connection, pane and shell | `a_broken_pipe_after_a_failed_exec_does_not_kill_the_server` |
 | † SIGUSR1 every 20 ms for 3 s: several reloads, the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
 
 ## Clipboard — `tests/clipboard.rs`

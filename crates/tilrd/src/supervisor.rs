@@ -1791,6 +1791,21 @@ impl Supervisor {
     /// on with the same panes. Returns only if that did not happen: `true`
     /// if the supervisor should shut down, `false` if it carries on itself.
     async fn reload(&mut self, events: &mut mpsc::UnboundedReceiver<Event>) -> bool {
+        // A stop during the reload is noted aside as well: from the last
+        // read of the events on, the event it turns into is read by nobody
+        // before the exec. It is raised again for the successor right
+        // before the exec; armed from the start, so that one on its way to
+        // the events at their last read is not missed by both.
+        reload::arm_stop();
+        let shut_down = self.reload_armed(events).await;
+        if reload::disarm_stop() && !shut_down {
+            tracing::info!("asked to stop during the reload");
+            return true;
+        }
+        shut_down
+    }
+
+    async fn reload_armed(&mut self, events: &mut mpsc::UnboundedReceiver<Event>) -> bool {
         // A pane that is starting has not reported yet; wait for it rather
         // than carry a half-started pane over.
         if !self.starting.is_empty() {
@@ -1884,6 +1899,8 @@ impl Supervisor {
                 event => self.on_event(event),
             }
         }
+        // A test stops here, after the last read of the events.
+        let _ = crate::fail::point("reload-after-drain");
 
         // Let each pane process take the input queued for it, then stop
         // writing. A process that does not take it is stuck and is given up.
@@ -2045,18 +2062,41 @@ impl Supervisor {
         let exe = crate::exe();
         let err = match set_inheritable(true) {
             Ok(()) => {
-                let mut command = std::process::Command::new(exe);
+                // A test has the exec fail in `execvp`, after what the
+                // standard library does before it.
+                let program = match crate::fail::point("reload-exec-missing") {
+                    Ok(()) => exe.to_path_buf(),
+                    Err(_) => exe.with_extension("missing"),
+                };
+                let mut command = std::process::Command::new(&program);
                 command.args(std::env::args_os().skip(1));
                 // What comes from here to the successor's handlers waits for
                 // them: no thread of this image takes it.
                 reload::hold_signals(&mut command);
-                reload::hold_everywhere();
-                let err = match crate::fail::point("reload-exec") {
-                    Ok(()) => command.exec(),
-                    Err(err) => std::io::Error::other(err.to_string()),
+                // The exec runs on the main thread, in the future `run`
+                // drives with `block_on`, but the hold does not need that:
+                // what ended the process on macOS was another thread taking
+                // a signal during the exec, and with the signals held on
+                // every thread none does, whichever thread execs. Checked
+                // on macOS: 80 execs from a tokio worker under SIGUSR1
+                // every 20 ms, and the reload signal tests, all survived.
+                let err = match reload::hold_everywhere() {
+                    Ok(()) => {
+                        // A stop that came since the last read of the events
+                        // waits, pending, for the successor too.
+                        reload::raise_stop();
+                        let err = match crate::fail::point("reload-exec") {
+                            Ok(()) => command.exec(),
+                            Err(err) => std::io::Error::other(err.to_string()),
+                        };
+                        // First thing: `exec` left SIGPIPE at its default.
+                        reload::ignore_sigpipe();
+                        anyhow::Error::new(err).context(format!("exec {}", program.display()))
+                    }
+                    Err(err) => err,
                 };
                 reload::release_everywhere();
-                anyhow::Error::new(err).context(format!("exec {}", exe.display()))
+                err
             }
             Err(err) => anyhow::Error::new(err).context("make descriptors inheritable"),
         };

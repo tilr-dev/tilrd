@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T18:50:01.101778+00:00",
+   "started": "2026-10-18T19:31:43.994761+00:00",
    "commit": null,
    "counts": {
-    "PASS": 506,
+    "PASS": 509,
     "FAIL": 1,
     "BLOCKED": 0
    },
    "args": "",
-   "path": "itests/results/20261018T204944-81945"
+   "path": "itests/results/20261018T213125-73861"
   }
  },
  "capabilities": [
@@ -7234,6 +7234,69 @@
        "slug": "left-and-right-margins",
        "title": "Left and right margins",
        "tag": "reload/the-cursor-is-where-it-was-under-origin-mode#left-and-right-margins",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "a-failed-exec-leaves-sigpipe-ignored",
+     "title": "A failed exec leaves SIGPIPE ignored",
+     "tag": "reload/a-failed-exec-leaves-sigpipe-ignored",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "reload::a_broken_pipe_after_a_failed_exec_does_not_kill_the_server"
+     ],
+     "scenarios": [
+      {
+       "slug": "a-broken-pipe-after-a-failed-exec",
+       "title": "A broken pipe after a failed exec",
+       "tag": "reload/a-failed-exec-leaves-sigpipe-ignored#a-broken-pipe-after-a-failed-exec",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "a-stop-asked-for-while-a-reload-prepares-its-exec-is-not-lost",
+     "title": "A stop asked for while a reload prepares its exec is not lost",
+     "tag": "reload/a-stop-asked-for-while-a-reload-prepares-its-exec-is-not-lost",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "reload::a_sigterm_while_the_reload_prepares_its_exec_stops_the_server"
+     ],
+     "scenarios": [
+      {
+       "slug": "sigterm-while-the-panes-detach",
+       "title": "SIGTERM while the panes detach",
+       "tag": "reload/a-stop-asked-for-while-a-reload-prepares-its-exec-is-not-lost#sigterm-while-the-panes-detach",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "a-child-that-failed-to-start-does-not-hold-up-a-reload",
+     "title": "A child that failed to start does not hold up a reload",
+     "tag": "reload/a-child-that-failed-to-start-does-not-hold-up-a-reload",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "cloud::a_panic_starting_cloudflared_does_not_hold_up_the_next_reload"
+     ],
+     "scenarios": [
+      {
+       "slug": "a-panic-starting-cloudflared",
+       "title": "A panic starting cloudflared",
+       "tag": "reload/a-child-that-failed-to-start-does-not-hold-up-a-reload#a-panic-starting-cloudflared",
        "cases": [],
        "covered": false
       }

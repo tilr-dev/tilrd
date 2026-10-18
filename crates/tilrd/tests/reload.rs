@@ -1028,8 +1028,8 @@ async fn a_sigterm_while_the_supervisor_execs_waits_for_the_successor() {
     let pid = shell_pid(&server, &mut client, pane_id).await;
 
     server.signal("-USR1");
-    wait_logged(&server, "reloading exe=", TIMEOUT).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Logged at the failpoint, after the signals are held.
+    wait_logged(&server, "failpoint reload-exec: sleeping", TIMEOUT).await;
     server.signal("-TERM");
     let started = tokio::time::Instant::now();
     let status = loop {
@@ -1048,6 +1048,108 @@ async fn a_sigterm_while_the_supervisor_execs_waits_for_the_successor() {
     assert!(server.logged("SIGTERM came during the reload"));
     assert!(server.logged("shutting down"));
     eventually("the shell exits", || !process_alive(pid)).await;
+}
+
+/// Wait for the server to end on its own.
+#[cfg(feature = "failpoints")]
+async fn exit_status(server: &mut Server) -> std::process::ExitStatus {
+    let started = tokio::time::Instant::now();
+    loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(started.elapsed() < TIMEOUT, "the server keeps running");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_sigterm_while_the_reload_prepares_its_exec_stops_the_server() {
+    // The supervisor stops after it read its events a last time, before
+    // the panes' writers detach and the exec: the event a SIGTERM turns
+    // into is not read there.
+    let (mut server, _) = failing_server("reload-after-drain=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    server.signal("-USR1");
+    wait_logged(&server, "failpoint reload-after-drain: sleeping", TIMEOUT).await;
+    server.signal("-TERM");
+    let status = exit_status(&mut server).await;
+    assert!(
+        status.success(),
+        "a clean shutdown, not the signal: {status}"
+    );
+    // The log thread may still be reading the last lines.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(server.logged("resumed after reload"), "the exec went ahead");
+    assert!(server.logged("SIGTERM came during the reload"));
+    assert!(server.logged("shutting down"));
+    eventually("the shell exits", || !process_alive(pid)).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
+    // The exec fails in execvp, after the standard library set SIGPIPE to
+    // its default for the new image. The test reads the server's stderr
+    // itself, and stops reading it once the reload failed.
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    let mut command = Command::new(&exe);
+    command.args(["--listen", "127.0.0.1:0"]);
+    Server::environment(&mut command, &dir, "reload-exec-missing=error");
+    command.stdin(Stdio::null()).stderr(Stdio::piped());
+    let mut child = spawn_copied(&mut command);
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let addr = loop {
+        let line = lines.next().expect("the server did not start").unwrap();
+        let addr = line
+            .split("listening on ")
+            .nth(1)
+            .map(|a| a.trim().to_owned());
+        log.lock().unwrap().push(line);
+        if let Some(addr) = addr {
+            break addr;
+        }
+    };
+    let sink = Arc::clone(&log);
+    let reader = std::thread::spawn(move || {
+        for line in lines.map_while(Result::ok) {
+            let failed = line.contains("reload failed");
+            sink.lock().unwrap().push(line);
+            if failed {
+                // Dropping the lines closes the pipe's read end.
+                break;
+            }
+        }
+    });
+    let mut server = Server {
+        child,
+        addr,
+        dir,
+        log,
+    };
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    server.signal("-USR1");
+    eventually("the reload fails", || reader.is_finished()).await;
+    reader.join().unwrap();
+    assert!(server.logged("exec "), "{:?}", server.log.lock().unwrap());
+
+    // A new connection is logged, to a pipe nobody reads any more.
+    let mut other = Client::connect(&server).await;
+    other.hello().await;
+    assert!(server.is_running(), "ended by the broken pipe");
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert_eq!(shell_pid(&server, &mut client, pane_id).await, pid);
+    assert!(server.is_running());
 }
 
 #[cfg(feature = "failpoints")]

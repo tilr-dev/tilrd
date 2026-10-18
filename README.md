@@ -735,7 +735,14 @@ What to know:
   executable starts are held across the exec and handled once it is up: one more reload,
   ignored, a clean shutdown (SIGTERM and SIGINT). The server takes them on one thread of its
   own (blocked on all the others), which blocks them too before the exec, so that no thread of
-  the old image takes one; its children start with none of them blocked.
+  the old image takes one; its children start with none of them blocked. A `SIGTERM` or
+  `SIGINT` that comes while the reload gets ready for the exec (the panes detaching, the
+  tunnel stopping) is not lost either: it is raised again right before the exec and waits
+  for the new executable, which shuts down cleanly. If the threads cannot be made to hold
+  the signals within 5 seconds, the reload fails (`reload failed: the signals cannot be
+  held ...`) and the server carries on.
+- An exec that fails leaves the server (or the pane process) as it was, with `SIGPIPE`
+  ignored again: a write to a pipe nobody reads any more fails instead of ending it.
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 

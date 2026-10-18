@@ -639,6 +639,8 @@ impl Pane {
                 let err = std::process::Command::new(exe)
                     .args(std::env::args_os().skip(1))
                     .exec();
+                // First thing: `exec` left SIGPIPE at its default.
+                reload::ignore_sigpipe();
                 anyhow::Error::new(err).context(format!("exec {}", exe.display()))
             }
             Err(err) => anyhow::Error::new(err).context("make the pty inheritable"),

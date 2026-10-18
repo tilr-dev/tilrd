@@ -323,16 +323,30 @@ pub fn spawn_unblocked<T>(spawn: impl FnOnce() -> T) -> T {
     }
     state.spawning += 1;
     drop(state);
-    let set = held_set();
-    // SAFETY: the set is valid.
-    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
-    let spawned = spawn();
-    // SAFETY: the set is valid.
-    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
-    let mut state = thread.lock();
-    state.spawning -= 1;
-    thread.changed.notify_all();
-    spawned
+    // From here on whatever happens, a panic included, puts the mask and
+    // the count back.
+    let _spawning = Spawning(thread);
+    release_held_signals();
+    // A test makes the start of a child panic here.
+    let _ = crate::fail::point("spawn-unblocked");
+    spawn()
+}
+
+/// A thread in [`spawn_unblocked`]: dropped, it blocks [`HELD`] on the
+/// thread again and only then leaves the count, so that the count never
+/// says no thread can take them while this one still can. It never panics:
+/// a panic while unwinding from another would abort the process.
+struct Spawning(&'static SignalThread);
+
+impl Drop for Spawning {
+    fn drop(&mut self) {
+        let set = held_set();
+        // SAFETY: the set is valid.
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
+        let mut state = self.0.lock();
+        state.spawning -= 1;
+        self.0.changed.notify_all();
+    }
 }
 
 /// The thread [`HELD`] are taken on, and what the others ask of it.
@@ -365,7 +379,22 @@ impl SignalThread {
             .wait(state)
             .unwrap_or_else(|err| err.into_inner())
     }
+
+    fn wait_timeout<'a>(
+        &self,
+        state: std::sync::MutexGuard<'a, SignalState>,
+        timeout: Duration,
+    ) -> std::sync::MutexGuard<'a, SignalState> {
+        self.changed
+            .wait_timeout(state, timeout)
+            .unwrap_or_else(|err| err.into_inner())
+            .0
+    }
 }
+
+/// How long a reload waits for the signal thread to block [`HELD`] and for
+/// the children being started to be started, before it gives up.
+const HOLD_TIMEOUT: Duration = Duration::from_secs(5);
 
 static SIGNAL_THREAD: std::sync::OnceLock<SignalThread> = std::sync::OnceLock::new();
 
@@ -410,34 +439,110 @@ pub fn serve_signals() -> std::io::Result<()> {
             }
         })?;
     // Let them in on the signal thread now.
-    set_signal_thread(thread, false, false);
+    if !set_signal_thread(thread, false, false, HOLD_TIMEOUT) {
+        return Err(std::io::Error::other("the signal thread does not answer"));
+    }
     Ok(())
 }
 
 /// Before an exec in place: have no thread of this process take [`HELD`],
 /// so that what comes waits for the successor. Undone by
-/// [`release_everywhere`] if the exec fails.
-pub fn hold_everywhere() {
-    if let Some(thread) = SIGNAL_THREAD.get() {
-        set_signal_thread(thread, true, true);
+/// [`release_everywhere`], also when this fails: after [`HOLD_TIMEOUT`],
+/// rather than freeze the thread that asked (the event loop).
+pub fn hold_everywhere() -> Result<()> {
+    hold_within(HOLD_TIMEOUT)
+}
+
+fn hold_within(timeout: Duration) -> Result<()> {
+    let Some(thread) = SIGNAL_THREAD.get() else {
+        return Ok(());
+    };
+    if !set_signal_thread(thread, true, true, timeout) {
+        let state = thread.lock();
+        bail!(
+            "the signals cannot be held after {timeout:?}: the signal thread has them {}, \
+             {} thread(s) starting a child",
+            if state.blocked { "blocked" } else { "let in" },
+            state.spawning
+        );
     }
+    Ok(())
 }
 
 /// Let the signal thread take [`HELD`] again, and children be started.
 pub fn release_everywhere() {
-    if let Some(thread) = SIGNAL_THREAD.get() {
-        set_signal_thread(thread, false, false);
+    if let Some(thread) = SIGNAL_THREAD.get()
+        && !set_signal_thread(thread, false, false, HOLD_TIMEOUT)
+    {
+        tracing::error!("the signal thread does not let the signals in again");
     }
 }
 
-fn set_signal_thread(thread: &SignalThread, block: bool, holding: bool) {
+/// Have the signal thread block [`HELD`] or let them in and, if `holding`,
+/// wait until no thread is starting a child. `false` if that has not
+/// happened within `timeout`.
+fn set_signal_thread(thread: &SignalThread, block: bool, holding: bool, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
     let mut state = thread.lock();
     state.holding = holding;
     state.block = block;
     thread.changed.notify_all();
     while state.blocked != block || (holding && state.spawning > 0) {
-        state = thread.wait(state);
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        state = thread.wait_timeout(state, left);
     }
+    true
+}
+
+/// Set SIGPIPE back to ignored, as the Rust runtime leaves it at start,
+/// after an exec in place that failed: the standard library sets it to the
+/// default action for the new image before `execvp` and does not undo that
+/// when `execvp` fails, after which a write to a pipe whose reader is gone
+/// (stderr, a pane process's pipes) would kill this process instead of
+/// failing.
+pub fn ignore_sigpipe() {
+    // SAFETY: setting a disposition to SIG_IGN has no preconditions.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+}
+
+/// While a reload gets ready for its exec: note a SIGTERM or SIGINT, as
+/// well as act on it as usual. Between the supervisor's last read of its
+/// events and the exec, the event a stop turns into is never read, and the
+/// exec would lose it; [`raise_stop`] keeps it for the successor. Armed
+/// with the reload, before its last read of events, so that a stop on its
+/// way to the event queue then is caught by one or the other. Ended by
+/// [`disarm_stop`].
+pub fn arm_stop() {
+    use std::sync::atomic::Ordering;
+    for came in &HELD_CAME {
+        came.store(false, Ordering::Relaxed);
+    }
+    HELD_TAKEN.store(false, Ordering::Relaxed);
+}
+
+/// Once [`hold_everywhere`] holds the signals, right before the exec: send
+/// this process again the stop [`arm_stop`] noted. No thread takes it now,
+/// so it waits, pending, across the exec, and the successor acts on it
+/// ([`take_held_signals`]). Nothing is noted after this.
+pub fn raise_stop() {
+    use std::sync::atomic::Ordering;
+    HELD_TAKEN.store(true, Ordering::Relaxed);
+    for (at, signal) in [(2, libc::SIGTERM), (3, libc::SIGINT)] {
+        if HELD_CAME[at].load(Ordering::Relaxed) {
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe { libc::kill(libc::getpid(), signal) };
+        }
+    }
+}
+
+/// The reload is over without an exec: whether a stop came while
+/// [`arm_stop`] was in force.
+pub fn disarm_stop() -> bool {
+    let held = take_held_record();
+    held.terminate || held.interrupt
 }
 
 /// Which of the held signals came while this process started.
@@ -453,6 +558,9 @@ static HELD_CAME: [std::sync::atomic::AtomicBool; HELD.len()] =
     [const { std::sync::atomic::AtomicBool::new(false) }; HELD.len()];
 static HELD_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The handler chained behind the server's own ([`record_signals`]): only
+/// notes which of [`HELD`] came, while the server starts and while a reload
+/// gets ready for its exec ([`arm_stop`]). Async-signal-safe: atomics only.
 extern "C" fn record_held(signal: libc::c_int) {
     use std::sync::atomic::Ordering;
     if HELD_TAKEN.load(Ordering::Relaxed) {

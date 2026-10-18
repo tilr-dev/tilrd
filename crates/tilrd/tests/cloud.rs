@@ -422,3 +422,35 @@ async fn a_cloudflared_ignoring_sigterm_does_not_hold_back_a_reload() {
     assert_ne!(before, after);
     assert!(alive(after.trim()));
 }
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_panic_starting_cloudflared_does_not_hold_up_the_next_reload() {
+    // The start of a child panics while the reload signals are let in on
+    // that thread; a reload waits for no child being started.
+    let (url, mut connections) = cloud().await;
+    let dir = Server::scratch_dir();
+    let failpoints = dir.join("failpoints");
+    std::fs::write(&failpoints, "spawn-unblocked=panic").unwrap();
+    let server = linked_server_in(dir, &url, &[], "cloudflared", "exec sleep 600\n");
+    let mut control = connections.recv().await.unwrap();
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    until("starting cloudflared panics", || {
+        server.logged("failpoint spawn-unblocked")
+    })
+    .await;
+    std::fs::write(&failpoints, "").unwrap();
+
+    server.signal("-USR1");
+    until("the server reloads", || {
+        server.logged("resumed after reload")
+    })
+    .await;
+    assert!(!server.logged("reload failed"));
+    // The successor starts cloudflared as usual.
+    let mut control = connections.recv().await.unwrap();
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+}

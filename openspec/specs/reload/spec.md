@@ -405,12 +405,40 @@ The cursor of a pane with a scrolling region, or left and right margins (`?69`),
 - **WHEN** a program turns on `?69`, sets the left and right margins to columns 5 to 15 and the scrolling region, turns on origin mode, and the server reloads
 - **THEN** the cursor is on the same cell, and text printed from there wraps at column 15 to column 5 of the next row
 
+### Requirement: A failed exec leaves SIGPIPE ignored
+When the exec of a reload fails, in the supervisor or in a pane process, the process SHALL carry on with SIGPIPE ignored as before the reload, so a later write to a pipe or socket whose reader is gone MUST fail with an error and MUST NOT kill it.
+
+**Verified by**: `reload::a_broken_pipe_after_a_failed_exec_does_not_kill_the_server`.
+
+#### Scenario: A broken pipe after a failed exec
+- **WHEN** a reload's exec fails in `execvp` (`reload-exec-missing=error`) and the server then logs to a stderr pipe whose reader has closed
+- **THEN** the server keeps running, the same connection works and its pane keeps its shell
+
+### Requirement: A stop asked for while a reload prepares its exec is not lost
+A SIGTERM or SIGINT arriving after the supervisor has read its events a last time and before its exec SHALL stop the server: the successor SHALL shut down cleanly (exit status 0, `shutting down` in the log), or, if the exec fails, the server itself.
+
+**Verified by**: `reload::a_sigterm_while_the_reload_prepares_its_exec_stops_the_server`.
+
+#### Scenario: SIGTERM while the panes detach
+- **WHEN** the supervisor receives SIGTERM after its last read of events and before the exec (`reload-after-drain=sleep:1500`, once the log has `failpoint reload-after-drain: sleeping`)
+- **THEN** the exec goes ahead, the successor logs `SIGTERM came during the reload`, exits with status 0, and the shells end
+
+### Requirement: A child that failed to start does not hold up a reload
+A reload SHALL NOT wait for a child whose start ended in a panic: the next reload SHALL go through. If the server's threads cannot be made to hold the reload signals within 5 seconds, the reload SHALL fail with `reload failed: ... the signals cannot be held` in the log and the server SHALL carry on as before.
+
+**Verified by**: `cloud::a_panic_starting_cloudflared_does_not_hold_up_the_next_reload`.
+
+#### Scenario: A panic starting cloudflared
+- **WHEN** starting `cloudflared` panics (`spawn-unblocked=panic`) and the server is then sent SIGUSR1
+- **THEN** the log has `resumed after reload` and no `reload failed`, and the successor starts `cloudflared` again
+
 ## Notes
 
 - Requirements without a test: Stale state files are swept at start.
 - Write-whole state files and the write sweep have no cargo integration test; they are covered by itests UC-064 / UC-065 and by unit tests in `crates/tilrd/src/reload.rs` (`a_state_file_is_replaced_whole_and_nothing_else_is_left`, `a_state_file_that_cannot_be_written_leaves_nothing_behind`).
 - Also covered: `reload::stopping_the_server_ends_the_shells` (SIGTERM without a reload); `uc_061.py::htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse`, `uc_062.py::ctrl_c_after_a_reload_interrupts_a_foreground_sleep`, `uc_062.py::a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c`.
 - UC-064 and UC-065 were red until 2026-10-17 per itests/USE_CASES.md:136-137 and are green at HEAD; no known red reload case.
-- Failpoints (`TILR_FAILPOINTS`, `TILR_FAILPOINTS_FILE`; actions `error`, `panic`, `exit`, `kill`, `sleep:MS`) used here: `reload-before-exec`, `supervisor-resume` and `pane-resume`, `pane-resume:<pane id>` (in the check run of a successor), `supervisor-resume-live` and `pane-resume-live`, `pane-resume-live:<pane id>` (in the live resume after the exec), `pane-reload-before-exec`. Only with the `failpoints` feature; a release has none.
+- Failpoints (`TILR_FAILPOINTS`, `TILR_FAILPOINTS_FILE`; actions `error`, `panic`, `exit`, `kill`, `sleep:MS`) used here: `reload-before-exec`, `supervisor-resume` and `pane-resume`, `pane-resume:<pane id>` (in the check run of a successor), `supervisor-resume-live` and `pane-resume-live`, `pane-resume-live:<pane id>` (in the live resume after the exec), `pane-reload-before-exec`, `reload-after-drain`, `reload-exec`, `reload-exec-missing`, `spawn-unblocked`. A `sleep:MS` action logs `failpoint NAME: sleeping MS ms` first, for a test to act while the process sleeps. Only with the `failpoints` feature; a release has none.
 - The check run is not checked from outside for binding or locking nothing ("The check process resumes without taking over"): the tests see that the server keeps its socket, connections and panes through it.
+- "A failed exec leaves SIGPIPE ignored" is tested for the supervisor only; the pane process's restore after its own failed exec is by review. The 5 s hold timeout of "A child that failed to start does not hold up a reload" has no test of its own (by review): the test shows the next reload going through.
 - The pidfd wait is Linux-only; elsewhere an inherited child is waited on a blocking thread.
