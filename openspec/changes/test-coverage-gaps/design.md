@@ -121,3 +121,25 @@ first microseconds, so it is not affected.
   would work, but the command line is what the test is about (`sh -c 'sleep 30; :'
   cloudflared tunnel --config ...`, as the product's leftover looks) and would change;
   polling keeps it.
+
+## D7. The lagging client's "stale screen", and its drop in Dagger (5.9; TILR-112)
+
+Two causes, both in the test.
+1. "stale screen" (macOS under load, 3 of 30 runs; reproduced): the test took the pane's
+   last screen from what `fast` had read when `<done>` showed, but the prompt that follows
+   `<done>` came in a frame of its own that `fast` had not read yet. A frame trace of the
+   lagging client showed it get the lag's full frame within 20 ms, differing from `fast`'s
+   copy in one row, row 99: `"$"` (slow) against `""` (fast). The server was right; the
+   reference was stale. Fix: after the pane goes quiet `fast` subscribes again and takes
+   the screen from the full frame that brings (the pane's screen as it is), and the lagging
+   client must reach that. 0 of 40 failed under the same load afterwards.
+2. Dagger (always red, also at 563840a): `slow` reads nothing while 30 MB drain, so it
+   answers no ping; in a Dagger container that takes about 30 s, the default client
+   timeout, and the server drops it as silent (4002), as it should a client that does not
+   read. Fix: the test's server runs with `--client-timeout 0`: the test is about lag, and
+   liveness has its own tests (`a_client_that_vanishes_without_closing_is_dropped`, ...).
+- Rejected: answering pings from a side task without reading frames. Pings come in the
+  same stream, behind the frames the client does not read; nothing can answer them
+  without reading through those.
+- Rejected: a longer wait for the screen. The trace showed the frames arrive in 20 ms; the
+  wait was never short.

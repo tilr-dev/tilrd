@@ -543,7 +543,11 @@ async fn the_same_client_id_under_another_token_supersedes_nobody() {
 
 #[tokio::test]
 async fn a_lagging_client_gets_the_last_screen_without_new_output() {
-    let server = Server::start(&[]);
+    // `slow` reads nothing while the output drains, so it answers no ping:
+    // where that takes longer than the client timeout (30 s; a Dagger
+    // container takes about that for 30 MB) the server rightly drops it as
+    // silent. Lag, not liveness, is what this is about.
+    let server = Server::start(&["--client-timeout", "0"]);
     let mut fast = Client::connect(&server).await;
     let pane_id = fast.open_pane_with(300, 100, "").await;
     // A client on a slow network: a small receive buffer fills at once.
@@ -568,6 +572,10 @@ async fn a_lagging_client_gets_the_last_screen_without_new_output() {
     .await;
     fast.wait_screen("<done>").await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    // The pane's last screen, whole: what `fast` has read so far can stop
+    // short of it (the prompt after `<done>` comes in a frame of its own).
+    fast.subscribe(pane_id).await;
+    while !next_frame(&mut fast).await.full {}
     let last = fast.screen.text();
 
     // `slow` reads again: with nothing more printed, the screen it ends up
