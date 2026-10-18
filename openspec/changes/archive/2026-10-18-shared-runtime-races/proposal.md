@@ -31,3 +31,5 @@ Itsaplan TILR-122 (phase 1, bug, high) and TILR-123. Two `tilrd` of one user sha
 ## Impact
 
 `crates/tilrd/src/clipboard.rs` (`install_shims`), `crates/tilrd/src/reload.rs` (`write_shared_file`), `crates/tilrd/src/shell.rs`, `crates/tilrd/src/local.rs` (`peer_gone`), `crates/tilrd/src/host.rs`, `crates/tilrd/src/supervisor.rs`, `crates/tilrd/src/agent.rs`, `crates/tilrd/tests/files.rs`, README, USE_CASES.md. No protocol change, nothing new crosses a reload, `state-formats` unchanged. A reload keeps the pid and the executable path, so its links are found right and left alone. An update from the previous release: the updated server's first start replaces links and wrappers the old one made by a rename, without a gap; an old server of the same user still running keeps its remove-then-link at its own next start. Not breaking.
+
+Implemented by: [`72b0422`](https://github.com/tilr-dev/tilrd/commit/72b0422) fix: keep the shared runtime files usable while another server starts (2026-10-18).

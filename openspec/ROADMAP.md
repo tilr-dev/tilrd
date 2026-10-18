@@ -127,6 +127,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | snapshot-origin-mode-cursor | af85db3 |
 | agent-socket-per-server | 5e0f703 |
 | reload-signal-storm | 060c7e4 |
-| shared-runtime-races | recorded in the next commit |
+| shared-runtime-races | 72b0422 |
 
 Older work is in `openspec/changes/archive/`.
