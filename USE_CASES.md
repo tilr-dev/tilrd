@@ -90,6 +90,7 @@ The test's name is the statement of the use case.
 |---|---|
 | A client without the access token, or with someone else's, gets an error and is disconnected; with the token it gets in | `a_client_needs_the_access_token` |
 | The token is kept in a file readable by the user only (the state directory is 0700) and survives a restart; `tilrd token` prints the same one | `the_token_is_kept_for_the_user_only_and_across_restarts` |
+| A state directory left 0755 with an id and a token in it is set to 0700 at start; the server keeps that id and token | `an_existing_state_directory_is_made_private` |
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
 | A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
 
@@ -384,6 +385,13 @@ pane process. The server's counters are at `GET /metrics`.
   it, before the answer or `updated`) is not visible to these tests; itests
   UC-046 and UC-060 trace the system calls under `strace`. A power loss is not
   tested.
+- `tilr service install|uninstall`: `crates/tilr/tests` start no service
+  manager. Unit tests in `crates/tilr/src/service.rs` check the unit, plist
+  and crontab line, that a unit or plist without the `tilr service` mark is
+  not replaced (`a_file_without_the_mark_is_not_replaced`) and that a missing
+  crontab is recognized from cronie's and busybox's messages
+  (`a_missing_crontab_is_recognized_from_cron_and_busybox`); end to end with
+  stand-in `systemctl`, `loginctl` and `crontab`: itests UC-020…UC-023.
 - `tilr edit` is also delivered to an old client that does not know
   `HostEvent` and silently ignores it: the server counts it as a recipient.
 - `tilr` in a terminal: drawing is checked only by what shows in the pty

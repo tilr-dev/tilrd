@@ -283,7 +283,8 @@ of its own. Its log then goes nowhere; redirect stderr to keep it.
 On the Unix socket: the user, as above, without a token. On the TCP port a client must send
 the server's access token in `Hello.token`. The server makes the token the first time it
 runs and keeps it in `$XDG_STATE_HOME/tilr/token` (`~/.local/state/tilr`, a directory made
-0700), readable by the user only. To see it, on that machine:
+0700; one that is there already is set to 0700 at start, and one of another user's is
+refused), readable by the user only. To see it, on that machine:
 
 ```sh
 tilr token
@@ -354,6 +355,11 @@ tilr service uninstall    # remove what install added
 - **macOS**: a launchd agent, `~/Library/LaunchAgents/sh.tilr.tilrd.plist` (`RunAtLoad`,
   `KeepAlive` on failure, the socket named, the log in `~/Library/Logs/tilrd.log`), loaded
   with `launchctl bootstrap gui/<uid>`.
+
+Install replaces only a unit or plist it wrote itself (they carry `tilr service`): over one
+of your own it fails with `… was not written by `tilr service install`: move it away to
+install` and changes nothing. `crontab` runs in the C locale, and a user without a crontab
+yet is recognized from cron's and busybox's messages.
 
 A tilrd that already runs (one `tilr` started) is left alone: the service takes over from
 the next boot. Uninstall removes the unit, the crontab line (the whole crontab if install

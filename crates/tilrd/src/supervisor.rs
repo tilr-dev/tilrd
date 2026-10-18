@@ -408,6 +408,9 @@ pub fn run(options: Options) -> Result<()> {
             if listener.is_none() && local.is_none() {
                 anyhow::bail!("nothing to listen on");
             }
+            if state.is_none() {
+                identity::make_state_dir_private()?;
+            }
             let token = if options.auth {
                 Some(
                     auth::token()

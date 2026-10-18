@@ -46,9 +46,12 @@ pub fn install(socket: &Path) -> Result<ExitCode> {
     check_quotable(socket)?;
     let running = daemon::running(socket);
     if cfg!(target_os = "macos") {
+        refuse_foreign(&plist_path())?;
         return install_launchd(&tilrd, socket, running);
     }
     if systemd_user() {
+        // Before lingering is touched: a refused install changes nothing.
+        refuse_foreign(&unit_path())?;
         match linger()? {
             Linger::On => return install_systemd(&tilrd, false, running),
             Linger::TurnedOn => return install_systemd(&tilrd, true, running),
@@ -148,7 +151,7 @@ fn install_systemd(tilrd: &Path, linger_turned_on: bool, running: bool) -> Resul
     let path = unit_path();
     // Lingering on from an earlier install of ours stays ours to turn off.
     let ours_before = fs::read_to_string(&path).is_ok_and(|text| text.contains(LINGER_NOTE));
-    write_private(&path, &unit(tilrd, linger_turned_on || ours_before))?;
+    write_whole(&path, &unit(tilrd, linger_turned_on || ours_before))?;
     systemctl(&["daemon-reload"])?;
     if running {
         systemctl(&["enable", UNIT])?;
@@ -259,7 +262,7 @@ fn uninstall_cron() -> Result<bool> {
     let lines: Vec<&str> = current.lines().filter(|line| !is_ours(line)).collect();
     if lines.iter().all(|line| line.trim().is_empty()) {
         // Install made the crontab: none again.
-        let out = run("crontab", &["-r"])?;
+        let out = crontab(&["-r"])?;
         if !out.status.success() {
             bail!(
                 "crontab -r: {}",
@@ -279,7 +282,7 @@ fn is_ours(line: &str) -> bool {
 
 /// The user's crontab; empty if there is none.
 fn crontab_read() -> Result<String> {
-    let out = run("crontab", &["-l"]).map_err(|err| {
+    let out = crontab(&["-l"]).map_err(|err| {
         anyhow::anyhow!(
             "no way to start tilrd at boot here: no systemd user service with lingering, and no crontab ({err})"
         )
@@ -288,10 +291,17 @@ fn crontab_read() -> Result<String> {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     let err = String::from_utf8_lossy(&out.stderr);
-    if err.contains("no crontab for") {
+    if no_crontab(&err) {
         return Ok(String::new());
     }
     bail!("crontab -l: {}", err.trim());
+}
+
+/// Whether `crontab -l` failed because the user has no crontab yet: cronie's
+/// and Vixie cron's `no crontab for <user>`, busybox's `can't open '<file>':
+/// No such file or directory` (in the C locale, which crontab runs in).
+fn no_crontab(stderr: &str) -> bool {
+    stderr.contains("no crontab for") || stderr.contains("No such file or directory")
 }
 
 fn crontab_write(lines: &[&str]) -> Result<()> {
@@ -299,6 +309,7 @@ fn crontab_write(lines: &[&str]) -> Result<()> {
     text.push('\n');
     let mut child = Command::new("crontab")
         .arg("-")
+        .env("LC_ALL", "C")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -359,7 +370,7 @@ fn install_launchd(tilrd: &Path, socket: &Path, running: bool) -> Result<ExitCod
     if let Some(dir) = log.parent() {
         fs::create_dir_all(dir)?;
     }
-    write_private(&path, &plist(tilrd, socket, &log))?;
+    write_whole(&path, &plist(tilrd, socket, &log))?;
     let domain = format!("gui/{}", uid());
     if running {
         say(&format!(
@@ -429,6 +440,30 @@ fn run(program: &str, args: &[&str]) -> std::io::Result<Output> {
         .output()
 }
 
+/// `crontab` in the C locale, so its messages are the ones `no_crontab`
+/// knows.
+fn crontab(args: &[&str]) -> std::io::Result<Output> {
+    Command::new("crontab")
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+}
+
+/// Install replaces only a unit or plist of its own (with the mark): stop if
+/// `path` is someone else's, before anything is changed.
+fn refuse_foreign(path: &Path) -> Result<()> {
+    match fs::read_to_string(path) {
+        Ok(text) if !text.contains(MARK) => bail!(
+            "{} was not written by `tilr service install`: move it away to install",
+            path.display()
+        ),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
 fn first_line(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes)
         .ok()?
@@ -449,9 +484,9 @@ fn check_quotable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Written whole (a temp file renamed), readable by the user only, with its
-/// directory made.
-fn write_private(path: &Path, text: &str) -> Result<()> {
+/// Written whole (a temp file synced and renamed), 0644, with its directory
+/// made.
+fn write_whole(path: &Path, text: &str) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().context("a path with no directory")?;
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -545,6 +580,40 @@ mod tests {
             "<string>exec \"/Users/u/.local/bin/tilrd\" --socket \"/tmp/s &amp; t/tilrd.sock\"</string>"
         ));
         assert!(text.contains("<key>SuccessfulExit</key>\n\t\t<false/>"));
+    }
+
+    #[test]
+    fn a_file_without_the_mark_is_not_replaced() {
+        let dir = std::env::temp_dir().join(format!("tilr-service-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(UNIT);
+        assert!(refuse_foreign(&path).is_ok(), "no file yet");
+        fs::write(&path, "[Service]\nExecStart=/usr/bin/mine\n").unwrap();
+        let err = refuse_foreign(&path).unwrap_err().to_string();
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        assert!(
+            err.contains("was not written by `tilr service install`"),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[Service]\nExecStart=/usr/bin/mine\n"
+        );
+        fs::write(&path, unit(Path::new("/x/tilrd"), false)).unwrap();
+        assert!(refuse_foreign(&path).is_ok(), "its own unit is replaced");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_crontab_is_recognized_from_cron_and_busybox() {
+        assert!(no_crontab("no crontab for u\n"));
+        assert!(no_crontab(
+            "crontab: can't open '/var/spool/cron/crontabs/u': No such file or directory\n"
+        ));
+        assert!(!no_crontab("crontab: Permission denied\n"));
+        assert!(!no_crontab(
+            "You (u) are not allowed to use this program (crontab)\n"
+        ));
     }
 
     #[test]

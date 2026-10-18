@@ -82,6 +82,41 @@ async fn the_token_is_kept_for_the_user_only_and_across_restarts() {
 }
 
 #[tokio::test]
+async fn an_existing_state_directory_is_made_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Left 0755 by hand (or an older version), with an id and a token in it.
+    let dir = Server::scratch_dir();
+    let state = dir.join("state");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let token = "ab".repeat(32);
+    let id = "6f1c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f";
+    std::fs::write(state.join("token"), format!("{token}\n")).unwrap();
+    std::fs::set_permissions(state.join("token"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(state.join("server-id"), format!("{id}\n")).unwrap();
+
+    let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+    assert_eq!(
+        std::fs::metadata(&state).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(server.token(), token, "the same token");
+    assert_eq!(
+        refusal(&server, &token).await,
+        None,
+        "and it lets the client in"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state.join("server-id"))
+            .unwrap()
+            .trim(),
+        id,
+        "the same id"
+    );
+}
+
+#[tokio::test]
 async fn a_server_started_without_authentication_asks_for_no_token() {
     let server = Server::start(&["--no-auth"]);
     assert_eq!(server.token(), "");

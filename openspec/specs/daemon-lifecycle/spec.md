@@ -219,6 +219,15 @@ The server and `tilr` SHALL open the socket's lock file (`<socket>.lock`) and `t
 - **WHEN** `tilrd.log` is a symbolic link to another file and `tilr` starts a server
 - **THEN** `tilr` fails with that error and the link target is unchanged
 
+### Requirement: An existing state directory is made private
+At start the server SHALL set an existing state directory owned by its euid to 0700 and SHALL NOT use one owned by another user (`<dir> belongs to another user`), before it reads or writes `server-id`, the token or the Cloud link there.
+
+**Verified by**: `auth::an_existing_state_directory_is_made_private`.
+
+#### Scenario: Loose state directory
+- **WHEN** the state directory exists with mode 0755 and holds `server-id` and the token, and `tilrd` starts
+- **THEN** the directory is 0700 and the server keeps its id and token
+
 ## Notes
 
 - Partly untested: the "logged once" part of the SIGHUP requirement; in "tilr starts tilrd detached" the start timeout, the log-tail messages and the `$TILRD` fallback; the other-bind-error and another-user's-socket messages.

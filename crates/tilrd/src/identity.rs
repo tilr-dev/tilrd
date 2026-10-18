@@ -23,17 +23,38 @@ pub fn state_dir() -> Option<PathBuf> {
     Some(std::env::home_dir()?.join(".local/state/tilr"))
 }
 
-/// Make the state directory (or another of the user's own) if it is not
-/// there: private to the user (0700), its parents as usual.
+/// Make the state directory (or another of the user's own) private to the
+/// user (0700): created if it is not there (its parents as usual), set to
+/// 0700 if it is, refused if it belongs to another user.
 pub fn create_private_dir(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("create {}", dir.display())),
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+        Err(err) => return Err(err).with_context(|| format!("create {}", dir.display())),
+    }
+    let meta = std::fs::metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
+    // SAFETY: geteuid has no preconditions.
+    if meta.uid() != unsafe { libc::geteuid() } {
+        anyhow::bail!("{} belongs to another user", dir.display());
+    }
+    if meta.mode() & 0o777 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("restrict {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// At start: an existing state directory is made private (0700) before the
+/// id, the token or the Cloud link in it are read; one of another user's is
+/// an error. A missing one is made when something is first kept in it.
+pub fn make_state_dir_private() -> Result<()> {
+    match state_dir() {
+        Some(dir) if dir.exists() => create_private_dir(&dir),
+        _ => Ok(()),
     }
 }
 
@@ -51,8 +72,8 @@ pub fn server_id() -> Uuid {
 
 fn read_or_create(dir: &Path) -> Result<Uuid> {
     let path = dir.join(ID_FILE);
+    create_private_dir(dir)?;
     if !path.exists() {
-        create_private_dir(dir)?;
         // Written aside and linked into place: the file appears whole, and a
         // server starting at the same moment does not replace the id of this
         // one, it reads it.

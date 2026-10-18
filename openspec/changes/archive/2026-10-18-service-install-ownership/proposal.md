@@ -18,8 +18,10 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) (findings #23,
 ## Capabilities
 
 ### Modified Capabilities
-- `tilr-cli`: "Service install with systemd" and "Service install on macOS" refuse a foreign file; "Service install with cron" recognizes a missing crontab independently of the locale and implementation.
-- `daemon-lifecycle`: "State directory" makes an existing directory private.
+- `tilr-cli`: new requirements "Service install leaves a unit or plist it did not write" and "A missing crontab is recognized whatever the cron".
+- `daemon-lifecycle`: new requirement "An existing state directory is made private".
+
+Changed while implementing: the behaviour was first written into the existing requirements ("Service install with systemd", "… on macOS", "… with cron", "State directory"); that made their text longer than `openspec validate --strict` accepts once merged, so each is a requirement of its own. Systemd detection (`systemctl --user show-environment`, read-only) still runs before the refusal: install has to know a systemd unit is what it would write.
 
 ## Non-goals
 

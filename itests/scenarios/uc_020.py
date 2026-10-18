@@ -7,6 +7,9 @@ There is no systemd in the container: systemctl and loginctl are scripts that no
 arguments (tt.FakeServiceTools); the unit is checked as a file. That Type=notify holds is
 checked by running its ExecStart as systemd would, with $NOTIFY_SOCKET: tilrd must say
 READY=1 there once it listens.
+
+A tilr.service the user wrote (without the `tilr service` mark) is not replaced: install
+fails naming it and tells systemd nothing.
 """
 
 import socket
@@ -95,3 +98,20 @@ def a_running_tilrd_is_left_alone(t: T):
     t.lacks("\n".join(fake.called()), "--now", "start")
     t.has(r.err, "a tilrd runs already")
     t.eq([d.pid for d in t.tilrd_daemons()], [daemon.pid], "the same server")
+
+
+@case(spec=["tilr-cli/service-install-leaves-a-unit-or-plist-it-did-not-write#a-unit-it-did-not-write"])
+def install_leaves_a_unit_it_did_not_write(t: T):
+    """UC-020: a hand-written tilr.service (no `tilr service` mark): install fails naming it, the file is unchanged, systemd is told nothing."""
+    user, fake, env = install(t, linger="no")
+    unit = user.home / ".config/systemd/user/tilr.service"
+    own = "[Unit]\nDescription=my own tilrd\n\n[Service]\nExecStart=/opt/tilrd/tilrd --listen 0.0.0.0:7890\n"
+    r = user.run("sh", "-c", f"mkdir -p {unit.parent} && cat > {unit}", input=own)
+    t.eq(r.code, 0, "the user's unit is written")
+    r = user.run("tilr", "service", "install", env=env)
+    t.ok(r.code != 0, f"tilr service install fails (exit {r.code})")
+    t.has(r.err, str(unit), "was not written by `tilr service install`: move it away to install")
+    t.eq(unit.read_text(), own, "the user's unit is unchanged")
+    t.eq(fake.called(), ["systemctl --user show-environment"], "systemd and loginctl are told nothing")
+    t.eq(fake.crontab(), None, "no crontab either")
+    t.eq(t.tilrd_daemons(), [], "nothing started")
