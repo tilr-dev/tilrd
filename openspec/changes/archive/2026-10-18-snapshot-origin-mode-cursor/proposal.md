@@ -22,3 +22,5 @@ Found while implementing `reload-screen-fidelity` (TILR-74); the loss is older t
 ## Impact
 
 `crates/tilr-screen/src/ghostty.rs` (`snapshot`, `cursor_position`) and its unit tests, `crates/tilrd/tests/reload.rs`, USE_CASES.md, README "Reloading without closing shells". No wire, protocol or state format change (the snapshot stays a VT byte stream); size S.
+
+Implemented by: [`af85db3`](https://github.com/tilr-dev/tilrd/commit/af85db3) fix(screen): keep the cursor and margins under origin mode across a reload (2026-10-18).
