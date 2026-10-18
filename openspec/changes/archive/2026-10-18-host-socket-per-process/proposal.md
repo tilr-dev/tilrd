@@ -29,3 +29,5 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) (finding #11):
 ## Impact
 
 `crates/tilrd/src/host.rs` (path choice, probe, removal by inode, sweep), `crates/tilrd/src/supervisor.rs` (`set_up_host_socket`, removal on stop). Survives a reload: same pid, so the same path is chosen. An update from the previous release keeps `<server_id>.sock` for the single-server case, so running panes are unaffected. No protocol change, no state file change.
+
+Implemented by: [`ddcc453`](https://github.com/tilr-dev/tilrd/commit/ddcc453) fix(host): give each of one user's servers its own host socket (2026-10-18).

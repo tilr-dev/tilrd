@@ -115,6 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | exec-escaped-descendants | 48efd35 |
 | client-socket-peer-check | 8274039 |
 | hello-deadline | f32643d |
-| host-socket-per-process | recorded in the next commit |
+| host-socket-per-process | ddcc453 |
 
 Older work is in `openspec/changes/archive/`.
