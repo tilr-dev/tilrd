@@ -2,13 +2,13 @@
 
 ## Context
 
-At 048b0e2 `crates/tilrd/src/metrics.rs:154-280` renders three `tilrd_` gauges (to become `tilr_`) and twelve `tilr_` families; the drop reasons are `ClientDrop` (`metrics.rs:78-104`), counted in `Supervisor::drop_client` for `Gone::Dropped` only (`crates/tilrd/src/supervisor.rs:2634-2635`); `Gone::NoHello` (`supervisor.rs:2625-2633`) and `Gone::Refused` (`supervisor.rs:2624`) are not counted.
+At 048b0e2 `crates/tilrd/src/metrics.rs:154-280` renders three `tilrd_` gauges and twelve `tilr_` families; the drop reasons are `ClientDrop` (`metrics.rs:78-104`), counted in `Supervisor::drop_client` for `Gone::Dropped` only (`crates/tilrd/src/supervisor.rs:2634-2635`); `Gone::NoHello` (`supervisor.rs:2625-2633`) and `Gone::Refused` (`supervisor.rs:2624`) are not counted.
 
 ## Decisions
 
-### D1. The prefix is `tilr_`
-Owner decision (2026-10-18, "везде tilr_"). Prometheus practice is one application prefix per exporter; `tilr_` is the product's name, and twelve families already carry it, so only the three gauges `tilrd_info`, `tilrd_clients`, `tilrd_panes` are renamed (back to `tilr_info`, `tilr_clients`, `tilr_panes`, as before e6885b0 minus the `_server`).
-- Rejected: `tilrd_` for all (twelve renames). It follows the binary's name, which e6885b0 gave to the three gauges, but costs four times the renames for the same one-prefix result; the owner chose the product prefix.
+### D1. The prefix is `tilrd_`
+The process that serves the metrics is `tilrd`, and e6885b0 named "the metrics" after it when it renamed the binary; Prometheus practice is one prefix per exporter, the application's name. `tilr_` is the product and also the client binary (`tilr`), which serves no metrics.
+- Rejected: `tilr_` for all (three renames instead of twelve). Fewer renames, but against the recorded intent of e6885b0 and ambiguous with the `tilr` client. With no release cut yet the number of renames costs little.
 
 ### D2. No double emission
 The old names are not emitted alongside the new ones for a transition: nothing released carries them, and a doubled exposition doubles every series a scraper stores.
