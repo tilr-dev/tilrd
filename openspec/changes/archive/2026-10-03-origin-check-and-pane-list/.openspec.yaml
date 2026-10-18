@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-03
+# Retro archive: requirements live in openspec/specs (current state); no deltas kept.
+skip_specs: true
