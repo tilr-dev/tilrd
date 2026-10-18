@@ -32,3 +32,5 @@ Changed while implementing: the behaviour was first written into the existing re
 ## Impact
 
 `crates/tilr/src/service.rs`, `crates/tilrd/src/identity.rs` (and its callers in `auth.rs`, `cloud.rs`, the supervisor start), `crates/tilrd/tests/auth.rs`, itests UC-020, README "Starting at boot". **BREAKING** (CLI behavior): `tilr service install` over a hand-written `tilr.service` or plist now fails instead of replacing it; migration: move the file away (or add the marker) and install again. No protocol change, no PROTOCOL_VERSION or feature change, nothing crosses a reload (the state directory is checked at start; a reload is not a start). An update from the previous release: the next start tightens the directory.
+
+Implemented by: [`1d44e4b`](https://github.com/tilr-dev/tilrd/commit/1d44e4b) fix(service)!: never replace a unit or plist install did not write (2026-10-18).

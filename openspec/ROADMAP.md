@@ -119,6 +119,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | sighup-ignoring-shell-reaped | 47bce42 |
 | cloudflared-outlives-exec | 0aff8e0 |
 | durable-file-writes | 42a4cc2 |
-| service-install-ownership | recorded in the next commit |
+| service-install-ownership | 1d44e4b |
 
 Older work is in `openspec/changes/archive/`.
