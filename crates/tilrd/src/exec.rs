@@ -450,6 +450,11 @@ fn spawn(start: &ExecStart) -> Result<Child, String> {
         // and killed: its children go with it.
         .process_group(0)
         .kill_on_drop(true);
+    // What the service manager told the server is not the program's; its
+    // own `env` may still set any of it.
+    for name in crate::pty::SERVICE_MANAGER_ENV {
+        cmd.env_remove(name);
+    }
     for entry in &start.env {
         match entry.split_once('=') {
             Some((name, value)) if !name.is_empty() => {

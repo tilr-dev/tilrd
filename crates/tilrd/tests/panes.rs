@@ -571,3 +571,32 @@ async fn a_client_that_skips_hello_is_turned_away() {
     assert_eq!(asks_first.run(pane_id, "true").await, 0);
     assert!(!asks_first.screen.has_row("got through"));
 }
+
+#[tokio::test]
+async fn a_pane_does_not_get_the_service_managers_variables() {
+    let dir = Server::scratch_dir();
+    let (notify, env) = service_manager_env(&dir);
+    let env: Vec<(&str, &str)> = env.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+    let server = Server::start_with_env(dir, &[], &env);
+    // The server itself still tells the service manager it is ready.
+    notify
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut ready = [0; 64];
+    let len = notify.recv(&mut ready).unwrap();
+    assert_eq!(&ready[..len], b"READY=1");
+
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    assert_eq!(client.run(pane_id, "env > ~/pane-env").await, 0);
+    let seen = std::fs::read_to_string(server.dir.join("pane-env")).unwrap();
+    for (name, _) in &env {
+        assert!(
+            !seen
+                .lines()
+                .any(|line| line.starts_with(&format!("{name}="))),
+            "{name} in the pane: {seen}"
+        );
+    }
+    assert!(seen.lines().any(|line| line.starts_with("TILR_PANE=")));
+}

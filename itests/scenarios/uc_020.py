@@ -22,9 +22,10 @@ def install(t: T, linger: str = "yes", linger_ok: bool = True):
     return user, fake, env
 
 
-@case(spec=["daemon-lifecycle/ready-notification-for-a-service-manager", "tilr-cli/service-install-with-systemd"])
+@case(spec=["daemon-lifecycle/ready-notification-for-a-service-manager", "tilr-cli/service-install-with-systemd",
+            "panes/user-variables-of-a-pane"])
 def service_install_writes_a_notify_user_unit_and_enables_it(t: T):
-    """UC-020: the unit's ExecStart, Type=notify and Restart; daemon-reload and enable --now."""
+    """UC-020: the unit's ExecStart, Type=notify and Restart; daemon-reload and enable --now; its panes lack NOTIFY_SOCKET."""
     user, fake, env = install(t)
     r = user.run("tilr", "service", "install", env=env)
     t.eq(r.code, 0, f"tilr service install:\n{r.text}")
@@ -59,6 +60,16 @@ def service_install_writes_a_notify_user_unit_and_enables_it(t: T):
     t.eq(message, b"READY=1", "tilrd tells the service manager it is ready")
     t.eq(user.run("tilr", "ls", "-q", env=env).code, 0, "and it serves the socket then")
     t.eq(len(t.tilrd_daemons()), 1, "one tilrd")
+
+    # NOTIFY_SOCKET is the server's, not its panes'.
+    pane_env = user.home / "pane-env"
+    r = user.run("tilr", "new", "-d", "--", "sh", "-c", f"env > {pane_env}.tmp && mv {pane_env}.tmp {pane_env}", env=env)
+    t.eq(r.code, 0, f"tilr new -d:\n{r.text}")
+    t.eventually(pane_env.exists, "the pane ran env")
+    seen = pane_env.read_text()
+    t.ok("TILR_PANE=" in seen, "the pane's environment")
+    t.lacks(seen, "NOTIFY_SOCKET=")
+    t.eq(len(t.tilrd_daemons()), 1, "still one tilrd")
 
 
 @case(spec=["tilr-cli/service-install-with-systemd"])

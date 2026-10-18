@@ -87,9 +87,26 @@ impl Server {
     /// Start a server in which things go wrong where `failpoints` says, see
     /// `src/fail.rs`. It hands them on to what it reloads into.
     pub fn start_failing(dir: PathBuf, exe: &Path, args: &[&str], failpoints: &str) -> Self {
+        Self::start_full(dir, exe, args, failpoints, &[])
+    }
+
+    /// Start a server whose environment also has `env`, e.g. what a service
+    /// manager sets.
+    pub fn start_with_env(dir: PathBuf, args: &[&str], env: &[(&str, &str)]) -> Self {
+        Self::start_full(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), args, "", env)
+    }
+
+    fn start_full(
+        dir: PathBuf,
+        exe: &Path,
+        args: &[&str],
+        failpoints: &str,
+        env: &[(&str, &str)],
+    ) -> Self {
         let mut command = Command::new(exe);
         command.args(["--listen", "127.0.0.1:0"]).args(args);
         Self::environment(&mut command, &dir, failpoints);
+        command.envs(env.iter().copied());
         command.stdin(Stdio::null()).stderr(Stdio::piped());
         let mut child = spawn_copied(&mut command);
 
@@ -556,6 +573,29 @@ pub async fn pane_sock(server: &Server, client: &mut Client, pane_id: PaneId) ->
 pub async fn stop(server: &mut Server) {
     server.signal("-TERM");
     eventually("the server exits", || !server.is_running()).await;
+}
+
+/// What a service manager hands a `Type=notify` unit: `NOTIFY_SOCKET` (a
+/// datagram socket in `dir`, returned to read `READY=1` from), socket
+/// activation and the watchdog.
+pub fn service_manager_env(
+    dir: &Path,
+) -> (std::os::unix::net::UnixDatagram, Vec<(String, String)>) {
+    let path = dir.join("notify.sock");
+    let socket = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+    let env = [
+        ("NOTIFY_SOCKET", path.to_str().unwrap()),
+        ("LISTEN_FDS", "1"),
+        ("LISTEN_FDNAMES", "tilrd"),
+        ("LISTEN_PID", "1"),
+        ("WATCHDOG_USEC", "30000000"),
+        ("WATCHDOG_PID", "1"),
+    ];
+    let env = env
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect();
+    (socket, env)
 }
 
 pub async fn reconnect(server: &Server, mut client: Client) -> Client {

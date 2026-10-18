@@ -92,6 +92,18 @@ pub const PANE_ENV: &str = "TILR_PANE";
 /// Variables a launchd job hands its children that mean nothing to a shell.
 const LAUNCHD_ENV: [&str; 2] = ["XPC_SERVICE_NAME", "XPC_FLAGS"];
 
+/// Variables systemd hands the server (a `Type=notify` unit, socket
+/// activation, the watchdog) that are about the server only: a program in a
+/// pane or an exec that knows them would act on them for a unit it is not.
+pub const SERVICE_MANAGER_ENV: [&str; 6] = [
+    "NOTIFY_SOCKET",
+    "LISTEN_FDS",
+    "LISTEN_FDNAMES",
+    "LISTEN_PID",
+    "WATCHDOG_USEC",
+    "WATCHDOG_PID",
+];
+
 /// The user this process runs as, from the password database.
 #[derive(Debug, Default)]
 struct User {
@@ -207,7 +219,7 @@ pub fn spawn_shell(
             cmd.env(name, value);
         }
     }
-    for name in LAUNCHD_ENV {
+    for name in LAUNCHD_ENV.into_iter().chain(SERVICE_MANAGER_ENV) {
         cmd.env_remove(name);
     }
     cmd.env("SHELL", &shell)

@@ -601,3 +601,33 @@ async fn an_exec_given_up_at_a_reload_ends_with_its_exec_exit() {
         other => panic!("the exec's last message was not its ExecExit: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn an_exec_does_not_get_the_service_managers_variables() {
+    let dir = Server::scratch_dir();
+    let (_notify, env) = service_manager_env(&dir);
+    let env: Vec<(&str, &str)> = env.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+    let server = Server::start_with_env(dir, &[], &env);
+    let mut client = Client::connect(&server).await;
+
+    let ran = run(&mut client, argv(&["env"])).await;
+    let seen = ran.stdout();
+    for (name, _) in &env {
+        assert!(
+            !seen
+                .lines()
+                .any(|line| line.starts_with(&format!("{name}="))),
+            "{name} in the exec: {seen}"
+        );
+    }
+    // The exec's own `env` still sets any of them.
+    let ran = run(
+        &mut client,
+        ExecStart {
+            env: vec!["NOTIFY_SOCKET=/x".into()],
+            ..argv(&["env"])
+        },
+    )
+    .await;
+    assert!(ran.stdout().lines().any(|line| line == "NOTIFY_SOCKET=/x"));
+}

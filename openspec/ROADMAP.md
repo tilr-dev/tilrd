@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| notify-socket-env | panes and execs do not inherit `NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` | S | - | no | ready |
 | attach-robustness | `tilr attach` survives errors after a reconnect, detaches at once while connecting, restores the terminal on signals | S | - | no | ready |
 | sighup-ignoring-shell-reaped | a pane whose supervisor is gone ends its shell's and foreground groups (SIGHUP, 2 s, SIGKILL); ClosePane too | M | - | no | ready |
 | cloudflared-outlives-exec | cloudflared in its own process group, stopped by a starting server if left behind | S | - | no | ready |
@@ -116,5 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | client-socket-peer-check | 8274039 |
 | hello-deadline | f32643d |
 | host-socket-per-process | ddcc453 |
+| notify-socket-env | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

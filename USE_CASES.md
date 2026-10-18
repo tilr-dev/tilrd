@@ -35,6 +35,7 @@ The test's name is the statement of the use case.
 | A pane has its own UUID: the shell sees it in `$TILR_PANE`, the pane process on its command line (`pane --id <uuid>`), where the size is given only if it is not 80×24 | `a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps` |
 | `tilrd ps` (for users, `tilr ps`) shows the panes of a running server: id, pid, size, command | `ps_lists_the_panes_of_a_running_server` |
 | A server has its own id, the same after a restart; another server has another one | `a_server_keeps_its_id_when_it_restarts` |
+| A server started by a service manager (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` set) still says `READY=1`, but its panes do not get those variables | `a_pane_does_not_get_the_service_managers_variables` |
 
 ## Unix socket for local clients — `tests/local.rs`
 
@@ -287,6 +288,7 @@ nothing in the group outlives the exec.
 |---|---|
 | The server announces the `exec` feature; with `--no-exec` and `exec = false` it does not, `ExecStart` is answered with `ExecStarted` `exec_id` 0 and error `exec is turned off`, the connection is alive | `exec_is_offered_unless_turned_off` |
 | stdout and stderr apart, the exit code; arguments as given (`$HOME`, `*`, `` `id` ``, a space are not expanded); the directory and the environment, without a directory the home one; without stdin the program reads the end; no program, an empty `argv`, no directory, an environment entry that is not `NAME=value`: refused in `ExecStarted.error`; the start, the end and the refusal are logged | `a_program_runs_without_a_shell_and_its_outputs_come_apart` |
+| An exec does not get the service manager's variables (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*`) the server was started with; its own `env` may still set them | `an_exec_does_not_get_the_service_managers_variables` |
 | Killed by a signal (its own SIGTERM, a SIGINT from the client to the group): `signal`, code 0 | `the_signal_that_killed_a_program_is_reported` |
 | A time limit of 0.5 s: `timed_out`, SIGKILL, under 3 s; neither the program nor its background child is left | `a_time_limit_kills_the_program_and_its_children` |
 | `ExecCancel`: `cancelled`, the program and its child killed at once | `a_cancelled_program_ends_at_once_with_its_children` |

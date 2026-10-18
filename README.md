@@ -33,8 +33,9 @@ A pane opened without a command runs the user's login shell (the password databa
 `$SHELL`, else `/bin/sh`) as a login shell, `argv[0]` = `-zsh` and the like, so it reads the
 user's profile whatever environment the server was started in (a launchd agent gets the bare
 system `PATH`). The pane gets `SHELL`, `HOME`, `USER`, `LOGNAME`, `TERM=xterm-256color`,
-`COLORTERM`, `TILR_PANE`; launchd's `XPC_SERVICE_NAME` / `XPC_FLAGS` are dropped. A pane with
-a command runs it as given, without a shell.
+`COLORTERM`, `TILR_PANE`; launchd's `XPC_SERVICE_NAME` / `XPC_FLAGS` and what systemd hands
+the server (`NOTIFY_SOCKET`, `LISTEN_FDS`, `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC`,
+`WATCHDOG_PID`) are dropped. A pane with a command runs it as given, without a shell.
 
 ## Install
 
@@ -466,7 +467,8 @@ everything else: a client that may open a shell may run a program.
 
 - `ExecStart` names the program and its arguments (`argv`), run as they are: no shell,
   nothing expanded; `argv[0]` is looked up in the server's `PATH`. Optionally a directory
-  (`cwd`, else the home directory), `NAME=value` entries added to the server's environment,
+  (`cwd`, else the home directory), `NAME=value` entries added to the server's environment
+  (less the service-manager variables a pane does not get either, which `env` may still set),
   `stdin`, and a time limit (`timeout_ms`). The answer is `ExecStarted` with the exec's id
   and the program's pid, or with why it did not start (no such program or directory, more
   than 64 execs of the client running). `ExecStarted` and `ExecInputAck` are never dropped:

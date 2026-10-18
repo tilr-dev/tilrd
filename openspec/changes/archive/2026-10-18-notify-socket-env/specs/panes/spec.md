@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: User variables of a pane
-`HOME`, `USER` and `LOGNAME` SHALL come from the password database when the server's own value is unset or empty, and pass through otherwise; `XPC_SERVICE_NAME`, `XPC_FLAGS` and the service-manager variables `NOTIFY_SOCKET`, `LISTEN_FDS`, `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC` and `WATCHDOG_PID` SHALL be removed, even when the server was started with them. When the server has tools for the panes it SHALL put their directory first on `PATH` and name it in `TILR_SHIMS` (see `clipboard-host-events`).
+`HOME`, `USER` and `LOGNAME` SHALL come from the password database when the server's own value is unset or empty, and pass through otherwise; `XPC_SERVICE_NAME`, `XPC_FLAGS` and the service manager's `NOTIFY_SOCKET`, `LISTEN_FDS`, `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC` and `WATCHDOG_PID` SHALL be removed. When the server has tools for the panes it SHALL put their directory first on `PATH` and name it in `TILR_SHIMS` (see `clipboard-host-events`).
 
 **Verified by**: `panes::a_pane_without_a_command_runs_the_users_login_shell` and `panes::a_pane_does_not_get_the_service_managers_variables`.
 
