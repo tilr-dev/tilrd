@@ -30,3 +30,21 @@ another test thread still holds the copy's write descriptor (closed on exec, not
 - Rejected: copying the executable through a descriptor opened with `O_CLOEXEC` only. The
   descriptor is inherited by any fork in the window between open and the fork's exec
   whatever its flags; retrying the spawn is what passes once that child execs.
+
+## D2. A log line asserted before the reader thread has it (5.5; TILR-115)
+
+Cause: `Server::logged` (and `Daemon::log_text`) read a snapshot of what the reader
+thread has collected so far; a line the server writes on an event reaches it some time
+after the event, so `assert!(server.logged(..))` right after the event fails under load.
+Fix: `Server::wait_logged(needle)` (up to `TIMEOUT`, 20 s) and `wait_logged_within` in
+`tests/common`, and every positive `assert!(server.logged(..))` in `crates/tilrd/tests`
+became a wait (agent, auth, cloud, exec, panes, reconnect, reload, socks, update; the
+`eventually`/`until` polls of a log line and reload.rs's own `wait_logged` went to the shared
+one; the 200 ms sleeps "the log thread may still be reading" are gone). In `local.rs` the
+`Daemon`'s `wait_logged` waits up to `TIMEOUT` with a deadline and the log asserts there
+wait too; `Daemon::exit` waits for the reader to reach the end of the log (end of file)
+instead of sleeping 50 ms.
+- Negative asserts (`!server.logged(..)`) stay snapshots: absence cannot be waited for;
+  they can pass too early, not fail spuriously.
+- Rejected: reading the log synchronously in `logged` (no thread). The server writes all
+  the time; something has to drain the pipe or the server blocks on its stderr.

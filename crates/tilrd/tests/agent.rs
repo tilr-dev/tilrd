@@ -364,11 +364,9 @@ async fn the_panes_socket_works_after_a_reload() {
     let plain = reload(&server, client).await;
     drop(plain);
     assert_eq!(read_to_end(&mut program).await, b"");
-    // The log is read by a thread of the harness: it may lag the reply.
-    eventually("the server logs the resume", || {
-        server.logged("resumed after reload with 1 pane(s)")
-    })
-    .await;
+    server
+        .wait_logged("resumed after reload with 1 pane(s)")
+        .await;
 
     let mut client = agent_client(&server).await;
     watch(&mut client, pane_id).await;

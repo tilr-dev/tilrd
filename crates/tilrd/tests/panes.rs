@@ -234,7 +234,7 @@ async fn the_configuration_file_names_the_allowed_origins() {
         .await
         .unwrap();
     assert_eq!(page.hello().await.protocol_version, PROTOCOL_VERSION);
-    assert!(server.logged("configuration read"));
+    server.wait_logged("configuration read").await;
 
     let server = Server::start_in(
         configured(file),

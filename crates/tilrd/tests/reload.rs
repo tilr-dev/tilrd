@@ -40,7 +40,9 @@ async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: 
     assert!(client.clipboard_ack().await.ok);
     let check = script(server, "check.sh", CLAUDE_CHECK_IMAGE);
     assert_eq!(client.run(new_pane, &check).await, 0);
-    assert!(server.logged("resumed after reload with 1 pane(s)"));
+    server
+        .wait_logged("resumed after reload with 1 pane(s)")
+        .await;
 }
 
 /// Open a pane and leave marks in its shell for [`assert_pane_survived`].
@@ -89,7 +91,7 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
 
     // Nobody tells the server: it notices on its own.
     let client = reconnect(&server, client).await;
-    assert!(server.logged("executable changed on disk"));
+    server.wait_logged("executable changed on disk").await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
 
@@ -216,7 +218,9 @@ async fn a_reload_shows_in_no_command_line_and_leaves_no_file_behind() {
     let mut client = reload(&server, client).await;
     client.subscribe(pane_id).await;
     assert_eq!(client.run(pane_id, "true").await, 0);
-    assert!(server.logged("resumed after reload with 1 pane(s)"));
+    server
+        .wait_logged("resumed after reload with 1 pane(s)")
+        .await;
 
     // Same processes, looking the same.
     assert_eq!(client.list_panes().await[0].pid, pane_pid);
@@ -416,7 +420,9 @@ async fn a_closing_pane_is_still_killed_after_a_reload() {
         client.pane_exit_code(pane_id).await;
     }
     assert!(client.list_panes().await.is_empty());
-    assert!(server.logged("resumed after reload with 1 pane(s)"));
+    server
+        .wait_logged("resumed after reload with 1 pane(s)")
+        .await;
 }
 
 #[tokio::test]
@@ -553,7 +559,7 @@ async fn a_reload_that_fails_before_the_handover_leaves_everything_as_it_was() {
     let pid = shell_pid(&server, &mut client, pane_id).await;
 
     server.signal("-USR1");
-    eventually("the reload fails", || server.logged("reload failed")).await;
+    server.wait_logged("reload failed").await;
 
     // Not even the connection was dropped: the same client carries on.
     assert!(server.is_running());
@@ -573,10 +579,7 @@ async fn a_pane_that_cannot_hand_over_carries_on_in_the_code_it_has() {
 
     // The supervisor reloads; the pane process stays the one it was.
     let client = reload(&server, client).await;
-    eventually("the pane fails to reload", || {
-        server.logged("reload failed")
-    })
-    .await;
+    server.wait_logged("reload failed").await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
 
@@ -597,10 +600,7 @@ async fn a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on() {
     let kept_shell = shell_pid(&server, &mut client, kept).await;
 
     let mut client = reload(&server, client).await;
-    eventually("the crashed pane is given up", || {
-        server.logged("pane process died")
-    })
-    .await;
+    server.wait_logged("pane process died").await;
     assert!(server.is_running());
     let panes = client.list_panes().await;
     assert_eq!(panes.len(), 1);
@@ -711,14 +711,6 @@ async fn assert_nothing_changed(
     assert!(left.is_empty(), "left behind: {left:?}");
 }
 
-async fn wait_logged(server: &Server, needle: &str, within: Duration) {
-    let started = tokio::time::Instant::now();
-    while !server.logged(needle) {
-        assert!(started.elapsed() < within, "not logged: {needle}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 const REFUSED: &str = "not reloading: the new executable could not resume";
 
 #[cfg(feature = "failpoints")]
@@ -731,11 +723,9 @@ async fn a_successor_that_panics_resuming_is_not_reloaded_into() {
     let server_pid = server.child.id();
 
     server.signal("-USR1");
-    wait_logged(&server, REFUSED, TIMEOUT).await;
-    assert!(
-        server.logged("failpoint supervisor-resume"),
-        "the reason is logged"
-    );
+    server.wait_logged(REFUSED).await;
+    // The reason is logged.
+    server.wait_logged("failpoint supervisor-resume").await;
     assert_eq!(server.child.id(), server_pid);
     assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
 }
@@ -787,11 +777,9 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
     std::fs::rename(&staged, &exe).unwrap();
 
     server.signal("-USR1");
-    wait_logged(&server, REFUSED, TIMEOUT).await;
-    assert!(
-        server.logged("unexpected argument '--socket'"),
-        "the log names the argument"
-    );
+    server.wait_logged(REFUSED).await;
+    // The log names the argument.
+    server.wait_logged("unexpected argument '--socket'").await;
     assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
     assert!(socket.exists(), "the socket stays");
     drop(server);
@@ -817,8 +805,9 @@ async fn a_successor_that_refuses_the_configuration_is_not_reloaded_into() {
     )
     .unwrap();
     server.signal("-USR1");
-    wait_logged(&server, REFUSED, TIMEOUT).await;
-    assert!(server.logged("unknown field `socsk`"), "the log says why");
+    server.wait_logged(REFUSED).await;
+    // The log says why.
+    server.wait_logged("unknown field `socsk`").await;
     assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
 
     // Fixed, the next reload goes through.
@@ -840,13 +829,10 @@ async fn a_successor_that_never_answers_the_check_is_not_reloaded_into() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
     assert!(!server.logged(REFUSED));
-    wait_logged(
-        &server,
-        "did not answer within 10 s",
-        Duration::from_secs(30),
-    )
-    .await;
-    assert!(server.logged(REFUSED));
+    server
+        .wait_logged_within("did not answer within 10 s", Duration::from_secs(30))
+        .await;
+    server.wait_logged(REFUSED).await;
     assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
 }
 
@@ -879,12 +865,11 @@ async fn a_pane_whose_successor_fails_the_check_carries_on() {
     // The supervisor's check passes and it reloads; the pane process's
     // fails, and it stays the one it was.
     let client = reload(&server, client).await;
-    eventually("the pane refuses its successor", || {
-        server.logged("the new executable could not resume")
-    })
-    .await;
-    assert!(server.logged("reload failed"));
-    assert!(server.logged("failpoint pane-resume"));
+    server
+        .wait_logged("the new executable could not resume")
+        .await;
+    server.wait_logged("reload failed").await;
+    server.wait_logged("failpoint pane-resume").await;
     // The same shell: assert_pane_survived compares its pid too.
     assert_pane_survived(&mut server, client, pane_id).await;
     assert!(!server.logged("pane process died"));
@@ -909,7 +894,7 @@ fn count_logged(server: &Server, needle: &str) -> usize {
 #[cfg(feature = "failpoints")]
 async fn in_the_successor_starting(server: &Server) {
     server.signal("-USR1");
-    wait_logged(server, "reloading exe=", TIMEOUT).await;
+    server.wait_logged("reloading exe=").await;
     // The exec follows within milliseconds.
     tokio::time::sleep(Duration::from_millis(300)).await;
 }
@@ -934,8 +919,8 @@ async fn signals_arriving_while_the_successor_starts_are_held_for_it() {
         assert!(server.is_running(), "the server ended");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(server.logged("SIGHUP ignored"));
-    assert!(server.logged("SIGUSR1 came during the reload"));
+    server.wait_logged("SIGHUP ignored").await;
+    server.wait_logged("SIGUSR1 came during the reload").await;
     assert_eq!(server.child.id(), server_pid);
 
     let survivor = Client::connect(&server).await;
@@ -974,9 +959,7 @@ async fn a_sigterm_while_the_successor_starts_stops_the_server_cleanly() {
         status.success(),
         "a clean shutdown, not the signal: {status}"
     );
-    // The log thread may still be reading the last lines.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.logged("shutting down"));
+    server.wait_logged("shutting down").await;
     eventually("the shell exits", || !process_alive(pid)).await;
 }
 
@@ -1004,10 +987,8 @@ async fn a_sigint_while_the_successor_starts_stops_the_server_cleanly() {
         status.success(),
         "a clean shutdown, not the signal: {status}"
     );
-    // The log thread may still be reading the last lines.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.logged("SIGINT came during the reload"));
-    assert!(server.logged("shutting down"));
+    server.wait_logged("SIGINT came during the reload").await;
+    server.wait_logged("shutting down").await;
     eventually("the shell exits", || !process_alive(pid)).await;
     assert!(!socket.exists(), "the socket is left");
     assert!(
@@ -1029,7 +1010,7 @@ async fn a_sigterm_while_the_supervisor_execs_waits_for_the_successor() {
 
     server.signal("-USR1");
     // Logged at the failpoint, after the signals are held.
-    wait_logged(&server, "failpoint reload-exec: sleeping", TIMEOUT).await;
+    server.wait_logged("failpoint reload-exec: sleeping").await;
     server.signal("-TERM");
     let started = tokio::time::Instant::now();
     let status = loop {
@@ -1043,10 +1024,8 @@ async fn a_sigterm_while_the_supervisor_execs_waits_for_the_successor() {
         status.success(),
         "a clean shutdown, not the signal: {status}"
     );
-    // The log thread may still be reading the last lines.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.logged("SIGTERM came during the reload"));
-    assert!(server.logged("shutting down"));
+    server.wait_logged("SIGTERM came during the reload").await;
+    server.wait_logged("shutting down").await;
     eventually("the shell exits", || !process_alive(pid)).await;
 }
 
@@ -1075,18 +1054,19 @@ async fn a_sigterm_while_the_reload_prepares_its_exec_stops_the_server() {
     let pid = shell_pid(&server, &mut client, pane_id).await;
 
     server.signal("-USR1");
-    wait_logged(&server, "failpoint reload-after-drain: sleeping", TIMEOUT).await;
+    server
+        .wait_logged("failpoint reload-after-drain: sleeping")
+        .await;
     server.signal("-TERM");
     let status = exit_status(&mut server).await;
     assert!(
         status.success(),
         "a clean shutdown, not the signal: {status}"
     );
-    // The log thread may still be reading the last lines.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.logged("resumed after reload"), "the exec went ahead");
-    assert!(server.logged("SIGTERM came during the reload"));
-    assert!(server.logged("shutting down"));
+    // The exec went ahead.
+    server.wait_logged("resumed after reload").await;
+    server.wait_logged("SIGTERM came during the reload").await;
+    server.wait_logged("shutting down").await;
     eventually("the shell exits", || !process_alive(pid)).await;
 }
 
@@ -1216,5 +1196,5 @@ async fn a_second_server_keeps_its_host_socket_across_a_reload() {
     };
     assert_eq!(event.pane_id, pane_id.to_string());
     assert!(sock.exists());
-    assert!(second.logged("reload"));
+    second.wait_logged("reload").await;
 }

@@ -121,7 +121,7 @@ async fn a_server_started_without_authentication_asks_for_no_token() {
     let server = Server::start(&["--no-auth"]);
     assert_eq!(server.token(), "");
     assert_eq!(refusal(&server, "").await, None);
-    assert!(server.logged("no authentication"));
+    server.wait_logged("no authentication").await;
 }
 
 #[tokio::test]
@@ -150,7 +150,7 @@ async fn a_connection_that_never_says_hello_is_closed_after_10_s() {
         (Duration::from_secs(9)..Duration::from_secs(13)).contains(&waited),
         "closed after {waited:?}"
     );
-    assert!(server.logged("client sent no Hello in 10s"));
+    server.wait_logged("client sent no Hello in 10s").await;
 
     // The one that said Hello after a second stays.
     tokio::time::sleep(Duration::from_secs(2)).await;

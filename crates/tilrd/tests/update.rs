@@ -196,7 +196,7 @@ async fn update_installs_the_latest_release_and_the_running_server_keeps_its_she
 
     // Nobody tells the server: it notices the new file and reloads.
     let mut client = reconnect(&running, client).await;
-    assert!(running.logged("executable changed on disk"));
+    running.wait_logged("executable changed on disk").await;
     client.subscribe(pane_id).await;
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
 }

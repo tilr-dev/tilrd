@@ -213,9 +213,9 @@ async fn a_program_runs_without_a_shell_and_its_outputs_come_apart() {
         assert_eq!(started.exec_id, 0);
         assert!(started.error.contains(error), "{}", started.error);
     }
-    assert!(server.logged("exec refused"));
-    assert!(server.logged("exec started"));
-    assert!(server.logged("exec ended"));
+    server.wait_logged("exec refused").await;
+    server.wait_logged("exec started").await;
+    server.wait_logged("exec ended").await;
 }
 
 #[tokio::test]
@@ -470,7 +470,8 @@ async fn a_client_that_goes_takes_its_programs_with_it() {
         !process_alive(pid) && !process_alive(child)
     })
     .await;
-    eventually("the log says why", || server.logged("client gone")).await;
+    // The log says why.
+    server.wait_logged("client gone").await;
 }
 
 #[tokio::test]

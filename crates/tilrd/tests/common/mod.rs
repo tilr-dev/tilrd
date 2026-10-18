@@ -169,12 +169,34 @@ impl Server {
             .env_remove("TILR_SOCKET");
     }
 
+    /// Whether the server has logged a line with `needle` so far, as far as
+    /// the thread reading its log has got. For a line an event makes the
+    /// server write, wait with [`Server::wait_logged`] instead: the line
+    /// reaches this log some time after the event.
     pub fn logged(&self, needle: &str) -> bool {
         self.log
             .lock()
             .unwrap()
             .iter()
             .any(|line| line.contains(needle))
+    }
+
+    /// Wait up to [`TIMEOUT`] for the server to log a line with `needle`.
+    pub async fn wait_logged(&self, needle: &str) {
+        self.wait_logged_within(needle, TIMEOUT).await;
+    }
+
+    /// Wait up to `within` for the server to log a line with `needle`.
+    pub async fn wait_logged_within(&self, needle: &str, within: Duration) {
+        let deadline = tokio::time::Instant::now() + within;
+        while !self.logged(needle) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "not logged within {within:?}: {needle}\n{}",
+                self.log.lock().unwrap().join("\n")
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// The access token the server made for itself; empty if it runs

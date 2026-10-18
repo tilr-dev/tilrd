@@ -369,11 +369,9 @@ async fn a_cloudflared_left_by_a_killed_server_is_stopped() {
         "cloudflared-next",
         "exec sleep 600\n",
     );
-    until("the leftover is stopped", || {
-        next.logged(&format!(
-            "stopped a cloudflared left by an earlier server (pid {pid})"
-        ))
-    })
+    next.wait_logged(&format!(
+        "stopped a cloudflared left by an earlier server (pid {pid})"
+    ))
     .await;
     until("the leftover is gone", || !alive(&pid)).await;
     // And the next tunnel is its own.
@@ -436,17 +434,12 @@ async fn a_panic_starting_cloudflared_does_not_hold_up_the_next_reload() {
     let mut control = connections.recv().await.unwrap();
     control.greet().await;
     control.send(tunnel("abc234.tilr.test")).await;
-    until("starting cloudflared panics", || {
-        server.logged("failpoint spawn-unblocked")
-    })
-    .await;
+    // Starting cloudflared panics.
+    server.wait_logged("failpoint spawn-unblocked").await;
     std::fs::write(&failpoints, "").unwrap();
 
     server.signal("-USR1");
-    until("the server reloads", || {
-        server.logged("resumed after reload")
-    })
-    .await;
+    server.wait_logged("resumed after reload").await;
     assert!(!server.logged("reload failed"));
     // The successor starts cloudflared as usual.
     let mut control = connections.recv().await.unwrap();

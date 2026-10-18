@@ -16,6 +16,8 @@ struct Daemon {
     dir: PathBuf,
     socket: PathBuf,
     log: Arc<Mutex<Vec<String>>>,
+    /// Set once the log has been read to its end.
+    log_read: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Daemon {
@@ -40,12 +42,15 @@ impl Daemon {
         // The executable may be a copy the test just made.
         let mut child = spawn_copied(&mut command);
         let log = Arc::new(Mutex::new(Vec::new()));
+        let log_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sink = Arc::clone(&log);
+        let read = Arc::clone(&log_read);
         let stderr = child.stderr.take().unwrap();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 sink.lock().unwrap().push(line);
             }
+            read.store(true, Ordering::Relaxed);
         });
         let socket = match args.iter().position(|arg| *arg == "--socket") {
             Some(at) => PathBuf::from(args[at + 1]),
@@ -56,6 +61,7 @@ impl Daemon {
             dir: dir.to_owned(),
             socket,
             log,
+            log_read,
         }
     }
 
@@ -87,8 +93,12 @@ impl Daemon {
     fn exit(&mut self) -> (std::process::ExitStatus, String) {
         for _ in 0..1000 {
             if let Some(status) = self.child.try_wait().unwrap() {
-                // The log thread has read what was written before the exit.
-                std::thread::sleep(Duration::from_millis(50));
+                // The log thread reads what was written before the exit.
+                let deadline = std::time::Instant::now() + TIMEOUT;
+                while !self.log_read.load(Ordering::Relaxed) && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
                 return (status, self.log_text());
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -256,7 +266,7 @@ async fn the_socket_is_the_users_alone_and_asks_no_token() {
     assert!(ps.status.success(), "{ps:?}");
     assert!(String::from_utf8_lossy(&ps.stdout).contains(&pane));
     // And a TCP port, on loopback, by default.
-    assert!(daemon.log_text().contains("listening on ws://127.0.0.1:"));
+    wait_logged(&daemon, "listening on ws://127.0.0.1:");
 }
 
 #[test]
@@ -285,9 +295,9 @@ fn no_listen_serves_the_socket_alone() {
     let scratch = Scratch::new();
     let daemon = Daemon::start(&scratch.0, &["--no-listen"]);
     assert!(daemon.ps().status.success());
+    wait_logged(&daemon, "no TCP port");
     let log = daemon.log_text();
     assert!(!log.contains("listening on ws://"), "{log}");
-    assert!(log.contains("no TCP port"), "{log}");
     let mut both = Daemon::spawn(&scratch.0, &["--no-listen", "--no-socket"]);
     let (status, log) = both.exit();
     assert!(!status.success());
@@ -346,11 +356,7 @@ fn another_user_is_turned_away_even_where_the_permissions_let_it_in() {
     std::fs::set_permissions(&daemon.socket, std::fs::Permissions::from_mode(0o666)).unwrap();
     let refused = as_nobody(&scratch.0);
     assert!(!refused.status.success(), "{refused:?}");
-    assert!(
-        daemon
-            .log_text()
-            .contains("refused a connection on the Unix socket")
-    );
+    wait_logged(&daemon, "refused a connection on the Unix socket");
     assert!(daemon.ps().status.success(), "the user still gets in");
 }
 
@@ -364,13 +370,7 @@ fn a_socket_left_by_a_killed_server_is_replaced() {
     assert!(meta.file_type().is_socket(), "SIGKILL leaves the socket");
 
     let second = Daemon::start(&scratch.0, &[]);
-    assert!(
-        second
-            .log_text()
-            .contains("removing the socket of a server that is gone"),
-        "{}",
-        second.log_text()
-    );
+    wait_logged(&second, "removing the socket of a server that is gone");
     assert!(second.ps().status.success());
 }
 
@@ -486,20 +486,10 @@ fn with_a_tcp_port_a_socket_in_use_is_only_a_warning() {
     );
 
     let mut tcp = Daemon::spawn(&scratch.0, &["--listen", "127.0.0.1:0"]);
-    for _ in 0..500 {
-        if tcp.log_text().contains("listening on ws://") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_logged(&tcp, "listening on ws://");
     std::thread::sleep(Duration::from_millis(200));
     assert!(tcp.running(), "{}", tcp.log_text());
-    assert!(
-        tcp.log_text()
-            .contains("no Unix socket for local clients: another tilrd"),
-        "{}",
-        tcp.log_text()
-    );
+    wait_logged(&tcp, "no Unix socket for local clients: another tilrd");
     assert!(first.ps().status.success(), "the first still serves it");
 }
 
@@ -511,17 +501,7 @@ async fn a_reload_keeps_the_socket_and_its_lock() {
     let pane = create_pane(&mut ws).await;
     drop(ws);
     daemon.signal(libc::SIGUSR1);
-    for _ in 0..500 {
-        if daemon.log_text().contains("resumed after reload") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        daemon
-            .log_text()
-            .contains("resumed after reload with 1 pane(s)")
-    );
+    wait_logged(&daemon, "resumed after reload with 1 pane(s)");
     assert!(daemon.running(), "the same process");
     let mut ws = connect(&daemon.socket).await;
     assert!(panes(&mut ws).await.iter().any(|p| p.pane_id == pane));
@@ -639,6 +619,7 @@ async fn server_commands_run_for_local_clients_only() {
     assert_eq!(String::from_utf8_lossy(&out), token);
 
     // On TCP, with the token: refused.
+    wait_logged(&daemon, "listening on ");
     let addr = daemon
         .log_text()
         .lines()
@@ -693,14 +674,19 @@ fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
     std::fs::rename(&staged, exe).unwrap();
 }
 
+/// Wait up to [`TIMEOUT`] for the server to log a line with `needle`: the
+/// log reaches the test through a thread some time after the server wrote
+/// it.
 fn wait_logged(daemon: &Daemon, needle: &str) {
-    for _ in 0..500 {
-        if daemon.log_text().contains(needle) {
-            return;
-        }
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !daemon.log_text().contains(needle) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not logged: {needle}\n{}",
+            daemon.log_text()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
-    panic!("not logged: {needle}\n{}", daemon.log_text());
 }
 
 #[test]

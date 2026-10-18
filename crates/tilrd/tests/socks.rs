@@ -205,7 +205,7 @@ async fn raw(server: &Server) -> TcpStream {
 async fn a_page_reaches_a_loopback_service_through_the_socks_websocket() {
     let server = socks_server(&[]);
     let service = echo_service().await;
-    assert!(server.logged("SOCKS proxy on"));
+    server.wait_logged("SOCKS proxy on").await;
 
     let mut wire = open_with_token(&server).await;
     assert_eq!(greet(&mut wire, &[NO_AUTH]).await, NO_AUTH);
@@ -295,7 +295,7 @@ async fn the_socks_websocket_comes_only_from_an_allowed_origin() {
 #[tokio::test]
 async fn the_proxy_is_off_unless_asked_for() {
     let server = Server::start(&[]);
-    assert!(server.logged("SOCKS proxy off"));
+    server.wait_logged("SOCKS proxy off").await;
     let bearer = format!("Bearer {}", server.token());
     let refused = open(&server, "", &[("authorization", &bearer)]).await;
     assert!(refused.is_err_and(|err| err.contains("404")));
@@ -318,7 +318,7 @@ async fn the_configuration_file_turns_the_proxy_on() {
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(dir.join("config/server.toml"), "socks = true\n").unwrap();
     let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
-    assert!(server.logged("SOCKS proxy on"));
+    server.wait_logged("SOCKS proxy on").await;
     let mut wire = open_with_token(&server).await;
     assert_eq!(greet(&mut wire, &[NO_AUTH]).await, NO_AUTH);
 }

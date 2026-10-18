@@ -130,7 +130,7 @@ async fn a_client_that_vanishes_without_closing_is_dropped() {
             break;
         }
     }
-    assert!(server.logged("client went silent"));
+    server.wait_logged("client went silent").await;
     // The pane and the client that kept answering are unharmed.
     assert_eq!(stays.run(pane_id, "true").await, 0);
 
@@ -170,7 +170,7 @@ async fn a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped() {
         () = talking => unreachable!(),
         () = dropped => {}
     }
-    assert!(server.logged("client stopped answering pings"));
+    server.wait_logged("client stopped answering pings").await;
     assert!(!server.logged("client went silent"));
     assert_eq!(stays.run(pane_id, "true").await, 0);
 }
@@ -497,7 +497,9 @@ async fn a_client_back_on_a_new_connection_supersedes_its_old_one_at_once() {
         close_frame(&mut old).await,
         Some((tilr_proto::close::SUPERSEDED, "superseded".into()))
     );
-    assert!(server.logged("client superseded by a newer connection"));
+    server
+        .wait_logged("client superseded by a newer connection")
+        .await;
     // The new connection starts afresh: it subscribes as any other.
     new.subscribe(pane_id).await;
     assert_eq!(new.run(pane_id, "true").await, 0);
