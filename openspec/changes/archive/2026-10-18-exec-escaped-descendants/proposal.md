@@ -31,3 +31,5 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) found (finding
 ## Impact
 
 `crates/tilrd/src/exec.rs` (reader loop, `run()`, `stop_all`, reap order), `crates/tilrd/src/outbox.rs` (a small bulk packet queued without waiting for room), `crates/tilrd/src/supervisor.rs` (exec off answer; dropping a client whose lane cannot take an exec reply). Not breaking: a client that already checks `HelloAck.features` never sees the new refusal. Nothing crosses a reload (execs end at a reload, unchanged); an update from the previous release changes nothing on disk.
+
+Implemented by: [`48efd35`](https://github.com/tilr-dev/tilrd/commit/48efd35) fix(exec): always end an exec, last with ExecExit, never losing a reply (2026-10-18).

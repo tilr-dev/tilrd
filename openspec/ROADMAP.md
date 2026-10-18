@@ -114,7 +114,7 @@ the answer shapes `quic-transport`, `directory-sync` and possibly `port-forwardi
 | reload-rollback | 4298b15 |
 | reload-signals-and-socket | a0f1ae9 |
 | bulk-window-stall | 7d18ae3 |
-| exec-escaped-descendants | recorded in the next commit |
+| exec-escaped-descendants | 48efd35 |
 | client-socket-peer-check | 8274039 |
 
 Older work is in `openspec/changes/archive/`.
