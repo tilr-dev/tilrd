@@ -11,8 +11,11 @@
 //! The protocol on the socket is the one on the TCP port (WebSocket, then
 //! `Hello`), without the access token: the directory is the user's only, the
 //! socket is 0600, and the server checks that a client's uid is its own.
+//! `tilr` checks the other way round before it sends anything: the runtime
+//! directory ([`check_runtime_dir`]) and the server's uid.
 
 use std::ffi::OsString;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Overrides the socket's path.
@@ -108,6 +111,51 @@ pub fn check_socket_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Why the runtime directory `dir` cannot be trusted with the socket, if it
+/// cannot (tmux's check of its own): it must be a directory itself, not a
+/// link to one, owned by this user, with nothing for group and others. One
+/// that is not there yet is fine: it is made private.
+pub fn check_runtime_dir(dir: &Path) -> Result<(), String> {
+    let meta = match std::fs::symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("the runtime directory {}: {err}", dir.display())),
+    };
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    check_dir_meta(dir, &meta, uid)
+}
+
+fn check_dir_meta(dir: &Path, meta: &std::fs::Metadata, uid: u32) -> Result<(), String> {
+    let dir = dir.display();
+    let way_out = format!("remove it, or set {RUNTIME_DIR_ENV} to a directory of your own");
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "the runtime directory {dir} is a symbolic link, not a directory: {way_out}"
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(format!(
+            "the runtime directory {dir} is not a directory: {way_out}"
+        ));
+    }
+    if meta.uid() != uid {
+        return Err(format!(
+            "the runtime directory {dir} belongs to another user (uid {}), not to this one \
+             (uid {uid}): {way_out}",
+            meta.uid()
+        ));
+    }
+    let mode = meta.mode() & 0o7777;
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "the runtime directory {dir} is open to other users (mode {mode:04o}): \
+             `chmod 700 {dir}`, or {way_out}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +181,47 @@ mod tests {
         let err = check_socket_path(&long).unwrap_err();
         assert!(err.contains(SOCKET_ENV), "{err}");
         assert!(err.contains(&format!("{} bytes", max + 1)), "{err}");
+    }
+
+    #[test]
+    fn a_runtime_directory_of_this_user_alone_is_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("tilr-proto-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join("run");
+        assert!(check_runtime_dir(&dir).is_ok(), "not there yet");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(check_runtime_dir(&dir).is_ok());
+
+        for mode in [0o750, 0o705, 0o755, 0o770] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let err = check_runtime_dir(&dir).unwrap_err();
+            assert!(err.contains("open to other users"), "{mode:o}: {err}");
+            assert!(err.contains(&format!("{mode:04o}")), "{err}");
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        let err = check_runtime_dir(&link).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+
+        let file = root.join("file");
+        std::fs::write(&file, "").unwrap();
+        let err = check_runtime_dir(&file).unwrap_err();
+        assert!(err.contains("not a directory"), "{err}");
+
+        // Another user's: the owner cannot be changed without root, the
+        // check is given another uid instead.
+        let meta = std::fs::symlink_metadata(&dir).unwrap();
+        let err = check_dir_meta(&dir, &meta, meta.uid() + 1).unwrap_err();
+        assert!(
+            err.contains(&format!("belongs to another user (uid {})", meta.uid())),
+            "{err}"
+        );
+        assert!(err.contains(RUNTIME_DIR_ENV), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -48,6 +48,7 @@ The test's name is the statement of the use case.
 | A socket left by a killed (SIGKILL) server is removed by the next server, which listens in its place | `a_socket_left_by_a_killed_server_is_replaced` |
 | A plain file where the socket goes: a clear error, the file intact | `a_file_at_the_path_is_left_alone_with_a_clear_error` |
 | Another program listening where the socket goes: a clear error, its socket intact and working | `another_programs_listener_at_the_path_is_left_alone_with_a_clear_error` |
+| The lock file is a symbolic link: the server does not start, the link is not followed and its target is intact | `a_symlinked_lock_file_is_refused` |
 | A path longer than `sun_path`: a clear error and an exit (`TILR_SOCKET`) | `a_socket_path_too_long_is_a_clear_error` |
 | Eight servers started at once on one socket: exactly one is left, the others say "another tilrd" | `of_servers_started_at_once_one_serves_the_socket` |
 | With TCP, a socket in use is only a warning, the server works over TCP (as the Tilr app's does); a socket named with `--socket` must work | `with_a_tcp_port_a_socket_in_use_is_only_a_warning` |
@@ -67,6 +68,8 @@ The test's name is the statement of the use case.
 | A socket left after a SIGKILL: `ls` starts nothing, `new` starts a new server | `a_socket_left_by_a_killed_server_is_replaced_by_the_next_tilr` |
 | A file where the socket goes: a clear error, the file intact | `a_file_in_the_way_is_left_alone_with_a_clear_error` |
 | A socket path that is too long: a clear error | `a_socket_path_too_long_is_a_clear_error` |
+| A runtime directory open to group or others (0755, 0770) or a symbolic link to a private one: `new`, `ls`, `kill-server` refuse naming it and what is wrong, no server is started, nothing is made there; private again, it works (another user's directory: itests UC-03A) | `a_runtime_directory_open_to_others_or_a_link_is_refused_and_nothing_started` |
+| The lock file or `tilrd.log` is a symbolic link: `tilr new` refuses, the link is not followed and its target is intact | `a_symlinked_lock_file_is_refused` |
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
@@ -304,6 +307,10 @@ pane process. The server's counters are at `GET /metrics`.
 
 ## Not covered
 
+- `tilr` and a socket served by another uid (refused before a byte is sent): it
+  takes a second user, so it is itests UC-03A (and UC-034); the directory
+  checks themselves are unit tests in `tilr-proto` (`local.rs`), the token
+  that goes to loopback targets only one in `tilr` (`target.rs`).
 - Client: the web client's behaviour on a dropped connection (automatic
   reconnect, back into the same pane) is checked by hand only. The web client
   does not send `Ping` yet.

@@ -38,6 +38,7 @@ enum Probe {
 }
 
 fn probe(socket: &Path) -> Result<Probe> {
+    check_dir(socket)?;
     match fs::symlink_metadata(socket) {
         Ok(meta) if !meta.file_type().is_socket() => bail!(
             "{} is in the way: it is not a socket (nothing was removed); \
@@ -109,8 +110,20 @@ pub fn ensure_running(socket: &Path) -> Result<()> {
     }
 }
 
+/// The runtime directory, when the socket is the default one there, must be
+/// the user's alone (see [`local::check_runtime_dir`]) before anything at the
+/// socket is reached or started.
+fn check_dir(socket: &Path) -> Result<()> {
+    if local::is_default(socket)
+        && let Some(dir) = socket.parent()
+    {
+        local::check_runtime_dir(dir).map_err(|err| anyhow!(err))?;
+    }
+    Ok(())
+}
+
 /// The socket's directory: the runtime directory is made private to the
-/// user, as the server makes it.
+/// user, as the server makes it, and checked again once it is there.
 fn prepare_dir(socket: &Path) -> Result<()> {
     let dir = socket
         .parent()
@@ -121,17 +134,12 @@ fn prepare_dir(socket: &Path) -> Result<()> {
         .mode(0o700)
         .create(dir)
         .with_context(|| format!("create {}", dir.display()))?;
-    if local::is_default(socket) {
-        let meta = fs::metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
-        // SAFETY: geteuid has no preconditions.
-        if meta.uid() != unsafe { libc::geteuid() } {
-            bail!("{} belongs to another user", dir.display());
-        }
-    }
-    Ok(())
+    check_dir(socket)
 }
 
-/// The lock file, locked; `None` if another holds it.
+/// The lock file, locked; `None` if another holds it. A link at its path is
+/// not followed, and what is there must be a file of this user's; it is not
+/// truncated (the server writes its pid once it holds the lock).
 fn try_lock(path: &Path) -> Result<Option<File>> {
     let file = fs::OpenOptions::new()
         .read(true)
@@ -139,8 +147,10 @@ fn try_lock(path: &Path) -> Result<Option<File>> {
         .create(true)
         .truncate(false)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
+        .with_context(|| format!("open {} (a symbolic link is not followed)", path.display()))?;
+    own_file(&file, path)?;
     // SAFETY: flock has no memory-safety preconditions; the file is open.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let err = std::io::Error::last_os_error();
@@ -151,11 +161,34 @@ fn try_lock(path: &Path) -> Result<Option<File>> {
     }
     // A server that stopped removes the file: the lock taken on it, between
     // opening and locking, locks nothing. Taken again next time round.
-    let same = match (file.metadata(), fs::metadata(path)) {
+    let same = match (file.metadata(), fs::symlink_metadata(path)) {
         (Ok(open), Ok(named)) => open.dev() == named.dev() && open.ino() == named.ino(),
         _ => false,
     };
     Ok(same.then_some(file))
+}
+
+/// What was opened at `path` must be a regular file of this user's.
+fn own_file(file: &File, path: &Path) -> Result<()> {
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?;
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if !meta.is_file() {
+        bail!(
+            "{} is not a regular file (nothing was changed)",
+            path.display()
+        );
+    }
+    if meta.uid() != uid {
+        bail!(
+            "{} belongs to another user (uid {}), not to this one (uid {uid})",
+            path.display(),
+            meta.uid()
+        );
+    }
+    Ok(())
 }
 
 /// Start tilrd for `socket`, handing it `lock`. Returns its log's path.
@@ -166,8 +199,15 @@ fn start(socket: &Path, lock: &File) -> Result<PathBuf> {
         .create(true)
         .append(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&log_path)
-        .with_context(|| format!("open {}", log_path.display()))?;
+        .with_context(|| {
+            format!(
+                "open {} (a symbolic link is not followed)",
+                log_path.display()
+            )
+        })?;
+    own_file(&log, &log_path)?;
     let fd = lock.as_raw_fd();
     let mut command = Command::new(&exe);
     command
@@ -269,7 +309,12 @@ fn log_tail(path: &Path) -> String {
 /// (one that cannot be opened, another user's, is taken as held).
 pub fn stopped(socket: &Path) -> bool {
     let lock = local::lock_path(socket);
-    match File::open(&lock) {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        // Not a link; nor waiting for a writer, were it a FIFO.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&lock);
+    match file {
         Ok(file) => {
             // SAFETY: flock has no memory-safety preconditions.
             unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) == 0 }

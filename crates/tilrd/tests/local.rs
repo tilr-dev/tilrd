@@ -390,6 +390,22 @@ fn a_file_at_the_path_is_left_alone_with_a_clear_error() {
 }
 
 #[test]
+fn a_symlinked_lock_file_is_refused() {
+    let scratch = Scratch::new();
+    let socket = scratch.0.join("runtime/tilrd.sock");
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let target = scratch.0.join("elsewhere");
+    std::fs::write(&target, "mine").unwrap();
+    std::os::unix::fs::symlink(&target, tilr_proto::local::lock_path(&socket)).unwrap();
+    let mut daemon = Daemon::spawn(&scratch.0, &["--no-listen"]);
+    let (status, log) = daemon.exit();
+    assert!(!status.success());
+    assert!(log.contains("a symbolic link is not followed"), "{log}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine");
+    assert!(!socket.exists(), "{log}");
+}
+
+#[test]
 fn another_programs_listener_at_the_path_is_left_alone_with_a_clear_error() {
     let scratch = Scratch::new();
     let socket = scratch.0.join("runtime/tilrd.sock");

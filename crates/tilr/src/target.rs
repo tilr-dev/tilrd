@@ -11,6 +11,8 @@
 //! # A tilrd elsewhere instead of the local one:
 //! connect = "ws://10.0.0.5:7890"
 //! token = "…"            # what `tilrd token` prints there
+//! # Without a token, a server on the loopback gets this machine's (the
+//! # state directory's `token`); another host gets none.
 //! # Or the local one at another path:
 //! # socket = "/run/user/1000/tilr/tilrd.sock"
 //! ```
@@ -83,6 +85,16 @@ pub fn load_config() -> Result<Config> {
 /// Settle on the server: a socket or an address given beats one from the
 /// file; neither, the default socket.
 pub fn resolve(given: Given, config: Config) -> Result<Target> {
+    resolve_with(given, config, stored_token)
+}
+
+/// [`resolve`], with the token of this machine's server from `stored`: asked
+/// only for a target on the loopback.
+fn resolve_with(
+    given: Given,
+    config: Config,
+    stored: impl FnOnce() -> Option<String>,
+) -> Result<Target> {
     if given.socket.is_some() && given.connect.is_some() {
         bail!("--socket and --connect name two servers: give one");
     }
@@ -96,10 +108,12 @@ pub fn resolve(given: Given, config: Config) -> Result<Target> {
     });
     match url {
         Some(url) => {
+            // This machine's token never leaves it: another machine's server
+            // gets only a token given for it.
             let token = given
                 .token
                 .or(config.token)
-                .or_else(stored_token)
+                .or_else(|| if is_loopback(&url) { stored() } else { None })
                 .unwrap_or_default();
             Ok(Target::Remote { url, token })
         }
@@ -108,6 +122,37 @@ pub fn resolve(given: Given, config: Config) -> Result<Target> {
                 .socket
                 .unwrap_or_else(tilr_proto::local::default_socket_path),
         )),
+    }
+}
+
+/// Whether `url` names this machine over the loopback: `localhost`, an
+/// address in 127.0.0.0/8, or `::1`. Anything else, a name that may resolve
+/// to the loopback included, is taken as another machine.
+fn is_loopback(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+        match bracketed.split_once(']') {
+            Some((host, _)) => host,
+            None => return false,
+        }
+    } else {
+        host_port.split(':').next().unwrap_or_default()
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+        }
+        Err(_) => false,
     }
 }
 
@@ -174,5 +219,51 @@ mod tests {
         let err = resolve(given(Some("/s"), Some("ws://h:1"), None), Config::default());
         assert!(err.is_err());
         assert!(toml::from_str::<Config>("sockett = \"/s\"").is_err());
+    }
+
+    #[test]
+    fn the_stored_token_goes_to_loopback_targets_only() {
+        let stored = || Some("local".to_owned());
+        let token = |url: &str, given_token: Option<&str>, config: Config| match resolve_with(
+            given(None, Some(url), given_token),
+            config,
+            stored,
+        )
+        .unwrap()
+        {
+            Target::Remote { token, .. } => token,
+            other => panic!("{other:?}"),
+        };
+        for url in [
+            "ws://127.0.0.1:7890",
+            "ws://127.1.2.3:7890/",
+            "ws://localhost:7890",
+            "wss://LOCALHOST/x",
+            "ws://[::1]:7890",
+            "ws://[::ffff:127.0.0.1]:7890",
+            "ws://user@127.0.0.1:7890",
+        ] {
+            assert_eq!(token(url, None, Config::default()), "local", "{url}");
+        }
+        for url in [
+            "ws://example.net:7890",
+            "ws://10.0.0.5:7890",
+            "ws://0.0.0.0:7890",
+            "ws://[::]:7890",
+            "ws://[2001:db8::1]:7890",
+            "ws://localhost.example.net:7890",
+            "ws://127.0.0.1.example.net:7890",
+            "ws://127.0.0.1@example.net:7890",
+            "not a url",
+        ] {
+            assert_eq!(token(url, None, Config::default()), "", "{url}");
+        }
+        // A token given for the target goes wherever it is.
+        assert_eq!(
+            token("ws://example.net:7890", Some("given"), Config::default()),
+            "given"
+        );
+        let config: Config = toml::from_str("token = \"t1\"").unwrap();
+        assert_eq!(token("ws://example.net:7890", None, config), "t1");
     }
 }

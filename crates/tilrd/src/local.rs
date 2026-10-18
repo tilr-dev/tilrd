@@ -162,8 +162,12 @@ fn take_lock(path: &Path) -> Result<File, ClaimError> {
             .create(true)
             .truncate(false)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)
-            .with_context(|| format!("open {}", path.display()))?;
+            .with_context(|| {
+                format!("open {} (a symbolic link is not followed)", path.display())
+            })?;
+        own_file(&file, path)?;
         if !flock(&file).with_context(|| format!("lock {}", path.display()))? {
             let mut pid = String::new();
             let _ = file.read_to_string(&mut pid);
@@ -216,8 +220,32 @@ fn flock(file: &File) -> std::io::Result<bool> {
     }
 }
 
+/// What was opened as the lock must be a regular file of this user's.
+fn own_file(file: &File, path: &Path) -> Result<()> {
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?;
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if !meta.is_file() {
+        bail!(
+            "{} is not a regular file (nothing was changed)",
+            path.display()
+        );
+    }
+    if meta.uid() != uid {
+        bail!(
+            "{} belongs to uid {}, not to this user (nothing was changed)",
+            path.display(),
+            meta.uid()
+        );
+    }
+    Ok(())
+}
+
+/// Whether `file` is what is at `path` (a link there is not followed).
 fn same_file(file: &File, path: &Path) -> bool {
-    match (file.metadata(), fs::metadata(path)) {
+    match (file.metadata(), fs::symlink_metadata(path)) {
         (Ok(open), Ok(named)) => open.dev() == named.dev() && open.ino() == named.ino(),
         _ => false,
     }

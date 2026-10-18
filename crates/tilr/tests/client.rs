@@ -43,6 +43,14 @@ impl Machine {
         self.dir.join("runtime/tilrd.sock")
     }
 
+    /// The runtime directory made beforehand, private as `tilr` makes it.
+    fn make_runtime_dir(&self) -> PathBuf {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = self.dir.join("runtime");
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        dir
+    }
+
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(TILR);
         command
@@ -281,13 +289,79 @@ fn a_socket_left_by_a_killed_server_is_replaced_by_the_next_tilr() {
 #[test]
 fn a_file_in_the_way_is_left_alone_with_a_clear_error() {
     let machine = Machine::new();
-    std::fs::create_dir_all(machine.socket().parent().unwrap()).unwrap();
+    machine.make_runtime_dir();
     std::fs::write(machine.socket(), "keep").unwrap();
     let output = machine.tilr(&["new", "-d"]);
     assert!(!output.status.success());
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("not a socket (nothing was removed)"), "{err}");
     assert_eq!(std::fs::read_to_string(machine.socket()).unwrap(), "keep");
+}
+
+#[test]
+fn a_runtime_directory_open_to_others_or_a_link_is_refused_and_nothing_started() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let runtime = machine.make_runtime_dir();
+    let refused = |what: &str| {
+        for args in [&["new", "-d"][..], &["ls"], &["kill-server"]] {
+            let output = machine.tilr(args);
+            assert!(!output.status.success(), "tilr {args:?}");
+            let err = String::from_utf8_lossy(&output.stderr);
+            assert!(err.contains(what), "tilr {args:?}: {err}");
+            assert!(err.contains(&runtime.display().to_string()), "{err}");
+        }
+        assert!(!machine.socket().exists(), "no server was started");
+        assert!(machine.log().is_empty(), "no server was started");
+    };
+
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+    refused("open to other users (mode 0755)");
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o770)).unwrap();
+    refused("open to other users (mode 0770)");
+
+    // A link to a private directory, which another user could repoint.
+    let real = machine.dir.join("real");
+    std::fs::rename(&runtime, &real).unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&real, &runtime).unwrap();
+    refused("is a symbolic link");
+    assert_eq!(
+        std::fs::read_dir(&real).unwrap().count(),
+        0,
+        "nothing made there"
+    );
+
+    // Private again: it works.
+    std::fs::remove_file(&runtime).unwrap();
+    std::fs::rename(&real, &runtime).unwrap();
+    machine.ok(&["new", "-d"]);
+}
+
+#[test]
+fn a_symlinked_lock_file_is_refused() {
+    let machine = Machine::new();
+    let runtime = machine.make_runtime_dir();
+    let target = machine.dir.join("elsewhere");
+    std::fs::write(&target, "keep").unwrap();
+    std::os::unix::fs::symlink(&target, runtime.join("tilrd.sock.lock")).unwrap();
+    let output = machine.tilr(&["new", "-d"]);
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("tilrd.sock.lock"), "{err}");
+    assert!(err.contains("symbolic link is not followed"), "{err}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    assert!(!machine.socket().exists(), "no server was started");
+
+    // The log too: a link there is not written through.
+    std::fs::remove_file(runtime.join("tilrd.sock.lock")).unwrap();
+    std::os::unix::fs::symlink(&target, runtime.join("tilrd.log")).unwrap();
+    let output = machine.tilr(&["new", "-d"]);
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("tilrd.log"), "{err}");
+    assert!(err.contains("symbolic link is not followed"), "{err}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
 }
 
 #[test]

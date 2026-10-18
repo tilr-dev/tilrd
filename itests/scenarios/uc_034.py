@@ -15,6 +15,7 @@ NOBODY = 65534
 @case(spec=[
     "access-control/the-unix-socket-checks-the-peer-s-uid",
     "daemon-lifecycle/runtime-directory-and-socket-modes",
+    "tilr-cli/tilr-checks-who-serves-the-socket",
 ])
 def another_user_cannot_use_the_socket(t: T):
     """UC-034: 0600 socket in a 0700 directory; uid 65534 is refused, by the permissions and by the server."""
@@ -43,6 +44,14 @@ def another_user_cannot_use_the_socket(t: T):
     os.chmod(socket, 0o666)
     r = as_nobody("ls")
     t.ok(r.code != 0, f"the server refuses another uid: {r.text}")
-    log = (run / "tilrd.log").read_text()
-    t.has(log, "refused a connection on the Unix socket", f"uid {NOBODY}")
+    # And tilr refuses a server of another uid (UC-03A) on its side, at once.
+    t.has(r.err, f"is served by another user (uid {os.geteuid()})")
+    t.eventually(lambda: "refused a connection on the Unix socket" in (run / "tilrd.log").read_text(),
+                 "the server logs the refusal")
+    t.has((run / "tilrd.log").read_text(), f"uid {NOBODY}")
+    # tilr enters its runtime directory only while it is private again.
+    r = t.tilr("ls", "-q", env=env)
+    t.ok(r.code != 0, "a runtime directory open to others is refused")
+    t.has(r.err, "open to other users (mode 0755)")
+    os.chmod(run, 0o700)
     t.eq(t.tilr("ls", "-q", env=env, check=True).out.count("\n"), 1, "the user still gets in")

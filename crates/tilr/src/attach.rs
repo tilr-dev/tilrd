@@ -131,6 +131,8 @@ impl Attach<'_> {
                             {
                                 return Ok(Exit::ServerGone);
                             }
+                            // Another user's socket now: nothing to wait for.
+                            Err(ConnectError::Untrusted(err)) => return Err(err),
                             Err(err) => {
                                 status(&format!("tilr: disconnected ({err}), reconnecting… (attempt {attempts}; Ctrl+] d detaches)"))?;
                                 next_attempt = Instant::now() + retry;

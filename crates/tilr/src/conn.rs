@@ -51,13 +51,16 @@ pub enum ConnectError {
     NoServer(std::io::Error),
     /// Something answered, but not as tilrd does, or turned this client away.
     Other(anyhow::Error),
+    /// Not talked to: the runtime directory is not this user's alone, or
+    /// another user serves the socket.
+    Untrusted(anyhow::Error),
 }
 
 impl std::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoServer(err) => write!(f, "{err}"),
-            Self::Other(err) => write!(f, "{err:#}"),
+            Self::Other(err) | Self::Untrusted(err) => write!(f, "{err:#}"),
         }
     }
 }
@@ -311,7 +314,17 @@ impl Conn {
     }
 }
 
+/// The local server's WebSocket. Nothing is sent before the socket is known
+/// to be this user's: in the runtime directory (the default socket), the
+/// directory must be private to the user; wherever it is, the process on the
+/// other end must run as this user.
 async fn open_local(path: &Path) -> Result<WebSocketStream<UnixStream>, ConnectError> {
+    if tilr_proto::local::is_default(path)
+        && let Some(dir) = path.parent()
+    {
+        tilr_proto::local::check_runtime_dir(dir)
+            .map_err(|err| ConnectError::Untrusted(anyhow!(err)))?;
+    }
     let stream = UnixStream::connect(path).await.map_err(|err| {
         use std::io::ErrorKind::{ConnectionRefused, NotFound};
         match err.kind() {
@@ -321,6 +334,7 @@ async fn open_local(path: &Path) -> Result<WebSocketStream<UnixStream>, ConnectE
             ),
         }
     })?;
+    check_peer(&stream, path)?;
     let (ws, _) = tokio_tungstenite::client_async(tilr_proto::local::URL, stream)
         .await
         .map_err(|err| {
@@ -330,6 +344,27 @@ async fn open_local(path: &Path) -> Result<WebSocketStream<UnixStream>, ConnectE
             ))
         })?;
     Ok(ws)
+}
+
+/// The process on the other end of `stream` must run as this user.
+fn check_peer(stream: &UnixStream, path: &Path) -> Result<(), ConnectError> {
+    let cred = stream.peer_cred().map_err(|err| {
+        ConnectError::Untrusted(anyhow::Error::new(err).context(format!(
+            "who serves {}: no peer credentials",
+            path.display()
+        )))
+    })?;
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if cred.uid() != uid {
+        return Err(ConnectError::Untrusted(anyhow!(
+            "socket {} is served by another user (uid {}), not by this one (uid {uid}): \
+             nothing was sent",
+            path.display(),
+            cred.uid()
+        )));
+    }
+    Ok(())
 }
 
 async fn open_remote(

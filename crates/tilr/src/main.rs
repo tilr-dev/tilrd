@@ -401,6 +401,7 @@ async fn connect(target: &Target, client_id: &str, start: bool) -> Result<Conn> 
             ),
             _ => Err(err),
         },
+        Err(ConnectError::Untrusted(err)) => Err(err),
     }
 }
 

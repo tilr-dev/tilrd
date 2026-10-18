@@ -155,7 +155,10 @@ local server that stopped (socket gone, lock free), ends the attach (`[tilrd sto
 
 **Which server.** `--socket PATH` / `TILR_SOCKET`, or `--connect ws://HOST:PORT` /
 `TILR_CONNECT` with `--token` / `TILR_TOKEN` for a server's TCP port (not started from
-here; without a token, the one of this machine's server). Else `~/.config/tilr/client.toml`
+here). Without a token given, a server on the loopback (`localhost`, `127.0.0.0/8`, `::1`)
+gets the one of this machine's server (the state directory's `token`); any other host gets
+none: this machine's token never leaves it, so give that server's own (`--token`,
+`TILR_TOKEN` or `token` in `client.toml`). Else `~/.config/tilr/client.toml`
 (`$XDG_CONFIG_HOME`, or `TILR_CONFIG_DIR`):
 
 ```toml
@@ -206,7 +209,13 @@ socket is `--socket PATH`, else `$TILR_SOCKET`, else `tilrd.sock` in the runtime
 `$TILR_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/tilr`, else `tilr-<uid>` in the temporary
 directory (`$TMPDIR` on macOS, `/tmp` on Linux). The directory is made 0700 (and must be the
 user's), the socket 0600, and the server checks each connection's peer uid (`SO_PEERCRED`,
-`getpeereid`) is its own: on the socket no access token is asked. A path longer than a
+`getpeereid`) is its own: on the socket no access token is asked. `tilr` checks the other
+way round before it says anything: the runtime directory must be a directory (not a link)
+of the user's with nothing for group and others, or `tilr` neither connects there nor
+starts a server (another user may have made `/tmp/tilr-<uid>` first), and whatever the
+socket's path, a server whose peer uid is not the user's is left at once, not a byte sent
+(`socket … is served by another user (uid N)`). The lock file and `tilrd.log` are opened
+without following a symbolic link (`O_NOFOLLOW`). A path longer than a
 socket can be bound at (107 bytes on Linux, 103 on macOS) is an error that says so. One
 server per socket: it holds `tilrd.sock.lock` (`flock`, with its pid in it) for as long as
 it runs, a reload included. What is found at the path when it starts:
