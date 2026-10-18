@@ -37,3 +37,5 @@ Still so at 1163abd: `crates/tilr-screen/src/ghostty.rs:479-491` remaps any key 
 ## Impact
 
 `crates/tilr-screen/src/ghostty.rs` and its unit tests; `crates/tilr-proto/proto/tilr.proto` (`KeyInput.code` comment); `crates/tilr-driver/src/keys.rs` only if its `alt-` keys need the produced character; itests UC-079 (`uc_079.py`, its tags) and `itests/USE_CASES.md` UC-079; README "Keys"; USE_CASES.md. Not breaking on the wire. A program that relied on Alt+Ф giving `ESC a` now gets `ESC ф` (as in xterm). Reload: nothing crosses a reload (encoding is per key; the pane state format is unchanged); a pane process takes the new encoding when it execs into the new executable. Update from the previous release: no effect beyond the new encoding.
+
+Implemented by: [`92e4f43`](https://github.com/tilr-dev/tilrd/commit/92e4f43) fix: Alt sends ESC and the character the key produced (2026-10-18).

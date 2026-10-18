@@ -118,6 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | startup-signal-window | f8fb63b |
 | pane-socket-peer-check | 248dd56 |
 | protocol-v3 | 3dc42e2 |
-| non-latin-ctrl-alt | recorded in the next commit |
+| non-latin-ctrl-alt | 92e4f43 |
 
 Older work is in `openspec/changes/archive/`.
