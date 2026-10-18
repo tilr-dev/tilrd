@@ -816,14 +816,19 @@ pub async fn shell_pid(server: &Server, client: &mut Client, pane_id: PaneId) ->
 }
 
 /// Wait up to five seconds for `condition` to hold.
-pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
-    for _ in 0..50 {
+pub async fn eventually(what: &str, condition: impl FnMut() -> bool) {
+    eventually_within(what, Duration::from_secs(5), condition).await;
+}
+
+/// Look up to `within` for `condition` to hold, every 100 ms.
+pub async fn eventually_within(what: &str, within: Duration, mut condition: impl FnMut() -> bool) {
+    for _ in 0..within.as_millis().div_ceil(100) {
         if condition() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("did not happen: {what}");
+    panic!("did not happen within {within:?}: {what}");
 }
 
 /// Ask the server to reload and connect again once it has.

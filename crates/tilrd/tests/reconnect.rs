@@ -279,7 +279,11 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
     // The connection drops: the terminal hangs up, and its process group,
     // the server's, gets SIGHUP.
     login.hang_up();
-    eventually("the login shell exits with its terminal", || {
+    // A shell ending on a signal: gone at the first look (0.1 s) even with
+    // four test suites running beside it, but once still there after 5 s
+    // with a Linux VM and Dagger taking the machine. Nothing in the test or
+    // the server was found to hold it: it waits to be scheduled.
+    eventually_within("the login shell exits with its terminal", TIMEOUT, || {
         !server.is_running()
     })
     .await;
