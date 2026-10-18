@@ -1,6 +1,6 @@
 # Tasks
 
-Written for option (c) of the Блокер; with (a) or (b) replace group 1 by "copy `itests/installer/install.sh` into the sh source, `diff` it empty, publish with its `publish.sh` right after the first release's `cdn` job" and drop the spec delta.
+Written for option (c), decided 2026-10-18 (see the proposal's Decision).
 
 ## 0. Check
 

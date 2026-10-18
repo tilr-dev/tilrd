@@ -2,7 +2,7 @@
 
 ## 0. Decision
 
-- [ ] 0.1 Owner answers the Блокер (now or after the transport decision; default on or off); remove the Блокер line and set the default in D3/D4 and the config; verify `openspec validate port-forwarding --strict`
+- [ ] 0.1 The transport decision (iroh vs quinn) is made, then reread D2-D4 against it; the default is the prepared plan (off, like SOCKS) unless the owner says otherwise; verify `openspec validate port-forwarding --strict`
 
 ## 1. Protocol and server
 

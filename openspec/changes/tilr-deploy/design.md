@@ -15,8 +15,13 @@
 The archive goes over stdin of `ssh <dest> sh -c '<script>'`; the script (embedded in `tilr`) follows the `installation` spec: `mktemp -d`, unpack, both `--version`, then `mv` `tilr` and then `tilrd` into `~/.local/bin` (made if missing), removing the temp dir on any exit. It prints `installed tilr <version> in ~/.local/bin` or the installer's failure message and exits non-zero leaving the old files.
 
 ### D5. Start and hand over
-With `--service`, `~/.local/bin/tilr service install` runs there and its output is shown. Then `~/.local/bin/tilr token` runs there (starting tilrd as the `tilr-cli` spec says) and `tilr deploy` prints the two lines of Блокер option (a). If `~/.local/bin` is not on the remote's login `PATH`, it says what to add, as the installer does.
+With `--service`, `~/.local/bin/tilr service install` runs there and its output is shown. Then `~/.local/bin/tilr token` runs there (starting tilrd as the `tilr-cli` spec says) and `tilr deploy` prints the two lines of the Decision (proposal.md). If `~/.local/bin` is not on the remote's login `PATH`, it says what to add, as the installer does.
 
 ## Reload and reconnect
 
 Nothing is handed over by deploy itself. When tilrd already runs on the remote, replacing its executable makes it reload as after `tilrd update`; its panes and clients survive.
+
+## Open
+
+### `--cloud` (not designed)
+Registering the machine in Tilr Cloud: `tilr cloud login` runs on the remote and its device code is shown on the local terminal. Open questions: how the code and the login URL are relayed, what happens when the remote is already linked, and the flag's interplay with `--service`. To be designed after Cloud is in production; nothing of it is in groups 1-4.

@@ -2,7 +2,7 @@
 
 ## 0. Decision
 
-- [ ] 0.1 Owner answers the Блокер (build now, and which access model); with (a) remove the Блокер line and go on; with (b) rewrite D1/D4 first; with (c) leave the change parked; verify `openspec validate read-only-viewer --strict`
+- [x] 0.1 Decided 2026-10-18: deferred until a use is named; groups 1+ are the ready plan (option (a)) and wait for that use; verify `openspec validate read-only-viewer --strict`
 
 ## 1. Token
 

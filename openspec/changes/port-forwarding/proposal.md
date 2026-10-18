@@ -1,8 +1,8 @@
 # Proposal: Forwarding TCP ports through the client connection
 
-Зависит от: protocol-v3
+Deferred: after the transport decision (iroh vs quinn; see `quic-transport`, `directory-sync`).
 
-Блокер: Build port forwarding now on the WebSocket transport, and is the server side on by default? Options: (a) build now, `--forward` / `forward = true` turns reverse forwards on (off by default, like SOCKS: a loopback TCP port, unlike the agent's 0600 socket, is open to every user of the server's machine); (b) build now, on by default like agent forwarding (as `ssh -R` is with sshd's defaults); (c) wait for the transport decision (iroh/quinn, changes `quic-transport` / `directory-sync`), where each forwarded connection would be its own QUIC stream. Recommendation: (a) — the messages are transport-neutral protobuf and move to QUIC streams unchanged, and off by default keeps a multi-user machine safe until a per-uid check exists.
+Зависит от: protocol-v3
 
 ## Why
 
@@ -15,7 +15,7 @@ Checked at 1163abd: streams exist only server-initiated with kind `ssh-agent` (`
 - **Remote to local (`ssh -R`)**: new `ForwardListen { request_id, port }` asks the server to listen on `127.0.0.1:<port>` (0 = any free port); `ForwardListening { request_id, forward_id, port, error }` answers. Each connection to it opens a stream to that client, `StreamOpen { kind: "tcp-forward", forward_id }`, then `StreamData` / `StreamClose` as for the agent. `ForwardStop { forward_id }` ends it; a forward also ends with its client's connection.
 - **Local to remote (`ssh -L`)**: no server change; `tilr forward -L [ADDR:]LPORT:HOST:HPORT` listens on the user's machine and carries each connection over the server's SOCKS proxy (`/socks` with the token), so it needs `--socks` on the server and the TCP port.
 - `tilr forward -R PORT:HOST:HPORT` uses `ForwardListen`; both forms run until interrupted and reconnect (re-asking their forwards) like `tilr attach`.
-- Feature `"forward"` in `HelloAck.features` (a capability the server can be run without: `--no-forward` / `forward = false`, or off by default per the Блокер); a client lists `"forward"` in `Hello.features` to be sent `tcp-forward` streams.
+- Feature `"forward"` in `HelloAck.features` (a capability the server can be run without: `--no-forward` / `forward = false`, or off by default per the Decision); a client lists `"forward"` in `Hello.features` to be sent `tcp-forward` streams.
 - Limits: at most 16 forwards per client; streams count toward the existing 64 per client; data on the bulk lane with the agent streams' backpressure rules.
 
 ## Capabilities
@@ -36,3 +36,9 @@ Checked at 1163abd: streams exist only server-initiated with kind `ssh-agent` (`
 `crates/tilr-proto/proto/tilr.proto` (`ForwardListen`, `ForwardListening`, `ForwardStop`, `StreamOpen.forward_id`, feature `"forward"`; additive), `crates/tilrd/src/{forward.rs (new), supervisor, config, main}.rs`, `crates/tilr/src/{main,forward.rs (new)}.rs`, README new section "Port forwarding" and "Protocol", USE_CASES.md, itests UC-07E. Reload: nothing crosses it; listeners close at the exec with every connection and `tilr` re-asks for them when it reconnects (a connection attempt in the gap is refused). Update from the previous release: works; the feature appears after the update.
 
 Not breaking: additive messages and fields only, no PROTOCOL_VERSION bump, no close code, state file or CDN change.
+
+## Decision (2026-10-18)
+
+Wait for the transport decision (option (c)): whether QUIC comes from iroh or quinn (`quic-transport`, `directory-sync`; Basic Memory note "Tilr — iroh как транспорт для всего") shapes how each forwarded connection is carried. Not built before it.
+
+Prepared plan, not a decision: when built, the server side is off by default like SOCKS (`--forward` / `forward = true`), since a loopback TCP port is open to every user of the server's machine. The messages are transport-neutral protobuf and would move to QUIC streams unchanged.

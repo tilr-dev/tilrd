@@ -1,6 +1,6 @@
 # Tasks
 
-Written for option (a) of the Блокер.
+Written for option (a), decided 2026-10-18 (see the proposal's Decision). Group 5 is not designed.
 
 ## 1. Fetching a release locally
 
@@ -21,3 +21,7 @@ Written for option (a) of the Блокер.
 - [ ] 4.1 Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`
 - [ ] 4.2 `./itests/dt --only scenarios --filter uc_07c` green; `./itests/dt coverage` exits 0
 - [ ] 4.3 Record the commit in proposal.md and archive the change
+
+## 5. `--cloud` (after Cloud is in production; to be designed)
+
+- [ ] 5.1 Design `tilr deploy --cloud` (design.md "Open"), then write its tasks here; not part of the first apply of this change

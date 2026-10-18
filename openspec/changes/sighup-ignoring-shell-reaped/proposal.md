@@ -28,3 +28,7 @@
 ## Impact
 
 `crates/tilrd/src/pane.rs` (stop path, `ClosePane`), `crates/tilrd/src/pty.rs` (foreground group of the master), `crates/tilrd/tests/panes.rs`, itests `uc_086.py` (new), USE_CASES.md, itests/USE_CASES.md (UC-086), README "Stopping". A server stop takes up to 2 s longer when a program ignores SIGHUP (`tilr kill-server` waits 10 s). No protocol change, no PROTOCOL_VERSION or feature change, no state format change; nothing crosses a reload (a reload signals nothing). An update from the previous release changes nothing until the server stops. Not breaking.
+
+## Decision (2026-10-18)
+
+Confirmed as designed: on stop, SIGHUP then (after 2 s) SIGKILL to the shell's process group and the foreground group. `nohup`'d and background jobs survive, as with `tmux kill-server` and an ssh disconnect. Rejected: systemd `KillMode=control-group` style (kill everything of the pane), which breaks `nohup` expectations and is not portable to macOS.

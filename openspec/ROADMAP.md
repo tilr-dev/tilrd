@@ -23,8 +23,8 @@ owner's word):
 - `release-process-tests`, `scoped-cdn-token` (before the `cdn` job's first run),
   `cloud-default-url` (machines linked by the first release store the Cloud URL).
 - `installer-atomic-install`: the first archive release is blocked by it. tilr.sh serves a
-  placeholder and the installer in the sh directory is still the old tilr-server one; its
-  Блокер (where `install.sh` lives) must be answered first.
+  placeholder and the installer in the sh directory is still the old tilr-server one;
+  decided 2026-10-18: `install.sh` lives here (`scripts/install.sh`) and the `cdn` job uploads it.
 - `tilr-mac-rename-compatibility`: the desktop-mac rename branch and its app feed land in the
   same step (the app's own repository; needs `protocol-v3`).
 
@@ -66,7 +66,7 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 | release-process-tests | tests for `scripts/release.sh` (stand-in wrangler, local CDN) and static checks of the workflows | M | - | no | ready |
 | scoped-cdn-token | the `cdn` environment gets a token scoped to the tilr-cdn bucket | S | - | no | ready (owner's Cloudflare access to create the token) |
 | cloud-default-url | `https://wss.tilr.dev` becomes the default Cloud URL | S | - | no | ready |
-| installer-atomic-install | the archive installer served at tilr.sh with the first release | S | release-process-tests | yes | needs owner |
+| installer-atomic-install | the archive installer served at tilr.sh with the first release | S | release-process-tests | no | ready |
 | tilr-mac-rename-compatibility | the Tilr app moves to tilrd (tracking; work in desktop-mac) | S here, M there | protocol-v3 | no | ready |
 
 ## Phase 5: features
@@ -79,21 +79,20 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 | osc8-hyperlinks | OSC 8 links in frames (`Frame.links`, `Run.link`); `tilr attach` draws them | S/M | protocol-v3 | no | ready |
 | reverse-clipboard | a copy in a pane (OSC 52, xclip, wl-copy) reaches the watching clients | M | protocol-v3 | no | ready |
 | files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once | M | protocol-v3 | no | ready |
-| tilr-deploy | `tilr deploy user@host` installs and starts tilrd over the user's ssh | M | installer-atomic-install | yes | needs owner |
-| read-only-viewer | a viewer token gives read-only connections | M | protocol-v3 | yes | needs owner |
-| port-forwarding | `ssh -R` / `-L` style forwards over the WebSocket; `tilr forward` | L | protocol-v3 | yes | needs owner |
+| tilr-deploy | `tilr deploy user@host` installs and starts tilrd over the user's ssh | M | installer-atomic-install | no | ready (its `--cloud` part is not designed; after Cloud is in production) |
 
 ## Phase 6: big directions (design first)
 
 The owner designs these before any implementation. Whether QUIC comes from iroh or quinn is
 being researched (Basic Memory `main/projects/tilr/tilr-iroh-kak-transport-dlia-vsego-vopros-na-prorabotku`);
-the answer shapes `quic-transport`, `directory-sync` and possibly `port-forwarding`.
+the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
 | quic-transport | a QUIC/UDP transport for bad networks, one stream per lane | L | - | - | design first |
 | directory-sync | `tilr-sync` crate embedded in tilrd: push sync over QUIC | L | - | - | design first |
 | multi-server | the client joins several machines (no tilrd change) | L | - | - | design first |
+| port-forwarding | `ssh -R` / `-L` style forwards; waits for the transport decision (iroh vs quinn); when built, off by default like SOCKS | L | protocol-v3, the transport decision | no | design first |
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | test-coverage-gaps | - | design first |
 
 ## Deferred
@@ -104,6 +103,7 @@ the answer shapes `quic-transport`, `directory-sync` and possibly `port-forwardi
 | sandboxed-pane | panes in a sandbox for agents (App Sandbox, Landlock) | L | - | - | deferred |
 | public-repo-readiness | checklist for making the repository public | S | readme-code-reconciliation | - | deferred |
 | release-platforms | musl, macOS on the CDN, x86_64 builds | M | public-repo-readiness | - | deferred |
+| read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | protocol-v3 | no | deferred |
 | libghostty-upstream-fixes | report and carry fixes for libghostty-vt (also: OSC 8 in the reload snapshot, pending-wrap accessor) | S | - | - | deferred |
 
 ## Done

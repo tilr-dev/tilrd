@@ -1,8 +1,8 @@
 # Proposal: Read-only viewer connections
 
-Зависит от: protocol-v3
+Deferred: until a use is named.
 
-Блокер: Build read-only viewers now, and how is read-only access given? Options: (a) one long-lived viewer token per server (`tilr token --viewer`, replaced with `tilr token --viewer --new`), a viewer sees every pane; (b) per-pane share links with an expiry, minted by the owner (needs a signed-token scheme or Cloud; larger); (c) park the change until a use is named (demo, pairing, watching an agent). Recommendation: (c) until a use is named; when one is, (a) — the design below assumes (a) and is ready to build as is.
+Зависит от: protocol-v3
 
 ## Why
 
@@ -27,7 +27,7 @@ Checked at 1163abd: not there. One token per server (`<state>/token`, `crates/ti
 ## Non-goals
 
 - `device_id` (deferred in the note).
-- Per-pane or expiring viewer access (option (b) of the Блокер).
+- Per-pane or expiring viewer access (per-pane share links, rejected).
 - Read-only on the Unix socket (it is the user's own).
 - Hiding panes from a viewer.
 
@@ -36,3 +36,7 @@ Checked at 1163abd: not there. One token per server (`<state>/token`, `crates/ti
 `crates/tilr-proto/proto/tilr.proto` (`HelloAck.read_only`, `Viewer.read_only`; additive), `crates/tilrd/src/{auth,supervisor,main}.rs`, `crates/tilr/src/main.rs` (`tilr token --viewer [--new]`), README "Who may connect" and "Protocol", USE_CASES.md, itests UC-03B. Reload: the viewer token is a file and is read at every `Hello`; connections reconnect after a reload and get read-only again by their token; nothing new crosses the reload. Update from the previous release: works (no file, no viewers).
 
 Not breaking: additive messages and fields only, no PROTOCOL_VERSION bump, no close code, state file or CDN change.
+
+## Decision (2026-10-18)
+
+Deferred (option (c)) until a concrete use is named (demo, pairing, watching an agent). The design for a per-server viewer token (option (a)) stays as the ready plan and is built as is when a use appears. Per-pane expiring share links (option (b)) are not planned.
