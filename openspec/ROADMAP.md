@@ -71,7 +71,7 @@ All of phase 1 is done (see "Done").
 | files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once | M | protocol-v3 | no | ready |
 | tilr-deploy | `tilr deploy user@host` installs and starts tilrd over the user's ssh | M | installer-atomic-install | no | ready (its `--cloud` part is not designed; after Cloud is in production) |
 | reload-exec-checked-file | the executable a reload checks is the one it execs (Linux `/proc/self/fd`, macOS a private copy) | M | - | no | ready |
-| metrics-no-hello-and-prefix | no-Hello closes counted in the drops metric (`no_hello`); one metric prefix, **BREAKING** for dashboards | S | - | yes (prefix) | needs owner |
+| metrics-no-hello-and-prefix | no-Hello closes counted in the drops metric (`no_hello`); one metric prefix `tilr_` (the three `tilrd_*` gauges renamed), **BREAKING** for dashboards | S | - | yes (3 gauge names) | ready |
 
 ## Phase 6: big directions (design first)
 
