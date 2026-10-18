@@ -14,7 +14,8 @@
 //! Output goes by the client's bulk lane ([`ToClient::send_bulk`]): a pipe
 //! is read only as fast as the lane has room, so a slow client holds the
 //! program up (it blocks writing) rather than the server's memory growing.
-//! `ExecExit` goes the same way, after the last of the output. Stdin the
+//! `ExecExit` goes the same way, after the last of the output, and is always
+//! the exec's last message. Stdin the
 //! other way is held to [`INPUT_WINDOW`] bytes not yet taken by the
 //! program, which the client knows from `ExecInputAck`.
 //!
@@ -37,8 +38,9 @@ use tilr_proto::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::outbox::ToClient;
 
@@ -49,9 +51,16 @@ const CHUNK: usize = 64 * 1024;
 pub const INPUT_WINDOW: usize = 4 << 20;
 /// Execs one client may have running at once.
 const MAX_EXECS_PER_CLIENT: usize = 64;
-/// How long after the program's group is gone its output is still read: a
-/// process that left the group (`setsid`) may hold the pipes open.
+/// How long after the program's group is gone its output is still waited
+/// for: a process that left the group (`setsid`) may hold the pipes open.
+/// Only the time spent waiting on the pipe counts, not waiting for room on
+/// the client's lane, so a slow client still gets the tail the program left.
 const DRAIN: Duration = Duration::from_secs(1);
+/// How much is still read of a pipe after the program's group is gone: more
+/// than a pipe can hold (Linux's `pipe-max-size` is 1 MiB by default), so
+/// all the program left in it, but a process outside the group that keeps
+/// writing to a slow client is not followed for ever.
+const DRAIN_BYTES: usize = 1 << 20;
 /// How long a reload or a stop waits for the execs it killed to report.
 const STOP_WAIT: Duration = Duration::from_secs(1);
 
@@ -60,6 +69,10 @@ pub enum Output {
     /// The exec is over; its client has been sent `ExecExit`, if it was
     /// still there.
     Ended { exec_id: u64 },
+    /// The client's interactive lane could not take a reply of an exec
+    /// (`ExecStarted`, `ExecInputAck`): it is stuck, and is dropped rather
+    /// than left waiting for a reply that never comes.
+    Stuck { client: u64 },
 }
 
 /// Where the tasks' outputs go: to the supervisor's actor.
@@ -127,6 +140,9 @@ struct Run {
     /// `None` once stdin is closed, or if it was never asked for.
     stdin: Option<Stdin>,
     task: JoinHandle<()>,
+    /// The tasks reading its output and writing its stdin, which a stop
+    /// that gives up on the exec ends before it tells the client.
+    helpers: Vec<AbortHandle>,
 }
 
 /// The way to a program's stdin.
@@ -226,6 +242,7 @@ impl Execs {
         if to_client.try_send(started.into()).is_err() {
             tracing::debug!(client, "exec dropped: the client is not taking packets");
             kill_group(pid, libc::SIGKILL);
+            (self.sink)(Output::Stuck { client });
             return None;
         }
         tracing::info!(
@@ -238,7 +255,7 @@ impl Execs {
             "exec started"
         );
 
-        let (over_tx, over) = watch::channel(None);
+        let (over_tx, over) = watch::channel(false);
         let output = tokio::spawn({
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -256,15 +273,19 @@ impl Execs {
                 let queued = Arc::new(AtomicUsize::new(0));
                 let feed = tokio::spawn(feed(
                     exec_id,
+                    client,
                     pipe,
                     rx,
                     Arc::clone(&queued),
                     to_client.clone(),
+                    Arc::clone(&self.sink),
                 ));
                 (Some(Stdin { tx, queued }), Some(feed))
             }
             None => (None, None),
         };
+        let mut helpers = vec![output.abort_handle()];
+        helpers.extend(feed.as_ref().map(JoinHandle::abort_handle));
         let (control, control_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(run(Running {
             exec_id,
@@ -289,6 +310,7 @@ impl Execs {
                 to_client: to_client.clone(),
                 stdin,
                 task,
+                helpers,
             },
         );
         None
@@ -367,7 +389,12 @@ impl Execs {
             {
                 continue;
             }
+            // Its readers first, so that no output of it follows the
+            // stand-in below.
             run.task.abort();
+            for helper in &run.helpers {
+                helper.abort();
+            }
             tracing::warn!(
                 client = run.client,
                 client_id = run.client_id,
@@ -380,7 +407,9 @@ impl Execs {
                 reason: why.reason().into(),
                 ..ExecExit::default()
             }));
-            let _ = run.to_client.try_send(exit.into());
+            // Behind the output already queued on the bulk lane, without
+            // waiting for room: one small packet over the bound.
+            let _ = run.to_client.queue_bulk_now(exit);
         }
         true
     }
@@ -465,8 +494,8 @@ struct Running {
     /// The task reading stdout and stderr.
     output: JoinHandle<()>,
     /// Told when the program's group is gone: the readers then give up a
-    /// pipe that stays open longer than [`DRAIN`].
-    over: watch::Sender<Option<tokio::time::Instant>>,
+    /// pipe that stays open longer than [`DRAIN`] allows.
+    over: watch::Sender<bool>,
     /// The task writing stdin.
     feed: Option<JoinHandle<()>>,
     to_client: ToClient,
@@ -480,9 +509,11 @@ async fn run(mut r: Running) {
     let deadline = r.limit.map(|limit| tokio::time::Instant::now() + limit);
     let mut end = None;
     let mut controlled = true;
-    let status = loop {
+    // Before the first look, so that no exit can slip between the two.
+    let mut sigchld = signal(SignalKind::child()).ok();
+    loop {
         tokio::select! {
-            status = r.child.wait() => break status,
+            () = exited(r.pid, &mut sigchld) => break,
             () = sleep_until(deadline), if end.is_none() => {
                 end = Some(End::TimedOut);
                 kill_group(r.pid, libc::SIGKILL);
@@ -505,13 +536,37 @@ async fn run(mut r: Running) {
                 }
             },
         }
-    };
-    // What the program left behind in its group goes with it. (Its pid, the
-    // group's id, cannot be taken by another process while the group has a
-    // member.)
+    }
+    // What the program left behind in its group goes with it. It has exited
+    // but is not reaped yet: its zombie still holds its pid, the group's id,
+    // so no other group can have taken it. No signal is sent after the reap.
     kill_group(r.pid, libc::SIGKILL);
-    let _ = r.over.send(Some(tokio::time::Instant::now() + DRAIN));
-    let _ = (&mut r.output).await;
+    let status = r.child.wait().await;
+    let _ = r.over.send(true);
+    // The output is read to its end, which a process that left the group
+    // may hold back a while; a cancel, the time limit or the client going
+    // cut that short at once.
+    loop {
+        tokio::select! {
+            _ = &mut r.output => break,
+            () = sleep_until(deadline), if end.is_none() => {
+                end = Some(End::TimedOut);
+                break;
+            }
+            control = r.control.recv(), if controlled => match control {
+                Some(Control::Signal(_)) => {}
+                Some(Control::Kill(why)) => {
+                    end.get_or_insert(why);
+                    break;
+                }
+                None => {
+                    end.get_or_insert(End::Shutdown);
+                    break;
+                }
+            },
+        }
+    }
+    r.output.abort();
     if let Some(feed) = r.feed {
         feed.abort();
     }
@@ -542,6 +597,49 @@ async fn run(mut r: Running) {
     (r.sink)(Output::Ended { exec_id: r.exec_id });
 }
 
+/// Once the program has exited, without reaping it: its zombie keeps its pid
+/// (and so its group's id) from being reused until [`Child::wait`].
+/// Woken by SIGCHLD, and once a second should a signal be missed.
+async fn exited(pid: u32, sigchld: &mut Option<Signal>) {
+    loop {
+        if has_exited(pid) {
+            return;
+        }
+        let wake = tokio::time::sleep(Duration::from_secs(1));
+        match sigchld {
+            Some(sigchld) => {
+                tokio::select! {
+                    _ = sigchld.recv() => {}
+                    () = wake => {}
+                }
+            }
+            None => wake.await,
+        }
+    }
+}
+
+/// Whether the child `pid` has exited, leaving it a zombie (`WNOWAIT`).
+fn has_exited(pid: u32) -> bool {
+    // SAFETY: an all-zero siginfo_t is a valid value of it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid siginfo_t to write to.
+    let found = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &raw mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if found == -1 {
+        // Not our child any more (reaped): nothing to wait for. EINTR: look
+        // again on the next wake.
+        return std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR);
+    }
+    // SAFETY: waitid filled in `info`, or left it zeroed if nothing exited.
+    unsafe { info.si_pid() != 0 }
+}
+
 async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -550,31 +648,61 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
 }
 
 /// Send what the program writes to one of its pipes to the client, as fast
-/// as the client's bulk lane takes it, until the pipe ends, the client is
-/// gone, or the program's group is and the pipe stayed open past the time
-/// given in `over`.
+/// as the client's bulk lane takes it, until the pipe ends or the client is
+/// gone. Once the program's group is gone (`over`), the pipe is waited on for
+/// at most [`DRAIN`] in all and read for at most [`DRAIN_BYTES`] more: a
+/// process that left the group may hold it open, or keep writing to it.
 async fn pump(
     exec_id: u64,
     stream: u32,
     pipe: Option<impl AsyncRead + Unpin + Send>,
     to_client: ToClient,
-    mut over: watch::Receiver<Option<tokio::time::Instant>>,
+    mut over: watch::Receiver<bool>,
 ) {
     let Some(mut pipe) = pipe else {
         return;
     };
     let mut buf = vec![0u8; CHUNK];
+    // What is left of the drain once the group is gone: time, bytes.
+    let mut drain = None;
     loop {
-        let n = tokio::select! {
-            biased;
-            read = pipe.read(&mut buf) => match read {
-                Ok(0) | Err(_) => return,
-                Ok(n) => n,
+        if drain.is_none() && *over.borrow() {
+            drain = Some((DRAIN, DRAIN_BYTES));
+        }
+        let read = match &mut drain {
+            None => tokio::select! {
+                read = pipe.read(&mut buf) => read,
+                // Read again, now against the drain's limits.
+                () = group_gone(&mut over) => continue,
             },
-            () = given_up(&mut over) => {
-                tracing::debug!(exec = exec_id, stream, "output still open after the program: left");
-                return;
+            Some((time, bytes)) => {
+                let waited = tokio::time::Instant::now();
+                let read = if time.is_zero() || *bytes == 0 {
+                    None
+                } else {
+                    let len = buf.len().min(*bytes);
+                    tokio::time::timeout(*time, pipe.read(&mut buf[..len]))
+                        .await
+                        .ok()
+                };
+                *time = time.saturating_sub(waited.elapsed());
+                let Some(read) = read else {
+                    tracing::debug!(
+                        exec = exec_id,
+                        stream,
+                        "output still coming after the program: left"
+                    );
+                    return;
+                };
+                if let Ok(n) = read {
+                    *bytes -= n;
+                }
+                read
             }
+        };
+        let n = match read {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
         };
         let packet = encode(server_message::Msg::ExecOutput(ExecOutput {
             exec_id,
@@ -587,12 +715,11 @@ async fn pump(
     }
 }
 
-/// Once the time `over` gives has passed.
-async fn given_up(over: &mut watch::Receiver<Option<tokio::time::Instant>>) {
-    let Some(deadline) = over.wait_for(Option::is_some).await.ok().and_then(|at| *at) else {
-        return std::future::pending().await;
-    };
-    tokio::time::sleep_until(deadline).await;
+/// Once the program's group is gone; never if the exec's task is.
+async fn group_gone(over: &mut watch::Receiver<bool>) {
+    if over.wait_for(|gone| *gone).await.is_err() {
+        std::future::pending().await
+    }
 }
 
 /// Write what the client sends to the program's stdin, telling the client
@@ -601,10 +728,12 @@ async fn given_up(over: &mut watch::Receiver<Option<tokio::time::Instant>>) {
 /// acknowledged, so the client is not held up.
 async fn feed(
     exec_id: u64,
+    client: u64,
     mut pipe: ChildStdin,
     mut from: mpsc::UnboundedReceiver<Bytes>,
     queued: Arc<AtomicUsize>,
     to_client: ToClient,
+    sink: Sink,
 ) {
     let mut taken = 0u64;
     let mut open = true;
@@ -620,7 +749,12 @@ async fn feed(
                 exec_id,
                 taken,
             }));
-            let _ = to_client.try_send(ack.into());
+            if to_client.try_send(ack.into()).is_err() {
+                // A client left without its last ack would wait for room
+                // for ever.
+                sink(Output::Stuck { client });
+                return;
+            }
         }
     }
     // Dropping the pipe closes it: the program reads end of file.
@@ -628,4 +762,73 @@ async fn feed(
 
 fn encode(msg: server_message::Msg) -> Bytes {
     tilr_proto::encode(&ServerMessage::from(msg))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn the_group_is_killed_while_the_program_is_a_zombie() {
+        // A program that leaves a child behind in its group and exits.
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & exit 3"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut sigchld = signal(SignalKind::child()).ok();
+        tokio::time::timeout(Duration::from_secs(5), exited(pid, &mut sigchld))
+            .await
+            .expect("the program exits");
+        // Exited, not reaped: its pid, the group's id, is still its own.
+        let stat = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&stat.stdout);
+        assert!(stat.trim().starts_with('Z'), "state {stat:?}");
+        kill_group(pid, libc::SIGKILL);
+        assert_eq!(child.wait().await.unwrap().code(), Some(3));
+        // The child it left went with the group.
+        let mut gone = false;
+        for _ in 0..50 {
+            // SAFETY: kill has no memory-safety preconditions.
+            if unsafe { libc::kill(-(pid as libc::pid_t), 0) } == -1 {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(gone, "the group outlived the kill");
+    }
+
+    #[tokio::test]
+    async fn a_reply_the_lane_cannot_take_drops_the_client() {
+        let stuck = Arc::new(Mutex::new(Vec::new()));
+        let mut execs = Execs::new({
+            let stuck = Arc::clone(&stuck);
+            Arc::new(move |output| {
+                if let Output::Stuck { client } = output {
+                    stuck.lock().unwrap().push(client);
+                }
+            })
+        });
+        let (to_client, _outbox) = crate::outbox::channel();
+        while to_client
+            .try_send(Bytes::from_static(b"frame").into())
+            .is_ok()
+        {}
+        let start = ExecStart {
+            request_id: 1,
+            argv: vec!["sleep".into(), "30".into()],
+            ..ExecStart::default()
+        };
+        let answer = execs.on_message(7, "", &to_client, Msg::ExecStart(start));
+        assert!(answer.is_none(), "{answer:?}");
+        assert_eq!(*stuck.lock().unwrap(), [7], "the client is reported stuck");
+        assert!(execs.runs.is_empty(), "no exec is left running for it");
+    }
 }

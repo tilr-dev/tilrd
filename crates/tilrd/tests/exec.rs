@@ -117,13 +117,24 @@ async fn exec_is_offered_unless_turned_off() {
             "{:?}",
             hello.features
         );
-        // Not answered; the connection goes on.
+        // Refused with a reason; the connection goes on.
         client.send(Msg::ExecStart(argv(&["true"]))).await;
         client.ping(5).await;
+        let refused = client
+            .wait_for(|msg| match msg {
+                server_message::Msg::ExecStarted(started) => Some(Some(started.clone())),
+                server_message::Msg::Pong(_) => Some(None),
+                _ => None,
+            })
+            .await
+            .expect("ExecStarted before Pong");
+        assert_eq!(
+            (refused.request_id, refused.exec_id, refused.error.as_str()),
+            (1, 0, "exec is turned off")
+        );
         assert!(
             client
                 .wait_for(|msg| match msg {
-                    server_message::Msg::ExecStarted(_) => Some(false),
                     server_message::Msg::Pong(_) => Some(true),
                     _ => None,
                 })
@@ -488,4 +499,105 @@ async fn a_reload_ends_the_programs_and_their_clients_hear_why() {
     let mut client = reconnect(&server, client).await;
     let ran = run(&mut client, argv(&["echo", "again"])).await;
     assert_eq!(ran.stdout(), "again\n");
+}
+
+/// `sh -c` text that runs `script` in the background in a session of its
+/// own, out of the exec's process group (`setsid`, which macOS has not as a
+/// command), and goes on once it has left the group: it writes its pid to
+/// `pid_file` then.
+fn escaped(script: &str, pid_file: &Path) -> String {
+    let file = pid_file.display();
+    format!(
+        "perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c 'echo $$ > {file}; {script}' & \
+         while [ ! -s '{file}' ]; do sleep 0.01; done;"
+    )
+}
+
+/// Kill a process the test left behind, if it is still there.
+fn kill(pid_file: &Path) {
+    if let Ok(pid) = std::fs::read_to_string(pid_file) {
+        let _ = Command::new("kill")
+            .args(["-9", pid.trim()])
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+#[tokio::test]
+async fn a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let writer = server.dir.join("writer-pid");
+    let script = format!("{} echo bye", escaped("exec yes", &writer));
+    let began = std::time::Instant::now();
+    let ran = run(&mut client, argv(&["sh", "-c", &script])).await;
+    let took = began.elapsed();
+    kill(&writer);
+    assert!(ran.stdout().contains("bye\n"), "{:?}", ran.stdout());
+    assert_eq!(ran.exit.code, 0);
+    assert!(took < Duration::from_secs(3), "{took:?}");
+    // Its slot is free again: 64 execs run side by side.
+    for n in 0..64 {
+        let started = try_start(
+            &mut client,
+            ExecStart {
+                request_id: 100 + n,
+                ..argv(&["sleep", "30"])
+            },
+        )
+        .await;
+        assert_eq!(started.error, "", "exec {n}");
+    }
+}
+
+#[tokio::test]
+async fn a_cancel_during_the_drain_ends_the_exec_at_once() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let writer = server.dir.join("writer-pid");
+    let script = format!(
+        "{} echo bye",
+        escaped("while :; do echo x; sleep 0.01; done", &writer)
+    );
+    let (exec_id, pid) = start(&mut client, argv(&["sh", "-c", &script])).await;
+    // The shell has exited; the pipe is held by the writer outside its group.
+    eventually("the shell exits", || !process_alive(pid)).await;
+    client.send(Msg::ExecCancel(ExecCancel { exec_id })).await;
+    let cancelled = std::time::Instant::now();
+    let ran = finish(&mut client, exec_id).await;
+    let took = cancelled.elapsed();
+    kill(&writer);
+    assert!(ran.exit.cancelled, "{:?}", ran.exit);
+    assert!(took < Duration::from_secs(1), "{took:?}");
+}
+
+#[tokio::test]
+async fn an_exec_given_up_at_a_reload_ends_with_its_exec_exit() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    // Output that does not compress, so that it fills the lane.
+    let (exec_id, _) = start(&mut client, argv(&["cat", "/dev/urandom"])).await;
+    // The client reads nothing: its bulk lane fills, and the exec's readers
+    // wait for room.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.signal("-USR1");
+    // The reload gives up waiting for the exec after a second, and waits a
+    // second more for the clients to read what they were sent.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let mut last = None;
+    while let Some(msg) = client.next().await {
+        match msg {
+            server_message::Msg::ExecOutput(output) if output.exec_id == exec_id => {
+                last = Some(Err(output.data.len()));
+            }
+            server_message::Msg::ExecExit(exit) if exit.exec_id == exec_id => {
+                last = Some(Ok(exit));
+            }
+            _ => {}
+        }
+    }
+    match last {
+        Some(Ok(exit)) => assert_eq!(exit.reason, "reload"),
+        other => panic!("the exec's last message was not its ExecExit: {other:?}"),
+    }
 }

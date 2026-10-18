@@ -59,8 +59,11 @@ pub struct Outgoing {
     pub packet: Bytes,
     pub read_at: Option<Instant>,
     /// For a bulk packet: its room in the bulk lane, given back when it is
-    /// written (dropped).
+    /// written (dropped); `None` for one queued without room
+    /// ([`ToClient::queue_bulk_now`]).
     credit: Option<OwnedSemaphorePermit>,
+    /// Whether it came by the bulk lane.
+    bulk: bool,
 }
 
 impl From<Bytes> for Outgoing {
@@ -69,6 +72,7 @@ impl From<Bytes> for Outgoing {
             packet,
             read_at: None,
             credit: None,
+            bulk: false,
         }
     }
 }
@@ -79,12 +83,13 @@ impl Outgoing {
             packet,
             read_at,
             credit: None,
+            bulk: false,
         }
     }
 
     /// Whether it came by the bulk lane.
     pub fn bulk(&self) -> bool {
-        self.credit.is_some()
+        self.bulk
     }
 }
 
@@ -104,6 +109,9 @@ struct Backlog {
     head_at: AtomicU64,
     /// The supervisor wants to hear when the queue is empty again.
     want_drained: AtomicBool,
+    /// Bulk packets queued without room ([`ToClient::queue_bulk_now`]) and
+    /// not yet written.
+    bulk_now: AtomicUsize,
 }
 
 /// Where the supervisor queues packets for one client; clones go to the
@@ -180,8 +188,28 @@ impl ToClient {
                 packet,
                 read_at: None,
                 credit: Some(credit),
+                bulk: true,
             })
             .map_err(|err| err.0.packet)
+    }
+
+    /// Queue a small packet in the bulk lane at once, behind the bulk
+    /// packets queued before it, without waiting for room: the last word of
+    /// something whose sender cannot wait (an exec given up at a reload).
+    /// `Err` once the connection is gone.
+    pub fn queue_bulk_now(&self, packet: Bytes) -> Result<(), Bytes> {
+        self.backlog.bulk_now.fetch_add(1, Ordering::Relaxed);
+        self.bulk_tx
+            .send(Outgoing {
+                packet,
+                read_at: None,
+                credit: None,
+                bulk: true,
+            })
+            .map_err(|err| {
+                self.backlog.bulk_now.fetch_sub(1, Ordering::Relaxed);
+                err.0.packet
+            })
     }
 
     /// Count a packet in; an empty queue starts its wait now.
@@ -213,7 +241,9 @@ impl ToClient {
 
     /// Whether nothing is queued in either lane, nor being written.
     pub fn idle(&self) -> bool {
-        self.drained() && self.credit.available_permits() == BULK_BYTES
+        self.drained()
+            && self.credit.available_permits() == BULK_BYTES
+            && self.backlog.bulk_now.load(Ordering::Relaxed) == 0
     }
 
     /// Have the writer say so (see [`Outbox::written`]) the next time the
@@ -254,6 +284,9 @@ impl Outbox {
     /// A bulk packet gives its room back.
     pub fn written(&self, outgoing: Outgoing) -> bool {
         if outgoing.bulk() {
+            if outgoing.credit.is_none() {
+                self.backlog.bulk_now.fetch_sub(1, Ordering::Relaxed);
+            }
             return false;
         }
         self.backlog.packets.fetch_sub(1, Ordering::Relaxed) == 1
@@ -458,6 +491,28 @@ mod tests {
             written, BULK_WINDOW,
             "the window, not what the pong claimed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_packet_queued_now_goes_after_the_bulk_before_it() {
+        let (tx, mut outbox) = channel();
+        // The lane is full: a sender would wait for room.
+        tx.send_bulk(Bytes::from(vec![0; BULK_BYTES]))
+            .await
+            .unwrap();
+        tx.queue_bulk_now(Bytes::from("the end")).unwrap();
+        assert!(!tx.idle());
+        let first = outbox.recv(true).await.unwrap();
+        assert_eq!(first.packet.len(), BULK_BYTES);
+        assert!(!outbox.written(first));
+        assert!(!tx.idle(), "the last one is still queued");
+        let last = outbox.recv(true).await.unwrap();
+        assert!(last.bulk());
+        assert_eq!(last.packet, "the end");
+        assert!(!outbox.written(last));
+        assert!(tx.idle());
+        drop(outbox);
+        assert!(tx.queue_bulk_now(Bytes::from("late")).is_err());
     }
 
     #[tokio::test]

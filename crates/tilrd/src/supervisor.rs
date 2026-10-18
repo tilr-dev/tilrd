@@ -1627,6 +1627,9 @@ impl Supervisor {
                     execs.ended(exec_id);
                 }
             }
+            // An exec's reply did not fit the client's lane: dropped, as for
+            // a frame, rather than left waiting for it.
+            Event::Exec(exec::Output::Stuck { client }) => self.drop_stuck(client),
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
             }
@@ -2195,8 +2198,14 @@ impl Supervisor {
                     self.send(client_id, reply);
                 }
             }
-            Msg::ExecStart(_) if !self.exec => {
+            Msg::ExecStart(start) if !self.exec => {
                 tracing::debug!(client = client_id, "exec request while exec is off");
+                let refused = tilr_proto::ExecStarted {
+                    request_id: start.request_id,
+                    error: "exec is turned off".into(),
+                    ..Default::default()
+                };
+                self.send(client_id, server_message::Msg::ExecStarted(refused));
             }
             msg @ (Msg::ExecStart(_)
             | Msg::ExecInput(_)

@@ -282,17 +282,20 @@ nothing in the group outlives the exec.
 
 | Use case | Test |
 |---|---|
-| The server announces the `exec` feature; with `--no-exec` and `exec = false` it does not, `ExecStart` gets no answer, the connection is alive | `exec_is_offered_unless_turned_off` |
+| The server announces the `exec` feature; with `--no-exec` and `exec = false` it does not, `ExecStart` is answered with `ExecStarted` `exec_id` 0 and error `exec is turned off`, the connection is alive | `exec_is_offered_unless_turned_off` |
 | stdout and stderr apart, the exit code; arguments as given (`$HOME`, `*`, `` `id` ``, a space are not expanded); the directory and the environment, without a directory the home one; without stdin the program reads the end; no program, an empty `argv`, no directory, an environment entry that is not `NAME=value`: refused in `ExecStarted.error`; the start, the end and the refusal are logged | `a_program_runs_without_a_shell_and_its_outputs_come_apart` |
 | Killed by a signal (its own SIGTERM, a SIGINT from the client to the group): `signal`, code 0 | `the_signal_that_killed_a_program_is_reported` |
 | A time limit of 0.5 s: `timed_out`, SIGKILL, under 3 s; neither the program nor its background child is left | `a_time_limit_kills_the_program_and_its_children` |
 | `ExecCancel`: `cancelled`, the program and its child killed at once | `a_cancelled_program_ends_at_once_with_its_children` |
 | The program exited, leaving a background process in its group that holds stdout: the exec ends with it, the process is killed | `what_a_program_leaves_running_in_its_group_goes_when_it_exits` |
+| The program exited, leaving a process outside its group (`setsid`) that writes to stdout without pause (`yes`): `ExecExit` within 3 s; its slot is free, 64 execs start afterwards | `a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec` |
+| The shell exited, a process outside its group holds stdout and writes now and then: `ExecCancel` ends the exec within 1 s, `cancelled` | `a_cancel_during_the_drain_ends_the_exec_at_once` |
 | stdin: empty and closed is the end of file; 8 MiB in chunks within the window by acknowledgements arrive whole; a client more than 4 MiB ahead of a program that does not read: the exec is killed, `reason` `input overrun` | `stdin_reaches_the_program_and_is_acknowledged` |
 | 32 MiB of output: while the client does not read, the program waits (has not finished writing); then everything whole and in order, stderr apart, the exit after the output | `a_large_output_arrives_whole_in_order_and_holds_up_a_slow_client` |
 | Eight 1 s execs together take about a second, each with its own output; a pane works alongside | `execs_run_side_by_side_with_the_panes` |
 | The client left: its programs and their children are killed, `client gone` in the log | `a_client_that_goes_takes_its_programs_with_it` |
 | Reload: a running exec is killed with its group, the client gets `ExecExit` with `reason` `reload` and the output before it before the connection closes; after reconnecting exec works | `a_reload_ends_the_programs_and_their_clients_hear_why` |
+| Reload while the client reads none of an exec's output (`cat /dev/urandom`, its lane full): the server gives up waiting for the exec; once the client reads again, the last message of that exec is `ExecExit` `reason` `reload`, no output after it | `an_exec_given_up_at_a_reload_ends_with_its_exec_exit` |
 
 ## Metrics — `tests/metrics.rs`
 

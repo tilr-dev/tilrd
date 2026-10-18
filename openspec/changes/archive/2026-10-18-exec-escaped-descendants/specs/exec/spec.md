@@ -10,16 +10,16 @@ The server SHALL list `"exec"` in `HelloAck.features` unless it runs with `--no-
 - **THEN** `"exec"` is not in `HelloAck.features`, the client receives `ExecStarted` with `exec_id` 0 and error `exec is turned off`, and then `Pong`
 
 ### Requirement: Nothing of a program outlives its exec
-When the program exits, whatever is left in its process group SHALL be killed with SIGKILL before the program is reaped, and the exec SHALL end with it, even when a leftover process held its stdout open. A pipe still held open by a process outside the group SHALL be read for at most 1 s of waiting on that pipe after the group is gone, however much that process writes (time the server waits for room on the client's bulk lane does not count), and then given up; `ExecCancel`, the time limit and the client going MUST end that wait at once. On Linux the program MUST also be killed should the server die without killing it (`PR_SET_PDEATHSIG`; its children then go only with the group).
+When the program exits, what is left in its process group SHALL be killed with SIGKILL before the program is reaped, and the exec SHALL end with it. A pipe held open by a process outside the group SHALL be read after the group is gone for at most 1 s of waiting on it (not counting waits for room on the bulk lane) and 1 MiB, then given up; `ExecCancel`, the time limit and the client going MUST end that at once. On Linux the program MUST also die with the server (`PR_SET_PDEATHSIG`).
 
-**Verified by**: `exec::what_a_program_leaves_running_in_its_group_goes_when_it_exits` and `exec::a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec`.
+**Verified by**: `exec::what_a_program_leaves_running_in_its_group_goes_when_it_exits`, `exec::a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec`, `exec::a_cancel_during_the_drain_ends_the_exec_at_once` and the unit test `exec::tests::the_group_is_killed_while_the_program_is_a_zombie` (crates/tilrd/src/exec.rs).
 
 #### Scenario: Background child holding stdout
 - **WHEN** a client runs `sh -c 'sleep 50 & echo $! > file; echo bye'`
 - **THEN** stdout is `bye\n`, code is 0, the exec ends within 5 s, and the `sleep 50` is gone
 
 #### Scenario: Escaped writer
-- **WHEN** a client runs `sh -c 'setsid sh -c "while :; do echo x; done" & echo bye'`
+- **WHEN** a client runs `sh -c 'setsid yes & echo bye'` (the shell going on once `yes` has left its group)
 - **THEN** `ExecExit` with code 0 arrives within 3 s, and a 65th exec can then be started where 64 ran
 
 #### Scenario: Cancel during the drain

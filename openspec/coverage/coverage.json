@@ -1,17 +1,17 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 146,
+  "cases": 147,
   "last_run": {
-   "started": "2026-10-18T10:57:45.775854+00:00",
+   "started": "2026-10-18T11:08:25.152052+00:00",
    "commit": null,
    "counts": {
-    "PASS": 148,
+    "PASS": 149,
     "FAIL": 0,
     "BLOCKED": 0
    },
    "args": "--only scenarios",
-   "path": "itests/results/20261018T125729-27823"
+   "path": "itests/results/20261018T130808-44345"
   }
  },
  "capabilities": [
@@ -2441,8 +2441,12 @@
      "slug": "exec-is-offered-unless-turned-off",
      "title": "Exec is offered unless turned off",
      "tag": "exec/exec-is-offered-unless-turned-off",
-     "cases": [],
-     "all_cases": [],
+     "cases": [
+      "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason"
+     ],
+     "all_cases": [
+      "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason"
+     ],
      "cargo_tests": [
       "exec::exec_is_offered_unless_turned_off",
       "config::tests::exec_is_on_unless_turned_off"
@@ -2457,7 +2461,9 @@
       }
      ],
      "covered": true,
-     "last_run": {}
+     "last_run": {
+      "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason": "PASS"
+     }
     },
     {
      "slug": "the-program-runs-as-given-without-a-shell",
@@ -2744,13 +2750,30 @@
      "cases": [],
      "all_cases": [],
      "cargo_tests": [
-      "exec::what_a_program_leaves_running_in_its_group_goes_when_it_exits"
+      "exec::what_a_program_leaves_running_in_its_group_goes_when_it_exits",
+      "exec::a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec",
+      "exec::a_cancel_during_the_drain_ends_the_exec_at_once",
+      "exec::tests::the_group_is_killed_while_the_program_is_a_zombie"
      ],
      "scenarios": [
       {
        "slug": "background-child-holding-stdout",
        "title": "Background child holding stdout",
        "tag": "exec/nothing-of-a-program-outlives-its-exec#background-child-holding-stdout",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "escaped-writer",
+       "title": "Escaped writer",
+       "tag": "exec/nothing-of-a-program-outlives-its-exec#escaped-writer",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "cancel-during-the-drain",
+       "title": "Cancel during the drain",
+       "tag": "exec/nothing-of-a-program-outlives-its-exec#cancel-during-the-drain",
        "cases": [],
        "covered": false
       }
@@ -2796,13 +2819,21 @@
       "uc_077:a_reload_ends_the_running_execs_with_their_children_and_says_why"
      ],
      "cargo_tests": [
-      "exec::a_reload_ends_the_programs_and_their_clients_hear_why"
+      "exec::a_reload_ends_the_programs_and_their_clients_hear_why",
+      "exec::an_exec_given_up_at_a_reload_ends_with_its_exec_exit"
      ],
      "scenarios": [
       {
        "slug": "reload-with-an-exec-running",
        "title": "Reload with an exec running",
        "tag": "exec/execs-do-not-survive-a-reload-or-a-stop#reload-with-an-exec-running",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "an-exec-that-does-not-report-in-time",
+       "title": "An exec that does not report in time",
+       "tag": "exec/execs-do-not-survive-a-reload-or-a-stop#an-exec-that-does-not-report-in-time",
        "cases": [],
        "covered": false
       }
@@ -2861,6 +2892,27 @@
        "slug": "over-tcp",
        "title": "Over TCP",
        "tag": "exec/server-commands-run-on-the-unix-socket-only#over-tcp",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "exec-replies-are-never-silently-lost",
+     "title": "Exec replies are never silently lost",
+     "tag": "exec/exec-replies-are-never-silently-lost",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "exec::tests::a_reply_the_lane_cannot_take_drops_the_client"
+     ],
+     "scenarios": [
+      {
+       "slug": "full-lane-at-execstarted",
+       "title": "Full lane at ExecStarted",
+       "tag": "exec/exec-replies-are-never-silently-lost#full-lane-at-execstarted",
        "cases": [],
        "covered": false
       }
@@ -10544,6 +10596,13 @@
    "id": "uc_076:tilr_edit_with_nobody_listening_fails_and_says_why",
    "spec": [
     "clipboard-host-events/tilr-edit-fails-with-a-reason-when-nobody-listens"
+   ],
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason",
+   "spec": [
+    "exec/exec-is-offered-unless-turned-off"
    ],
    "last_run": "PASS"
   },

@@ -806,7 +806,9 @@ async fn clipboard_put(session: &mut Session, c: &Value) -> Result<Value> {
 /// Run a program on the server's machine by Exec (see exec.rs):
 /// wait for its end, or with `background` answer once it started.
 async fn exec_start(session: &mut Session, c: &Value) -> Result<Value> {
-    if !session.features.iter().any(|f| f == exec::FEATURE) {
+    // `force`: send it all the same, to see how a server without the
+    // feature answers.
+    if !flag(c, "force") && !session.features.iter().any(|f| f == exec::FEATURE) {
         bail!(
             "the server does not offer {:?} (HelloAck.features {:?}): no Exec in the protocol",
             exec::FEATURE,

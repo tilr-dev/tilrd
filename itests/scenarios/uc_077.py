@@ -30,6 +30,20 @@ def start(t: T):
     return server, d
 
 
+@case(fixture="server_state", spec=["exec/exec-is-offered-unless-turned-off"])
+def exec_start_to_a_server_with_exec_off_is_refused_with_the_reason(t: T):
+    """UC-077: tilrd --no-exec offers no "exec"; an ExecStart sent all the same is answered
+    with ExecStarted error "exec is turned off", and the connection goes on."""
+    server = t.server("--no-exec", state=t.root / "state")
+    d = t.driver()
+    hello = d.connect(server, features=["ping", "exec"])
+    t.ok("exec" not in hello["features"], f"no exec offered (HelloAck.features {hello['features']})")
+    r = d.cmd("exec", argv=["true"], force=True, ok=False)
+    t.eq(r["ev"], "error", "the ExecStart is refused")
+    t.ok("exec is turned off" in r.get("message", ""), f"with the reason ({r.get('message')!r})")
+    t.eq(d.cmd("exec", argv=["true"], force=True, ok=False).get("ev"), "error", "the connection goes on")
+
+
 @case(fixture="server_state", spec=["exec/output-comes-apart-per-stream-then-execexit"])
 def exec_returns_stdout_and_stderr_apart_and_the_exit_code(t: T):
     """UC-077: sh -c 'echo out; echo err >&2; exit 3': stdout, stderr apart, code 3."""

@@ -7,13 +7,13 @@ Exec (feature `"exec"`): a client runs a program on the server's machine without
 ## Requirements
 
 ### Requirement: Exec is offered unless turned off
-The server SHALL list `"exec"` in `HelloAck.features` unless it runs with `--no-exec` or the configuration file has `exec = false` (`--no-exec` wins; unset is on). With exec off, an `ExecStart` without `server_command` MUST go unanswered and the connection MUST stay open. Exec takes the same access token as everything else.
+The server SHALL list `"exec"` in `HelloAck.features` unless it runs with `--no-exec` or the configuration file has `exec = false` (`--no-exec` wins; unset is on). With exec off, an `ExecStart` without `server_command` MUST be answered with `ExecStarted` carrying its `request_id`, `exec_id` 0 and `error` `exec is turned off`, and the connection MUST stay open. Exec takes the same access token as everything else.
 
 **Verified by**: `exec::exec_is_offered_unless_turned_off` and the unit test `config::tests::exec_is_on_unless_turned_off` (crates/tilrd/src/config.rs).
 
 #### Scenario: Turned off
 - **WHEN** the server runs with `--no-exec` (or `exec = false`) and a client sends `ExecStart` for `true` and then `Ping`
-- **THEN** `"exec"` is not in `HelloAck.features`, and `Pong` comes with no `ExecStarted` before it
+- **THEN** `"exec"` is not in `HelloAck.features`, the client receives `ExecStarted` with `exec_id` 0 and error `exec is turned off`, and then `Pong`
 
 ### Requirement: The program runs as given, without a shell
 The server SHALL start `argv[0]` (looked up in its `PATH` unless it has a `/`) with `argv[1..]` as they are: no shell, nothing expanded. It SHALL run in `cwd` (an existing directory; empty: the home directory) with the server's environment plus each `env` entry `NAME=value`. Without `stdin` its stdin MUST be `/dev/null`.
@@ -121,13 +121,21 @@ With `timeout_ms` greater than 0 the server SHALL kill the program's whole proce
 - **THEN** `ExecExit` has `cancelled` true and signal 9, and the program and its child are gone
 
 ### Requirement: Nothing of a program outlives its exec
-When the program exits, whatever is left in its process group SHALL be killed with SIGKILL and the exec SHALL end with it, even when a leftover process held its stdout open; a pipe still held open by a process outside the group is given up 1 s after the group is gone. On Linux the program MUST also be killed should the server die without killing it (`PR_SET_PDEATHSIG`; its children then go only with the group).
+When the program exits, what is left in its process group SHALL be killed with SIGKILL before the program is reaped, and the exec SHALL end with it. A pipe held open by a process outside the group SHALL be read after the group is gone for at most 1 s of waiting on it (not counting waits for room on the bulk lane) and 1 MiB, then given up; `ExecCancel`, the time limit and the client going MUST end that at once. On Linux the program MUST also die with the server (`PR_SET_PDEATHSIG`).
 
-**Verified by**: `exec::what_a_program_leaves_running_in_its_group_goes_when_it_exits`.
+**Verified by**: `exec::what_a_program_leaves_running_in_its_group_goes_when_it_exits`, `exec::a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec`, `exec::a_cancel_during_the_drain_ends_the_exec_at_once` and the unit test `exec::tests::the_group_is_killed_while_the_program_is_a_zombie` (crates/tilrd/src/exec.rs).
 
 #### Scenario: Background child holding stdout
 - **WHEN** a client runs `sh -c 'sleep 50 & echo $! > file; echo bye'`
 - **THEN** stdout is `bye\n`, code is 0, the exec ends within 5 s, and the `sleep 50` is gone
+
+#### Scenario: Escaped writer
+- **WHEN** a client runs `sh -c 'setsid yes & echo bye'` (the shell going on once `yes` has left its group)
+- **THEN** `ExecExit` with code 0 arrives within 3 s, and a 65th exec can then be started where 64 ran
+
+#### Scenario: Cancel during the drain
+- **WHEN** a client runs `sh -c 'setsid sh -c "while :; do echo x; sleep 0.01; done" &'` and sends `ExecCancel` as soon as the shell has exited
+- **THEN** `ExecExit` with `cancelled` true arrives within 1 s
 
 ### Requirement: A client's execs end with its connection
 When a client's connection ends (closed, dropped, superseded), the server SHALL kill the process groups of all its execs with SIGKILL and log `client gone`.
@@ -139,14 +147,18 @@ When a client's connection ends (closed, dropped, superseded), the server SHALL 
 - **THEN** the program and its child are gone and the log has `client gone`
 
 ### Requirement: Execs do not survive a reload or a stop
-Execs SHALL NOT be handed over in a reload: the server MUST kill every exec's group (SIGKILL) and, before the connections go, send each connected client the output so far and `ExecExit` `reason` `"reload"` (`"shutdown"` on a stop), waiting up to 1 s (one late gets an `ExecExit` with only `exec_id` and `reason`).
+Execs SHALL NOT be handed over in a reload: the server MUST kill every exec's group (SIGKILL) and, before the connections go, send each connected client the output so far and `ExecExit` `reason` `"reload"` (`"shutdown"` on a stop), waiting up to 1 s. For an exec that has not reported in that time the server MUST stop reading its output first and then queue an `ExecExit` with only `exec_id` and `reason` behind the output already queued, so no `ExecOutput` of that exec follows it.
 
-**Verified by**: `exec::a_reload_ends_the_programs_and_their_clients_hear_why` and UC-077 (`uc_077.py::a_reload_ends_the_running_execs_with_their_children_and_says_why`).
+**Verified by**: `exec::a_reload_ends_the_programs_and_their_clients_hear_why`, `exec::an_exec_given_up_at_a_reload_ends_with_its_exec_exit` and UC-077 (`uc_077.py::a_reload_ends_the_running_execs_with_their_children_and_says_why`).
 
 #### Scenario: Reload with an exec running
 - **WHEN** an exec has printed `started` and has a background child, and the server gets SIGUSR1
 - **THEN** the client gets stdout `started\n` and `ExecExit` with `reason` `"reload"` and signal 9, the program and its child are gone
 - **AND** after reconnecting, a new exec `echo again` runs and prints `again\n`
+
+#### Scenario: An exec that does not report in time
+- **WHEN** an exec whose output a client is not reading (bulk lane full) is running and the server gets SIGUSR1
+- **THEN** once the client reads again, the last message of that exec it receives is `ExecExit` with `reason` `"reload"`
 
 ### Requirement: Execs run side by side
 A client SHALL be able to run up to 64 execs at once, each running concurrently with its own output and exit, without holding up the panes.
@@ -170,8 +182,17 @@ An `ExecStart` with `server_command` SHALL run the server's own executable with 
 - **WHEN** a client connected over TCP with the token sends the same `ExecStart`
 - **THEN** `ExecStarted.error` contains `Unix socket only`
 
+### Requirement: Exec replies are never silently lost
+`ExecStarted` and `ExecInputAck` SHALL go on the client's interactive lane; when that lane cannot take one (it is full), the server MUST drop the client as too slow (log "client too slow", close code 4001, its execs killed) rather than lose the reply.
+
+**Verified by**: unit test `exec::tests::a_reply_the_lane_cannot_take_drops_the_client` (crates/tilrd/src/exec.rs).
+
+#### Scenario: Full lane at ExecStarted
+- **WHEN** a client's interactive lane is full and it sends `ExecStart`
+- **THEN** its connection is closed with code 4001 and no program is left running for it
+
 ## Notes
 
-- Requirements without a test: Input that is not wanted is ignored. Untested details inside other requirements: the 64-exec-per-client refusal, `reason` `"shutdown"` on a server stop, the `ExecExit` without status after the 1 s stop wait, the 1 s drain of a pipe held by a process outside the group, `PR_SET_PDEATHSIG`, and ignoring a signal for an exec that is not the client's.
+- Requirements without a test: Input that is not wanted is ignored. Untested details inside other requirements: the 64-exec-per-client refusal, `reason` `"shutdown"` on a server stop, `PR_SET_PDEATHSIG`, and ignoring a signal for an exec that is not the client's.
 - UC-077 was red before 2026-10-17 (no Exec) and passes at HEAD per itests/USE_CASES.md; no case cited here is currently failing.
 - Unit tests in `crates/tilrd/src/*.rs` are cited as `module::tests::name` with their file.

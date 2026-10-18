@@ -457,20 +457,23 @@ with `ssh-add -c`, say); otherwise turn forwarding off on servers you do not tru
 A client can run a program on the server's machine without a pane or a shell, as `ssh host
 cmd` would without the shell, and get its stdout and stderr apart and how it ended. On
 unless the server runs with `--no-exec` (or `exec = false` in the configuration file); the
-server lists `"exec"` in `HelloAck.features`. It takes the same access token as everything
-else: a client that may open a shell may run a program.
+server lists `"exec"` in `HelloAck.features`. With exec off, an `ExecStart` is answered with
+`ExecStarted` carrying `error` `exec is turned off`. It takes the same access token as
+everything else: a client that may open a shell may run a program.
 
 - `ExecStart` names the program and its arguments (`argv`), run as they are: no shell,
   nothing expanded; `argv[0]` is looked up in the server's `PATH`. Optionally a directory
   (`cwd`, else the home directory), `NAME=value` entries added to the server's environment,
   `stdin`, and a time limit (`timeout_ms`). The answer is `ExecStarted` with the exec's id
   and the program's pid, or with why it did not start (no such program or directory, more
-  than 64 execs of the client running).
+  than 64 execs of the client running). `ExecStarted` and `ExecInputAck` are never dropped:
+  a client whose queue cannot take one is dropped as too slow (close code 4001).
 - The output comes as `ExecOutput` (stream 1 stdout, 2 stderr; at most 64 KiB each, in
   order per stream), then `ExecExit`: the exit code, or the signal that killed the program,
   and whether it was for the time limit (`timed_out`) or `ExecCancel` (`cancelled`). Both go
   by the [second lane](#protocol): a client that takes them slowly holds the program up,
-  blocked writing to its pipe, and the server's memory stays flat.
+  blocked writing to its pipe, and the server's memory stays flat. `ExecExit` is always the
+  exec's last message.
 - `ExecInput` feeds stdin and closes it (`eof`). The server acknowledges what the program
   took with `ExecInputAck` (bytes in all); a client keeps at most 4 MiB ahead of that, and
   one that sends more has the exec killed (`reason` `"input overrun"`).
@@ -479,10 +482,15 @@ else: a client that may open a shell may run a program.
 
 The program leads a process group of its own, and nothing of it outlives the exec: the whole
 group is killed (SIGKILL) on the time limit, on `ExecCancel`, and when the program exits (a
-background child that keeps the output open ends with it). Execs are not panes and do not
+background child that keeps the output open ends with it; the group is killed before the
+program is reaped, so its id cannot have passed to another group). A process that left the
+group (`setsid`) and keeps the output open is waited for at most 1 s, and read for at most
+1 MiB more, after the group is gone; a cancel or the time limit ends that wait at once.
+Execs are not panes and do not
 survive a reload: it kills them and their groups, and a client still connected gets
 `ExecExit` with `reason` `"reload"` before its connection goes (`"shutdown"` when the server
-stops). A client whose connection ends takes its execs with it. On Linux a program is also
+stops), after the output it was sent; for an exec that does not report within a second, an
+`ExecExit` with only the reason. A client whose connection ends takes its execs with it. On Linux a program is also
 killed should the server die without doing it (`PR_SET_PDEATHSIG`); its children then go
 only if it had them in its group. The log has each start and end with the client's id.
 

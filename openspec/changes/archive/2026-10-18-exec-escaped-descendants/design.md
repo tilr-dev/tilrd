@@ -13,6 +13,8 @@ At 1163abd an exec is three tasks: `run()` (waits for the program, its time limi
 
 Rejected: a hard 1 s cap on the whole drain (a slow client would lose the end of a program that already exited); keeping `biased` and polling the deadline every N reads (still unbounded under a fast writer between polls).
 
+Corrected during implementation: a time budget alone does not bound a fast writer to a slow client. When the escaped process writes without pause (`yes`) and the client is the bottleneck, the reader spends almost all its time in `send_bulk`, which does not count, and almost none waiting on the pipe, so the 1 s is never spent. The drain is therefore also capped at `DRAIN_BYTES` (1 MiB) read after the group is gone: more than any pipe holds (Linux's `pipe-max-size` default), so the tail the program itself left still arrives whole, while an escaped writer is followed for at most 1 MiB. Also found: the review's unbounded `biased` loop is in practice cut by tokio's cooperative budget (a read is made to yield after a while and the `biased` select then polls the deadline), so `a_process_outside_the_group_that_keeps_writing_does_not_hold_the_exec` passes on the old code too; it stays as the regression test for the requirement.
+
 ### D2. Stand-in ExecExit after the readers stop
 `Run` keeps abort handles of the output and stdin tasks. When `stop_all` gives up on an exec it aborts those first, then queues the stand-in `ExecExit` on the bulk lane with a new `ToClient::queue_bulk_now` that does not wait for byte credit (one packet of a few bytes over the 4 MiB bound). The connection then closes with a flush (reload) as today, writing the bulk lane after the interactive one, so the stand-in comes after the output.
 
@@ -23,6 +25,8 @@ Rejected: a hard 1 s cap on the whole drain (a slow client would lose the end of
 
 ### D4. Kill the group before the reap
 On exit the program is first observed without reaping it (`waitid(P_PID, pid, WEXITED | WNOWAIT)` on a blocking thread, or the SIGCHLD stream plus `waitid` with `WNOHANG | WNOWAIT`), the group is killed while the zombie leader still reserves the id, and only then reaped (`Child::wait`). Signals sent for `ExecSignal`, the time limit and cancel are sent only before that point.
+
+Implemented with the SIGCHLD stream (`tokio::signal::unix`, registered before the first look) plus `waitid(P_PID, pid, WEXITED | WNOHANG | WNOWAIT)`, and a 1 s fallback wake should a signal be missed: no blocking thread per exec. During the drain `ExecSignal` is ignored (nothing of the group is left).
 
 ## Backpressure and memory
 
