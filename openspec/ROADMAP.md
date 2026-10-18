@@ -36,9 +36,7 @@ All of phase 1 is done (see "Done").
 
 ## Phase 2: protocol v3 and input
 
-| change | goal | size | depends on | blocker | status |
-|---|---|---|---|---|---|
-| reload-screen-fidelity | carry soft wrap, pending wrap, the ClosePane deadline and kitty placements across a pane reload | M | - | no | ready |
+All of phase 2 is done (see "Done").
 
 ## Phase 3: docs and tests
 
@@ -94,7 +92,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | public-repo-readiness | checklist for making the repository public | S | readme-code-reconciliation | - | deferred |
 | release-platforms | musl, macOS on the CDN, x86_64 builds | M | public-repo-readiness | - | deferred |
 | read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | - | no | deferred |
-| libghostty-upstream-fixes | report and carry fixes for libghostty-vt (also: OSC 8 in the reload snapshot, pending-wrap accessor) | S | - | - | deferred |
+| libghostty-upstream-fixes | report and carry fixes for libghostty-vt (also: OSC 8 in the reload snapshot) | S | - | - | deferred |
 
 ## Done
 
@@ -119,5 +117,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | pane-socket-peer-check | 248dd56 |
 | protocol-v3 | 3dc42e2 |
 | non-latin-ctrl-alt | 92e4f43 |
+| reload-screen-fidelity | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

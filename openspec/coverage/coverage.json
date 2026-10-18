@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T14:27:39.319257+00:00",
+   "started": "2026-10-18T15:07:08.708074+00:00",
    "commit": null,
    "counts": {
-    "PASS": 493,
+    "PASS": 497,
     "FAIL": 1,
     "BLOCKED": 0
    },
    "args": "",
-   "path": "itests/results/20261018T162726-35193"
+   "path": "itests/results/20261018T170650-13282"
   }
  },
  "capabilities": [
@@ -7038,6 +7038,78 @@
      "last_run": {
       "uc_06b:a_refused_reload_keeps_the_socket_and_tilr_finds_the_same_server": "PASS"
      }
+    },
+    {
+     "slug": "soft-wraps-carry-over",
+     "title": "Soft wraps carry over",
+     "tag": "reload/soft-wraps-carry-over",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "ghostty::tests::snapshot_keeps_a_line_wrapped_across_the_history_border",
+      "ghostty::tests::snapshot_keeps_a_pending_wrap",
+      "scroll::a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload"
+     ],
+     "scenarios": [
+      {
+       "slug": "wrapped-line-at-the-border",
+       "title": "Wrapped line at the border",
+       "tag": "reload/soft-wraps-carry-over#wrapped-line-at-the-border",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "pending-wrap",
+       "title": "Pending wrap",
+       "tag": "reload/soft-wraps-carry-over#pending-wrap",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "a-closing-pane-is-still-killed-after-a-reload",
+     "title": "A closing pane is still killed after a reload",
+     "tag": "reload/a-closing-pane-is-still-killed-after-a-reload",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "reload::a_closing_pane_is_still_killed_after_a_reload"
+     ],
+     "scenarios": [
+      {
+       "slug": "reload-during-close",
+       "title": "Reload during close",
+       "tag": "reload/a-closing-pane-is-still-killed-after-a-reload#reload-during-close",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "images-in-the-history-carry-over",
+     "title": "Images in the history carry over",
+     "tag": "reload/images-in-the-history-carry-over",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "ghostty::tests::snapshot_keeps_an_image_scrolled_into_the_history"
+     ],
+     "scenarios": [
+      {
+       "slug": "image-scrolled-partly-off-the-screen",
+       "title": "Image scrolled partly off the screen",
+       "tag": "reload/images-in-the-history-carry-over#image-scrolled-partly-off-the-screen",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },

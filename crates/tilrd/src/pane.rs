@@ -251,6 +251,8 @@ async fn serve(args: Args) -> Result<()> {
     let id = args.id.to_string();
     let mut last_input_seq = 0;
     let mut inputs = VecDeque::new();
+    let mut kill_at = None;
+    let mut hung_up = Vec::new();
     let (master, shell, screen, seq) = if let Some(handover) = take_handover(&args.id)? {
         crate::fail::point("pane-resume-live")?;
         crate::fail::point(&format!("pane-resume-live:{id}"))?;
@@ -271,6 +273,16 @@ async fn serve(args: Args) -> Result<()> {
                     .checked_sub(Duration::from_micros(mark.age_us))
                     .unwrap_or(now),
             })
+            .collect();
+        // A close under way goes on: what was hung up is killed when the
+        // deadline the old process armed passes.
+        if handover.kill_in_ms > 0 {
+            kill_at = Some(now + Duration::from_millis(u64::from(handover.kill_in_ms)));
+        }
+        hung_up = handover
+            .kill_pgids
+            .iter()
+            .filter_map(|&group| libc::pid_t::try_from(group).ok())
             .collect();
         let size = |cells: u32| cells.clamp(1, u32::from(u16::MAX)) as u16;
         let cell = if handover.cell_width_px > 0 && handover.cell_height_px > 0 {
@@ -329,8 +341,8 @@ async fn serve(args: Args) -> Result<()> {
         screen,
         to_supervisor,
         shell,
-        kill_at: None,
-        hung_up: Vec::new(),
+        kill_at,
+        hung_up,
         pending_input,
         seq,
         // A resumed pane redraws its clients from the restored screen.
@@ -597,6 +609,12 @@ impl Pane {
                     age_us: u64::try_from(mark.received.elapsed().as_micros()).unwrap_or(u64::MAX),
                 })
                 .collect(),
+            // At least 1 ms while a deadline is armed: 0 means none.
+            kill_in_ms: self.kill_at.map_or(0, |at| {
+                let left = at.saturating_duration_since(Instant::now()).as_millis();
+                u32::try_from(left).unwrap_or(u32::MAX).max(1)
+            }),
+            kill_pgids: self.hung_up.iter().map(|&group| group as u32).collect(),
         };
         let handover = handover.encode_to_vec();
         // The successor shows it can resume before this process is gone.

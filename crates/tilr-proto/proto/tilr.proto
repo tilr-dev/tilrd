@@ -1093,6 +1093,12 @@ message PaneHandover {
   uint64 last_input_seq = 12;
   // Named input not yet credited, oldest first.
   repeated PendingInput pending_inputs = 13;
+  // Milliseconds left until the process groups being ended after a
+  // ClosePane are killed (0 = none: no deadline armed).
+  uint32 kill_in_ms = 14;
+  // Those process groups: the shell's and the pty's foreground one, hung up
+  // already (empty = none).
+  repeated uint32 kill_pgids = 15;
 }
 
 // An input message named by ClientMessage.seq whose bytes are not all

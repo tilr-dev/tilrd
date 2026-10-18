@@ -158,6 +158,58 @@ async fn a_scrolled_view_stays_scrolled_through_a_reload() {
 }
 
 #[tokio::test]
+async fn a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    // 20 columns, 5 rows: the 30-character line wraps from the last history
+    // row into the first row of the screen, under it x, y, z and the cursor.
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 20,
+            rows: 5,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'line-1\\nline-2\\nabcdefghijklmnopqrst0123456789\\nx\\ny\\nz\\n'; \
+                 sleep 1000"
+                    .into(),
+            ],
+            cwd: String::new(),
+            request_id: 7,
+        }))
+        .await;
+    let pane_id: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) if created.request_id == 7 => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane_id).await;
+    client.wait_row("z").await;
+    assert!(client.screen.has_row("0123456789"));
+
+    let mut client = reload(&server, client).await;
+    client.subscribe(pane_id).await;
+    client.wait_row("z").await;
+    // Made wider, the terminal reflows a soft-wrapped line into one row: the
+    // line is one line, as a copy from the history would give it.
+    client
+        .send(Msg::Resize(Resize {
+            pane_id: pane_id.to_string(),
+            cols: 40,
+            rows: 5,
+            cell_width_px: 0,
+            cell_height_px: 0,
+        }))
+        .await;
+    client.scroll(pane_id, -1_000_000).await;
+    client.wait_row("abcdefghijklmnopqrst0123456789").await;
+    assert!(client.screen.has_row("line-2"));
+}
+
+#[tokio::test]
 async fn output_arriving_while_scrolled_back_does_not_move_the_view() {
     let server = Server::start(&[]);
     let (mut client, pane_id) = pane_with_history(&server).await;

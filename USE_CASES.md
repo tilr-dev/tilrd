@@ -147,6 +147,7 @@ Cloud repository.
 | History is there after reconnecting | `history_is_still_there_after_reconnecting` |
 | History survives a server reload | `history_survives_a_reload` |
 | A scrolled view stays scrolled after a reload | `a_scrolled_view_stays_scrolled_through_a_reload` |
+| A line soft-wrapped from the last history row into the first screen row is still one line after a reload (made wider, it is one row) | `a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload` |
 
 ## Updating from the CDN — `tests/update.rs`
 
@@ -206,6 +207,7 @@ state format; platforms other than `linux-aarch64`.
 | Input typed just before a reload reaches the shell, once | `input_typed_just_before_a_reload_reaches_the_shell` |
 | Several reloads in a row | `a_server_can_reload_again_and_again` |
 | A shell that exits after a reload reports its exit code | `a_shell_that_exits_after_a_reload_still_reports_its_exit_code` |
+| A pane closed just before a reload, its program ignoring SIGHUP: the program is still killed at the close deadline, the pane exits | `a_closing_pane_is_still_killed_after_a_reload` |
 | A pane's title, directory and creation time are kept | `the_title_and_directory_of_a_pane_are_kept_across_a_reload` |
 | Stopping the server ends the shells | `stopping_the_server_ends_the_shells` |
 | The same after a reload | `stopping_the_server_after_a_reload_ends_the_shells` |
@@ -355,7 +357,10 @@ pane process. The server's counters are at `GET /metrics`.
   frames skipped, only a stream of packets other than frames fills it;
   end-to-end slow-network use cases are itests UC-043, UC-049.
 - A reload while a full-screen application (vim, htop) is open in a pane:
-  there are unit tests of the screen snapshot, no end-to-end use case.
+  there are unit tests of the screen snapshot, no end-to-end use case. The
+  unit tests also cover a cursor waiting to wrap at the last column and kitty
+  images whose top row is in the history (`ghostty::tests`), which no
+  end-to-end use case checks.
 - A reload while a pane is being created.
 - An update when the disk is full: here only a non-writable directory is
   checked, and that test does not run as root (in a container); a full disk

@@ -10,7 +10,7 @@ use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RowIterator}
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen as ActiveScreen};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{Style as VtStyle, StyleColor, Underline as VtUnderline};
-use libghostty_vt::terminal::{Mode, ModeKind, Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::terminal::{Mode, ModeKind, Point, PointCoordinate, PointSpace, ScrollViewport};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions, key, mouse, paste};
 use tilr_proto::{
     Color, Cursor, CursorShape, Frame, Image, KeyAction, KeyInput, MouseAction, MouseButton,
@@ -610,7 +610,7 @@ impl Screen for GhosttyScreen {
                 modes.extend(format!("\x1b[{private}{}{set}", mode.value()).bytes());
             }
         }
-        let cursor = cursor_position(&self.term)?;
+        let cursor = cursor_position(&self.term, Extras::Pen)?;
         let cursor_shape = {
             let snapshot = self.render.update(&self.term)?;
             let steady = u8::from(!snapshot.cursor_blinking()?);
@@ -628,12 +628,20 @@ impl Screen for GhosttyScreen {
             .collect();
         // The formatter only emits terminal state around some content, so it
         // is given the top-left cell, which is then printed onto itself.
-        let state = format_range(&self.term, Point::Active, (0, 0), (0, 0), true)?;
+        let state = format_range(&self.term, Point::Active, (0, 0), (0, 0), Extras::All)?;
 
         let alternate = if self.term.active_screen()? == ActiveScreen::Alternate {
-            let mut content =
-                format_range(&self.term, Point::Active, (0, 0), (last.x, last.y), false)?;
-            content.extend(kitty_images(&self.term, &mut self.placements)?);
+            let mut content = format_range(
+                &self.term,
+                Point::Active,
+                (0, 0),
+                (last.x, last.y),
+                Extras::None,
+            )?;
+            // The alternate screen has no history.
+            let images = kitty_images(&self.term, &mut self.placements)?;
+            content.extend(images.transmit);
+            content.extend(images.screen);
             let mode = [Mode::ALT_SCREEN_SAVE, Mode::ALT_SCREEN]
                 .into_iter()
                 .find(|&mode| self.term.mode(mode).unwrap_or(false))
@@ -647,20 +655,19 @@ impl Screen for GhosttyScreen {
             None
         };
 
-        let mut out = Vec::new();
-        let history = self.term.scrollback_rows()?;
+        let images = kitty_images(&self.term, &mut self.placements)?;
+        let mut out = images.transmit;
+        let history = u32::try_from(self.term.scrollback_rows()?)?;
         if history > 0 {
-            let end = (last.x, history as u32 - 1);
-            out.extend(format_range(
-                &self.term,
-                Point::History,
-                (0, 0),
-                end,
-                false,
-            )?);
-            // Push the history off the screen before the screen is drawn.
+            // A line soft-wrapped from the last history row into the first
+            // screen row is replayed in one piece, so it wraps there again.
+            let joined = row_wrapped(&self.term, history - 1)?;
+            let end = if joined { history } else { history - 1 };
+            out.extend(replay_rows(&self.term, last.x, end, &images.history)?);
+            // Push the history off the screen before the screen is drawn;
+            // the second part of a joined line stays as its first row.
             out.extend(b"\x1b[0m");
-            out.extend(b"\r\n".repeat(usize::from(rows)));
+            out.extend(b"\r\n".repeat(usize::from(rows) - usize::from(joined)));
         }
         out.extend(b"\x1b[H");
         out.extend(format_range(
@@ -668,11 +675,12 @@ impl Screen for GhosttyScreen {
             Point::Active,
             (0, 0),
             (last.x, last.y),
-            false,
+            Extras::None,
         )?);
         out.extend(b"\x1b[0m");
-        out.extend(kitty_images(&self.term, &mut self.placements)?);
-        out.extend(cursor_position(&self.term)?);
+        out.extend(images.screen);
+        // The pen is left as it is: the end of the snapshot sets it.
+        out.extend(cursor_position(&self.term, Extras::None)?);
         if let Some((mode, content)) = alternate {
             out.extend(format!("\x1b[?{mode}h\x1b[H").bytes());
             out.extend(content);
@@ -1049,60 +1057,80 @@ impl graphics::DecodePng for PngDecoder {
 }
 
 /// The Kitty graphics on the active screen as the commands that put them
-/// there: each image transmitted once (`a=t`, its id kept, as PNG), then
-/// every placement of it at its cell (`a=p`, the cursor left alone), or as
-/// the virtual placement its placeholder cells refer to. A placement whose
-/// top is scrolled into the history cannot be put back and is left out.
+/// back, in three parts the snapshot puts in their places.
+struct KittyImages {
+    /// Each image transmitted once (`a=t`, its id kept, as PNG).
+    transmit: Vec<u8>,
+    /// The placements whose top row is in the history: the row (in the
+    /// history), the column, and the command that places it at the cursor
+    /// (`a=p`, the cursor left alone). Sorted by row.
+    history: Vec<(u32, u16, String)>,
+    /// Every other placement at its cell, and the virtual placements their
+    /// placeholder cells refer to.
+    screen: Vec<u8>,
+}
+
 fn kitty_images(
     term: &Terminal<'_, '_>,
     iterator: &mut graphics::PlacementIterator<'_>,
-) -> Result<Vec<u8>> {
+) -> Result<KittyImages> {
     use std::fmt::Write;
 
+    let history = u32::try_from(term.scrollback_rows()?)?;
     let graphics = term.kitty_graphics()?;
-    let mut out = String::new();
-    let mut transmitted = std::collections::HashSet::new();
+    let mut transmit = String::new();
+    let mut in_history = Vec::new();
+    let mut screen = String::new();
+    // Whether each image could be transmitted.
+    let mut transmitted = HashMap::new();
     let mut placements = iterator.update(&graphics)?;
     while let Some(placement) = placements.next() {
         let id = placement.image_id()?;
         let Some(image) = graphics.image(id) else {
             continue;
         };
+        // The top-left cell, in the history and the screen together.
         let position = if placement.is_virtual()? {
             None
         } else {
-            match placement.viewport_pos(&image, term)? {
-                Some(position) if position.row >= 0 && position.col >= 0 => Some(position),
-                _ => continue,
-            }
-        };
-        if transmitted.insert(id) {
-            let Some(png) = encode_png(&image)? else {
+            let Ok(rect) = placement.rect(&image, term) else {
                 continue;
             };
-            let encoded = base64(&png);
-            let mut chunks = encoded.as_bytes().chunks(4096).peekable();
-            let mut first = true;
-            while let Some(chunk) = chunks.next() {
-                let more = u8::from(chunks.peek().is_some());
-                if first {
-                    write!(out, "\x1b_Ga=t,q=2,i={id},f=100,m={more};")?;
-                    first = false;
-                } else {
-                    write!(out, "\x1b_Gm={more};")?;
-                }
-                out.push_str(std::str::from_utf8(chunk)?);
-                out.push_str("\x1b\\");
+            match term.point_from_grid_ref(&rect.start(), PointSpace::Screen)? {
+                Some(top) => Some(top),
+                None => continue,
             }
+        };
+        let sent = match transmitted.entry(id) {
+            Entry::Occupied(sent) => *sent.get(),
+            Entry::Vacant(entry) => {
+                let png = encode_png(&image)?;
+                if let Some(png) = &png {
+                    let encoded = base64(png);
+                    let mut chunks = encoded.as_bytes().chunks(4096).peekable();
+                    let mut first = true;
+                    while let Some(chunk) = chunks.next() {
+                        let more = u8::from(chunks.peek().is_some());
+                        if first {
+                            write!(transmit, "\x1b_Ga=t,q=2,i={id},f=100,m={more};")?;
+                            first = false;
+                        } else {
+                            write!(transmit, "\x1b_Gm={more};")?;
+                        }
+                        transmit.push_str(std::str::from_utf8(chunk)?);
+                        transmit.push_str("\x1b\\");
+                    }
+                }
+                *entry.insert(png.is_some())
+            }
+        };
+        if !sent {
+            continue;
         }
+        let mut place = String::new();
         match position {
-            Some(position) => write!(
-                out,
-                "\x1b[{};{}H\x1b_Ga=p,q=2,C=1,i={id}",
-                position.row + 1,
-                position.col + 1
-            )?,
-            None => write!(out, "\x1b_Ga=p,q=2,U=1,i={id}")?,
+            Some(_) => write!(place, "\x1b_Ga=p,q=2,C=1,i={id}")?,
+            None => write!(place, "\x1b_Ga=p,q=2,U=1,i={id}")?,
         }
         for (key, value) in [
             ("p", placement.placement_id()?),
@@ -1116,16 +1144,122 @@ fn kitty_images(
             ("Y", placement.y_offset()?),
         ] {
             if value != 0 {
-                write!(out, ",{key}={value}")?;
+                write!(place, ",{key}={value}")?;
             }
         }
         let z = placement.z()?;
         if z != 0 {
-            write!(out, ",z={z}")?;
+            write!(place, ",z={z}")?;
         }
-        out.push_str(";\x1b\\");
+        place.push_str(";\x1b\\");
+        match position {
+            Some(top) if top.y < history => in_history.push((top.y, top.x, place)),
+            Some(top) => write!(screen, "\x1b[{};{}H{place}", top.y - history + 1, top.x + 1)?,
+            None => screen.push_str(&place),
+        }
     }
-    Ok(out.into_bytes())
+    in_history.sort_by_key(|&(row, _, _)| row);
+    Ok(KittyImages {
+        transmit: transmit.into_bytes(),
+        history: in_history,
+        screen: screen.into_bytes(),
+    })
+}
+
+/// Whether the row `y` of the history and the screen together is
+/// soft-wrapped into the next one.
+fn row_wrapped(term: &Terminal<'_, '_>, y: u32) -> Result<bool> {
+    let point = Point::Screen(PointCoordinate { x: 0, y });
+    Ok(term.grid_ref(point)?.row()?.is_wrapped()?)
+}
+
+/// The rows from the top of the history to `end` (of the history and the
+/// screen together) as VT sequences that print them from the home position
+/// of an empty screen, the cursor left on `end`. The placements in
+/// `images` (from [`KittyImages::history`]) are put back at their rows on
+/// the way, as the rows are printed.
+fn replay_rows(
+    term: &Terminal<'_, '_>,
+    last_x: u16,
+    end: u32,
+    images: &[(u32, u16, String)],
+) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    // Where the next range starts; the cursor is there.
+    let mut start = (0, 0);
+    let mut images = images.iter().filter(|(row, _, _)| *row <= end).peekable();
+    while let Some(&&(row, _, _)) = images.peek() {
+        if row > start.1 {
+            out.extend(rows_through(term, start, last_x, row - 1)?);
+            if row_wrapped(term, row - 1)? {
+                // The row continues the one above: its first character is
+                // printed to wrap there, and the cursor goes back.
+                let first = term
+                    .grid_ref(Point::Screen(PointCoordinate { x: 0, y: row }))?
+                    .cell()?;
+                let width = if first.wide()? == CellWide::Wide {
+                    2
+                } else {
+                    1
+                };
+                out.extend(format_range(
+                    term,
+                    Point::Screen,
+                    (0, row),
+                    (width - 1, row),
+                    Extras::None,
+                )?);
+                start = (width, row);
+            } else {
+                out.extend(b"\r\n");
+                start = (0, row);
+            }
+        }
+        while let Some((_, col, place)) = images.next_if(|(at, _, _)| *at == row) {
+            out.extend(format!("\x1b[{}G{place}", col + 1).bytes());
+        }
+        out.extend(b"\r");
+        if start.0 > 0 {
+            out.extend(format!("\x1b[{}G", start.0 + 1).bytes());
+        }
+    }
+    out.extend(rows_through(term, start, last_x, end)?);
+    Ok(out)
+}
+
+/// The cells from `start` to the end of row `end` (of the history and the
+/// screen together), the cursor left on row `end`: the formatter leaves out
+/// blank rows at the end of a range, so they are new lines here.
+fn rows_through(
+    term: &Terminal<'_, '_>,
+    start: (u16, u32),
+    last_x: u16,
+    end: u32,
+) -> Result<Vec<u8>> {
+    let mut last = end;
+    loop {
+        let from = if last == start.1 { start.0 } else { 0 };
+        let row = format_range(
+            term,
+            Point::Screen,
+            (from, last),
+            (last_x, last),
+            Extras::None,
+        )?;
+        if !row.is_empty() {
+            let mut out = if last == start.1 {
+                row
+            } else {
+                format_range(term, Point::Screen, start, (last_x, last), Extras::None)?
+            };
+            out.extend(b"\r\n".repeat((end - last) as usize));
+            return Ok(out);
+        }
+        if last == start.1 {
+            return Ok(b"\r\n".repeat((end - start.1) as usize));
+        }
+        last -= 1;
+    }
 }
 
 fn base64(data: &[u8]) -> String {
@@ -1147,22 +1281,59 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-/// The sequence that moves the cursor to where it is in `term`.
-fn cursor_position(term: &Terminal<'_, '_>) -> Result<Vec<u8>> {
+/// The sequence that puts the cursor back where it is in `term`. A cursor
+/// waiting to wrap after the last column (a character printed there) cannot
+/// be moved there: the cell is printed again, in its own style, as the
+/// program left it, followed by `extras` ([`Extras::Pen`] sets the pen as
+/// it is).
+fn cursor_position(term: &Terminal<'_, '_>, extras: Extras) -> Result<Vec<u8>> {
     let (x, y) = (term.cursor_x()?, term.cursor_y()?);
-    Ok(format!("\x1b[{};{}H", y + 1, x + 1).into_bytes())
+    if !term.is_cursor_pending_wrap()? {
+        return Ok(format!("\x1b[{};{}H", y + 1, x + 1).into_bytes());
+    }
+    let cell = term
+        .grid_ref(Point::Active(PointCoordinate { x, y: u32::from(y) }))?
+        .cell()?;
+    // The right half of a wide character is printed from its left half.
+    let from = if x > 0 && cell.wide()? == CellWide::SpacerTail {
+        x - 1
+    } else {
+        x
+    };
+    // Printed with the default pen (the formatter leaves out a default
+    // style) and character sets (the cell is mapped already).
+    let mut out = format!("\x1b[{};{}H\x1b[0m\x1b(B\x0f", y + 1, from + 1).into_bytes();
+    out.extend(format_range(
+        term,
+        Point::Active,
+        (from, u32::from(y)),
+        (x, u32::from(y)),
+        extras,
+    )?);
+    Ok(out)
+}
+
+/// What [`format_range`] emits besides the cells.
+#[derive(Clone, Copy, PartialEq)]
+enum Extras {
+    None,
+    /// The cursor's pen: the current style, hyperlink, protection and
+    /// character sets.
+    Pen,
+    /// The pen and the terminal state that lives outside the cells:
+    /// palette, scrolling region, tabstops, keyboard protocols and working
+    /// directory.
+    All,
 }
 
 /// Format the cells from `start` to `end` (inclusive, as `(x, y)` in the
-/// space of `point`) as VT sequences. With `state`, the terminal state that
-/// lives outside the cells comes along: scrolling region, tabstops, keyboard
-/// protocol, charsets, working directory and the current style.
+/// space of `point`) as VT sequences, with `extras` after them.
 fn format_range(
     term: &Terminal<'_, '_>,
     point: fn(PointCoordinate) -> Point,
     start: (u16, u32),
     end: (u16, u32),
-    state: bool,
+    extras: Extras,
 ) -> Result<Vec<u8>> {
     let start = term.grid_ref(point(PointCoordinate {
         x: start.0,
@@ -1170,6 +1341,7 @@ fn format_range(
     }))?;
     let end = term.grid_ref(point(PointCoordinate { x: end.0, y: end.1 }))?;
     let selection = Selection::new(start, end, false);
+    let (pen, state) = (extras != Extras::None, extras == Extras::All);
     let options = FormatterOptions::new()
         .with_format(Format::Vt)
         .with_unwrap(true)
@@ -1180,11 +1352,11 @@ fn format_range(
         .with_tabstops(state)
         .with_pwd(state)
         .with_keyboard(state)
-        .with_style(state)
-        .with_hyperlink(state)
-        .with_protection(state)
+        .with_style(pen)
+        .with_hyperlink(pen)
+        .with_protection(pen)
         .with_kitty_keyboard(state)
-        .with_charsets(state);
+        .with_charsets(pen);
     let mut formatter = Formatter::new(term, options)?;
     Ok(formatter.format_alloc(None)?.to_vec())
 }
@@ -2239,25 +2411,106 @@ mod tests {
         assert_eq!(row_text(&frame, 0), "ab");
     }
 
+    /// (image, column, row, columns, rows) of a placement.
+    type PlacedAt = (u32, i32, i32, u32, u32);
+
+    /// Where a client sees the image placements: (image, column, row,
+    /// columns, rows) at the bottom, one row scrolled back and at the top of
+    /// the history. An image transmitted again has a new generation, so that
+    /// is left out.
+    fn placements(screen: &mut GhosttyScreen) -> [Vec<PlacedAt>; 3] {
+        let mut seen = |delta| {
+            screen.scroll(delta);
+            let mut placements: Vec<_> = (screen.frame(true).unwrap().unwrap().placements)
+                .iter()
+                .map(|p| (p.image_id, p.col, p.row, p.cols, p.rows))
+                .collect();
+            placements.sort_unstable();
+            placements
+        };
+        let seen = [seen(0), seen(-1), seen(-100)];
+        screen.scroll_to_bottom();
+        seen
+    }
+
     #[test]
-    fn snapshot_leaves_out_an_image_scrolled_into_the_history() {
-        let mut bytes = b"ab".to_vec();
+    fn snapshot_keeps_an_image_scrolled_into_the_history() {
+        // One image where a soft-wrapped line continues, both rows in the
+        // history; under it another, its top one row up in the history.
+        let mut bytes = b"0123456789abcdefghijkl".to_vec();
+        bytes.extend(kitty_image(",i=8"));
+        bytes.extend(b"\r\nab");
         bytes.extend(kitty_image(""));
-        // Text on every row (the formatter drops blank history rows); the
-        // image's top ends up one row up in the history.
-        bytes.extend(b"c\r\nd\r\ne\r\nf\r\ng");
-        let mut restored = round_trip(&bytes);
-        let frame = restored.frame(true).unwrap().unwrap();
-        assert!(frame.placements.is_empty());
-        restored.scroll(-1);
-        assert!(
-            restored
-                .frame(false)
-                .unwrap()
-                .unwrap()
-                .placements
-                .is_empty()
+        bytes.extend(b"\r\nc\r\nd\r\ne");
+        let mut original = screen();
+        original.feed(&bytes);
+        let before = placements(&mut original);
+        assert_eq!(
+            before,
+            [
+                vec![(7, 2, -1, 10, 2)],
+                vec![(7, 2, 0, 10, 2)],
+                vec![(7, 2, 3, 10, 2), (8, 2, 1, 10, 2)],
+            ]
         );
+
+        let mut restored = round_trip(&bytes);
+        assert_eq!(placements(&mut restored), before);
+    }
+
+    #[test]
+    fn snapshot_keeps_a_line_wrapped_across_the_history_border() {
+        let mut bytes = Vec::new();
+        for i in 0..6 {
+            bytes.extend(format!("line {i}\r\n").bytes());
+        }
+        // 30 characters: the last history row wraps into the first screen
+        // row, and that one wraps no further.
+        bytes.extend(b"abcdefghijklmnopqrst0123456789\r\nx\r\ny\r\nz");
+        let mut original = screen();
+        original.feed(&bytes);
+        let history = original.term.scrollback_rows().unwrap() as u32;
+        assert!(row_wrapped(&original.term, history - 1).unwrap());
+
+        let mut restored = round_trip(&bytes);
+        assert!(row_wrapped(&restored.term, history - 1).unwrap());
+        assert!(!row_wrapped(&restored.term, history).unwrap());
+        // Wider, the line is one row again, as it is in the original.
+        for screen in [&mut original, &mut restored] {
+            screen.resize(40, 4, DEFAULT_CELL_PX).unwrap();
+        }
+        assert_eq!(view(&mut restored), view(&mut original));
+        assert!(
+            view(&mut restored)
+                .0
+                .contains(&"abcdefghijklmnopqrst0123456789".to_owned())
+        );
+    }
+
+    #[test]
+    fn snapshot_keeps_a_pending_wrap() {
+        // Exactly a row's worth, the last cell in red, the pen green: the
+        // cursor waits at the last column.
+        for bytes in [
+            &b"$ abcdefghijklmnopq\x1b[31mr\x1b[32m"[..],
+            // The same with a wide character in the last two columns.
+            "$ abcdefghijklmnop\u{4e2d}\x1b[32m".as_bytes(),
+        ] {
+            let mut original = screen();
+            original.feed(bytes);
+            assert!(original.term.is_cursor_pending_wrap().unwrap());
+            let mut restored = round_trip(bytes);
+            assert!(restored.term.is_cursor_pending_wrap().unwrap());
+
+            for screen in [&mut original, &mut restored] {
+                screen.feed(b"x");
+            }
+            let frame = restored.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 1), "x");
+            let expected = original.frame(true).unwrap().unwrap();
+            assert_eq!(frame.changed, expected.changed);
+            assert_eq!(frame.styles, expected.styles);
+        }
     }
 
     #[test]

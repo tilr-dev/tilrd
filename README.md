@@ -660,7 +660,11 @@ The server picks up a new executable without ending any shell:
 
 The supervisor execs the new executable in place, keeping its pid, the listening sockets
 (TCP, and the Unix socket with its lock) and the pane processes, then has every pane process
-do the same. Shells, their screens, scrollback and scroll position carry over.
+do the same. Shells, their screens, scrollback and scroll position carry over: a line
+soft-wrapped from the history onto the screen stays one line, a cursor waiting to wrap at
+the last column still wraps with the next character, and kitty images keep their places,
+those scrolled into the history too. A pane being closed (`ClosePane`, its program not
+gone yet) is still killed at its deadline, 2 s after the close, by the successor.
 
 A process is exec'd with the arguments it was started with, so it looks the same in `ps`
 before and after. What it hands to its successor goes into a file in the runtime directory

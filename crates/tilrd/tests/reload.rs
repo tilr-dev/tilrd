@@ -357,6 +357,69 @@ async fn a_shell_that_exits_after_a_reload_still_reports_its_exit_code() {
 }
 
 #[tokio::test]
+async fn a_closing_pane_is_still_killed_after_a_reload() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    // The pane's program ignores SIGHUP: only the kill at the close
+    // deadline ends it.
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 80,
+            rows: 24,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "trap '' HUP; echo \"pid-$$\"; sleep 1000".into(),
+            ],
+            cwd: String::new(),
+            request_id: 7,
+        }))
+        .await;
+    let pane_id: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) if created.request_id == 7 => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane_id).await;
+    client.wait_screen("pid-").await;
+    let program: u32 = client
+        .screen
+        .text()
+        .split("pid-")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    client
+        .send(Msg::ClosePane(ClosePane {
+            pane_id: pane_id.to_string(),
+        }))
+        .await;
+    // Once the server answers, the close is on its way to the pane ahead
+    // of the reload, which comes well within the 2 s deadline.
+    client.list_panes().await;
+    let mut client = reload(&server, client).await;
+
+    eventually("the program is killed", || !process_alive(program)).await;
+    // The client sees the pane exit, unless that was before it connected.
+    if client
+        .list_panes()
+        .await
+        .iter()
+        .any(|pane| pane.pane_id == pane_id.to_string())
+    {
+        client.pane_exit_code(pane_id).await;
+    }
+    assert!(client.list_panes().await.is_empty());
+    assert!(server.logged("resumed after reload with 1 pane(s)"));
+}
+
+#[tokio::test]
 async fn the_title_and_directory_of_a_pane_are_kept_across_a_reload() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
