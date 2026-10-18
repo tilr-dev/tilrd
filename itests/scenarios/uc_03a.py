@@ -4,7 +4,9 @@ XDG_RUNTIME_DIR: /tmp/tilr-<uid>) and serve a socket there, or serve one at a pa
 victim names (TILR_SOCKET, --socket, client.toml's `socket`). `tilr` refuses: a runtime
 directory that is not the user's alone is not entered (nothing connected, no tilrd
 started); a socket whose peer runs as another uid is closed before the WebSocket handshake
-(not a byte sent).
+(not a byte sent). The same holds for the host socket of a pane: `tilr edit` / `tilr open`
+(the client, `tilrd edit`, the pane's `tilr`) with $TILR_SOCK naming a socket another uid
+serves exit 1 before writing the request.
 """
 
 from pathlib import Path
@@ -106,3 +108,35 @@ def a_socket_another_user_serves_at_a_named_path_is_refused_before_a_byte(t: T):
     t.eventually(lambda: len(connections(report)) >= 3, lambda: f"each tilr connected: {connections(report)}")
     t.eq(set(connections(report)), {0}, "not a byte was sent to the other user's socket")
     t.eq(t.tilrd_daemons(), [], "no tilrd was started")
+
+
+@case(spec=[
+    "clipboard-host-events/tilr-edit-and-tilr-open-talk-only-to-a-host-socket-of-the-user-s"
+    "#another-user-s-socket-at-tilr-sock",
+])
+def tilr_edit_says_nothing_to_a_host_socket_another_user_serves(t: T):
+    """UC-03A: $TILR_SOCK served by another uid: tilr edit / tilr open / tilrd edit / the pane's tilr exit 1, 0 bytes sent."""
+    t.need("root", "procfs")
+    alice, mallory = t.user("alice"), t.user("mallory")
+    where = Path("/tmp/elsewhere")
+    t.eq(mallory.sh(f"mkdir -m 755 {where}").code, 0, "mallory's directory")
+    socket = where / "host.sock"
+    report = serve_fake(t, mallory, socket)
+    served = f"socket {socket} is served by another user (uid {mallory.uid})"
+    # The pane's `tilr`: the server's executable under that name, as the shim directory has it.
+    shim = alice.home / "shims"
+    t.eq(alice.sh(f"mkdir {shim} && ln -s \"$(command -v tilrd)\" {shim}/tilr").code, 0, "the pane's tilr")
+    env = {"TILR_PANE": "6f1c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f", "TILR_SOCK": socket}
+
+    asks = [
+        ("tilr edit", [CLIENT_EXE, "edit", "notes.md"]),
+        ("tilr open", [CLIENT_EXE, "open", "https://example.com"]),
+        ("tilrd edit", ["tilrd", "edit", "notes.md"]),
+        ("the pane's tilr edit", [shim / "tilr", "edit", "notes.md"]),
+    ]
+    for what, argv in asks:
+        r = alice.run(*argv, env=env)
+        t.eq(r.code, 1, f"{what} exits 1 ({r.err.strip()})")
+        t.has(r.err, "tilr: cannot reach the tilr server: ", served)
+    t.eventually(lambda: len(connections(report)) == len(asks), lambda: f"each one connected: {connections(report)}")
+    t.eq(set(connections(report)), {0}, "not a byte was sent to the other user's socket")

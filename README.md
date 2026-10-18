@@ -560,7 +560,10 @@ tilr open https://example.com    # open a URL; --kind and `-- args` say more
 ```
 
 The server passes the request on as `HostEvent` (with an absolute path) to every client
-watching that pane that announced `"host-events"`. With nobody to hear it, `tilr` says
+watching that pane that announced `"host-events"`. Before it writes the request, `tilr`
+checks who serves `$TILR_SOCK` (`SO_PEERCRED` / `getpeereid`): a socket of another user
+gets not a byte, and `tilr` exits 1 with `cannot reach the tilr server: socket … is served
+by another user (uid N), …`. With nobody to hear it, `tilr` says
 "no tilr client attached" and exits with 1; outside a pane, "not inside a tilr pane". Other
 `tilr` commands go to the next `tilr` on the `PATH`: the [client](#the-client-tilr).
 

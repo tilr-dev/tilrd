@@ -404,6 +404,10 @@ pane process. The server's counters are at `GET /metrics`.
   crontab is recognized from cronie's and busybox's messages
   (`a_missing_crontab_is_recognized_from_cron_and_busybox`); end to end with
   stand-in `systemctl`, `loginctl` and `crontab`: itests UC-020…UC-023.
+- `tilr edit` / `tilr open` and a host socket another user serves at
+  `$TILR_SOCK` (exit 1, not a byte sent): it takes a second user, so it is
+  itests UC-03A; the uid comparison is the unit test
+  `local::tests::a_peer_of_another_uid_is_refused` in `tilr-proto`.
 - `tilr edit` is also delivered to an old client that does not know
   `HostEvent` and silently ignores it: the server counts it as a recipient.
 - `tilr` in a terminal: drawing is checked only by what shows in the pty

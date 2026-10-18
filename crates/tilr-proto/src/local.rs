@@ -156,9 +156,87 @@ fn check_dir_meta(dir: &Path, meta: &std::fs::Metadata, uid: u32) -> Result<(), 
     Ok(())
 }
 
+/// The uid of the process on the other end of the connected Unix stream
+/// `fd` (`SO_PEERCRED` on Linux, `getpeereid` elsewhere).
+pub fn peer_uid(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // SAFETY: an all-zero ucred is a valid out-value, and `len` is its size.
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: the pointers are valid for the sizes given.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &mut len,
+            )
+        };
+        if rc == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(cred.uid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let (mut uid, mut gid) = (0, 0);
+        // SAFETY: the out-pointers are valid.
+        if unsafe { libc::getpeereid(fd.as_raw_fd(), &mut uid, &mut gid) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(uid)
+    }
+}
+
+/// Why a socket at `path` whose peer runs as `peer` must not be talked to
+/// by this process (euid `own`), if it must not: nothing is sent to a
+/// socket another user serves.
+pub fn check_peer_uid(path: &Path, peer: u32, own: u32) -> Result<(), String> {
+    if peer != own {
+        return Err(format!(
+            "socket {} is served by another user (uid {peer}), not by this one (uid {own}): \
+             nothing was sent",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Check that the process serving the connected Unix stream `fd` (at
+/// `path`) runs as this process's euid, before anything is written to it.
+pub fn check_peer(fd: std::os::fd::BorrowedFd<'_>, path: &Path) -> Result<(), String> {
+    let peer = peer_uid(fd)
+        .map_err(|err| format!("who serves {}: no peer credentials: {err}", path.display()))?;
+    // SAFETY: geteuid has no preconditions.
+    check_peer_uid(path, peer, unsafe { libc::geteuid() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_peer_of_another_uid_is_refused() {
+        let path = Path::new("/tmp/tilr-1000/x.sock");
+        assert_eq!(check_peer_uid(path, 1000, 1000), Ok(()));
+        assert_eq!(
+            check_peer_uid(path, 1001, 1000),
+            Err(
+                "socket /tmp/tilr-1000/x.sock is served by another user (uid 1001), not by \
+                 this one (uid 1000): nothing was sent"
+                    .to_owned()
+            )
+        );
+        // A real pair of sockets: the peer is this process, so it passes.
+        let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        use std::os::fd::AsFd;
+        // SAFETY: geteuid has no preconditions.
+        assert_eq!(peer_uid(ours.as_fd()).unwrap(), unsafe { libc::geteuid() });
+        assert_eq!(check_peer(ours.as_fd(), path), Ok(()));
+    }
 
     #[test]
     fn files_go_next_to_the_socket() {

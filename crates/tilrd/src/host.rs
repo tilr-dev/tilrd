@@ -411,6 +411,12 @@ fn has_scheme(target: &str) -> bool {
 fn ask(sock: &Path, request: &Request) -> Result<Reply> {
     let mut stream =
         UnixStream::connect(sock).with_context(|| format!("connect to {}", sock.display()))?;
+    // Nothing goes to a socket another user serves: the request names the
+    // pane and the file or URL to open.
+    {
+        use std::os::fd::AsFd;
+        tilr_proto::local::check_peer(stream.as_fd(), sock).map_err(anyhow::Error::msg)?;
+    }
     stream.set_read_timeout(Some(CLIENT_TIMEOUT))?;
     stream.set_write_timeout(Some(CLIENT_TIMEOUT))?;
     let mut line = serde_json::to_string(request)?;

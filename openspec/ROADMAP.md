@@ -32,9 +32,7 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 ## Phase 1: correctness and security
 
-| change | goal | size | depends on | blocker | status |
-|---|---|---|---|---|---|
-| pane-socket-peer-check | `tilr edit` / `tilr open` (and `tilrd edit`) check that `$TILR_SOCK` is served by the user before sending | S | - | no | ready |
+All of phase 1 is done (see "Done").
 
 ## Phase 2: protocol v3 and input
 
@@ -120,5 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | service-install-ownership | 1d44e4b |
 | shims-path-robustness | 0590786 |
 | startup-signal-window | f8fb63b |
+| pane-socket-peer-check | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

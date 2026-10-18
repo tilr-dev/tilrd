@@ -348,23 +348,9 @@ async fn open_local(path: &Path) -> Result<WebSocketStream<UnixStream>, ConnectE
 
 /// The process on the other end of `stream` must run as this user.
 fn check_peer(stream: &UnixStream, path: &Path) -> Result<(), ConnectError> {
-    let cred = stream.peer_cred().map_err(|err| {
-        ConnectError::Untrusted(anyhow::Error::new(err).context(format!(
-            "who serves {}: no peer credentials",
-            path.display()
-        )))
-    })?;
-    // SAFETY: geteuid has no preconditions.
-    let uid = unsafe { libc::geteuid() };
-    if cred.uid() != uid {
-        return Err(ConnectError::Untrusted(anyhow!(
-            "socket {} is served by another user (uid {}), not by this one (uid {uid}): \
-             nothing was sent",
-            path.display(),
-            cred.uid()
-        )));
-    }
-    Ok(())
+    use std::os::fd::AsFd;
+    tilr_proto::local::check_peer(stream.as_fd(), path)
+        .map_err(|err| ConnectError::Untrusted(anyhow!(err)))
 }
 
 async fn open_remote(
