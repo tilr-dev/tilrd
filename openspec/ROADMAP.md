@@ -118,6 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | protocol-v3 | 3dc42e2 |
 | non-latin-ctrl-alt | 92e4f43 |
 | reload-screen-fidelity | 53e7ff2 |
-| readme-code-reconciliation | recorded in the next commit |
+| readme-code-reconciliation | e70d499 |
 
 Older work is in `openspec/changes/archive/`.

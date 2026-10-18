@@ -41,3 +41,5 @@ Writing `openspec/specs/` (2026-10-18) found statements in README.md, USE_CASES.
 ## Impact
 
 README.md, USE_CASES.md, itests/USE_CASES.md (UC-082 text), AGENTS.md or the `release-process` Note (task 4.4), `crates/tilr/src/{attach,conn}.rs` (close code 4000), `crates/tilr/tests/client.rs`, the Notes of the specs listed. Not breaking: `tilr` is the only client changed, and only for a close it should not get. Reload and update: nothing crosses a reload; `tilr` and `tilrd` from the same archive.
+
+Implemented by: [`e70d499`](https://github.com/tilr-dev/tilrd/commit/e70d499) fix(tilr): end a superseded attach; README and USE_CASES match the code (2026-10-18).
