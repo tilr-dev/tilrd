@@ -21,7 +21,7 @@ def one_daemon(t: T, env: dict):
     t.eq(log.count("Unix socket for local clients"), 1, "one server ever took the socket")
 
 
-@case()
+@case(spec=["daemon-lifecycle/concurrent-starts-start-one-server"])
 def tilr_started_eight_times_at_once_starts_one_daemon(t: T):
     """UC-012: eight `tilr new -d` at once on an empty machine: eight panes, one tilrd."""
     t.need("procfs")
@@ -45,7 +45,7 @@ def tilr_started_eight_times_at_once_starts_one_daemon(t: T):
     one_daemon(t, env)
 
 
-@case()
+@case(spec=["daemon-lifecycle/concurrent-starts-start-one-server"])
 def two_terminals_running_tilr_at_once_share_one_daemon(t: T):
     """UC-012: `tilr` in two terminals at the same moment: both attach, one tilrd."""
     t.need("procfs")

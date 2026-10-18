@@ -32,7 +32,12 @@ def private(t: T, root: Path, uid: int):
     return found
 
 
-@case()
+@case(spec=[
+    "daemon-lifecycle/runtime-directory-and-socket-modes",
+    "daemon-lifecycle/state-directory",
+    "daemon-lifecycle/unix-socket-location",
+    "installation/the-first-run-makes-private-directories",
+])
 def on_a_clean_system_tilr_makes_its_directories_private(t: T):
     """UC-005: no XDG_RUNTIME_DIR, no ~/.config: paths made, directories 0700, files and sockets 0600."""
     user = t.user()

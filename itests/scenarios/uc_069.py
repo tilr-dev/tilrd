@@ -25,7 +25,7 @@ RELOADS = 50
 WARM = 5
 
 
-@case(fixture="server_state", timeout=600)
+@case(fixture="server_state", timeout=600, spec=["reload/inherited-processes-are-waited-without-leaks"])
 def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
     """UC-069: 50 SIGUSR1 reloads with output, a counter and typing; pids kept, fds and memory flat, no orphans."""
     server = t.server(state=t.root / "state")

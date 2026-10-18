@@ -44,7 +44,7 @@ def boot(t: T, user, fake, env):
     t.eq([d.pid for d in t.tilrd_daemons()], [daemons[0].pid], "that one, no other")
 
 
-@case()
+@case(spec=["tilr-cli/service-install-with-cron"])
 def without_lingering_a_crontab_reboot_line_is_written(t: T):
     """UC-021: enable-linger refused: a @reboot line, the choice said, no unit, tilrd started."""
     user = t.user()
@@ -61,7 +61,7 @@ def without_lingering_a_crontab_reboot_line_is_written(t: T):
     boot(t, user, fake, env)
 
 
-@case()
+@case(spec=["tilr-cli/service-install-with-cron"])
 def without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own(t: T):
     """UC-021: no systemd user manager: the @reboot line next to the user's lines; once, however often installed."""
     user = t.user()
@@ -81,7 +81,7 @@ def without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own(t: T)
     boot(t, user, fake, env)
 
 
-@case()
+@case(spec=["tilr-cli/service-install-with-cron"])
 def with_neither_systemd_nor_crontab_install_fails_and_writes_nothing(t: T):
     """UC-021: no way to start at boot: a clear error, non-zero, nothing written or started."""
     user = t.user()

@@ -13,7 +13,7 @@ from pathlib import Path
 from tt import FakeServiceTools, T, case, changes, snapshot
 
 
-@case()
+@case(spec=["installation/the-installer-sets-up-no-service", "tilr-cli/nothing-starts-tilrd-at-boot-unless-asked"])
 def nothing_starts_tilrd_at_boot_unless_asked(t: T):
     """UC-023: install (systemd there) and use tilr: no unit, crontab, linger, autostart or profile edit."""
     user = t.user()

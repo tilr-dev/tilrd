@@ -64,7 +64,11 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "files/temporary-files-of-writes-cut-short-are-swept-at-start",
+    "reload/a-file-write-cut-by-a-reload-leaves-the-file-as-it-was",
+    "reload/temporary-files-of-cut-writes-are-swept-at-start",
+])
 def a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works(t: T):
     """UC-064: an 8 MB write in chunks while the server updates: the file unchanged, no temp file, the retry succeeds."""
     exe, server, d, shell = start(t, features=("ping", "files"))
@@ -115,7 +119,10 @@ class EchoService:
         conn.close()
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "reload/socks-sessions-and-agent-streams-end-at-a-reload",
+    "socks-proxy/a-session-ends-with-its-connection-and-with-the-server",
+])
 def a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works(t: T):
     """UC-064: a SOCKS session open through an update: the service sees its end, a new session echoes 1 MB."""
     exe, server, d, shell = start(t, "--socks")
@@ -169,7 +176,10 @@ while True:
 """
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "reload/socks-sessions-and-agent-streams-end-at-a-reload",
+    "ssh-agent-forwarding/a-reload-ends-open-streams-and-keeps-the-socket-path",
+])
 def an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works(t: T):
     """UC-064: a program talking to the agent through an update reads EOF; the next agent stream works."""
     exe, server, d, shell = start(t, features=("ping", "agent"))

@@ -27,7 +27,10 @@ def viewer_ids(observer, pane: str) -> list[str]:
     return sorted(v["client_id"] for p in panes if p["pane"] == pane for v in p["viewed_by"])
 
 
-@case(fixture="server_state", hosts=["laptop"])
+@case(fixture="server_state", hosts=["laptop"], spec=[
+    "client-liveness/a-client-s-newer-connection-supersedes-its-older-one",
+    "client-liveness/panes-say-who-watches-them",
+])
 def two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live(t: T):
     """UC-052: two drivers on one host, each its own client_id, watch one pane: both stay, both type."""
     server = t.server(listen="0.0.0.0:0", state=t.root / "state")
@@ -57,7 +60,7 @@ def two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live(t: T):
     t.eq(drops(t, server, "superseded"), 0.0, "no supersede counted")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/another-token-supersedes-nobody"])
 def the_same_client_id_under_another_token_supersedes_nobody(t: T):
     """UC-052: a spoof with the victim's client_id: refused with a wrong token; on --no-auth another token is another client."""
     server = t.server(state=t.root / "state")
@@ -90,7 +93,10 @@ def the_same_client_id_under_another_token_supersedes_nobody(t: T):
     t.eq(open_server.logged("superseded"), 0, "nobody superseded")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "client-liveness/a-new-connection-starts-afresh",
+    "metrics/clients-let-go-by-reason",
+])
 def a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected(t: T):
     """UC-052: a second connection with the same client_id and token: the first closed at once (4000 superseded)."""
     server = t.server(state=t.root / "state")

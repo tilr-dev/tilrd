@@ -21,13 +21,13 @@ def from_peer(t: T, server):
     t.ok(server.logged("client connected"), "the server saw it")
 
 
-@case(hosts=["peer"])
+@case(hosts=["peer"], spec=["access-control/tcp-clients-present-the-token-in-hello"])
 def listening_on_every_ipv4_address_asks_for_the_token(t: T):
     """UC-031: --listen 0.0.0.0:7890: reachable from another container, token required."""
     from_peer(t, t.server(listen="0.0.0.0:7890"))
 
 
-@case(hosts=["peer"])
+@case(hosts=["peer"], spec=["access-control/tcp-clients-present-the-token-in-hello"])
 def listening_on_every_address_takes_ipv4_too_and_asks_for_the_token(t: T):
     """UC-031: --listen [::]:7890 (dual stack): another container over IPv4, token required."""
     from_peer(t, t.server(listen="[::]:7890"))

@@ -5,7 +5,7 @@ appears. Both show the same pane (the one used last), and what one types the oth
 from tt import T, case
 
 
-@case()
+@case(spec=["tilr-cli/default-pane"])
 def a_second_tilr_attaches_to_the_same_daemon_and_pane(t: T):
     """UC-011: the second tilr finds the first one's tilrd and its pane; still one daemon."""
     t.need("procfs")

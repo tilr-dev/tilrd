@@ -22,7 +22,7 @@ def closed_from_peer(t: T):
     t.ok(re.search("refused|timed out", r.err, re.I), "refused (or dropped)")
 
 
-@case(hosts=["peer"])
+@case(hosts=["peer"], spec=["daemon-lifecycle/tcp-port-defaults-to-loopback-7890"])
 def a_tilrd_tilr_starts_listens_on_loopback_only(t: T):
     """UC-030: `tilr` starts tilrd: 127.0.0.1:7890 only; loopback works with the token, another container is refused."""
     user = t.user()
@@ -36,7 +36,7 @@ def a_tilrd_tilr_starts_listens_on_loopback_only(t: T):
     closed_from_peer(t)
 
 
-@case(hosts=["peer"])
+@case(hosts=["peer"], spec=["daemon-lifecycle/tcp-port-defaults-to-loopback-7890"])
 def a_bare_tilrd_listens_on_loopback_only(t: T):
     """UC-030: `tilrd` with no flags (as a service runs it): 127.0.0.1:7890 only."""
     dir = t.scratch("bare")

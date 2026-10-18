@@ -119,7 +119,7 @@ def result(path: Path) -> dict:
         return {}
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["ssh-agent-forwarding/bytes-go-both-ways-unchanged-and-in-order"])
 def a_stream_echoed_by_the_client_comes_back_whole_in_order(t: T):
     """UC-073: 64 MiB to the client and back through one stream: same hash both ways; throughput recorded."""
     server, _, d, pane, program = start(t)
@@ -133,7 +133,7 @@ def a_stream_echoed_by_the_client_comes_back_whole_in_order(t: T):
     t.metric("echo_mb_s", round(2 * size / 1e6 / r["seconds"], 1))
 
 
-@case(fixture="server_state", timeout=400)
+@case(fixture="server_state", timeout=400, spec=["ssh-agent-forwarding/bytes-go-both-ways-unchanged-and-in-order"])
 def a_big_stream_to_the_client_arrives_whole_and_in_order(t: T):
     """UC-073: 256 MiB from a program to the client: the client's hash of the stream equals the program's."""
     server, _, d, pane, program = start(t)
@@ -152,7 +152,10 @@ def a_big_stream_to_the_client_arrives_whole_and_in_order(t: T):
     t.metric("stream_mb_s", round(size / 1e6 / r["seconds"], 1))
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "client-liveness/frames-go-ahead-of-data-in-quantity",
+    "ssh-agent-forwarding/a-slow-client-holds-the-program-back",
+])
 def a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for(t: T):
     """UC-073: the client reads at 1 MB/s: the program is held back, server memory flat, the client stays; then all of it arrives."""
     server, proxy, d, pane, program = start(t, proxy=True)
@@ -191,7 +194,7 @@ def a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for
     t.check("the counter kept going on the slow client's screen", lambda: counter.check_screen(d))
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["ssh-agent-forwarding/a-client-running-ahead-of-the-program-loses-the-stream"])
 def a_client_running_ahead_of_a_slow_program_is_held_to_the_queue_and_then_loses_the_stream(t: T):
     """UC-073: 2 MiB to a program reading 512 KB/s arrives whole; 64 MiB at once ends the stream, memory flat."""
     server, _, d, pane, program = start(t)

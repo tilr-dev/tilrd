@@ -27,7 +27,7 @@ def reloaded(t: T):
     return server, d, pane
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["reload/screens-scrollback-and-programs-carry-over"])
 def ctrl_c_after_a_reload_interrupts_a_foreground_sleep(t: T):
     """UC-062: a reload, then sleep 1000 in the foreground; Ctrl+C ends it with status 130."""
     server, d, pane = reloaded(t)
@@ -39,7 +39,7 @@ def ctrl_c_after_a_reload_interrupts_a_foreground_sleep(t: T):
     t.eventually(lambda: not t.procs(r"^sleep 1000$"), "sleep 1000 is gone", timeout=5)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["reload/screens-scrollback-and-programs-carry-over"])
 def a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c(t: T):
     """UC-062: sleep 1000 started before a reload; Ctrl+C after it ends the sleep (130)."""
     server = t.server(state=t.root / "state")
@@ -59,7 +59,7 @@ def a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c(t: T):
     t.eq(d.value(pane, "$?"), "130", "sleep's exit status (SIGINT)")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["reload/screens-scrollback-and-programs-carry-over"])
 def ctrl_z_and_fg_after_a_reload_stop_and_resume_a_job(t: T):
     """UC-062: after a reload, Ctrl+Z stops sleep 1000 (state T), jobs lists it, fg resumes it, Ctrl+C ends it."""
     server, d, pane = reloaded(t)

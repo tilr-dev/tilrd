@@ -39,7 +39,10 @@ def install_fails(t: T, user, url: str, env: dict, *said: str):
     t.eq(t.tilrd_daemons(), [], "no server started")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/the-release-is-checked-in-a-temporary-directory-first",
+])
 def a_bad_checksum_installs_nothing(t: T):
     """UC-004: the archive's checksum does not match: nothing installed, nothing left."""
     user, cdn, url, env = setup(t)
@@ -48,7 +51,10 @@ def a_bad_checksum_installs_nothing(t: T):
     install_fails(t, user, url, env, "checksum mismatch, nothing installed")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/the-release-is-checked-in-a-temporary-directory-first",
+])
 def a_download_cut_short_installs_nothing(t: T):
     """UC-004: the connection drops halfway through the archive: nothing installed, nothing left."""
     user, cdn, url, env = setup(t)
@@ -57,7 +63,10 @@ def a_download_cut_short_installs_nothing(t: T):
     install_fails(t, user, url, env, "download failed, nothing installed")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/the-release-is-checked-in-a-temporary-directory-first",
+])
 def an_archive_cut_short_installs_nothing(t: T):
     """UC-004: an archive cut in half, its checksum made of the half: unpacking fails, nothing installed."""
     user, cdn, url, env = setup(t)
@@ -69,7 +78,10 @@ def an_archive_cut_short_installs_nothing(t: T):
     install_fails(t, user, url, env, f"the archive of {version} is damaged or lacks tilrd or tilr, nothing installed")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/both-programs-are-installed-or-neither",
+])
 def an_archive_without_tilr_installs_nothing(t: T):
     """UC-004: the archive has tilrd but no tilr: tilrd is not installed either."""
     user, cdn, url, env = setup(t)
@@ -78,7 +90,10 @@ def an_archive_without_tilr_installs_nothing(t: T):
     install_fails(t, user, url, env, f"the archive of {version} is damaged or lacks tilrd or tilr, nothing installed")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/both-programs-are-installed-or-neither",
+])
 def a_program_that_does_not_run_installs_nothing(t: T):
     """UC-004: tilr in the archive is not a program: tilrd is not installed either."""
     user, cdn, url, env = setup(t)
@@ -89,7 +104,10 @@ def a_program_that_does_not_run_installs_nothing(t: T):
     install_fails(t, user, url, env, f"tilr {version} does not run on this system", "nothing installed")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/no-release-for-the-platform-is-a-clear-error",
+])
 def no_release_for_the_platform_installs_nothing(t: T):
     """UC-004: the CDN has no release for this platform: a clear error, nothing installed."""
     user, cdn, url, env = setup(t)
@@ -99,7 +117,10 @@ def no_release_for_the_platform_installs_nothing(t: T):
     install_fails(t, user, url, env, f"no release for linux {cdn.platform.split('-', 1)[1]}")
 
 
-@case()
+@case(spec=[
+    "installation/a-release-that-cannot-be-installed-leaves-nothing",
+    "installation/no-release-for-the-platform-is-a-clear-error",
+])
 def a_latest_version_without_its_archive_installs_nothing(t: T):
     """UC-004: `latest` names a version whose archive is not there (yet): nothing installed."""
     user, cdn, url, env = setup(t)
@@ -108,7 +129,7 @@ def a_latest_version_without_its_archive_installs_nothing(t: T):
                   "nothing installed")
 
 
-@case()
+@case(spec=["installation/a-failed-update-leaves-the-installation-and-its-server-alone"])
 def a_broken_update_leaves_the_installation_and_its_server_alone(t: T):
     """UC-004: a new release with a bad checksum, then one without tilr, over a running install: all as it was."""
     user, cdn, url, env = setup(t)

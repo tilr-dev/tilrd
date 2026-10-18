@@ -19,7 +19,7 @@ def shell(t: T, url: str, token: str, name: str):
     t.eq(d.value(d.shell_pane(), "$((6*7))"), "42", f"a shell over {url}")
 
 
-@case()
+@case(spec=["daemon-lifecycle/tcp-port-defaults-to-loopback-7890"])
 def ipv6_loopback_serves_ipv6_only(t: T):
     """UC-032: --listen [::1]: a client on [::1] gets a shell; 127.0.0.1 is refused."""
     need_ipv6(t)
@@ -33,7 +33,7 @@ def ipv6_loopback_serves_ipv6_only(t: T):
         print("  ok: 127.0.0.1 refused")
 
 
-@case()
+@case(spec=["daemon-lifecycle/tcp-port-defaults-to-loopback-7890"])
 def dual_stack_serves_both_loopbacks(t: T):
     """UC-032: --listen [::]: shells over [::1] and over 127.0.0.1."""
     need_ipv6(t)

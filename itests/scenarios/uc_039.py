@@ -26,7 +26,7 @@ def closed_after(s: socket.socket, limit: float) -> float:
     return time.monotonic() - started
 
 
-@case()
+@case(spec=["access-control/a-handshake-has-10-seconds"])
 def a_silent_connection_is_closed_by_the_handshake_timeout(t: T):
     """UC-039: connect and silence: closed after ~10 s; a request begun and abandoned: the same."""
     server = t.server()
@@ -41,7 +41,7 @@ def a_silent_connection_is_closed_by_the_handshake_timeout(t: T):
     t.ok(server.alive(), "the server is up")
 
 
-@case()
+@case(spec=["client-liveness/a-silent-client-is-dropped"])
 def a_websocket_that_never_says_hello_is_dropped_by_the_client_timeout(t: T):
     """UC-039: WebSocket open, then silence (no Hello, no pongs): dropped within --client-timeout."""
     server = t.server("--client-timeout", 4)

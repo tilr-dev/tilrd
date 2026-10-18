@@ -32,7 +32,7 @@ def check_after_reset(t: T, observer, client, pane: str, counter: Counter, cut_a
     t.eq(client.run(pane, "echo typed-after"), 0, "input works after the reset")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-connection-that-ends-is-forgotten-at-once"])
 def a_reset_in_the_middle_of_a_frame_makes_the_client_reconnect_at_once(t: T):
     """UC-045: the proxy cuts mid-message with RST; reconnect within 2 s, the viewer cleaned up, the screen whole."""
     server = t.server(state=t.root / "state")
@@ -52,7 +52,7 @@ def a_reset_in_the_middle_of_a_frame_makes_the_client_reconnect_at_once(t: T):
     check_after_reset(t, observer, client, pane, counter, cut_at, since)
 
 
-@case(fixture="server_state", hosts=["phone"])
+@case(fixture="server_state", hosts=["phone"], spec=["client-liveness/a-connection-that-ends-is-forgotten-at-once"])
 def a_socket_reset_by_the_clients_kernel_is_cleaned_up_by_the_server_at_once(t: T):
     """UC-045: ss -K on the client's container resets its socket mid-output; reconnect at once, the viewer cleaned up."""
     server = t.server(listen="0.0.0.0:0", state=t.root / "state")

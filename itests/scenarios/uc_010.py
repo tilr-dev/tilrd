@@ -14,7 +14,11 @@ import stat
 from tt import T, case
 
 
-@case()
+@case(spec=[
+    "daemon-lifecycle/tilr-starts-tilrd-detached",
+    "daemon-lifecycle/unix-socket-location",
+    "tilr-cli/attached-terminal",
+])
 def tilr_without_a_running_daemon_starts_tilrd_detached_and_connects(t: T):
     """UC-010: the first `tilr` on an empty machine spawns one detached tilrd and attaches."""
     t.need("procfs")

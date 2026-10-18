@@ -18,7 +18,7 @@ def taken(port: int = 0) -> socket.socket:
     return s
 
 
-@case()
+@case(spec=["daemon-lifecycle/a-taken-port"])
 def a_taken_port_is_a_clear_error(t: T):
     """UC-033: --listen on a taken port: exit 1 within seconds, the error names the port and the way out."""
     holder = taken()
@@ -34,7 +34,7 @@ def a_taken_port_is_a_clear_error(t: T):
     t.ok(not (dir / "runtime" / "tilrd.sock").exists(), "no socket left")
 
 
-@case()
+@case(spec=["daemon-lifecycle/a-taken-port"])
 def a_bare_tilrd_next_to_a_running_one_says_the_default_port_is_taken(t: T):
     """UC-033: `tilrd` while the user's tilrd holds 127.0.0.1:7890: exit 1, the port named."""
     user = t.user()
@@ -44,7 +44,7 @@ def a_bare_tilrd_next_to_a_running_one_says_the_default_port_is_taken(t: T):
     t.has(r.err, "127.0.0.1:7890 is taken")
 
 
-@case()
+@case(spec=["daemon-lifecycle/a-taken-port"])
 def a_tilrd_tilr_starts_goes_on_without_the_taken_port(t: T):
     """UC-033: the default port is held by another program: `tilr` still starts tilrd, which warns and serves its socket."""
     holder = taken(7890)

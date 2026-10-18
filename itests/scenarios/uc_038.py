@@ -40,7 +40,7 @@ def open_many(port: int, n: int) -> list[socket.socket]:
     return [socket.create_connection(("127.0.0.1", port), timeout=10) for _ in range(n)]
 
 
-@case(timeout=240)
+@case(timeout=240, spec=["access-control/a-handshake-has-10-seconds"])
 def a_thousand_silent_connections_and_a_slowloris_leave_the_server_working(t: T):
     """UC-038: 1000 silent + 300 slowloris + 1000 connect-and-close: the server serves a client meanwhile."""
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)

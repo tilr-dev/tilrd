@@ -69,7 +69,7 @@ def after_break(t: T, client, home: Path, target: Path, before: str, seen_temp: 
     t.eq(temps(home), [], "no temporary file after the retry")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/an-abandoned-write-leaves-the-file-and-no-temporary-file"])
 def a_write_cut_by_a_reset_leaves_the_file_as_it_was_and_no_temporary_file(t: T):
     """UC-046: RST after 20 of 64 chunks of a 4 MB write; the file unchanged, the temp file gone, the retry succeeds."""
     server, proxy, client, home, target, before, seen_temp, stop = prepare(t)
@@ -80,7 +80,7 @@ def a_write_cut_by_a_reset_leaves_the_file_as_it_was_and_no_temporary_file(t: T)
     after_break(t, client, home, target, before, seen_temp, stop, broke, limit=3)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/an-abandoned-write-leaves-the-file-and-no-temporary-file"])
 def a_write_cut_by_a_silent_network_leaves_the_file_as_it_was_and_no_temporary_file(t: T):
     """UC-046: half-open after 1 s of a 4 MB write; once the server drops the client, the file unchanged, no temp file."""
     server, proxy, client, home, target, before, seen_temp, stop = prepare(t)

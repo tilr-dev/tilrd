@@ -26,7 +26,7 @@ def tick_numbers(text: str) -> list[int]:
     return [int(m) for m in re.findall(r"(?m)^tick (\d+)$", text)]
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-silent-client-is-dropped"])
 def a_frozen_connection_is_dropped_by_both_sides_and_the_client_returns_to_the_same_pane(t: T):
     """UC-040: freeze both directions mid-output; server drops the viewer, client reconnects after the network returns."""
     server = t.server("--client-timeout", CLIENT_TIMEOUT_S, state=t.root / "state")

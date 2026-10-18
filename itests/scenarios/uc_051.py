@@ -15,7 +15,9 @@ NETEM = "delay 150ms 20ms loss 1% reorder 10% 50%"
 COMMANDS = 30
 
 
-@case(fixture="server_state", hosts=["phone"], net_admin=True)
+@case(fixture="server_state", hosts=["phone"], net_admin=True, spec=[
+    "metrics/latency-is-measurable-over-a-bad-network",
+])
 def a_shell_stays_usable_on_a_3g_network_and_input_latency_is_recorded(t: T):
     """UC-051: 3G profile: typing keys and running commands works, each output once; latency percentiles recorded."""
     server = t.server(listen="0.0.0.0:0", state=t.root / "state")

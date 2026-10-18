@@ -43,7 +43,7 @@ def pasted(t: T, d, pane, command: str) -> tuple[int, str]:
     return code, hashlib.sha256(out.read_bytes()).hexdigest() if out.exists() else ""
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["clipboard-host-events/an-upload-becomes-the-clipboard-on-its-last-chunk"])
 def an_image_put_on_the_clipboard_is_pasted_byte_for_byte(t: T):
     """UC-075: a 700 KB PNG in 64 KiB chunks: xclip and wl-paste in a pane give it back exactly; text too."""
     server, d, hello, pane = start(t)
@@ -64,7 +64,7 @@ def an_image_put_on_the_clipboard_is_pasted_byte_for_byte(t: T):
          "xclip pastes the text exactly")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["clipboard-host-events/the-first-chunk-empties-the-clipboard"])
 def the_clipboard_takes_exactly_its_limit_and_refuses_one_byte_more_leaving_it_empty(t: T):
     """UC-075: exactly 1 MiB is taken and pasted; 1 MiB + 1 is refused and the clipboard is empty; a lying size refused."""
     server, d, hello, pane = start(t)
@@ -90,7 +90,7 @@ def the_clipboard_takes_exactly_its_limit_and_refuses_one_byte_more_leaving_it_e
     t.eq(ack["ok"], False, f"a transfer carrying more than it announced is refused ({ack['error']})")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["clipboard-host-events/content-expires"])
 def clipboard_content_expires(t: T):
     """UC-075: with --clipboard-ttl 3, content pastes at once and is gone after the TTL."""
     server, d, hello, pane = start(t)

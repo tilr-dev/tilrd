@@ -71,7 +71,9 @@ def all_well(t: T, server, d, shell, before, counter, pids, what: str):
     t.check(f"a new client and a new pane work {what}", a_new_client_works)
 
 
-@case(fixture="server_state", services=["cdn"], net_admin=True, timeout=300)
+@case(fixture="server_state", services=["cdn"], net_admin=True, timeout=300, spec=[
+    "update/a-disk-full-during-the-download-installs-nothing",
+])
 def an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_breaks_nothing(t: T):
     """UC-065: the download does not fit the executable's disk: update fails, nothing installed or left; with room it works."""
     manifest = t.manifest()
@@ -146,7 +148,7 @@ def room_again_and_reload(t: T, runtime, server, d, shell, before, counter, vim,
     counter.check_log(max_gap=1.5)
 
 
-@case(fixture="server_state", net_admin=True)
+@case(fixture="server_state", net_admin=True, spec=["reload/state-files-are-private-and-written-whole-or-not-at-all"])
 def a_reload_with_no_room_for_its_state_keeps_the_server_and_its_panes(t: T):
     """UC-065: the runtime directory's disk is full; SIGUSR1 cannot write the state: the server carries on, panes kept."""
     runtime, server, d, shell, before, counter, vim, notes, pids = runtime_on_a_small_disk(t)
@@ -162,7 +164,7 @@ def a_reload_with_no_room_for_its_state_keeps_the_server_and_its_panes(t: T):
     room_again_and_reload(t, runtime, server, d, shell, before, counter, vim, notes, pids, reloads=0)
 
 
-@case(fixture="server_state", net_admin=True)
+@case(fixture="server_state", net_admin=True, spec=["reload/a-pane-that-cannot-save-its-state-stays-as-it-is"])
 def a_reload_with_room_for_the_servers_state_but_not_the_panes_keeps_every_pane(t: T):
     """UC-065: room for the supervisor's state only (one page): the panes cannot save theirs; every pane lives on."""
     runtime, server, d, shell, before, counter, vim, notes, pids = runtime_on_a_small_disk(t)

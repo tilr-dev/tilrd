@@ -52,7 +52,12 @@ def flare_pid(flare_dir: Path) -> int:
         return 0
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "cloud-tunnels/a-linked-server-keeps-one-control-connection-to-cloud",
+    "cloud-tunnels/the-server-writes-the-tunnel-s-configuration",
+    "cloud-tunnels/tunnel-close-stops-cloudflared-and-removes-its-secret",
+    "cloud-tunnels/tunnel-open-runs-cloudflared-aimed-at-this-server-s-port",
+])
 def tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it(t: T):
     """UC-07A: tunnel_open -> cloudflared runs with a config pointing at this server's port; tunnel_close -> it is stopped."""
     cloud, control, hello, server, flare_dir = linked(t)
@@ -91,7 +96,11 @@ def tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it(t: T
     t.ok(flare_pid(flare_dir) not in (0, pid), "a tunnel opened again runs a new cloudflared")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "access-control/cloud-does-not-decide-who-connects",
+    "cloud-tunnels/cloud-cannot-point-the-tunnel-elsewhere",
+    "cloud-tunnels/nothing-but-tunnel-commands-from-cloud-is-acted-on",
+])
 def nothing_but_tunnel_commands_from_cloud_is_acted_on(t: T):
     """UC-07A: Cloud sends pane, input, exec, file and clipboard commands: none has any effect; the server carries on."""
     cloud, control, hello, server, flare_dir = linked(t)
@@ -141,7 +150,10 @@ def nothing_but_tunnel_commands_from_cloud_is_acted_on(t: T):
     t.check("Cloud cannot point the tunnel anywhere but this server's port", a_tunnel_cannot_be_turned_elsewhere)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "access-control/cloud-does-not-decide-who-connects",
+    "cloud-tunnels/a-server-without-authentication-takes-no-tunnel",
+])
 def a_server_without_authentication_gets_no_tunnel(t: T):
     """UC-07A: a server started with --no-auth refuses tunnel_open (failed, no cloudflared)."""
     cloud, control, hello, server, flare_dir = linked(t, "--no-auth")

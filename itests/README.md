@@ -27,6 +27,7 @@ cd itests
 ./dt fixtures                          # fixture graph and how many cases use each
 ./dt fixture server_state              # export a snapshot to results/fixture-server_state
 ./dt call server export --path ./tilrd   # the Linux binary (also: driver, build)
+./dt coverage                          # write ../openspec/coverage/ (no Dagger)
 ```
 
 Results go to `results/<timestamp>-<pid>/` (`results/latest` links the last run):
@@ -120,7 +121,7 @@ itests/
   fixtures/*.py          prepared states shared by cases
   installer/install.sh   a copy of the installer of the sh repository (not edited here)
   scenarios/uc_NNN.py    the cases of one use case
-  tools/                 report.html and the history page
+  tools/                 report.html, the history page and the spec coverage (coverage.py)
 ```
 
 ### Container layout (backend `dagger`)
@@ -193,7 +194,7 @@ lost: `screen` and `wait_for` wait for the full frame of the next connection.
 ```python
 from tt import T, case
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["reload/client-connections-end-and-clients-reconnect"])
 def a_reconnecting_client_finds_its_shell(t: T):
     """UC-0NN: one line about the behavior."""
     server = t.server(state=t.root / "state")
@@ -206,6 +207,11 @@ def a_reconnecting_client_finds_its_shell(t: T):
 ```
 
 * Name the case after the behavior, as a sentence; the docstring starts with the UC id.
+* Tag it with the requirements of `openspec/specs/` it verifies, `spec=["<capability>/<requirement
+  slug>"]` (optionally `#<scenario slug>`; a slug is the heading in lower case, every run of
+  other characters a `-`), and name the case in the requirement's `**Verified by**` line.
+  `python3 -m tt list` refuses an untagged case and, in a checkout, a tag naming no
+  requirement; the tags feed only the coverage report, never the run.
   One case = one independent subcase, starting from a fresh copy of its fixture.
 * A scenario module imports only `tt` (only that file is mounted).
 * If the product disagrees with the use case, the case fails — note at the top of the
@@ -315,6 +321,15 @@ builds it (`_service` in main.py), binds it under that hostname and passes its U
 archive of tilrd-next and tilr-next with its checksum, as `tilrd update` and the
 installer read them. `echo` is a TCP echo service on port
 7007 (`tcp://echo:7007`), the far end of a pane's connection that must outlive a reload.
+
+## Coverage report
+
+`./dt coverage` (`uv run --no-project python itests/tools/coverage.py`, no Dagger) writes
+`openspec/coverage/coverage.md` and `coverage.json`: per capability, each requirement with
+the cases tagged for it, the cargo tests the spec text names ("Verified by …"), and each
+case's status in `results/latest` when there is one; requirements with neither are listed
+under "Uncovered". It exits 1 on an invalid registry. Run it after changing a requirement
+or a case's tags.
 
 ## Gotchas
 

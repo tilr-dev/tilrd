@@ -48,7 +48,7 @@ def back_to_normal(t: T, proxy, observer, client, pane: str, counter: Counter, s
     t.eq(client.run(pane, "echo typed-after-return"), 0, "input works after the return")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-client-that-no-longer-hears-the-server-is-dropped"])
 def a_cut_of_server_to_client_only_is_noticed_by_the_client_and_both_sides_let_go(t: T):
     """UC-041: freeze server -> client; the client notices the silence, the server drops it, it comes back."""
     server, proxy, observer, client, pane, counter = setup(t)
@@ -70,7 +70,7 @@ def a_cut_of_server_to_client_only_is_noticed_by_the_client_and_both_sides_let_g
     back_to_normal(t, proxy, observer, client, pane, counter, since)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-client-that-no-longer-hears-the-server-is-dropped"])
 def a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server(t: T):
     """UC-041: freeze server -> client under a client that keeps pinging without listening; the server must drop it."""
     server, proxy, observer, client, pane, counter = setup(t)
@@ -96,7 +96,10 @@ def a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server(t: T)
     counter.check_log()
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "client-liveness/a-client-that-no-longer-hears-the-server-is-dropped",
+    "client-liveness/clients-ping-the-server-with-ping",
+])
 def a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs(t: T):
     """UC-041: freeze client -> server; the server drops the silent client, the client misses its pongs; it comes back."""
     server, proxy, observer, client, pane, counter = setup(t)

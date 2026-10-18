@@ -12,7 +12,10 @@ from tt import CLIENT_EXE, T, case
 NOBODY = 65534
 
 
-@case()
+@case(spec=[
+    "access-control/the-unix-socket-checks-the-peer-s-uid",
+    "daemon-lifecycle/runtime-directory-and-socket-modes",
+])
 def another_user_cannot_use_the_socket(t: T):
     """UC-034: 0600 socket in a 0700 directory; uid 65534 is refused, by the permissions and by the server."""
     t.need("procfs", "root")

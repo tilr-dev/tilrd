@@ -87,13 +87,13 @@ def agent_case(t: T, cut, limit: float):
     t.ok(all(line.endswith("True") for line in lines[:-1]), "every echo of the next stream came back intact")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["ssh-agent-forwarding/a-client-that-goes-takes-its-streams-with-it"])
 def an_agent_stream_cut_by_a_reset_ends_for_the_program_and_the_next_one_works(t: T):
     """UC-047: RST in the middle of an agent stream; the program reads EOF at once, the next stream works."""
     agent_case(t, lambda proxy: proxy.cut(), limit=3)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["ssh-agent-forwarding/a-client-that-goes-takes-its-streams-with-it"])
 def an_agent_stream_on_a_silent_connection_ends_for_the_program_and_the_next_one_works(t: T):
     """UC-047: half-open in the middle of an agent stream; the program reads EOF once the server drops the client."""
     agent_case(t, lambda proxy: proxy.freeze(conn="open"), limit=CLIENT_TIMEOUT_S + 3)
@@ -153,13 +153,13 @@ def socks_case(t: T, cut, limit: float):
     t.eq(echo.opened, 2, "two connections reached the service")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["socks-proxy/a-session-ends-with-its-connection-and-with-the-server"])
 def a_socks_stream_cut_by_a_reset_ends_for_the_service_and_the_next_one_works(t: T):
     """UC-047: RST in the middle of a SOCKS session; the service sees the end at once, the next session works."""
     socks_case(t, lambda proxy, conn: proxy.cut(conn=conn), limit=3)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["socks-proxy/a-silent-socks-websocket-is-dropped"])
 def a_socks_stream_on_a_silent_connection_ends_for_the_service_and_the_next_one_works(t: T):
     """UC-047: half-open SOCKS session; the service sees the end once the server drops the silent WebSocket."""
     socks_case(t, lambda proxy, conn: proxy.freeze(conn=conn), limit=CLIENT_TIMEOUT_S + 3)

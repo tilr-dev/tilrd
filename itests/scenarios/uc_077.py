@@ -30,7 +30,7 @@ def start(t: T):
     return server, d
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/output-comes-apart-per-stream-then-execexit"])
 def exec_returns_stdout_and_stderr_apart_and_the_exit_code(t: T):
     """UC-077: sh -c 'echo out; echo err >&2; exit 3': stdout, stderr apart, code 3."""
     server, d = start(t)
@@ -38,7 +38,7 @@ def exec_returns_stdout_and_stderr_apart_and_the_exit_code(t: T):
     t.eq((r["stdout"], r["stderr"], r["code"], r["signal"]), ("out\n", "err\n", 3, 0), "outputs and status")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/the-program-runs-as-given-without-a-shell"])
 def exec_runs_no_shell_so_nothing_is_expanded(t: T):
     """UC-077: argv goes to the program as it is: no globbing, variables, substitution; cwd and env as asked."""
     server, d = start(t)
@@ -50,7 +50,7 @@ def exec_runs_no_shell_so_nothing_is_expanded(t: T):
     t.eq(r["ev"], "error", "a program that does not exist is refused at start")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/the-program-leads-its-own-process-group-which-execsignal-reaches"])
 def exec_reports_the_signal_that_killed_the_program(t: T):
     """UC-077: a program killed by SIGTERM (its own) and one sent SIGINT by the client: signal reported."""
     server, d = start(t)
@@ -63,7 +63,7 @@ def exec_reports_the_signal_that_killed_the_program(t: T):
     t.eq(r["signal"], 2, "killed by the SIGINT the client sent")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/a-time-limit-kills-the-program-and-its-group"])
 def exec_with_a_time_limit_is_killed_and_leaves_nothing_behind(t: T):
     """UC-077: sleep 30 with a 1 s limit: timed out within 3 s, the process and its children gone."""
     server, d = start(t)
@@ -74,7 +74,7 @@ def exec_with_a_time_limit_is_killed_and_leaves_nothing_behind(t: T):
     t.eventually(lambda: not t.procs(r"^sleep 3[01]$"), "no sleep is left running", timeout=3)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/execcancel-kills-at-once"])
 def a_cancelled_exec_ends_at_once_with_its_children(t: T):
     """UC-077: ExecCancel on a running program: it and its children end, the exit says cancelled."""
     server, d = start(t)
@@ -86,7 +86,7 @@ def a_cancelled_exec_ends_at_once_with_its_children(t: T):
     t.eventually(lambda: not t.procs(r"^sleep 4[01]$"), "no sleep is left running", timeout=3)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/output-is-paced-by-the-client"])
 def a_large_output_arrives_whole_and_in_order(t: T):
     """UC-077: 64 MiB on stdout and 1 MiB on stderr interleaved: both whole (sha256), apart."""
     server, d = start(t)
@@ -104,7 +104,7 @@ def a_large_output_arrives_whole_and_in_order(t: T):
          "stderr whole")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/stdin-is-fed-within-a-4-mib-window"])
 def stdin_given_to_exec_reaches_the_program(t: T):
     """UC-077: sha256sum fed 10 MiB on stdin in pieces, then EOF: the hash of what was sent."""
     server, d = start(t)
@@ -120,7 +120,7 @@ def stdin_given_to_exec_reaches_the_program(t: T):
     t.eq(r["stdout"], f"{hashlib.sha256(data.read_bytes()).hexdigest()}  -\n", "the program read all of it")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/execs-run-side-by-side"])
 def eight_execs_run_at_once(t: T):
     """UC-077: eight programs of 1 s each started together end in about 1 s, each with its own output."""
     server, d = start(t)
@@ -133,7 +133,7 @@ def eight_execs_run_at_once(t: T):
     t.eq(d.run(d.shell_pane(), "echo panes-still-work"), 0, "panes work beside them")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/execs-do-not-survive-a-reload-or-a-stop"])
 def a_reload_ends_the_running_execs_with_their_children_and_says_why(t: T):
     """UC-077: execs are not panes: a reload kills a running one and its children, the
     client hears ExecExit with reason "reload" before its connection goes; after it, exec
@@ -153,7 +153,7 @@ def a_reload_ends_the_running_execs_with_their_children_and_says_why(t: T):
     t.eq(d.cmd("exec", argv=["echo", "again"])["stdout"], "again\n", "exec after the reload")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["exec/a-client-s-execs-end-with-its-connection"])
 def a_client_that_goes_takes_its_execs_and_their_children_with_it(t: T):
     """UC-077: the client's connection ends (closed, or cut without a close): its running
     execs are killed with their process groups; the log says so with the client's id."""

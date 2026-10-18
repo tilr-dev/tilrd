@@ -42,7 +42,9 @@ def server_drops(server) -> int:
     return server.logged("client went silent, dropping") + server.logged("client stopped answering pings")
 
 
-@case(fixture="server_state", hosts=["phone"], net_admin=True, timeout=400)
+@case(fixture="server_state", hosts=["phone"], net_admin=True, timeout=400, spec=[
+    "client-liveness/a-lagging-client-skips-to-the-latest-screen",
+])
 def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it(t: T):
     """UC-043: 30% loss + 500±200 ms both ways for a minute: few disconnects, the screen keeps moving, recovery after."""
     server = t.server(listen="0.0.0.0:0", state=t.root / "state")
@@ -110,7 +112,7 @@ def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it
     t.eq(phone.run(typing, "echo typed-after", timeout=60), 0, "input works after the network heals")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-lagging-client-skips-to-the-latest-screen"])
 def a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect(t: T):
     """UC-043: layer 1: 300-700 ms per chunk and 30% of chunks held for a retransmission; no drop, the screen moves."""
     server = t.server(state=t.root / "state")

@@ -24,7 +24,7 @@ WantedBy=default.target
 """
 
 
-@case()
+@case(spec=["tilr-cli/service-uninstall-removes-only-its-own"])
 def uninstall_removes_the_unit_it_wrote_and_nothing_else(t: T):
     """UC-022: the unit disabled and removed, lingering off again, other units and the server untouched."""
     user = t.user()
@@ -53,7 +53,7 @@ def uninstall_removes_the_unit_it_wrote_and_nothing_else(t: T):
     t.eq(user.run("tilr", "ls", "-q", env=env).out, panes, "with its panes")
 
 
-@case()
+@case(spec=["tilr-cli/service-uninstall-removes-only-its-own"])
 def uninstall_leaves_lingering_it_did_not_turn_on(t: T):
     """UC-022: lingering was on before install: uninstall leaves it on."""
     user = t.user()
@@ -64,7 +64,7 @@ def uninstall_leaves_lingering_it_did_not_turn_on(t: T):
     t.lacks("\n".join(fake.called()), "disable-linger")
 
 
-@case()
+@case(spec=["tilr-cli/service-uninstall-removes-only-its-own"])
 def uninstall_removes_its_crontab_line_and_keeps_the_users(t: T):
     """UC-022: the @reboot line goes, the user's lines stay as they were."""
     user = t.user()
@@ -79,7 +79,7 @@ def uninstall_removes_its_crontab_line_and_keeps_the_users(t: T):
     t.eq(fake.crontab(), MINE + "\n", "the crontab as it was")
 
 
-@case()
+@case(spec=["tilr-cli/service-uninstall-removes-only-its-own"])
 def uninstall_removes_the_crontab_it_made(t: T):
     """UC-022: no crontab before install: none after uninstall."""
     user = t.user()
@@ -91,7 +91,7 @@ def uninstall_removes_the_crontab_it_made(t: T):
     t.ok("crontab -r" in fake.called(), "removed with crontab -r")
 
 
-@case()
+@case(spec=["tilr-cli/service-uninstall-removes-only-its-own"])
 def uninstall_leaves_what_it_did_not_write(t: T):
     """UC-022: nothing installed: nothing removed; a hand-written unit is left alone."""
     user = t.user()

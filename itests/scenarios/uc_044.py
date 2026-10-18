@@ -59,7 +59,7 @@ def resurrection(t: T, abandon: str, server_args=()):
     return server, proxy, observer, client, pane, counter, marks, revived
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-client-s-newer-connection-supersedes-its-older-one"])
 def a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connection(t: T):
     """UC-044: freeze the first connection 10 s; the client reconnects; on revival the old one ends, one viewer."""
     server, proxy, observer, client, pane, counter, marks, revived = resurrection(t, "close")
@@ -79,7 +79,7 @@ def a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connect
     t.eq(len(re.findall(r"(?m)^typed-after$", client.text(pane))), 1, "its output appears once")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-client-s-newer-connection-supersedes-its-older-one"])
 def a_revived_connection_left_open_by_the_client_was_superseded_by_its_reconnect(t: T):
     """UC-044: same, the client leaves the old socket open and unread; its reconnect superseded it, one viewer."""
     server, proxy, observer, client, pane, counter, marks, revived = resurrection(

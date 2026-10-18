@@ -8,7 +8,12 @@ from pathlib import Path
 from tt import T, case, descendants
 
 
-@case()
+@case(spec=[
+    "daemon-lifecycle/stopping",
+    "tilr-cli/how-an-attach-ends",
+    "tilr-cli/kill-server",
+    "tilr-cli/which-commands-start-the-local-server",
+])
 def kill_server_leaves_no_process_and_no_socket(t: T):
     """UC-017: kill-server with an attached client and three panes: nothing is left."""
     t.need("procfs")

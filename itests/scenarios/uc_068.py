@@ -20,7 +20,7 @@ from tt.live import state_files, wait_reloads
 ROUNDS = 20
 
 
-@case(fixture="server_state", timeout=420)
+@case(fixture="server_state", timeout=420, spec=["reload/a-stuck-pane-process-is-closed-not-carried-over"])
 def panes_created_while_the_server_reloads_are_whole_or_absent_and_every_reload_happens(t: T):
     """UC-068: 20 rounds of CreatePane racing SIGUSR1: listed panes and pane processes match, all answer, all reloads done."""
     server = t.server(state=t.root / "state")

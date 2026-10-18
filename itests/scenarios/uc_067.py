@@ -26,7 +26,7 @@ exec -a "$0" {next} "$@"
 """
 
 
-@case(fixture="server_state", services=["echo"])
+@case(fixture="server_state", services=["echo"], spec=["reload/state-formats-names-what-this-executable-reads"])
 def a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live_on(t: T):
     """UC-067: the update installs a release that reads another state format: no reload, panes and old version kept."""
     manifest = t.manifest()

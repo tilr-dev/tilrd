@@ -6,7 +6,7 @@ TCP port for the app. `sudo` is a script that notes being called: it never is.
 from tt import USER_PATH, T, case
 
 
-@case()
+@case(spec=["installation/without-systemd-the-install-still-works"])
 def without_root_sudo_or_systemd_everything_works(t: T):
     """UC-006: an unprivileged user in a container without systemd installs and uses tilr."""
     user = t.user()

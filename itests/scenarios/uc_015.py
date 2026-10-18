@@ -16,7 +16,7 @@ def socket_path(env: dict) -> Path:
     return path
 
 
-@case()
+@case(spec=["daemon-lifecycle/what-is-found-at-the-socket-path", "tilr-cli/connecting-and-saying-hello"])
 def another_programs_listener_at_the_socket_is_left_alone(t: T):
     """UC-015: a program that is not tilrd listens on the socket: a clear error, it keeps listening."""
     t.need("procfs")
@@ -57,7 +57,7 @@ def another_programs_listener_at_the_socket_is_left_alone(t: T):
     listener.close()
 
 
-@case()
+@case(spec=["daemon-lifecycle/what-is-found-at-the-socket-path"])
 def a_file_that_is_not_a_socket_is_left_alone(t: T):
     """UC-015: a plain file at the socket's path: a clear error, the file as it was."""
     t.need("procfs")

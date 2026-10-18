@@ -63,7 +63,9 @@ def move_to_lte(t: T, server, observer, wifi, lte, lte_url: str, pane: str, coun
     counter.check_log()
 
 
-@case(fixture="server_state", hosts=["wifi", "lte"])
+@case(fixture="server_state", hosts=["wifi", "lte"], spec=[
+    "client-liveness/a-client-s-newer-connection-supersedes-its-older-one",
+])
 def a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection(t: T):
     """UC-042: iptables DROP on the old network's container, the client returns from another container; one viewer."""
     server = t.server("--client-timeout", CLIENT_TIMEOUT_S, listen="0.0.0.0:0", state=t.root / "state")
@@ -83,7 +85,9 @@ def a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection(t: T
                 client_id=client_id)
 
 
-@case(fixture="server_state", hosts=["wifi", "lte"], services=["proxy"])
+@case(fixture="server_state", hosts=["wifi", "lte"], services=["proxy"], spec=[
+    "client-liveness/a-client-s-newer-connection-supersedes-its-older-one",
+])
 def a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_proxy(t: T):
     """UC-042: client, proxy and tilrd in three containers; the proxy freezes the old path, the client returns directly."""
     server = t.server("--client-timeout", CLIENT_TIMEOUT_S, listen="0.0.0.0:0", state=t.root / "state")

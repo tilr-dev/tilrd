@@ -14,7 +14,10 @@ from tt.live import LivePanes, reload_times, wait_reloads
 PROGRAMS = ("shell", "counter", "vim", "less", "python", "sleep", "tcp")
 
 
-@case(fixture="server_state", services=["cdn", "echo"], timeout=480)
+@case(fixture="server_state", services=["cdn", "echo"], timeout=480, spec=[
+    "reload/rollback-and-roll-forward-keep-the-panes",
+    "update/rolling-back-is-an-update-to-an-older-release",
+])
 def rolling_back_and_forward_again_keeps_the_panes_and_their_programs(t: T):
     """UC-066: current -> next -> current -> next with panes open; versions as asked, programs alive throughout."""
     manifest = t.manifest()

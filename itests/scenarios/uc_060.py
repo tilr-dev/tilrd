@@ -21,7 +21,11 @@ from tt.live import LivePanes, reload_times
 RELOADED = "resumed after reload with"
 
 
-@case(fixture="server_state", services=["cdn", "echo"], timeout=420)
+@case(fixture="server_state", services=["cdn", "echo"], timeout=420, spec=[
+    "reload/a-reload-keeps-pids-and-command-lines-and-leaves-no-state-file",
+    "reload/inherited-processes-are-waited-without-leaks",
+    "update/live-programs-survive-an-update",
+])
 def update_from_the_cdn_keeps_every_program_in_the_panes_alive(t: T):
     """UC-060: update with a shell, counter, vim, htop, less, python, sleep and a TCP connection running; all survive."""
     cdn = t.service("cdn")

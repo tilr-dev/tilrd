@@ -55,7 +55,7 @@ def start(t: T):
     return server, d, home, work
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/answers-carry-the-bytes-of-names-that-are-not-utf-8"])
 def odd_and_unicode_names_go_both_ways_and_keep_their_exact_bytes(t: T):
     """UC-071: spaces, quotes, tab, newline, Cyrillic, emoji, NFC/NFD, 200 chars: written, listed and read back exactly."""
     server, d, home, work = start(t)
@@ -79,7 +79,7 @@ def odd_and_unicode_names_go_both_ways_and_keep_their_exact_bytes(t: T):
          "both normal forms are kept as written, not normalized")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/requests-name-files-by-bytes-when-given"])
 def a_name_that_is_not_utf8_is_listed_so_that_it_can_be_read_back(t: T):
     """UC-071: a file named with bytes that are not UTF-8: listed, and the listed name reads the file back."""
     server, d, home, work = start(t)
@@ -97,7 +97,7 @@ def a_name_that_is_not_utf8_is_listed_so_that_it_can_be_read_back(t: T):
     t.eq(info["error"], "", "and stats it")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/only-the-shared-directories-are-served"])
 def symbolic_links_are_listed_followed_and_written_through_but_not_out_of_the_shared_directories(t: T):
     """UC-071: links to a file, a directory, nothing and outside: kinds, reads, writes through, the outside one refused."""
     server, d, home, work = start(t)
@@ -140,7 +140,10 @@ def symbolic_links_are_listed_followed_and_written_through_but_not_out_of_the_sh
     t.check("a link out of the shared directories leads nowhere", outside_refused)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "files/listings-describe-entries-without-following-links",
+    "files/writes-keep-permissions-and-go-through-links",
+])
 def permission_bits_are_kept_by_writes_and_told_by_listings(t: T):
     """UC-071: writes over 0750, 0600 and 2775 files keep the mode; a new file is 0666 less the umask; modes listed."""
     server, d, home, work = start(t)

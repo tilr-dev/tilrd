@@ -17,7 +17,10 @@ def events(d, since: int) -> list[dict]:
     return [e for e in d.events[since:] if e.get("ev") == "host_event"]
 
 
-@case(fixture="server_state", hosts=["tablet"])
+@case(fixture="server_state", hosts=["tablet"], spec=[
+    "clipboard-host-events/host-events-reach-every-listening-client-watching-the-pane",
+    "clipboard-host-events/tilr-edit-and-tilr-open-say-what-to-open",
+])
 def tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other(t: T):
     """UC-076: tilr edit / open in a pane reach both listening viewers (one on another host), not the others."""
     server = t.server(listen="0.0.0.0:0", state=t.root / "state")
@@ -59,7 +62,7 @@ def tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other(t: T):
     t.ok(server.logged("host event delivered pane"), "the server logged the deliveries")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["clipboard-host-events/tilr-edit-fails-with-a-reason-when-nobody-listens"])
 def tilr_edit_with_nobody_listening_fails_and_says_why(t: T):
     """UC-076: with no client listening on the pane, `tilr edit` exits non-zero: no tilr client attached."""
     server = t.server(state=t.root / "state")

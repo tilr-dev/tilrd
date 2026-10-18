@@ -108,19 +108,23 @@ def transfers_while_typing(t: T, writes: int, reads: int):
          f"({base['p99_ms']} ms)")
 
 
-@case(fixture="server_state", timeout=600)
+@case(fixture="server_state", timeout=600, spec=["client-liveness/frames-go-ahead-of-data-in-quantity"])
 def parallel_transfers_both_ways_leave_the_terminal_responsive_and_the_files_intact(t: T):
     """UC-072: 4 x 32 MiB up and 2 x 32 MiB down at once while typing every 50 ms: latency bounded, hashes equal."""
     transfers_while_typing(t, WRITES, READS)
 
 
-@case(fixture="server_state", timeout=600)
+@case(fixture="server_state", timeout=600, spec=[
+    "client-liveness/bulk-data-in-the-network-is-bounded-by-pongs",
+    "client-liveness/frames-go-ahead-of-data-in-quantity",
+    "files/file-content-goes-by-the-bulk-lane",
+])
 def parallel_reads_leave_the_terminal_responsive(t: T):
     """UC-072: 3 x 32 MiB down at once while typing (what the server queues ahead of the frames)."""
     transfers_while_typing(t, 0, 3)
 
 
-@case(fixture="server_state", timeout=600)
+@case(fixture="server_state", timeout=600, spec=["files/file-content-goes-by-the-bulk-lane"])
 def parallel_writes_leave_the_terminal_responsive(t: T):
     """UC-072: 3 x 32 MiB up at once while typing (what the client's own uploads put ahead of its keys)."""
     transfers_while_typing(t, 3, 0)

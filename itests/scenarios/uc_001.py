@@ -21,7 +21,12 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@case()
+@case(spec=[
+    "installation/both-executables-go-into-local-bin-without-root",
+    "installation/the-installer-reads-the-cdn-layout",
+    "installation/the-installer-sets-up-no-service",
+    "release-process/the-cdn-layout-is-one-archive-per-platform",
+])
 def the_installer_puts_tilrd_and_tilr_in_local_bin_without_root(t: T):
     """UC-001: no root: both executables in ~/.local/bin, checksums checked, the version printed."""
     user = t.user()

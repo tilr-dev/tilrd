@@ -14,7 +14,11 @@ from pathlib import Path
 from tt import T, case
 
 
-@case()
+@case(spec=[
+    "daemon-lifecycle/what-is-found-at-the-socket-path",
+    "tilr-cli/reconnect-while-attached",
+    "tilr-cli/which-commands-start-the-local-server",
+])
 def after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon(t: T):
     """UC-014: tilrd SIGKILLed; its socket is left; the next tilr cleans it up and starts tilrd."""
     t.need("procfs")

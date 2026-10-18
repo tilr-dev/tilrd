@@ -18,7 +18,12 @@ from tt import CLIENT_EXE, T, case
 NOBODY = 65534
 
 
-@case()
+@case(spec=[
+    "access-control/the-host-events-and-agent-sockets-check-the-peer-s-uid",
+    "clipboard-host-events/the-host-socket-is-private-and-goes-with-the-server",
+    "clipboard-host-events/the-host-socket-serves-the-user-s-own-programs-only",
+    "ssh-agent-forwarding/only-the-user-s-own-programs-may-use-the-socket",
+])
 def another_user_cannot_send_tilr_edit_to_the_pane(t: T):
     """UC-035: uid 65534 cannot reach $TILR_SOCK (permissions, then the server's uid check); the user can."""
     user = t.user()

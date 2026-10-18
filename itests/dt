@@ -6,6 +6,7 @@
 #   ./dt fixtures                 fixture graph
 #   ./dt fixture NAME             export one fixture snapshot to results/fixture-NAME
 #   ./dt call FUNCTION [ARGS]     any module function, e.g. ./dt call server export --path ./tilrd
+#   ./dt coverage                 write ../openspec/coverage/ from the specs and the case tags (no Dagger)
 #   ./dt history                  open results/index.html (all runs)
 #   ./dt clear [--keep N]         delete local run reports (all, or all but the N newest)
 #
@@ -22,8 +23,8 @@ call() { "$ENGINE" -m "$HERE" call --commit "$COMMIT" --distro "$DISTRO" "$@"; }
 
 cmd=test
 case "${1:-}" in
-  test|fixtures|fixture|call|history|clear) cmd=$1; shift ;;
-  -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  test|fixtures|fixture|call|history|clear|coverage) cmd=$1; shift ;;
+  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 case "$cmd" in
@@ -50,6 +51,7 @@ case "$cmd" in
     [ "$(cat "$out/status")" = ok ]
     ;;
   fixtures) call fixtures ;;
+  coverage) uv run --no-project --quiet python "$HERE/tools/coverage.py" "$@" ;;
   fixture)
     [ $# -eq 1 ] || { echo "usage: ./dt fixture NAME" >&2; exit 2; }
     out="$HERE/results/fixture-$1"

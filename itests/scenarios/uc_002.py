@@ -11,7 +11,7 @@ from pathlib import Path
 from tt import USER_PATH, T, case, changes, snapshot
 
 
-@case()
+@case(spec=["installation/path-is-advised-never-edited"])
 def without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing(t: T):
     """UC-002: the hint is a ready line for ~/.profile; nothing of the user's is edited."""
     user = t.user()

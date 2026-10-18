@@ -57,7 +57,9 @@ def curl(laptop, socks: int, url: str, out: str = "-", timeout: float = 60):
                       f"127.0.0.1:{socks}", "-o", out, url, timeout=timeout + 10, quiet=out != "-")
 
 
-@case(fixture="server_state", hosts=["laptop"])
+@case(fixture="server_state", hosts=["laptop"], spec=[
+    "socks-proxy/names-are-resolved-on-the-server-and-localhost-is-its-loopback",
+])
 def curl_on_the_clients_machine_reaches_a_service_on_the_servers_loopback(t: T):
     """UC-074: curl via the client's SOCKS port gets a page served only on the server's 127.0.0.1 (and localhost)."""
     root, port, server, laptop, d, socks = setup(t)
@@ -70,7 +72,7 @@ def curl_on_the_clients_machine_reaches_a_service_on_the_servers_loopback(t: T):
     t.eq((stats["sessions"], stats["failed"]), (2, 0), "two SOCKS sessions went through the client")
 
 
-@case(fixture="server_state", hosts=["laptop"])
+@case(fixture="server_state", hosts=["laptop"], spec=["socks-proxy/sessions-run-side-by-side-and-with-the-terminal"])
 def twenty_sessions_at_once_each_get_their_own_file(t: T):
     """UC-074: 20 curls at once through the client: each file arrives whole (sha256)."""
     root, port, server, laptop, d, socks = setup(t)
@@ -86,7 +88,9 @@ def twenty_sessions_at_once_each_get_their_own_file(t: T):
     t.eq((stats["sessions"], stats["failed"], stats["open"]), (20, 0, 0), "20 sessions, none failed, all closed")
 
 
-@case(fixture="server_state", hosts=["laptop"], timeout=400)
+@case(fixture="server_state", hosts=["laptop"], timeout=400, spec=[
+    "socks-proxy/sessions-run-side-by-side-and-with-the-terminal",
+])
 def a_big_response_through_socks_arrives_whole(t: T):
     """UC-074: 100 MiB through the client's SOCKS port: hash equal; throughput recorded."""
     root, port, server, laptop, d, socks = setup(t)

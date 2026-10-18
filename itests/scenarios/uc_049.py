@@ -48,7 +48,11 @@ def sample_rss(t: T, pid: int) -> tuple[list[int], threading.Event]:
     return samples, stop
 
 
-@case(fixture="server_state", timeout=400)
+@case(fixture="server_state", timeout=400, spec=[
+    "client-liveness/a-lagging-client-skips-to-the-latest-screen",
+    "metrics/a-lagging-client-skips-to-the-latest-screen",
+    "metrics/per-pane-frame-counters",
+])
 def a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others(t: T):
     """UC-049: 10 KB/s client, output storm: frames skipped for it, server memory bounded, the fast client unaffected."""
     server = t.server(state=t.root / "state")
@@ -118,7 +122,10 @@ def a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the
     slow.wait_for(storm, r"(?m)^after-storm$", timeout=20)
 
 
-@case(fixture="server_state", timeout=200)
+@case(fixture="server_state", timeout=200, spec=[
+    "client-liveness/a-client-whose-queue-fills-is-dropped",
+    "client-liveness/a-dropped-connection-really-ends",
+])
 def a_client_too_slow_even_for_the_latest_screen_is_dropped_and_its_connection_ends(t: T):
     """UC-049: 1 KB/s towards a client under an output storm: dropped within the client timeout, connection gone."""
     timeout_s = 6

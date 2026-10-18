@@ -48,7 +48,7 @@ def random_file(path: Path, size: int) -> Path:
     return path
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/reads-come-in-chunks", "files/writes-are-whole-or-not-at-all"])
 def files_of_zero_one_and_exactly_the_limit_go_both_ways_intact(t: T):
     """UC-070: 0 B, 1 B and exactly the limit (1 MiB): up and down, hashes equal, sizes and stat right."""
     server, d, hello, home = configured(t, "1MB")
@@ -70,7 +70,7 @@ def files_of_zero_one_and_exactly_the_limit_go_both_ways_intact(t: T):
     t.eq(sorted(p.name for p in home.glob(".*tilr-write-*")), [], "no temporary files")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["files/a-read-is-bounded-by-the-limit-and-fails-whole"])
 def a_file_one_byte_over_the_limit_is_refused_whole_and_read_in_parts(t: T):
     """UC-070: limit+1: the write is refused with nothing written; one read refused, reading in parts works."""
     server, d, hello, home = configured(t, "1MB")
@@ -96,7 +96,7 @@ def a_file_one_byte_over_the_limit_is_refused_whole_and_read_in_parts(t: T):
     t.eq((tail["error"], tail["size"]), ("", 1), "a read of the last byte")
 
 
-@case(fixture="server_state", timeout=900)
+@case(fixture="server_state", timeout=900, spec=["files/file-content-goes-by-the-bulk-lane"])
 def a_gigabyte_goes_up_and_comes_back_in_chunks_with_its_hash(t: T):
     """UC-070: 1 GiB up in 1 MiB chunks, down in 64 MiB parts; hashes equal; throughput and server memory recorded."""
     server, d, hello, home = configured(t, "1GB")

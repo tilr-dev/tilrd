@@ -83,6 +83,7 @@ class Case:
     title: str
     hosts: list[str] = dataclasses.field(default_factory=list)
     net_admin: bool = False
+    spec: list[str] = dataclasses.field(default_factory=list)
 
 
 def fixture(*, requires: tuple[str, ...] | list[str] = (), tilr: bool = False):
@@ -103,16 +104,19 @@ def fixture(*, requires: tuple[str, ...] | list[str] = (), tilr: bool = False):
 
 
 def case(*, fixture: str | None = None, services: tuple[str, ...] | list[str] = (), timeout: int = 300,
-         hosts: tuple[str, ...] | list[str] = (), net_admin: bool = False):
+         hosts: tuple[str, ...] | list[str] = (), net_admin: bool = False,
+         spec: tuple[str, ...] | list[str] = ()):
     """Register a scenario case: a fresh container (copy of the fixture snapshot), the
     services it names bound by hostname, killed after `timeout` seconds. `hosts`: containers
     of their own the case drives (t.host(name)); `net_admin`: the case's own container may
-    change its network (t.net())."""
+    change its network (t.net()). `spec`: the requirements of openspec/specs/ the case
+    verifies, as CAPABILITY/REQUIREMENT-SLUG[#SCENARIO-SLUG] (tt/specs.py); they match the
+    spec's "Verified by" lines and only feed `./dt coverage`, never the run."""
     def deco(fn):
         short = fn.__module__.rsplit(".", 1)[-1]
         title = (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else ""
         CASES.append(Case(f"{short}:{fn.__name__}", fn.__module__, fixture, list(services), timeout, fn, title,
-                          list(hosts), net_admin))
+                          list(hosts), net_admin, list(spec)))
         return fn
     return deco
 

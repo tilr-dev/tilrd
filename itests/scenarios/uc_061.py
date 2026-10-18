@@ -29,7 +29,10 @@ def modes(d, pane) -> dict:
     return {k: s[k] for k in ("text", "alt_screen", "mouse_tracking", "cursor_visible", "cursor")}
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "reload/screens-scrollback-and-programs-carry-over",
+    "screen-frames/terminal-modes-in-frames",
+])
 def vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it(t: T):
     """UC-061: vim with the mouse on: same screen and modes after a reload; mouse and :wq work."""
     server = t.server(state=t.root / "state")
@@ -69,7 +72,7 @@ def vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it(t: T):
     t.check(":wq writes the buffer held across the reload", wq_writes)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["reload/screens-scrollback-and-programs-carry-over"])
 def htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse(t: T):
     """UC-061: htop: alternate screen, mouse on, cursor hidden after a reload; redraws, takes keys and F10."""
     server = t.server(state=t.root / "state")

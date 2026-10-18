@@ -14,7 +14,7 @@ from tt import T, Counter, case
 CYCLES = 1000
 
 
-@case(fixture="server_state", timeout=900)
+@case(fixture="server_state", timeout=900, spec=["client-liveness/a-connection-that-ends-is-forgotten-at-once"])
 def a_thousand_resets_leave_one_viewer_and_flat_server_memory_and_descriptors(t: T):
     """UC-050: 1000 RST cycles with auto reconnect; viewers 1, server fds flat, RSS growth small."""
     server = t.server(state=t.root / "state")

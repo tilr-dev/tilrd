@@ -55,7 +55,7 @@ def after_return(t: T, client, pane: str, marks, typed: list[str]):
     return counts
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-new-connection-starts-afresh"])
 def input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled(t: T):
     """UC-048: RST after 20 of 60 rapid inputs; what ran is the first part, in order, once; input works after."""
     server, proxy, client, pane, marks = setup(t)
@@ -68,7 +68,7 @@ def input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled(t:
     t.eq(got, names[:len(got)], "the inputs that ran are the first ones, in order")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-new-connection-starts-afresh"])
 def input_typed_into_a_silent_connection_is_lost_but_never_doubled(t: T):
     """UC-048: freeze, type for 3 s, the client reconnects after the network returns; held input never runs twice."""
     server, proxy, client, pane, marks = setup(t, "--client-timeout", CLIENT_TIMEOUT_S)
@@ -85,7 +85,7 @@ def input_typed_into_a_silent_connection_is_lost_but_never_doubled(t: T):
     after_return(t, client, pane, marks, typed)
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["client-liveness/a-new-connection-starts-afresh"])
 def input_held_in_a_connection_that_revives_arrives_once_at_most(t: T):
     """UC-048: freeze the connection, type, the client reconnects; the old connection revives with the held input."""
     server, proxy, client, pane, marks = setup(t)

@@ -88,7 +88,7 @@ def start(t: T):
     return server, d
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["screen-frames/keys-are-encoded-as-the-terminal-s-modes-say"])
 def ctrl_alt_function_and_cursor_keys_reach_the_program_as_xterm_sends_them(t: T):
     """UC-079: Ctrl-A..Z, Alt, F1-F12, arrows, editing keys: the program reads xterm's bytes for each."""
     server, d = start(t)
@@ -102,7 +102,7 @@ def ctrl_alt_function_and_cursor_keys_reach_the_program_as_xterm_sends_them(t: T
     t.eq(wrong, {}, "keys whose bytes differ from xterm's")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["screen-frames/pasting"])
 def bracketed_paste_wraps_the_text_and_cannot_be_ended_by_the_text(t: T):
     """UC-079: with ?2004 on a paste comes inside ESC[200~ ... ESC[201~; a pasted ESC[201~ cannot close it early."""
     server, d = start(t)
@@ -118,7 +118,7 @@ def bracketed_paste_wraps_the_text_and_cannot_be_ended_by_the_text(t: T):
     t.ok(got.endswith(b"\x1b[201~"), "and it comes last")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["screen-frames/pasting"])
 def a_paste_without_bracketed_mode_is_plain_text(t: T):
     """UC-079: with ?2004 off a paste is the text alone, no markers."""
     server, d = start(t)
@@ -127,7 +127,10 @@ def a_paste_without_bracketed_mode_is_plain_text(t: T):
     t.eq(got, b"plain paste", "the text, nothing else")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "screen-frames/mouse-input-reaches-only-a-program-that-asked-for-it",
+    "screen-frames/terminal-modes-in-frames",
+])
 def the_mouse_reaches_an_application_that_asked_for_it_and_no_other(t: T):
     """UC-079: SGR mouse on: press, release, drag and wheel at cells as ESC[<b;x;yM/m; off: nothing is sent."""
     server, d = start(t)
@@ -159,7 +162,10 @@ def the_mouse_reaches_an_application_that_asked_for_it_and_no_other(t: T):
     t.eq(wrong, {}, "mouse events whose bytes differ from xterm's SGR reports")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=[
+    "screen-frames/an-ascii-character-wins-over-the-physical-key",
+    "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout",
+])
 def ctrl_c_on_a_russian_layout_is_ctrl_c(t: T):
     """UC-079: Ctrl+С on a Russian layout (text 'с', code KeyC) reads as ^C and interrupts sleep; Dvorak, AZERTY too."""
     server, d = start(t)

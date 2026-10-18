@@ -8,7 +8,7 @@ import signal
 from tt import SERVER_EXE, T, case
 
 
-@case()
+@case(spec=["daemon-lifecycle/foreground-service-with-its-log-on-stderr", "tilr-cli/how-an-attach-ends"])
 def tilr_attaches_to_a_tilrd_running_in_the_foreground(t: T):
     """UC-016: `tilrd` in the foreground, log on stderr; tilr uses it; SIGTERM stops it cleanly."""
     t.need("procfs")

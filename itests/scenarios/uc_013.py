@@ -19,7 +19,7 @@ import time
 from tt import T, case
 
 
-@case()
+@case(spec=["daemon-lifecycle/sighup-is-ignored-and-panes-have-their-own-sessions"])
 def tilr_in_an_ssh_session_leaves_tilrd_and_its_shell_when_the_session_drops(t: T):
     """UC-013: `tilr` in an SSH login shell; the connection drops; a new tilr finds the same shell."""
     t.need("linux", "procfs")
@@ -92,13 +92,13 @@ def after_hangup(t: T, ssh, server, d, shell, before, panes):
     print("  ok: the counter keeps counting")
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["daemon-lifecycle/sighup-is-ignored-and-panes-have-their-own-sessions"])
 def tilrd_started_from_an_ssh_login_shell_survives_the_session_dropping(t: T):
     """UC-013: `tilrd &` in an SSH login shell; the connection drops; panes live on."""
     after_hangup(t, *prepare(t, "tilrd --listen 127.0.0.1:0"))
 
 
-@case(fixture="server_state")
+@case(fixture="server_state", spec=["daemon-lifecycle/sighup-is-ignored-and-panes-have-their-own-sessions"])
 def tilrd_started_with_setsid_keeps_its_panes_when_the_ssh_session_drops(t: T):
     """UC-013: tilrd detached by hand (setsid) from an SSH session; the session drops; panes live on."""
     after_hangup(t, *prepare(t, "setsid tilrd --listen 127.0.0.1:0"))

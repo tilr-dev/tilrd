@@ -52,7 +52,9 @@ def setup(t: T, forward: bool = True):
     return laptop, git, server, d, pane, listed, public
 
 
-@case(fixture="server_state", hosts=["laptop", "git"])
+@case(fixture="server_state", hosts=["laptop", "git"], spec=[
+    "ssh-agent-forwarding/real-ssh-and-git-use-the-forwarded-agent",
+])
 def ssh_add_in_a_pane_lists_the_keys_of_the_clients_agent(t: T):
     """UC-078: ssh-add -l / -L in a pane show exactly the key held by the agent on the client's machine."""
     laptop, git, server, d, pane, listed, public = setup(t)
@@ -64,7 +66,9 @@ def ssh_add_in_a_pane_lists_the_keys_of_the_clients_agent(t: T):
     t.ok(not list(t.root.glob("**/id")), "no private key on the server's machine")
 
 
-@case(fixture="server_state", hosts=["laptop", "git"])
+@case(fixture="server_state", hosts=["laptop", "git"], spec=[
+    "ssh-agent-forwarding/real-ssh-and-git-use-the-forwarded-agent",
+])
 def git_clone_over_ssh_uses_the_forwarded_agent_and_ssh_a_forwards_it_further(t: T):
     """UC-078: git clone root@git:/srv/repo.git in a pane authenticates with the client's key; ssh -A git ssh-add -l too."""
     laptop, git, server, d, pane, listed, public = setup(t)
@@ -77,7 +81,9 @@ def git_clone_over_ssh_uses_the_forwarded_agent_and_ssh_a_forwards_it_further(t:
     t.eq(out.read_text().strip(), listed, "the agent forwarded one hop further lists the laptop's key")
 
 
-@case(fixture="server_state", hosts=["laptop", "git"])
+@case(fixture="server_state", hosts=["laptop", "git"], spec=[
+    "ssh-agent-forwarding/with-no-agent-client-the-program-finds-no-agent",
+])
 def without_the_clients_agent_the_clone_is_refused(t: T):
     """UC-078: a client that does not forward its agent: ssh-add finds no keys, git clone is denied."""
     laptop, git, server, d, pane, listed, public = setup(t, forward=False)

@@ -22,7 +22,7 @@ def install(t: T, linger: str = "yes", linger_ok: bool = True):
     return user, fake, env
 
 
-@case()
+@case(spec=["daemon-lifecycle/ready-notification-for-a-service-manager", "tilr-cli/service-install-with-systemd"])
 def service_install_writes_a_notify_user_unit_and_enables_it(t: T):
     """UC-020: the unit's ExecStart, Type=notify and Restart; daemon-reload and enable --now."""
     user, fake, env = install(t)
@@ -61,7 +61,7 @@ def service_install_writes_a_notify_user_unit_and_enables_it(t: T):
     t.eq(len(t.tilrd_daemons()), 1, "one tilrd")
 
 
-@case()
+@case(spec=["tilr-cli/service-install-with-systemd"])
 def with_lingering_off_install_turns_it_on_and_notes_it(t: T):
     """UC-020: lingering off: loginctl enable-linger, the unit notes it for uninstall."""
     user, fake, env = install(t, linger="no")
@@ -72,7 +72,7 @@ def with_lingering_off_install_turns_it_on_and_notes_it(t: T):
     t.has(r.err, "lingering turned on")
 
 
-@case()
+@case(spec=["tilr-cli/service-install-with-systemd"])
 def a_running_tilrd_is_left_alone(t: T):
     """UC-020: a tilrd `tilr` started runs: the unit is enabled, not started; the server is untouched."""
     user, fake, env = install(t)

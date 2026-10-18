@@ -34,7 +34,7 @@ def log(user) -> str:
     return (Path("/tmp") / f"tilr-{user.uid}" / "tilrd.log").read_text()
 
 
-@case()
+@case(spec=["installation/installing-the-same-release-again-changes-nothing"])
 def installing_the_same_release_again_changes_nothing(t: T):
     """UC-003: the same release again: files untouched, the server not reloaded, exit 0."""
     user, cdn, url, env, bin, daemon = setup(t)
@@ -56,7 +56,11 @@ def installing_the_same_release_again_changes_nothing(t: T):
     t.eq(user.run(str(bin / "tilr"), "ls", "-q").out, panes, "the same panes")
 
 
-@case()
+@case(spec=[
+    "installation/a-new-release-reloads-the-running-server",
+    "reload/a-replaced-executable-is-reloaded-into-automatically",
+    "reload/the-tcp-listener-carries-over",
+])
 def installing_a_new_release_reloads_the_running_server_and_keeps_its_shells(t: T):
     """UC-003: a new release over a running tilrd: it reloads in place, shells and their state kept."""
     user, cdn, url, env, bin, daemon = setup(t)

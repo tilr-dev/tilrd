@@ -10,7 +10,7 @@ from pathlib import Path
 from tt import SERVER_EXE, T, case
 
 
-@case()
+@case(spec=["daemon-lifecycle/socket-path-length", "daemon-lifecycle/socket-required-or-optional"])
 def a_socket_path_longer_than_sun_path_is_a_clear_error(t: T):
     """UC-037: XDG_RUNTIME_DIR so deep the socket path is over 107 bytes: tilr and tilrd say so."""
     t.need("procfs")

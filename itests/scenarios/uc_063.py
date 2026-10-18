@@ -17,7 +17,10 @@ from tt import T, case
 from tt.live import reload_times
 
 
-@case(fixture="server_state", services=["cdn"], timeout=300)
+@case(fixture="server_state", services=["cdn"], timeout=300, spec=[
+    "reload/client-connections-end-and-clients-reconnect",
+    "update/live-programs-survive-an-update",
+])
 def a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled(t: T):
     """UC-063: typing every 20 ms through an update; the client reconnects itself; each line arrives once, in order."""
     manifest = t.manifest()

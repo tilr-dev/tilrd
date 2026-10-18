@@ -9,6 +9,7 @@ import traceback
 from pathlib import Path
 
 import tt
+from tt import specs as specmod
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +33,20 @@ def registry() -> dict:
     for c in tt.CASES:
         if c.fixture and c.fixture not in fixtures:
             errors.append(f"case {c.id}: unknown fixture {c.fixture}")
+        if not c.spec:
+            errors.append(f"case {c.id}: no spec tag (@case(spec=[...]))")
+    # The specs are next to the module in a checkout, not in a test container: the tags
+    # are checked where they can be.
+    try:
+        specs = specmod.load()
+    except FileNotFoundError:
+        specs = None
+    if specs is not None:
+        for c in tt.CASES:
+            for tag in c.spec:
+                reason = specmod.check_tag(tag, specs)
+                if reason:
+                    errors.append(f"case {c.id}: unknown spec tag {tag} ({reason})")
 
     def visit(name, path):
         if name in path:
@@ -49,7 +64,8 @@ def registry() -> dict:
         "fixtures": {f.name: {"module": f.module, "requires": f.requires, "tilr": f.tilr, "doc": f.doc}
                      for f in fixtures.values()},
         "cases": [{"id": c.id, "module": c.module, "fixture": c.fixture, "services": c.services,
-                   "timeout": c.timeout, "title": c.title, "hosts": c.hosts, "net_admin": c.net_admin}
+                   "timeout": c.timeout, "title": c.title, "hosts": c.hosts, "net_admin": c.net_admin,
+                   "spec": c.spec}
                   for c in tt.CASES],
     }
 

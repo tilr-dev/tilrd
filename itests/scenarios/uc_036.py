@@ -11,7 +11,7 @@ from pathlib import Path
 from tt import T, case
 
 
-@case()
+@case(spec=["ssh-agent-forwarding/sockets-a-killed-server-left-are-swept-at-start"])
 def agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start(t: T):
     """UC-036: SIGKILL leaves agent/<pane>.sock; the next tilrd removes them and makes its own."""
     user = t.user()
