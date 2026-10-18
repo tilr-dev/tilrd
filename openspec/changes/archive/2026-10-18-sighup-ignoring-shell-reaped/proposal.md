@@ -9,6 +9,7 @@
 
 - When a pane process loses its supervisor (server stop, `tilr kill-server`, or the supervisor killed), it notes the pty's foreground process group, sends SIGHUP to the shell's group and that foreground group, waits up to 2 s for the shell to exit and both groups to empty, then SIGKILLs what is left of the two groups, and only then exits (design D1, D2).
 - `ClosePane` ends the same two groups the same way (today: the shell's group only).
+- A stopping server closes the pipes to its pane processes and waits up to 3 s for them to exit instead of SIGKILLing them as it exits (found while implementing: the pane process handles are `kill_on_drop`; design D4).
 - Background jobs in other process groups (`nohup cmd &`, `disown`ed jobs) are left as a terminal hangup leaves them (design D3).
 - A reload is unaffected: the pane process execs and keeps the pty; nothing is signalled.
 - itests UC-086 gets its scenario.
@@ -27,7 +28,7 @@
 
 ## Impact
 
-`crates/tilrd/src/pane.rs` (stop path, `ClosePane`), `crates/tilrd/src/pty.rs` (foreground group of the master), `crates/tilrd/tests/panes.rs`, itests `uc_086.py` (new), USE_CASES.md, itests/USE_CASES.md (UC-086), README "Stopping". A server stop takes up to 2 s longer when a program ignores SIGHUP (`tilr kill-server` waits 10 s). No protocol change, no PROTOCOL_VERSION or feature change, no state format change; nothing crosses a reload (a reload signals nothing). An update from the previous release changes nothing until the server stops. Not breaking.
+`crates/tilrd/src/pane.rs` (stop path, `ClosePane`), `crates/tilrd/src/pty.rs` (foreground group of the master), `crates/tilrd/src/supervisor.rs` (wait for the pane processes on a stop), `crates/tilrd/tests/panes.rs`, itests `uc_086.py` (new), USE_CASES.md, itests/USE_CASES.md (UC-086), README "Stopping". A server stop takes up to 2 s longer when a program ignores SIGHUP (`tilr kill-server` waits 10 s). No protocol change, no PROTOCOL_VERSION or feature change, no state format change; nothing crosses a reload (a reload signals nothing). An update from the previous release changes nothing until the server stops. Not breaking.
 
 ## Decision (2026-10-18)
 

@@ -211,13 +211,17 @@ A pane SHALL keep running, with its screen and history, when its viewers disconn
 - **THEN** it gets a full frame with `cols` 50 and `rows` 10, `stty size` in the pane prints `10 50`, and `PaneInfo` says 50 x 10
 
 ### Requirement: Closing a pane ends its program
-`ClosePane` SHALL send SIGHUP to the process group of the pane's program and, if it has not exited 2 s later, SIGKILL; the pane then exits as any pane does.
+`ClosePane` SHALL send SIGHUP to the process group of the pane's program and to the pty's foreground process group and, if they have not emptied 2 s later, SIGKILL both; the pane then exits as any pane does.
 
-**Verified by**: `panes::closing_a_pane_ends_its_shell`.
+**Verified by**: `panes::closing_a_pane_ends_its_shell`, `panes::closing_a_pane_ends_a_foreground_program_ignoring_sighup`.
 
 #### Scenario: Close
 - **WHEN** a client sends `ClosePane` for a pane running a shell
 - **THEN** it gets `PaneExited` for that pane and `ListPanes` no longer lists it
+
+#### Scenario: Close with a foreground job ignoring SIGHUP
+- **WHEN** a pane's shell runs `sh -c 'trap "" HUP; sleep 1000'` in the foreground and a client sends `ClosePane`
+- **THEN** within 3 s the client gets `PaneExited` and the `sleep` is no longer running
 
 ### Requirement: Reporting how a pane's program exited
 When the pane's program ends, the pane SHALL send a last frame, then the server SHALL send `PaneExited{pane_id, exit_code}` to every connected client, remove the pane and push a `PaneList`. `exit_code` SHALL be the exit status, or -1 when the program was killed by a signal, had not exited 2 s after its pty closed (it is then killed), or the pane process died.
@@ -280,7 +284,7 @@ The server SHALL send its id in `HelloAck.server_id`: a UUID made when it first 
 
 ## Notes
 
-- Requirements without a test: "A pane that cannot start is reported to its creator", "When a pane was used last" (`used_at_ms` is read by `tilr`'s choice of pane, see `tilr-cli`, but no test asserts it). Parts without a test: the -1 exit code cases, the SIGKILL 2 s after `ClosePane`, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
+- Requirements without a test: "A pane that cannot start is reported to its creator", "When a pane was used last" (`used_at_ms` is read by `tilr`'s choice of pane, see `tilr-cli`, but no test asserts it). Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
 - Unit tests are cited as `module::tests::name` with their source file.
 - README "Layout" says the pane gets `HOME`, `USER`, `LOGNAME`; the code sets them only when the server's own environment lacks them (an inherited `HOME` wins over the password database). README also leaves the value of `COLORTERM` (`truecolor`) unsaid.
-- UC-082 (a 65535 x 65535 `Resize` is refused, the pane lives) is a planned itests case without a scenario; at HEAD a resize is clamped to 65535, not refused. UC-086 (a shell that ignores SIGHUP is left as an orphan when the server stops) is marked as a known bug (FAIL) in itests/USE_CASES.md and has no scenario yet; stopping the server is in `daemon-lifecycle`.
+- UC-082 (a 65535 x 65535 `Resize` is refused, the pane lives) is a planned itests case without a scenario; at HEAD a resize is clamped to 65535, not refused. Stopping the server, and what it ends in a pane (UC-086), is in `daemon-lifecycle`.

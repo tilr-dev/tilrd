@@ -181,13 +181,21 @@ SIGTERM and SIGINT SHALL stop the server: it SHALL stop accepting work, log `shu
 - **THEN** no tilrd, pane process or program in a pane is left, `tilrd.sock` and `tilrd.sock.lock` are gone, and `tilr ls` says `no tilrd runs`
 
 ### Requirement: No shell outlives the server
-When the server stops, a shell (or program) in a pane that ignores SIGHUP SHALL NOT be left running as an orphan: it SHALL be ended (killed after a grace period) before or as its pane process exits.
+When the server stops or its supervisor dies, a program in a pane that ignores SIGHUP SHALL NOT be left running: each pane process SHALL send SIGHUP to its shell's process group and the pty's foreground process group, SIGKILL what is left of them 2 s later, then exit; a stopping server SHALL wait up to 3 s for its pane processes. Background jobs in other groups (`nohup cmd &`) SHALL be left.
 
-**Verified by**: tracked as itests `UC-086` (no scenario yet).
+**Verified by**: `panes::a_shell_ignoring_sighup_is_ended_when_the_server_stops`, `panes::a_foreground_program_ignoring_sighup_is_ended_when_the_server_stops`, `panes::a_nohup_background_job_is_left_when_the_server_stops`; itests `UC-086` (`uc_086.py::a_shell_ignoring_sighup_does_not_outlive_the_server`).
 
 #### Scenario: Shell ignoring SIGHUP
 - **WHEN** a pane runs a program that ignores SIGHUP and the server receives SIGTERM
-- **THEN** after the server has exited, that program is no longer running
+- **THEN** once the server and its pane process have exited, that program is no longer running
+
+#### Scenario: Foreground job ignoring SIGHUP
+- **WHEN** a pane's shell runs `sh -c 'trap "" HUP; sleep 1000'` in the foreground and the user runs `tilr kill-server`
+- **THEN** when `tilr kill-server` has returned, the `sleep` is no longer running
+
+#### Scenario: nohup job
+- **WHEN** a pane's shell started `nohup sleep 1000 &` and the server receives SIGTERM
+- **THEN** that `sleep` is still running after the server and its pane process have exited
 
 ### Requirement: State directory
 What outlives a restart SHALL be kept in the state directory: `$TILR_STATE_DIR`, else `$XDG_STATE_HOME/tilr`, else `~/.local/state/tilr`, created 0700 (its parents as usual) when missing. The server's id SHALL be the UUID in `server-id` there (0600), made on first start and written aside and hard-linked into place so concurrent starts agree; a server that cannot keep it SHALL warn and use an id that lasts until it stops. The token file kept there is the `access-control` spec's.
@@ -213,8 +221,7 @@ The server and `tilr` SHALL open the socket's lock file (`<socket>.lock`) and `t
 
 ## Notes
 
-- Requirements without a test: No shell outlives the server (UC-086 has no scenario). Partly untested: the "logged once" part of the SIGHUP requirement; in "tilr starts tilrd detached" the start timeout, the log-tail messages and the `$TILRD` fallback; the other-bind-error and another-user's-socket messages.
+- Partly untested: the "logged once" part of the SIGHUP requirement; in "tilr starts tilrd detached" the start timeout, the log-tail messages and the `$TILRD` fallback; the other-bind-error and another-user's-socket messages.
 - The "Verified by" line is written as an OpenSpec metadata line (`**Verified by**: …`) so that it does not count toward the 500-character requirement-text limit of `openspec validate --strict`.
-- UC-086 (itests/USE_CASES.md group H, "Шелл, игнорирующий SIGHUP, при остановке сервера — не остаётся сиротой. (Сейчас баг — FAIL.)") has no `uc_086.py` scenario. The code confirms the bug: on shutdown a pane process that sees its supervisor pipe close returns at once (crates/tilrd/src/pane.rs:352-354, "Exiting closes the pty, which hangs up the shell") with no SIGHUP-then-SIGKILL grace, unlike `ClosePane` (pane.rs:559-560, 2 s `KILL_GRACE`); a shell ignoring SIGHUP is left running. `tilr kill-server` waits only for the pane processes' pids (crates/tilr/src/daemon.rs `stop`), so it reports success while such a shell lives on. The requirement states the intended behavior.
 - The TCP port is bound before the Unix socket is claimed (crates/tilrd/src/supervisor.rs `run`), which is why a taken port leaves no socket.
 - For a non-default socket path the server makes the directory 0700 only when it creates it; an existing directory keeps its mode (crates/tilrd/src/local.rs `claim`).

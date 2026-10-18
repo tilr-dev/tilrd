@@ -1,17 +1,17 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 148,
+  "cases": 149,
   "last_run": {
-   "started": "2026-10-18T12:16:30.630170+00:00",
+   "started": "2026-10-18T12:27:59.577502+00:00",
    "commit": null,
    "counts": {
-    "PASS": 150,
+    "PASS": 151,
     "FAIL": 0,
     "BLOCKED": 0
    },
    "args": "--only scenarios",
-   "path": "itests/results/20261018T141615-7806"
+   "path": "itests/results/20261018T142745-86692"
   }
  },
  "capabilities": [
@@ -2401,19 +2401,47 @@
      "title": "No shell outlives the server",
      "tag": "daemon-lifecycle/no-shell-outlives-the-server",
      "cases": [],
-     "all_cases": [],
-     "cargo_tests": [],
+     "all_cases": [
+      "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server"
+     ],
+     "cargo_tests": [
+      "panes::a_shell_ignoring_sighup_is_ended_when_the_server_stops",
+      "panes::a_foreground_program_ignoring_sighup_is_ended_when_the_server_stops",
+      "panes::a_nohup_background_job_is_left_when_the_server_stops"
+     ],
      "scenarios": [
       {
        "slug": "shell-ignoring-sighup",
        "title": "Shell ignoring SIGHUP",
        "tag": "daemon-lifecycle/no-shell-outlives-the-server#shell-ignoring-sighup",
-       "cases": [],
-       "covered": false
+       "cases": [
+        "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "foreground-job-ignoring-sighup",
+       "title": "Foreground job ignoring SIGHUP",
+       "tag": "daemon-lifecycle/no-shell-outlives-the-server#foreground-job-ignoring-sighup",
+       "cases": [
+        "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "nohup-job",
+       "title": "nohup job",
+       "tag": "daemon-lifecycle/no-shell-outlives-the-server#nohup-job",
+       "cases": [
+        "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server"
+       ],
+       "covered": true
       }
      ],
-     "covered": false,
-     "last_run": {}
+     "covered": true,
+     "last_run": {
+      "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server": "PASS"
+     }
     },
     {
      "slug": "state-directory",
@@ -5098,13 +5126,21 @@
      "cases": [],
      "all_cases": [],
      "cargo_tests": [
-      "panes::closing_a_pane_ends_its_shell"
+      "panes::closing_a_pane_ends_its_shell",
+      "panes::closing_a_pane_ends_a_foreground_program_ignoring_sighup"
      ],
      "scenarios": [
       {
        "slug": "close",
        "title": "Close",
        "tag": "panes/closing-a-pane-ends-its-program#close",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "close-with-a-foreground-job-ignoring-sighup",
+       "title": "Close with a foreground job ignoring SIGHUP",
+       "tag": "panes/closing-a-pane-ends-its-program#close-with-a-foreground-job-ignoring-sighup",
        "cases": [],
        "covered": false
       }
@@ -10875,6 +10911,15 @@
    "spec": [
     "access-control/cloud-does-not-decide-who-connects",
     "cloud-tunnels/a-server-without-authentication-takes-no-tunnel"
+   ],
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server",
+   "spec": [
+    "daemon-lifecycle/no-shell-outlives-the-server#shell-ignoring-sighup",
+    "daemon-lifecycle/no-shell-outlives-the-server#foreground-job-ignoring-sighup",
+    "daemon-lifecycle/no-shell-outlives-the-server#nohup-job"
    ],
    "last_run": "PASS"
   }

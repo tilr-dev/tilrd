@@ -192,6 +192,9 @@ struct Pane {
     shell: pty::Process,
     /// When to kill a shell that was asked to close and has not exited.
     kill_at: Option<Instant>,
+    /// The process groups hung up (the shell's, the pty's foreground one),
+    /// killed if they have not emptied by `kill_at`.
+    hung_up: Vec<libc::pid_t>,
     /// Input waiting for the pty to accept it.
     pending_input: Vec<u8>,
     seq: u64,
@@ -327,6 +330,7 @@ async fn serve(args: Args) -> Result<()> {
         to_supervisor,
         shell,
         kill_at: None,
+        hung_up: Vec::new(),
         pending_input,
         seq,
         // A resumed pane redraws its clients from the restored screen.
@@ -380,16 +384,27 @@ async fn serve(args: Args) -> Result<()> {
                     tracing::error!(pane = pane.id, "reload failed: {err:#}");
                     read_supervisor(packet_tx.clone());
                 }
-                // The supervisor is gone: nothing left to serve. Exiting
-                // closes the pty, which hangs up the shell.
-                Some(FromSupervisor::Closed) | None => return Ok(()),
+                // The supervisor is gone (the server stops, or died):
+                // nothing left to serve. What a closed terminal would end
+                // is ended, a program ignoring SIGHUP included, before this
+                // process exits and closes the pty.
+                Some(FromSupervisor::Closed) | None => {
+                    pane.hang_up();
+                    let deadline = Instant::now() + KILL_GRACE;
+                    if tokio::time::timeout_at(deadline, pane.shell.wait()).await.is_err() {
+                        pane.kill_groups();
+                        let _ = tokio::time::timeout(KILL_GRACE, pane.shell.wait()).await;
+                    }
+                    pane.end_groups(deadline).await;
+                    return Ok(());
+                }
             },
             () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
                 pane.send_frame().await?;
             }
             () = tokio::time::sleep_until(pane.kill_at.unwrap_or_else(Instant::now)), if pane.kill_at.is_some() => {
                 pane.kill_at = None;
-                pane.signal_shell(libc::SIGKILL);
+                pane.kill_groups();
             }
         }
     }
@@ -404,6 +419,10 @@ async fn serve(args: Args) -> Result<()> {
             -1
         }
     };
+    // Closed: what of the groups hung up is left goes at the deadline.
+    if let Some(deadline) = pane.kill_at {
+        pane.end_groups(deadline).await;
+    }
     let packet = tilr_proto::encode(&PaneExited {
         pane_id: pane.id.clone(),
         exit_code,
@@ -462,6 +481,44 @@ impl Pane {
         self.stats.input_us = micros(received.elapsed());
         self.input_credited = true;
         self.dirty = true;
+    }
+
+    /// Hang up the pane's program as a closed terminal would: SIGHUP to the
+    /// shell's process group and to the pty's foreground process group (a
+    /// job of the shell in a group of its own), both noted for
+    /// [`Pane::kill_groups`]. Background jobs in other groups are left.
+    fn hang_up(&mut self) {
+        let shell = self.shell.pid().map(|pid| pid as libc::pid_t);
+        let foreground = pty::foreground_group(self.pty.get_ref().as_fd());
+        for group in [shell, foreground].into_iter().flatten() {
+            if !self.hung_up.contains(&group) {
+                self.hung_up.push(group);
+            }
+        }
+        for &group in &self.hung_up {
+            pty::signal_group(group as u32, libc::SIGHUP);
+        }
+    }
+
+    /// SIGKILL what is left of the groups [`Pane::hang_up`] hung up.
+    fn kill_groups(&self) {
+        for &group in &self.hung_up {
+            if pty::group_alive(group) {
+                pty::signal_group(group as u32, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// Wait for the groups hung up to empty; at `deadline`, kill what is
+    /// left of them.
+    async fn end_groups(&self, deadline: Instant) {
+        while self.hung_up.iter().any(|&group| pty::group_alive(group)) {
+            if Instant::now() >= deadline {
+                self.kill_groups();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     fn signal_shell(&self, signal: libc::c_int) {
@@ -602,7 +659,7 @@ impl Pane {
     fn handle_message(&mut self, msg: ClientMessage) -> Result<()> {
         match msg.msg {
             Some(Msg::ClosePane(_)) => {
-                self.signal_shell(libc::SIGHUP);
+                self.hang_up();
                 self.kill_at.get_or_insert(Instant::now() + KILL_GRACE);
             }
             Some(Msg::Subscribe(_)) => {

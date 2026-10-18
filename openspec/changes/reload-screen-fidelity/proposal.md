@@ -1,6 +1,6 @@
 # Proposal: Carry the remaining screen state and the close deadline across a pane reload
 
-Зависит от: sighup-ignoring-shell-reaped, protocol-v3
+Зависит от: protocol-v3
 
 ## Why
 

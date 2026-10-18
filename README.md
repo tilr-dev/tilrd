@@ -266,7 +266,12 @@ cannot listen there.
 | `--no-exec` | | Do not let clients [run programs](#running-programs-exec) outside a pane (also `exec = false`) |
 
 Signals: `SIGTERM` and `SIGINT` stop the server and end its shells (`tilr kill-server`
-sends SIGTERM and waits for the server and its pane processes to be gone); `SIGUSR1`
+sends SIGTERM and waits for the server and its pane processes to be gone). Each pane
+process, when the server stops or dies, does what a closed terminal does: SIGHUP to the
+shell's process group and to the terminal's foreground group (the job running); what of
+those two groups ignores SIGHUP is killed 2 s later, and the server waits for that. A job in
+the background that ignores SIGHUP (`nohup cmd &`) is left, as after an SSH hangup;
+closing a pane (`ClosePane`, `tilr kill`) ends the same two groups the same way. `SIGUSR1`
 [reloads](#reloading-without-closing-shells) it. `SIGHUP` is ignored: a server started from
 a terminal (`tilrd &` in an SSH session) outlives it, and so do its panes, each in a session
 of its own. Its log then goes nowhere; redirect stderr to keep it.

@@ -335,6 +335,22 @@ pub fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+/// The foreground process group of the terminal whose master is `fd`, if
+/// it has one.
+pub fn foreground_group(fd: BorrowedFd<'_>) -> Option<libc::pid_t> {
+    // SAFETY: tcgetpgrp has no memory-safety preconditions.
+    let pgid = unsafe { libc::tcgetpgrp(fd.as_raw_fd()) };
+    (pgid > 0).then_some(pgid)
+}
+
+/// Whether any process is left in the process group `pgid`; a zombie not
+/// yet reaped counts.
+pub fn group_alive(pgid: libc::pid_t) -> bool {
+    // SAFETY: kill with signal 0 only checks.
+    let alive = unsafe { libc::kill(-pgid, 0) } == 0;
+    alive || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 /// Signal the whole process group of a session leader.
 pub fn signal_group(pid: u32, signal: libc::c_int) {
     // SAFETY: killpg has no memory-safety preconditions.

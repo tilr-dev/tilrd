@@ -57,6 +57,9 @@ const DETACH_TIMEOUT: Duration = Duration::from_secs(5);
 /// A reload asked for while a pane is starting is tried again this much
 /// later.
 const RELOAD_RETRY: Duration = Duration::from_millis(200);
+/// How long a stopping server waits for its pane processes, which take up
+/// to 2 s to end a program that ignores SIGHUP.
+const PANE_STOP: Duration = Duration::from_secs(3);
 /// Pings sent to a client within the time it may stay silent, so that one
 /// lost ping does not cost the connection.
 const PINGS_PER_TIMEOUT: u32 = 3;
@@ -1563,9 +1566,13 @@ impl Supervisor {
                 event => self.on_event(event),
             }
         }
-        // Returning closes the pipes to the pane processes, which makes them
-        // exit; each shell is hung up when its pty closes.
+        // Closing the pipes to the pane processes makes them end what runs
+        // in their panes (SIGHUP, and SIGKILL 2 s later for what ignores
+        // it) and exit; the server waits for that, so nothing of a pane
+        // outlives it. One still there after PANE_STOP is killed with its
+        // handle.
         tracing::info!("shutting down, closing {} pane(s)", self.panes.len());
+        self.stop_panes().await;
         // Asked to exit, so it signs off at Cloudflare, and reaped.
         self.tunnel.hold().await;
         if let Some(agent) = &mut self.agent {
@@ -1575,6 +1582,24 @@ impl Supervisor {
             execs.stop_all(exec::End::Shutdown).await;
         }
         self.local.take()
+    }
+
+    /// Close the pipe to every pane process and wait, up to [`PANE_STOP`],
+    /// until each has exited.
+    async fn stop_panes(&mut self) {
+        let deadline = tokio::time::Instant::now() + PANE_STOP;
+        let mut readers = Vec::new();
+        for (_, pane) in self.panes.drain() {
+            drop(pane.to_pane);
+            // The writer hands back the pipe once its queue is written;
+            // dropping that closes it.
+            drop(tokio::time::timeout_at(deadline, pane.link.writer).await);
+            readers.push(pane.link.reader);
+        }
+        for reader in readers {
+            // The reader waits for its process once the pipe from it ends.
+            let _ = tokio::time::timeout_at(deadline, reader).await;
+        }
     }
 
     fn on_event(&mut self, event: Event) {

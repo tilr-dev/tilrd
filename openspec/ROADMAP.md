@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| sighup-ignoring-shell-reaped | a pane whose supervisor is gone ends its shell's and foreground groups (SIGHUP, 2 s, SIGKILL); ClosePane too | M | - | no | ready |
 | cloudflared-outlives-exec | cloudflared in its own process group, stopped by a starting server if left behind | S | - | no | ready |
 | durable-file-writes | fsync file and directory around the rename in FsWrite and `tilrd update` | S | - | no | ready |
 | service-install-ownership | install does not replace a foreign unit/plist; locale-independent crontab detection; state directory tightened to 0700 | S | - | no | ready |
@@ -46,7 +45,7 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 |---|---|---|---|---|---|
 | protocol-v3 | PROTOCOL_VERSION 3 as the mandatory contract; `ping` leaves `HelloAck.features`; the version/feature rule written down | S | - | no | ready |
 | non-latin-ctrl-alt | only Ctrl goes by the physical key; Alt = ESC + the character produced; composed characters as themselves | S | protocol-v3 | no | ready |
-| reload-screen-fidelity | carry soft wrap, pending wrap, the ClosePane deadline and kitty placements across a pane reload | M | sighup-ignoring-shell-reaped, protocol-v3 | no | ready |
+| reload-screen-fidelity | carry soft wrap, pending wrap, the ClosePane deadline and kitty placements across a pane reload | M | protocol-v3 | no | ready |
 
 ## Phase 3: docs and tests
 
@@ -116,5 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | host-socket-per-process | ddcc453 |
 | notify-socket-env | 4e7812b |
 | attach-robustness | d7d4e65 |
+| sighup-ignoring-shell-reaped | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

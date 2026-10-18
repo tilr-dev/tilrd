@@ -25,6 +25,10 @@ The test's name is the statement of the use case.
 | A command in a pane runs and its output is visible; the shell's exit code reaches the client | `a_pane_runs_commands_and_reports_how_its_shell_exited` |
 | A pane opens in the home directory if the client named no directory or one that does not exist on the server; in the named one if it exists | `a_pane_starts_in_the_home_directory_unless_given_one_that_exists` |
 | Closing a pane ends its shell | `closing_a_pane_ends_its_shell` |
+| Closing a pane whose shell runs a foreground job that ignores SIGHUP: `PaneExited` within 3 s, the job killed | `closing_a_pane_ends_a_foreground_program_ignoring_sighup` |
+| A pane's program that ignores SIGHUP (and reads no input): gone once the stopped server's pane process has exited | `a_shell_ignoring_sighup_is_ended_when_the_server_stops` |
+| A foreground job of the pane's shell that ignores SIGHUP: gone once the stopped server's pane process has exited | `a_foreground_program_ignoring_sighup_is_ended_when_the_server_stops` |
+| A `nohup … &` job in the background outlives the server, as an SSH hangup leaves it | `a_nohup_background_job_is_left_when_the_server_stops` |
 | Two clients watch one pane and both type into it | `two_clients_watch_and_type_into_the_same_pane` |
 | A client left: the pane lives on, the others get an updated list | `a_client_that_leaves_does_not_take_the_pane_with_it` |
 | A client unsubscribed: it gets no more frames | `a_client_that_stops_watching_gets_no_more_frames` |

@@ -600,3 +600,139 @@ async fn a_pane_does_not_get_the_service_managers_variables() {
     }
     assert!(seen.lines().any(|line| line.starts_with("TILR_PANE=")));
 }
+
+/// Run, in the pane's shell, a program that ignores SIGHUP and writes its
+/// pid to a file; in the background (`nohup … &`) if `background`. Its pid.
+async fn start_ignoring_sighup(
+    server: &Server,
+    client: &mut Client,
+    pane_id: PaneId,
+    background: bool,
+) -> u32 {
+    let file = server.dir.join(format!("ignoring-{pane_id}"));
+    let program = format!(
+        "sh -c 'trap \"\" HUP; echo $$ > \"{}\"; exec sleep 1000'",
+        file.display()
+    );
+    let line = if background {
+        format!("nohup {program} >/dev/null 2>&1 &")
+    } else {
+        program
+    };
+    client.type_line(pane_id, &line).await;
+    eventually("the program starts", || {
+        std::fs::read_to_string(&file).is_ok_and(|pid| pid.ends_with('\n'))
+    })
+    .await;
+    std::fs::read_to_string(&file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// The pid of the process serving the pane.
+async fn pane_process(client: &mut Client, pane_id: PaneId) -> u32 {
+    let panes = client.list_panes().await;
+    let pane = panes
+        .iter()
+        .find(|pane| pane.pane_id == pane_id.to_string())
+        .unwrap();
+    pane.pid
+}
+
+/// SIGTERM to the server; once it and the pane process are gone, whether
+/// `pid` still runs.
+async fn alive_after_the_server_stops(mut server: Server, pane_process: u32, pid: u32) -> bool {
+    server.signal("-TERM");
+    eventually("the server exits", || !server.is_running()).await;
+    eventually("the pane process exits", || !process_alive(pane_process)).await;
+    process_alive(pid)
+}
+
+#[tokio::test]
+async fn closing_a_pane_ends_a_foreground_program_ignoring_sighup() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = start_ignoring_sighup(&server, &mut client, pane_id, false).await;
+    let closed = std::time::Instant::now();
+    client
+        .send(Msg::ClosePane(ClosePane {
+            pane_id: pane_id.to_string(),
+        }))
+        .await;
+    client.pane_exit_code(pane_id).await;
+    assert!(
+        closed.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        closed.elapsed()
+    );
+    assert!(!process_alive(pid), "the program is killed");
+}
+
+#[tokio::test]
+async fn a_shell_ignoring_sighup_is_ended_when_the_server_stops() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    // The pane's program itself ignores SIGHUP, and reads no input.
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 80,
+            rows: 24,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "trap '' HUP; echo \"pid-$$\"; exec sleep 1000".into(),
+            ],
+            cwd: String::new(),
+            request_id: 7,
+        }))
+        .await;
+    let pane_id: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) if created.request_id == 7 => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane_id).await;
+    client.wait_screen("pid-").await;
+    let text = client.screen.text();
+    let pid: u32 = text
+        .split("pid-")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .parse()
+        .unwrap();
+    let pane_process = pane_process(&mut client, pane_id).await;
+    assert!(!alive_after_the_server_stops(server, pane_process, pid).await);
+}
+
+#[tokio::test]
+async fn a_foreground_program_ignoring_sighup_is_ended_when_the_server_stops() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = start_ignoring_sighup(&server, &mut client, pane_id, false).await;
+    let pane_process = pane_process(&mut client, pane_id).await;
+    assert!(!alive_after_the_server_stops(server, pane_process, pid).await);
+}
+
+#[tokio::test]
+async fn a_nohup_background_job_is_left_when_the_server_stops() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = start_ignoring_sighup(&server, &mut client, pane_id, true).await;
+    let pane_process = pane_process(&mut client, pane_id).await;
+    let left = alive_after_the_server_stops(server, pane_process, pid).await;
+    // SAFETY: kill has no memory-safety preconditions; the pid is the job's.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    assert!(
+        left,
+        "a nohup job outlives the server, as a hangup leaves it"
+    );
+}

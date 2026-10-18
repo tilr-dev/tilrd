@@ -2,7 +2,7 @@
 
 ## Context
 
-A pane's shell is a session leader on the pty (`pty.rs:226`); an interactive shell puts each job in a process group of its own. When the pty master closes, the kernel sends SIGHUP to the session's foreground process group and the session leader; a shell forwards it to its jobs. A program that ignores SIGHUP survives that. At 1163abd the pane process exits right after its supervisor pipe closes (`pane.rs:381-383`) and the only grace is on `ClosePane`, aimed at the shell's group alone.
+A pane's shell is a session leader on the pty (`pty.rs:226`); an interactive shell puts each job in a process group of its own. When the pty master closes, the kernel sends SIGHUP to the session's foreground process group and the session leader; a shell forwards it to its jobs. A program that ignores SIGHUP survives that. At 1163abd the pane process exits right after its supervisor pipe closes (`pane.rs:381-383`) and the only grace is on `ClosePane`, aimed at the shell's group alone. Found while implementing: on a clean stop the pane process never got that far either, since the supervisor spawns it with `kill_on_drop(true)` (`supervisor.rs`, `start_pane_process`) and its handle is dropped when the supervisor returns, so every pane process was SIGKILLed as the server exited.
 
 ## Decisions
 
@@ -14,6 +14,9 @@ On losing its supervisor the pane process: reads the foreground group; sends SIG
 
 ### D3. Background jobs are left
 A background job of another process group that ignores SIGHUP (`nohup cmd &`) is what a user asks to outlive a hangup; tmux and SSH leave it, and so does this change. Scanning the whole session (Linux `/proc`, macOS `proc_listallpids`) was rejected: it would kill such jobs and needs per-platform process listing.
+
+### D4. The stopping server waits for its pane processes
+After its event loop ends the supervisor closes the pipe to each pane process (dropping the queue's sender and the pipe its writer hands back) and waits up to `PANE_STOP` (3 s: the 2 s grace and a margin) for each reader task, which ends once its process has exited and been reaped; a pane process still there after that is SIGKILLed when its handle drops, as before. So `tilr kill-server`, which waits for the server's pid, returns only once the pane programs are gone, and a server stop takes up to 2 s longer only when something ignores SIGHUP.
 
 ## Reload and reconnect
 
