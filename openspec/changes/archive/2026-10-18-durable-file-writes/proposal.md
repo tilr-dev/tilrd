@@ -28,3 +28,5 @@ Changed while implementing: the sync was first written into the existing require
 ## Impact
 
 `crates/tilrd/src/{files,update}.rs` (and a small shared helper), itests UC-046 and UC-060 cases, README "Files" and "Updating". Writes get slower by one or two syncs per file. No protocol change, no PROTOCOL_VERSION or feature change, nothing crosses a reload (a write cut by a reload is unchanged: the file stays as it was). An update from the previous release: the old `tilrd update` installs this one without syncing (as today); from then on updates sync. Not breaking.
+
+Implemented by: [`42a4cc2`](https://github.com/tilr-dev/tilrd/commit/42a4cc2) fix: sync finished file writes and installed releases to disk (2026-10-18).

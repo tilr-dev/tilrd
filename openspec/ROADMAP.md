@@ -119,6 +119,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | attach-robustness | d7d4e65 |
 | sighup-ignoring-shell-reaped | 47bce42 |
 | cloudflared-outlives-exec | 0aff8e0 |
-| durable-file-writes | recorded in the next commit |
+| durable-file-writes | 42a4cc2 |
 
 Older work is in `openspec/changes/archive/`.
