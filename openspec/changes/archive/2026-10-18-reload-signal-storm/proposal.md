@@ -29,3 +29,5 @@ Itsaplan TILR-121 (phase 1, bug). `reload::a_storm_of_reload_signals_costs_no_sh
 ## Impact
 
 `crates/tilrd/src/reload.rs` (the signal thread, `hold_everywhere` / `release_everywhere`, `spawn_unblocked`), `crates/tilrd/src/main.rs` (started for the server command after `record_signals`), `crates/tilrd/src/supervisor.rs` (exec path, failpoint, pane spawn), `crates/tilrd/src/exec.rs`, `crates/tilrd/src/cloud.rs`, `crates/tilrd/tests/reload.rs`, README reload section, USE_CASES.md. No protocol change; nothing new crosses a reload (the held signals are the mask and the pending set, as before); `state-formats` unchanged. A reload from the previous release into this one: the predecessor still execs with only its exec'ing thread holding them (a signal in that one window behaves as before); the successor starts its signal thread. Update from the previous release needs nothing else. Not breaking.
+
+Implemented by: [`060c7e4`](https://github.com/tilr-dev/tilrd/commit/060c7e4) fix(reload): let no thread take a held signal while the supervisor execs (2026-10-18).

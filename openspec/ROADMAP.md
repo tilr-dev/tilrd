@@ -123,6 +123,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | readme-code-reconciliation | e70d499 |
 | snapshot-origin-mode-cursor | af85db3 |
 | agent-socket-per-server | 5e0f703 |
-| reload-signal-storm | recorded in the next commit |
+| reload-signal-storm | 060c7e4 |
 
 Older work is in `openspec/changes/archive/`.
