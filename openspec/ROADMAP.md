@@ -115,6 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | hello-deadline | f32643d |
 | host-socket-per-process | ddcc453 |
 | notify-socket-env | 4e7812b |
-| attach-robustness | recorded in the next commit |
+| attach-robustness | d7d4e65 |
 
 Older work is in `openspec/changes/archive/`.
