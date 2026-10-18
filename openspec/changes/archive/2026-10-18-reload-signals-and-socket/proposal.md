@@ -32,3 +32,5 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) found that a r
 ## Impact
 
 `crates/tilrd/src/supervisor.rs` (signal mask, socket rule), `reload.rs` (holding and recording the signals), the start of `main.rs`. No state file format, `state-formats` or PROTOCOL_VERSION change. A reload from the previous release works (the old image does not block signals; that first reload keeps today's window); a rollback to a release before `reload-rollback` is refused by it. Nothing new crosses a reload. Not breaking: the only executables that no longer get a TCP-only reload are ones that print `reload-check 1` but not `unix-socket 1`, and none exists.
+
+Implemented by: [`a0f1ae9`](https://github.com/tilr-dev/tilrd/commit/a0f1ae9) fix(reload): hold signals across the exec; keep the socket on a refusal (2026-10-18).
