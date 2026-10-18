@@ -172,5 +172,5 @@ A client that comes through the Cloud tunnel SHALL be an ordinary TCP client of 
 - Requirements without a test: none. Partly untested: the constant-time comparison of tokens; "a tunnelled client needs the token" (follows from the tunnel leading to the TCP port, not tested end to end).
 - `local::another_user_is_turned_away_even_where_the_permissions_let_it_in` returns early unless run as root, so on CI (`runner`) it checks nothing; itests UC-034 runs it as root.
 - Unit tests in crates/tilrd/src/config.rs are cited by bare name (they are not in a `tests/` file).
-- Code vs README: none found for these requirements. README "Who may connect" does not say the Origin check also applies on the Unix socket (crates/tilrd/src/supervisor.rs:962 runs it for local connections too); specified as the code does.
+- Code vs README: none found for these requirements.
 - itests group D (UC-030..039) is all green at HEAD per itests/USE_CASES.md.

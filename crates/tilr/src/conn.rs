@@ -67,6 +67,34 @@ impl std::fmt::Display for ConnectError {
 
 impl std::error::Error for ConnectError {}
 
+/// The server closed the connection with a WebSocket close frame; the close
+/// code says why (`tilr_proto::close`).
+#[derive(Debug)]
+pub struct Closed {
+    /// None: a close frame without a code.
+    pub code: Option<u16>,
+    pub reason: String,
+}
+
+impl Closed {
+    /// A newer connection of this client id took over: not to be made again.
+    pub fn superseded(&self) -> bool {
+        self.code == Some(tilr_proto::close::SUPERSEDED)
+    }
+}
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.reason.is_empty() {
+            write!(f, "the server closed the connection")
+        } else {
+            write!(f, "the server closed the connection: {}", self.reason)
+        }
+    }
+}
+
+impl std::error::Error for Closed {}
+
 impl Conn {
     /// Connect and say hello as `client_id`.
     pub async fn connect(target: &Target, client_id: &str) -> Result<Self, ConnectError> {
@@ -151,10 +179,15 @@ impl Conn {
             self.heard = Instant::now();
             let packet = match message {
                 Message::Binary(packet) => packet,
-                Message::Close(frame) => match frame {
-                    Some(frame) => bail!("the server closed the connection: {}", frame.reason),
-                    None => bail!("the server closed the connection"),
-                },
+                Message::Close(frame) => {
+                    return Err(Closed {
+                        code: frame.as_ref().map(|frame| u16::from(frame.code)),
+                        reason: frame
+                            .map(|frame| frame.reason.to_string())
+                            .unwrap_or_default(),
+                    }
+                    .into());
+                }
                 _ => continue,
             };
             if let Some(msg) = tilr_proto::decode::<ServerMessage>(&packet)?.msg {

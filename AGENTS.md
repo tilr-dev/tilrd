@@ -59,7 +59,6 @@ the line.
   hand e.g. via `infisical run --path /cloudflare`; in CI the `cdn` environment's variable)
   besides wrangler credentials; the script fails without it.
 - Do not edit versions (`[workspace.package] version`, Cargo.lock) or CHANGELOG.md by hand.
-- release-please (`simple` strategy) also maintains `version.txt`; do not edit it.
 - The `aarch64-unknown-linux-gnu` release build (on `ubuntu-24.04-arm`, free only for public
   repos) is off by default: set repo variable RELEASE_LINUX_ARM64=true once the repo is
   public to enable the arm64 build. While it is off, the release and the CDN get

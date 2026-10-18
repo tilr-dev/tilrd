@@ -243,7 +243,5 @@ The `tilr` client SHALL answer `tilr edit` and `tilr open` with the same request
 ## Notes
 
 - Requirements without a test: none. Untested details inside requirements: the 1 MiB per-connection input cap of the host socket, the `/tmp/tilr-<uid>` fallback for long socket paths, the server running on without host events when the socket cannot be bound, `tilr: cannot reach the tilr server`, and handing over to a real `xclip`/`wl-paste` (the tests have none on `PATH`).
-- Contradiction: USE_CASES.md (the `tilr edit` bullet of "Not covered", lines 342-343) says an old client that does not know `HostEvent` is counted as a recipient; the code counts only clients with `"host-events"` in `Hello.features`, as `files::tilr_edit_fails_with_no_client_watching_or_outside_a_pane` and UC-076 check. This spec follows the code.
-- README "Pasting images" says the clipboard is Linux only for now; the server installs the shims on macOS too, macOS programs just do not use them.
 - No itests case cited here is currently red at HEAD per itests/USE_CASES.md (UC-035, UC-075, UC-076 pass).
 - Unit tests in `crates/tilrd/src/*.rs` are cited as `module::tests::name` with their file.

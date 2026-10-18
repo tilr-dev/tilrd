@@ -416,6 +416,7 @@ async fn attach(conn: Conn, target: &Target, client_id: &str, pane_id: &str) -> 
         attach::Exit::PaneExited(code) => println!("[pane {short} exited with code {code}]"),
         attach::Exit::PaneGone => println!("[pane {short} is gone]"),
         attach::Exit::ServerGone => println!("[tilrd stopped]"),
+        attach::Exit::Superseded => println!("[superseded by another connection of this client]"),
     }
     Ok(ExitCode::SUCCESS)
 }

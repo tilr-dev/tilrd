@@ -307,5 +307,4 @@ When a pane runs the user's login shell, that shell is zsh, bash or fish, and th
 
 - Requirements without a test: "A pane that cannot start is reported to its creator", "When a pane was used last" (`used_at_ms` is read by `tilr`'s choice of pane, see `tilr-cli`, but no test asserts it). Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
 - Unit tests are cited as `module::tests::name` with their source file.
-- README "Layout" says the pane gets `HOME`, `USER`, `LOGNAME`; the code sets them only when the server's own environment lacks them (an inherited `HOME` wins over the password database). README also leaves the value of `COLORTERM` (`truecolor`) unsaid.
-- UC-082 (a 65535 x 65535 `Resize` is refused, the pane lives) is a planned itests case without a scenario; at HEAD a resize is clamped to 65535, not refused. Stopping the server, and what it ends in a pane (UC-086), is in `daemon-lifecycle`.
+- UC-082 (a 65535 x 65535 `Resize` is clamped to 1..65535, the pane lives) is a planned itests case without a scenario. Stopping the server, and what it ends in a pane (UC-086), is in `daemon-lifecycle`.

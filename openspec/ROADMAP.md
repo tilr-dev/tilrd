@@ -42,7 +42,6 @@ All of phase 2 is done (see "Done").
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| readme-code-reconciliation | README / USE_CASES match the code; a superseded `tilr attach` ends instead of reconnecting | S | - | no | ready |
 | test-coverage-gaps | tests for the 19 untested server/client requirements; fix or quarantine the known flakes | L | - | no | ready |
 | snapshot-origin-mode-cursor | the pane snapshot restores the cursor right under origin mode (DECOM) with a scroll region | S | - | no | ready |
 
@@ -119,5 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | protocol-v3 | 3dc42e2 |
 | non-latin-ctrl-alt | 92e4f43 |
 | reload-screen-fidelity | 53e7ff2 |
+| readme-code-reconciliation | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

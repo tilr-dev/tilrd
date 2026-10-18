@@ -22,6 +22,8 @@ The test's name is the statement of the use case.
 | The first thing a client gets is the answer to its `Hello`: pane lists are not sent to it before, and after that it gets them like everyone else | `the_first_thing_a_client_hears_is_the_answer_to_its_hello` |
 | A client that does not start with `Hello` gets an error and is disconnected; its input never reaches the shell | `a_client_that_skips_hello_is_turned_away` |
 | A browser page connects only from an allowed origin; programs without `Origin` get through | `a_browser_page_connects_only_from_an_allowed_origin` |
+| The configuration file (`server.toml`) names the allowed origins and `--allow-origin` replaces its list; a file that does not parse, or names an unknown key, stops the server from starting and says where it is | `the_configuration_file_names_the_allowed_origins` |
+| A pane without a command runs the user's login shell (`$0` is `-zsh`, `-bash`, `-sh`), with `SHELL`, `HOME`, `USER`, `LOGNAME` set and the server's tools (`$TILR_SHIMS`) still reachable after the login profile | `a_pane_without_a_command_runs_the_users_login_shell` |
 | A command in a pane runs and its output is visible; the shell's exit code reaches the client | `a_pane_runs_commands_and_reports_how_its_shell_exited` |
 | A pane opens in the home directory if the client named no directory or one that does not exist on the server; in the named one if it exists | `a_pane_starts_in_the_home_directory_unless_given_one_that_exists` |
 | Closing a pane ends its shell | `closing_a_pane_ends_its_shell` |
@@ -83,6 +85,7 @@ The test's name is the statement of the use case.
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
+| A second connection says `Hello` with an attached `tilr`'s client id (read from `PaneInfo.viewed_by`) on the same socket: `tilr` is closed as superseded (4000), prints `[superseded by another connection of this client]`, restores the terminal and exits 0 without reconnecting; the pane stays | `an_attach_superseded_by_its_own_client_id_ends` |
 | `kill -TERM` of an attached `tilr`: it ends by SIGTERM, the terminal back in cooked mode (`icanon`, `echo`), cursor shown, main screen, nothing printed; the pane stays | `a_terminated_attach_restores_the_terminal` |
 | A reconnect that connects but loses the connection before the pane list comes (a stand-in server on a TCP port): a failed attempt on the status line, the next one attaches and typing gets through | `an_error_right_after_a_reconnect_is_retried` |
 | Ctrl+] d while a reconnect attempt waits on a server that accepts and never answers: detached at once, not after the 5 s connect timeout | `detach_works_while_a_reconnect_attempt_hangs` |
@@ -161,6 +164,7 @@ Cloud repository.
 | † The updater is killed just before the swap: the executables are the old ones; the next update goes through and cleans up the unpacked release | `an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up` |
 | † `tilr` is already in place but `tilrd` cannot be swapped: the old `tilr` is put back (or removed if there was none) | `a_server_that_cannot_be_put_in_place_puts_the_old_client_back` |
 | † Two updates at once: the release is installed once, the second waits and sees it is already there | `two_updates_at_once_install_the_release_once` |
+| A server Tilr.app manages (`app-managed.json` next to the executable): `tilrd update` fails, saying so, without contacting the CDN | `app_managed_server_never_contacts_the_standalone_update_feed` |
 
 ### Live check on a machine — `scripts/update-test.sh`
 
@@ -257,7 +261,7 @@ through the server's socket.
 | `readonly = true`: looking and reading are allowed; write, mkdir, rename, delete are refused, nothing changes on disk | `a_read_only_server_shows_files_but_changes_nothing` |
 | `--no-files` and `[files] enabled = false`: no feature, `fs_max_bytes` 0, requests get no answer and have no effect, the connection is alive | `files_can_be_turned_off` |
 | In a pane: `$TILR_PANE`, `$TILR_SERVER` (the server id) and `$TILR_SOCK` (the socket); `tilr edit notes.md` reaches every client watching the pane as a `HostEvent` with an absolute path; `tilr open URL -- args`, `--kind`; other `tilr` commands go to the next `tilr` on PATH | `tilr_edit_in_a_pane_asks_the_clients_watching_it_to_open_the_file` |
-| Nobody watching the pane: "no tilr client attached", exit code 1; outside a pane: "not inside a tilr pane", exit code 1; a foreign pane: "no such pane"; non-JSON: `bad request`; a stopped server removes the socket | `tilr_edit_fails_with_no_client_watching_or_outside_a_pane` |
+| Nobody watching the pane, or only a client that did not say `"host-events"` in `Hello.features` (one built before them, which is not counted as a recipient): "no tilr client attached", exit code 1; outside a pane: "not inside a tilr pane", exit code 1; a foreign pane: "no such pane"; non-JSON: `bad request`; a stopped server removes the socket | `tilr_edit_fails_with_no_client_watching_or_outside_a_pane` |
 | One user's two servers (one state directory, so one server id) each keep a host socket: the first `<server_id>.sock`, the second `<server_id>-<pid>.sock`; `tilr edit` in a pane of each reaches its own clients, and stopping the second leaves the first one's socket | `two_servers_of_one_user_keep_their_host_sockets` |
 
 ## SOCKS proxy — `tests/socks.rs`
@@ -414,8 +418,6 @@ pane process. The server's counters are at `GET /metrics`.
   `$TILR_SOCK` (exit 1, not a byte sent): it takes a second user, so it is
   itests UC-03A; the uid comparison is the unit test
   `local::tests::a_peer_of_another_uid_is_refused` in `tilr-proto`.
-- `tilr edit` is also delivered to an old client that does not know
-  `HostEvent` and silently ignores it: the server counts it as a recipient.
 - `tilr` in a terminal: drawing is checked only by what shows in the pty
   (text, the prompt); colours, the mouse, pasting and layouts have not been
   run through a real terminal. Drawing assumes the pane is the size of the

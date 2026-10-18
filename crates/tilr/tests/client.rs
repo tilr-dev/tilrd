@@ -566,6 +566,123 @@ fn attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches() {
     assert_eq!(machine.ok(&["ls", "-q"]).lines().count(), 1);
 }
 
+/// A WebSocket of the test's own to the machine's server, said `Hello` as
+/// `client_id` (empty: none).
+fn connect_as(
+    machine: &Machine,
+    client_id: &str,
+) -> tokio_tungstenite::tungstenite::WebSocket<std::os::unix::net::UnixStream> {
+    use tilr_proto::{ClientMessage, Hello, ServerMessage, client_message, server_message};
+    use tokio_tungstenite::tungstenite::{Message, client};
+    let stream = std::os::unix::net::UnixStream::connect(machine.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+    let (mut ws, _) = client(tilr_proto::local::URL, stream).unwrap();
+    let hello = client_message::Msg::Hello(Hello {
+        protocol_version: tilr_proto::PROTOCOL_VERSION,
+        client_name: "test".into(),
+        client_id: client_id.into(),
+        ..Default::default()
+    });
+    ws.send(Message::Binary(tilr_proto::encode(&ClientMessage::from(
+        hello,
+    ))))
+    .unwrap();
+    loop {
+        let Message::Binary(packet) = ws.read().unwrap() else {
+            continue;
+        };
+        let reply: ServerMessage = tilr_proto::decode(&packet).unwrap();
+        match reply.msg {
+            Some(server_message::Msg::HelloAck(_)) => return ws,
+            other => assert!(
+                !matches!(other, Some(server_message::Msg::Error(_))),
+                "{other:?}"
+            ),
+        }
+    }
+}
+
+/// The client id of the `tilr` viewing the machine's one pane, from the
+/// server's pane list.
+fn viewer_id(machine: &Machine) -> String {
+    use tilr_proto::{ClientMessage, ListPanes, ServerMessage, client_message, server_message};
+    use tokio_tungstenite::tungstenite::Message;
+    let mut ws = connect_as(machine, "");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for request_id in 1.. {
+        let list = client_message::Msg::ListPanes(ListPanes { request_id });
+        ws.send(Message::Binary(tilr_proto::encode(&ClientMessage::from(
+            list,
+        ))))
+        .unwrap();
+        let panes = loop {
+            let Message::Binary(packet) = ws.read().unwrap() else {
+                continue;
+            };
+            let reply: ServerMessage = tilr_proto::decode(&packet).unwrap();
+            if let Some(server_message::Msg::PaneList(list)) = reply.msg
+                && list.request_id == request_id
+            {
+                break list.panes;
+            }
+        };
+        if let Some(viewer) = panes
+            .iter()
+            .flat_map(|pane| &pane.viewed_by)
+            .find(|viewer| viewer.client_name == "tilr")
+        {
+            assert!(!viewer.client_id.is_empty(), "tilr names its client id");
+            return viewer.client_id.clone();
+        }
+        assert!(Instant::now() < deadline, "no tilr views the pane");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unreachable!()
+}
+
+#[test]
+fn an_attach_superseded_by_its_own_client_id_ends() {
+    let machine = Machine::new();
+    let mut terminal = Terminal::spawn(machine.command(&[]));
+    terminal.write("echo \"one-$((40+2))\"\r");
+    terminal.expect("one-42");
+    let id = viewer_id(&machine);
+    // Another connection says Hello as this tilr, on the same socket: the
+    // server lets tilr's go as superseded, and tilr does not take the pane
+    // back.
+    let _newer = connect_as(&machine, &id);
+    terminal.expect("[superseded by another connection of this client]");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        terminal.read();
+        if let Some(status) = terminal.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "tilr goes on after superseded");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status:?}");
+    assert!(terminal.cooked(), "the terminal restored");
+    assert!(
+        !terminal.seen.contains("reconnecting"),
+        "no reconnect: {:?}",
+        &terminal.seen[terminal.seen.len().saturating_sub(2000)..]
+    );
+    assert_eq!(
+        machine.log().matches("superseded").count(),
+        1,
+        "superseded once:\n{}",
+        machine.log()
+    );
+    assert_eq!(
+        machine.ok(&["ls", "-q"]).lines().count(),
+        1,
+        "the pane goes on"
+    );
+}
+
 #[test]
 fn a_terminated_attach_restores_the_terminal() {
     use std::os::unix::process::ExitStatusExt;

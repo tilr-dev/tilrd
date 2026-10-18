@@ -32,10 +32,12 @@ child of the supervisor, which owns the pty, the shell and the screen model.
 A pane opened without a command runs the user's login shell (the password database's, else
 `$SHELL`, else `/bin/sh`) as a login shell, `argv[0]` = `-zsh` and the like, so it reads the
 user's profile whatever environment the server was started in (a launchd agent gets the bare
-system `PATH`). The pane gets `SHELL`, `HOME`, `USER`, `LOGNAME`, `TERM=xterm-256color`,
-`COLORTERM`, `TILR_PANE`; launchd's `XPC_SERVICE_NAME` / `XPC_FLAGS` and what systemd hands
-the server (`NOTIFY_SOCKET`, `LISTEN_FDS`, `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC`,
-`WATCHDOG_PID`) are dropped. A pane with a command runs it as given, without a shell.
+system `PATH`). The pane gets `SHELL`, `TERM=xterm-256color`, `COLORTERM=truecolor`,
+`TILR_PANE`, and `HOME`, `USER`, `LOGNAME` from the password database where the server's own
+environment lacks them (an inherited `HOME` wins); launchd's `XPC_SERVICE_NAME` /
+`XPC_FLAGS` and what systemd hands the server (`NOTIFY_SOCKET`, `LISTEN_FDS`,
+`LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC`, `WATCHDOG_PID`) are dropped. A pane with a
+command runs it as given, without a shell.
 
 The server's tools for the panes (`xclip`, `wl-paste`, `tilr`; their directory is
 `$TILR_SHIMS`) come first on `PATH`, also when a startup file sets `PATH` from scratch: zsh,
@@ -154,21 +156,26 @@ Ctrl+] sends Ctrl+] itself; another key after it is sent as it is. Keys go as `K
 with `code` (the physical key) for the keys a terminal names (Enter, Tab, the arrows,
 F1…F12); a character key comes from the terminal as the character the layout made, Ctrl
 folded in (Ctrl+С on a Russian layout arrives as ^C), so its `code` stays empty. Pastes go
-as `Paste` (bracketed), the mouse only while the program in the pane asks for it (else the
-wheel scrolls the history). The pane used last is the one with the latest
-`PaneInfo.used_at_ms` (a subscribe, or input).
+as `Paste` (bracketed), the mouse only while the program in the pane asks for it: `tilr`
+captures the mouse only then, so otherwise the wheel is the outer terminal's own (its
+scrollback, or arrow keys on the alternate screen). The pane used last is the one with the
+latest `PaneInfo.used_at_ms` (a subscribe, or input).
 
 **Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as it runs. A
-connection that drops (a reload of the server, the network) is made again with it at once,
-then every 0.1 s doubling to 2 s; the bottom row says `disconnected …, reconnecting…`
-meanwhile, and what is typed then is dropped, not sent later. An attempt that connects but
-loses the connection (or gets no answer) before the pane is listed and subscribed is a
-failed attempt like a refused one, and Ctrl+] d detaches at once also while an attempt
-waits. Over TCP it pings every 5 s and takes 15 s of silence as a dropped connection. A
-pane gone after the reconnect, or a local server that stopped (socket gone, lock free),
-ends the attach (`[tilrd stopped]`). SIGTERM, SIGHUP or SIGINT (`kill -INT`; Ctrl+C is a
-key for the pane) restore the terminal (cooked mode, cursor, main screen) and end `tilr` by
-that signal, printing nothing; the pane goes on.
+connection that drops (a reload of the server, the network) is made again with it 0.1 s
+after the loss, then after waits from 0.1 s doubling to 2 s; the bottom row says
+`disconnected …, reconnecting…` meanwhile, and what is typed then is dropped, not sent
+later. An attempt that connects but loses the connection (or gets no answer) before the pane
+is listed and subscribed is a failed attempt like a refused one, and Ctrl+] d detaches at
+once also while an attempt waits. It pings every 5 s, on the Unix socket as over TCP, and
+takes 15 s of silence as a dropped connection. A pane gone after the reconnect, or a local
+server that stopped (socket gone, lock free), ends the attach (`[tilrd stopped]`). A
+connection closed as superseded (close code 4000: another connection said `Hello` with this
+`tilr`'s client id) is not made again: `tilr` restores the terminal, prints `[superseded by
+another connection of this client]` and exits 0, rather than take the pane back from the
+other in a loop. SIGTERM, SIGHUP or SIGINT (`kill -INT`; Ctrl+C is a key for the pane)
+restore the terminal (cooked mode, cursor, main screen) and end `tilr` by that signal,
+printing nothing; the pane goes on.
 
 **Which server.** `--socket PATH` / `TILR_SOCKET`, or `--connect ws://HOST:PORT` /
 `TILR_CONNECT` with `--token` / `TILR_TOKEN` for a server's TCP port (not started from
@@ -217,8 +224,9 @@ manager shows it, except in a server `tilr` started: that one warns in its log a
 the Unix socket alone, without a tunnel, rather than another port nobody would know of. A
 Tilr app's server or another user's may hold 7890; `tilr` on the machine works either way.
 A reload keeps what the server had: its TCP socket, or none. A connection on the port that
-has not finished its WebSocket handshake (or SOCKS or metrics request) within 10 s is
-closed, so connections that say nothing hold no descriptor longer. A main-protocol
+has not finished its WebSocket handshake (or SOCKS request) within 10 s is closed, so
+connections that say nothing hold no descriptor longer; a [metrics](#metrics) request whose
+head has not come within 10 s gets `400`. A main-protocol
 connection (on the port or the Unix socket) that has not sent `Hello` within 10 s of its
 WebSocket handshake is closed with close code 4002 (`timeout`), whatever `--client-timeout`
 is (also 0); the log says `client sent no Hello in 10s`. There is no limit on their number
@@ -306,7 +314,9 @@ A client without the token, or with another, gets an `Error` and the connection 
 
 `--no-auth` turns the check off: then anyone who can reach the port gets a shell. A page in
 a browser must, with or without the token, come from an allowed origin: `--allow-origin`,
-else the configuration file's list, else the built-in one.
+else the configuration file's list, else the built-in one. The origin is checked on the
+Unix socket too: a handshake there that carries an `Origin` header not on the list is
+refused (403) as on the port; one without the header passes.
 
 ### The configuration file
 
@@ -352,6 +362,9 @@ Optional, and only when asked: nothing starts tilrd at boot but this.
 tilr service install      # start tilrd at boot, and again if it fails
 tilr service uninstall    # remove what install added
 ```
+
+The service runs tilrd for the socket `--socket PATH` / `TILR_SOCKET` names, else the
+default one; `socket` in `client.toml` is not read here.
 
 - **Linux with systemd and lingering**: a user unit, `~/.config/systemd/user/tilr.service`
   (`$XDG_CONFIG_HOME`): `Type=notify` (tilrd says `READY=1` on `$NOTIFY_SOCKET` once it
@@ -645,7 +658,8 @@ Limits of this approach:
   directly does not see it.
 - The clipboard is one per user and machine. Two clients pasting at the same moment
   overwrite each other.
-- Linux only for now: on macOS, programs read the clipboard through other means.
+- It serves Linux programs: the shims are on `PATH` on macOS too, but macOS programs read
+  the clipboard through other means (`pbpaste`, the pasteboard) and do not run them.
 
 Files live in `$XDG_RUNTIME_DIR/tilr` (or `tilr-<uid>` under the temp directory), readable
 by the user only. To use the clipboard from a shell outside tilr, say an SSH session on the
@@ -655,7 +669,9 @@ same machine, put the `bin` directory there first on its `PATH`.
 
 The server picks up a new executable without ending any shell:
 
-- on its own, about a second after the file it was started from is replaced;
+- on its own, one to two seconds after the file it was started from is replaced (it is
+  checked every second and taken once it looks the same on two checks in a row, so a build
+  still writing it is not picked up half-done);
 - on `SIGUSR1`.
 
 The supervisor execs the new executable in place, keeping its pid, the listening sockets
@@ -743,8 +759,10 @@ before sending that capability's requests, in this order:
 `Hello.features` says what the client can serve (`host-events`, `agent`).
 
 A connection starts with `Hello`, which carries the protocol version of the client and the
-[access token](#who-may-connect). A server that speaks another version, or is sent anything
-else first, answers with an `Error` and closes the connection. `HelloAck` carries the
+[access token](#who-may-connect). A server that speaks another version, or is sent another
+message first, answers with an `Error` and closes the connection. A packet that does not
+decode gets an `Error` (`bad packet: …`) and the connection stays, before `Hello` as after;
+a message of a type the server does not know is ignored. `HelloAck` carries the
 version of the server, and is the first message the client gets: nothing else is sent to it
 before.
 
@@ -761,18 +779,20 @@ WebSocket close code 4002 (`timeout`), or resets it if not even the close gets o
 A client is one instance of an app (a window, a tab, a process), and says so in
 `Hello.client_id`: a UUID v4 it makes up when it starts and sends on every connection it
 makes. When a `Hello` names the `client_id` of a connection still open, under the same
-access token, the server closes that older connection at once with close code 4000
+access token and on the same transport (the Unix socket, or TCP: neither speaks for the
+other), the server closes that older connection at once with close code 4000
 (`superseded`): it is the same client come back (from another network, after a reload of
 its page), and the old connection is what the network it left still holds, a ghost viewer
 otherwise until the client timeout. The new connection starts afresh and subscribes itself;
 nothing is carried over and no input is replayed (input sent into the old connection may be
-lost, never doubled). A client does not reconnect a connection closed as superseded.
-Another token with the same id supersedes nobody; an empty `client_id` neither supersedes
+lost, never doubled). A client does not reconnect a connection closed as superseded
+(`tilr` ends its attach). Another token, or the other transport, with the same id
+supersedes nobody; an empty `client_id` neither supersedes
 nor is superseded. `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
 The server does not hoard frames for a client that cannot keep up. Unsent data the kernel
-holds for a client is kept small (`TCP_NOTSENT_LOWAT`, 16 KiB), so what it is behind on
+holds for a client is kept small (`TCP_NOTSENT_LOWAT`, 4 KiB), so what it is behind on
 waits in its queue. A client whose queue has held a packet for longer than 250 ms lags: its
 frames of a pane are skipped until its queue is written out, then it gets a full frame of
 the screen as it is then (the pane is asked for one, within a second even if the pane
@@ -894,9 +914,10 @@ The supervisor's part (routing between client and pane) is in [`/metrics`](#metr
 ## Metrics
 
 `GET /metrics` on the server's port answers a plain HTTP request (not a WebSocket) with the
-server's counters in the Prometheus text format (`Content-Type: text/plain; version=0.0.4`).
-A request whose line starts with `GET /metrics` followed by a space or `?` is taken for one,
-so `/metrics` and `/metrics?...` are no longer paths a WebSocket can be opened on.
+server's counters in the Prometheus text format (`Content-Type: text/plain; version=0.0.4;
+charset=utf-8`). A request whose line starts with `GET /metrics` followed by a space or `?`
+is taken for one, so `/metrics` and `/metrics?...` are no longer paths a WebSocket can be
+opened on.
 
 It asks for the access token as [`/socks`](#socks-proxy) does: `Authorization: Bearer
 <token>`, or `?token=<token>`. Without it: 401; from a browser page of a disallowed origin

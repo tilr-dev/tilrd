@@ -9,7 +9,10 @@
 //! A connection that drops (the network, the server reloading) is made
 //! again with the same client id; meanwhile the bottom row says so, and
 //! what is typed is dropped, not sent later, and Ctrl+] d still detaches. A
-//! local server that is gone for good (its socket nobody's) ends the attach.
+//! local server that is gone for good (its socket nobody's) ends the attach,
+//! as does a close as superseded (4000): another connection says `Hello`
+//! with this client's id, and reconnecting would take the pane back from it
+//! in a loop.
 //!
 //! SIGTERM, SIGHUP and SIGINT restore the terminal, then end the process.
 
@@ -39,7 +42,7 @@ use tilr_proto::{
 };
 use tokio::time::Instant;
 
-use crate::conn::{Conn, ConnectError};
+use crate::conn::{Closed, Conn, ConnectError};
 use crate::daemon;
 use crate::target::Target;
 
@@ -59,6 +62,9 @@ pub enum Exit {
     PaneGone,
     /// The local server stopped.
     ServerGone,
+    /// The server closed the connection as superseded by a newer one of
+    /// this client id.
+    Superseded,
 }
 
 /// Attach to `pane_id` over `conn` until detached or the pane ends.
@@ -137,6 +143,7 @@ impl Attach<'_> {
                     }
                     Attempt::PaneGone => return Ok(Exit::PaneGone),
                     Attempt::ServerGone => return Ok(Exit::ServerGone),
+                    Attempt::Superseded => return Ok(Exit::Superseded),
                     Attempt::Untrusted(err) => return Err(err),
                     Attempt::Failed(err) => {
                         status(&format!(
@@ -164,6 +171,7 @@ impl Attach<'_> {
                         return Ok(Exit::PaneGone);
                     }
                     Ok(_) => None,
+                    Err(err) if superseded(&err) => return Ok(Exit::Superseded),
                     Err(err) => Some(err.to_string()),
                 },
                 event = input.next() => {
@@ -246,6 +254,7 @@ enum Attempt {
     Connected(Conn),
     PaneGone,
     ServerGone,
+    Superseded,
     /// Another user's socket now: nothing to wait for.
     Untrusted(anyhow::Error),
     /// Worth another attempt: the reason, for the status line.
@@ -268,12 +277,18 @@ async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
     match fresh.list_panes().await {
         Ok(panes) if !panes.iter().any(|pane| pane.pane_id == pane_id) => return Attempt::PaneGone,
         Ok(_) => {}
+        Err(err) if superseded(&err) => return Attempt::Superseded,
         Err(err) => return Attempt::Failed(format!("{err:#}")),
     }
     match subscribe(&mut fresh, pane_id).await {
         Ok(()) => Attempt::Connected(fresh),
         Err(err) => Attempt::Failed(format!("{err:#}")),
     }
+}
+
+/// The connection was closed as superseded (4000).
+fn superseded(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<Closed>().is_some_and(Closed::superseded)
 }
 
 /// Size the pane to this terminal and watch it; the server answers with

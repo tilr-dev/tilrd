@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T15:07:08.708074+00:00",
+   "started": "2026-10-18T15:27:08.694785+00:00",
    "commit": null,
    "counts": {
-    "PASS": 497,
+    "PASS": 498,
     "FAIL": 1,
     "BLOCKED": 0
    },
    "args": "",
-   "path": "itests/results/20261018T170650-13282"
+   "path": "itests/results/20261018T172650-8399"
   }
  },
  "capabilities": [
@@ -708,7 +708,8 @@
      ],
      "cargo_tests": [
       "reconnect::a_client_that_reconnects_finds_its_pane_as_it_left_it",
-      "reconnect::subscribing_again_sends_the_whole_screen_again"
+      "reconnect::subscribing_again_sends_the_whole_screen_again",
+      "client::an_attach_superseded_by_its_own_client_id_ends"
      ],
      "scenarios": [
       {
@@ -9360,7 +9361,8 @@
       "uc_017:kill_server_leaves_no_process_and_no_socket"
      ],
      "cargo_tests": [
-      "client::attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches"
+      "client::attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches",
+      "client::an_attach_superseded_by_its_own_client_id_ends"
      ],
      "scenarios": [
       {
@@ -9842,6 +9844,27 @@
        "slug": "busybox-crontab-without-a-crontab",
        "title": "busybox crontab without a crontab",
        "tag": "tilr-cli/a-missing-crontab-is-recognized-whatever-the-cron#busybox-crontab-without-a-crontab",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "a-superseded-attach-ends",
+     "title": "A superseded attach ends",
+     "tag": "tilr-cli/a-superseded-attach-ends",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "client::an_attach_superseded_by_its_own_client_id_ends"
+     ],
+     "scenarios": [
+      {
+       "slug": "another-connection-with-the-same-client-id",
+       "title": "Another connection with the same client id",
+       "tag": "tilr-cli/a-superseded-attach-ends#another-connection-with-the-same-client-id",
        "cases": [],
        "covered": false
       }

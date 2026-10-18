@@ -234,9 +234,9 @@ When an attached `tilr` gets SIGTERM, SIGHUP or SIGINT it SHALL restore the term
 - **THEN** `tilr` ends by SIGTERM, `stty -a` on its terminal shows `icanon` and `echo`, the cursor is shown, and the pane is still listed by `tilr ls`
 
 ### Requirement: How an attach ends
-An attach SHALL end with one line on stdout and exit status 0: `[detached from pane XXXXXXXX]` (the first 8 characters of the id) on Ctrl+] d or end of input, `[pane XXXXXXXX exited with code N]` on `PaneExited`, `[pane XXXXXXXX is gone]` when a `PaneList` lacks the pane or it is gone after a reconnect, and `[tilrd stopped]` when the local server stopped.
+An attach SHALL end with one line on stdout and exit status 0: `[detached from pane XXXXXXXX]` (the first 8 characters of the id) on Ctrl+] d or end of input, `[pane XXXXXXXX exited with code N]` on `PaneExited`, `[pane XXXXXXXX is gone]` when a `PaneList` lacks the pane or it is gone after a reconnect, `[tilrd stopped]` when the local server stopped, and `[superseded by another connection of this client]` when the server closed the connection as superseded (4000).
 
-**Verified by**: `client::attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches`, itests `UC-016` (`uc_016.py::tilr_attaches_to_a_tilrd_running_in_the_foreground`), `UC-017` (`uc_017.py::kill_server_leaves_no_process_and_no_socket`).
+**Verified by**: `client::attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches`, itests `UC-016` (`uc_016.py::tilr_attaches_to_a_tilrd_running_in_the_foreground`), `UC-017` (`uc_017.py::kill_server_leaves_no_process_and_no_socket`), `client::an_attach_superseded_by_its_own_client_id_ends`.
 
 #### Scenario: Detach
 - **WHEN** the user presses Ctrl+] then d
@@ -273,7 +273,7 @@ Keys SHALL go as `KeyInput` (press or repeat; releases dropped). Enter, Tab, Bac
 - **THEN** the client turns the terminal's mouse capture on, then off again
 
 ### Requirement: Reconnect while attached
-An attached client SHALL ping every 5 s and SHALL take 15 s without hearing anything (pongs included), a failed send or a read error as a lost connection. It SHALL then show `tilr: disconnected (<why>), reconnecting… (Ctrl+] d detaches)` in reverse video on the bottom row, drop keys typed while disconnected (except the prefix and its `d`), and connect again with the same `client_id`, 0.1 s after the loss and then with waits doubling up to 2 s.
+An attached client SHALL ping every 5 s and SHALL take 15 s without hearing anything (pongs included), a failed send or a read error as a lost connection (a 4000 close ends the attach instead). It SHALL then show `tilr: disconnected (<why>), reconnecting… (Ctrl+] d detaches)` in reverse video on the bottom row, drop keys typed while disconnected (except the prefix and its `d`), and connect again with the same `client_id`, 0.1 s after the loss and then with waits doubling up to 2 s.
 
 **Verified by**: `client::attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches`, itests `UC-014` (`uc_014.py::after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon`).
 
@@ -430,11 +430,17 @@ Before it connects to the default socket or starts a server for it, `tilr` SHALL
 - **WHEN** `crontab -l` exits 1 saying `crontab: can't open '/var/spool/cron/crontabs/u': No such file or directory`
 - **THEN** install takes the crontab as empty and writes its line
 
+### Requirement: A superseded attach ends
+When the server closes an attached `tilr`'s connection with close code 4000 (`superseded`), `tilr` SHALL NOT reconnect: it SHALL restore the terminal, print `[superseded by another connection of this client]` on stdout and exit with status 0.
+
+**Verified by**: `client::an_attach_superseded_by_its_own_client_id_ends`.
+
+#### Scenario: Another connection with the same client id
+- **WHEN** `tilr` is attached and a second connection says `Hello` with `tilr`'s `client_id` and the same token on the same transport
+- **THEN** `tilr` prints `[superseded by another connection of this client]` and exits 0 without connecting again
+- **AND** the pane goes on
+
 ## Notes
 
 - Requirements without a test: kill; One client id per run (the reconnect test does not compare ids). Partly untested: the connect/request timeouts and the protocol-mismatch message (Connecting and saying hello), non-zero codes and reasons (Server command exit status), `tilr update` from the client. Several requirements rest on unit tests in `crates/tilr/src/*.rs` (`tests::…`, `target::tests::…`, `service::tests::…`) rather than on `crates/tilr/tests/client.rs`.
 - The "Verified by" line is written as an OpenSpec metadata line (`**Verified by**: …`) so that it does not count toward the 500-character requirement-text limit of `openspec validate --strict`.
-- README "Disconnects" says "Over TCP it pings every 5 s and takes 15 s of silence"; the code (crates/tilr/src/attach.rs:46-47, 185-191) pings and times out on the Unix socket as well.
-- README "Disconnects" says a dropped connection is "made again with it at once, then every 0.1 s doubling to 2 s"; the code (attach.rs:197) makes the first attempt 0.1 s after the loss.
-- README "Attached" says the wheel scrolls the history when the program does not ask for the mouse; the client only captures the mouse while `Frame.mouse_tracking` is on (attach.rs:214-224), so it never gets wheel events to turn into `Scroll` otherwise (the `Scroll` branch in attach.rs:537-547 is unreachable in practice): the outer terminal handles the wheel itself.
-- `tilr service install` takes the socket from `--socket`/`TILR_SOCKET` or the default, not from `client.toml`'s `socket` (main.rs service branch).

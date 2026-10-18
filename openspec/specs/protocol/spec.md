@@ -154,7 +154,6 @@ A server speaking version 3 SHALL implement, without a feature flag, `Ping`, `He
 
 - Requirements without a test: none. Partly untested: the 64 MiB decompression cap of "Compression of large bodies".
 - Unit tests in crates/tilr-proto/src/lib.rs are cited by bare name (they are not in a `tests/` file).
-- Code vs README: README "Protocol" says a server "sent anything else first answers with an `Error` and closes the connection". In code (crates/tilrd/src/supervisor.rs:1846-1851) a packet that does not decode, or decodes to an unknown message type, is handled before the `Hello` check: before `Hello` it gets `bad packet: …` (connection kept) or is ignored, not refused. Specified as the code does.
 - `"agent"` in `HelloAck.features` is listed whenever forwarding is on, whatever the client's `Hello.features`; what the client's `"agent"` gates is `StreamOpen` (see `ssh-agent-forwarding`).
 - The rule for later changes (README "Protocol", the tilr.proto header, openspec/config.yaml): a change a peer cannot ignore bumps `PROTOCOL_VERSION`; a feature names only a capability a server can be run without; a change a peer may ignore needs neither. A process rule, not an observable behavior.
 - File names that are not UTF-8 (`*_bytes` twins) are a rule of the files protocol only: see the `files` spec.
