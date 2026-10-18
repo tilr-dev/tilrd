@@ -623,9 +623,10 @@ What to know:
   (`tilrd state-formats`). If it does not run, reads another version than the server
   writes, or does not say `reload-check 1` (a release from before the check below), the
   server logs `not reloading` and carries on with the code it has. Such an upgrade needs a
-  restart. An executable that does not say `unix-socket 1` there (one from before the
-  socket) is not handed the socket: a server with a TCP port reloads into it without the
-  socket, one on its socket alone does not reload.
+  restart. A server that serves its Unix socket does not reload into an executable that
+  does not say `unix-socket 1` there either: the socket would be left with nobody serving
+  it. A refused reload keeps the socket and its lock served, so `tilr` finds the same
+  server.
 - Then, before it stops anything, the server has the new file show that it can resume: it
   runs it with the server's own command line and environment and `TILR_RELOAD_CHECK` naming
   a copy of the state it would hand over (`server-<pid>.check.state`). That run parses the
@@ -639,6 +640,8 @@ What to know:
   (`panes/<pane id>.check.state`) and carries on with its code if the check fails. A new
   version that passes its check and then crashes taking over still ends the server and its
   shells.
+- `SIGUSR1`, `SIGHUP` and `SIGTERM` that arrive while the new executable starts are held
+  across the exec and handled once it is up: one more reload, ignored, a clean shutdown.
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 

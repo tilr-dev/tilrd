@@ -479,9 +479,28 @@ pub fn run(options: Options) -> Result<()> {
                 ));
             }
             tokio::spawn(lag_ticks(events_tx.clone()));
-            tokio::spawn(shutdown_signal(events_tx.clone()));
-            tokio::spawn(reload_signal(events_tx.clone()));
-            tokio::spawn(hangup_signal());
+            // The handlers are in place before anything else can happen;
+            // then come the signals held across the exec that started this
+            // process, if one did.
+            use tokio::signal::unix::{SignalKind, signal};
+            let term = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+            let usr1 = signal(SignalKind::user_defined1()).context("install SIGUSR1 handler")?;
+            let hup = signal(SignalKind::hangup()).context("install SIGHUP handler")?;
+            tokio::spawn(shutdown_signal(term, events_tx.clone()));
+            tokio::spawn(reload_signal(usr1, events_tx.clone()));
+            tokio::spawn(hangup_signal(hup));
+            let held = reload::take_held_record();
+            if held.hangup {
+                tracing::info!("SIGHUP ignored: the server keeps running without its terminal");
+            }
+            if held.reload {
+                tracing::info!("SIGUSR1 came during the reload: reloading again");
+                let _ = events_tx.send(Event::Reload);
+            }
+            if held.terminate {
+                tracing::info!("SIGTERM came during the reload");
+                let _ = events_tx.send(Event::Shutdown);
+            }
             if options.auto_reload {
                 let events = events_tx.clone();
                 tokio::spawn(reload::watch_executable(crate::exe(), move || {
@@ -760,9 +779,10 @@ fn set_up_shims(
     (receiver, env)
 }
 
-async fn shutdown_signal(events: mpsc::UnboundedSender<Event>) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+async fn shutdown_signal(
+    mut term: tokio::signal::unix::Signal,
+    events: mpsc::UnboundedSender<Event>,
+) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
@@ -772,9 +792,10 @@ async fn shutdown_signal(events: mpsc::UnboundedSender<Event>) {
 
 /// SIGUSR1 reloads the supervisor and the pane processes, to pick up a
 /// rebuilt executable without closing any shell.
-async fn reload_signal(events: mpsc::UnboundedSender<Event>) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut usr1 = signal(SignalKind::user_defined1()).expect("install SIGUSR1 handler");
+async fn reload_signal(
+    mut usr1: tokio::signal::unix::Signal,
+    events: mpsc::UnboundedSender<Event>,
+) {
     while usr1.recv().await.is_some() {
         if events.send(Event::Reload).is_err() {
             break;
@@ -785,9 +806,7 @@ async fn reload_signal(events: mpsc::UnboundedSender<Event>) {
 /// SIGHUP is the terminal the server was started from going away (an SSH
 /// session dropping, the shell passing it on to its jobs). The server, like
 /// its panes, outlives that terminal; reloading is SIGUSR1's.
-async fn hangup_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut hup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
+async fn hangup_signal(mut hup: tokio::signal::unix::Signal) {
     if hup.recv().await.is_some() {
         tracing::info!("SIGHUP ignored: the server keeps running without its terminal");
     }
@@ -1719,18 +1738,15 @@ impl Supervisor {
                 return false;
             }
         };
+        // Without the socket the successor would leave its file behind with
+        // nobody serving it, and the next `tilr` would start a second
+        // server.
         if !hand_over_socket && self.local.is_some() {
-            if self.listener.is_none() {
-                tracing::error!(
-                    "not reloading: {} cannot take over the Unix socket, the only one this server listens on",
-                    exe.display()
-                );
-                return false;
-            }
-            tracing::warn!(
-                "{} cannot take over the Unix socket: it serves the TCP port alone",
+            tracing::error!(
+                "not reloading: {} cannot take over the Unix socket this server serves",
                 exe.display()
             );
+            return false;
         }
 
         // The successor shows it can resume from the state as it would be
@@ -1952,9 +1968,13 @@ impl Supervisor {
         let exe = crate::exe();
         let err = match set_inheritable(true) {
             Ok(()) => {
-                let err = std::process::Command::new(exe)
-                    .args(std::env::args_os().skip(1))
-                    .exec();
+                let mut command = std::process::Command::new(exe);
+                command.args(std::env::args_os().skip(1));
+                // What comes between the exec and the successor's handlers
+                // waits for them.
+                reload::hold_signals(&mut command);
+                let err = command.exec();
+                reload::release_held_signals();
                 anyhow::Error::new(err).context(format!("exec {}", exe.display()))
             }
             Err(err) => anyhow::Error::new(err).context("make descriptors inheritable"),

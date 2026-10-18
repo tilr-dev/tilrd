@@ -779,3 +779,125 @@ async fn a_pane_whose_successor_fails_the_check_carries_on() {
     assert_pane_survived(&mut server, client, pane_id).await;
     assert!(!server.logged("pane process died"));
 }
+
+// Signals that arrive while the successor starts, before it has its
+// handlers, are held across the exec for it.
+
+#[cfg(feature = "failpoints")]
+fn count_logged(server: &Server, needle: &str) -> usize {
+    server
+        .log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains(needle))
+        .count()
+}
+
+/// Start a reload and come back once the successor is starting, sleeping
+/// before its handlers are in place (`supervisor-resume-live=sleep:...`).
+#[cfg(feature = "failpoints")]
+async fn in_the_successor_starting(server: &Server) {
+    server.signal("-USR1");
+    wait_logged(server, "reloading exe=", TIMEOUT).await;
+    // The exec follows within milliseconds.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn signals_arriving_while_the_successor_starts_are_held_for_it() {
+    let (mut server, _) = failing_server("supervisor-resume-live=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let server_pid = server.child.id();
+
+    in_the_successor_starting(&server).await;
+    // Each of them, unheld, would end the server here.
+    server.signal("-HUP");
+    server.signal("-USR1");
+    let client = reconnect(&server, client).await;
+    drop(client);
+    let started = tokio::time::Instant::now();
+    while count_logged(&server, "resumed after reload with") < 2 {
+        assert!(started.elapsed() < TIMEOUT, "no second reload");
+        assert!(server.is_running(), "the server ended");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(server.logged("SIGHUP ignored"));
+    assert!(server.logged("SIGUSR1 came during the reload"));
+    assert_eq!(server.child.id(), server_pid);
+
+    let survivor = Client::connect(&server).await;
+    assert_pane_survived(&mut server, survivor, pane_id).await;
+    let mut client = Client::connect(&server).await;
+    let new_pane = client.open_pane().await;
+    // A shell started after the held signals has none of them blocked: a
+    // hangup ends it (128 + SIGHUP).
+    assert_eq!(
+        client
+            .run(new_pane, "sh -c 'kill -HUP $$; echo survived'")
+            .await,
+        129
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_sigterm_while_the_successor_starts_stops_the_server_cleanly() {
+    let (mut server, _) = failing_server("supervisor-resume-live=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    in_the_successor_starting(&server).await;
+    server.signal("-TERM");
+    let started = tokio::time::Instant::now();
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(started.elapsed() < TIMEOUT, "the server keeps running");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        status.success(),
+        "a clean shutdown, not the signal: {status}"
+    );
+    // The log thread may still be reading the last lines.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(server.logged("shutting down"));
+    eventually("the shell exits", || !process_alive(pid)).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_storm_of_reload_signals_costs_no_shell() {
+    // A short pause before the handlers: some of the signals land there.
+    let (mut server, _) = failing_server("supervisor-resume-live=sleep:100");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let server_pid = server.child.id();
+    drop(client);
+
+    for _ in 0..150 {
+        // SAFETY: kill has no memory-safety preconditions.
+        unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Let the last reloads finish.
+    let mut seen = count_logged(&server, "resumed after reload with");
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let now = count_logged(&server, "resumed after reload with");
+        if now == seen {
+            break;
+        }
+        seen = now;
+    }
+    assert!(server.is_running());
+    assert_eq!(server.child.id(), server_pid);
+    assert!(seen >= 2, "reloads: {seen}");
+    let client = Client::connect(&server).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}

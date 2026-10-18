@@ -93,10 +93,9 @@ pub fn formats() -> String {
 const SUPERVISOR_STATE: &str = "supervisor-state";
 const PANE_STATE: &str = "pane-state";
 /// Said by an executable that takes over the Unix socket for local clients
-/// (`SupervisorState.local_*`). One that does not say it ignores those
-/// fields: the socket is then not handed over to it (the descriptors close
-/// with the exec and the lock with them), and a server that has no TCP port
-/// does not reload into it.
+/// (`SupervisorState.local_*`). One that does not say it would ignore those
+/// fields and leave the socket file with nobody serving it: a server that
+/// serves its socket does not reload into it.
 const UNIX_SOCKET: &str = "unix-socket";
 /// Said by an executable that answers the check of a successor
 /// ([`CHECK_ENV`]). One that does not say it is not reloaded into: started
@@ -260,6 +259,113 @@ fn answer(line: &str) {
     let mut stdout = std::io::stdout().lock();
     let _ = writeln!(stdout, "{line}");
     let _ = stdout.flush();
+}
+
+/// The signals held across a supervisor's exec: what arrives between the
+/// exec and the successor's handlers would otherwise end the server.
+const HELD: [libc::c_int; 3] = [libc::SIGUSR1, libc::SIGHUP, libc::SIGTERM];
+
+fn held_set() -> libc::sigset_t {
+    // SAFETY: sigemptyset initializes the set; sigaddset takes valid
+    // signal numbers.
+    unsafe {
+        let mut set = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for signal in HELD {
+            libc::sigaddset(&mut set, signal);
+        }
+        set
+    }
+}
+
+/// Have `command`, about to be exec'd in place, start with [`HELD`]
+/// blocked: they wait, pending, for the successor ([`take_held_signals`]).
+/// Done in `pre_exec`, after whatever the standard library does to the mask.
+/// If the exec fails, [`release_held_signals`] undoes it.
+pub fn hold_signals(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: pthread_sigmask is async-signal-safe, and the set is built
+    // before.
+    unsafe {
+        let set = held_set();
+        command.pre_exec(move || {
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+}
+
+/// Unblock [`HELD`] on this thread again: the exec that was to carry them
+/// over did not happen.
+pub fn release_held_signals() {
+    let set = held_set();
+    // SAFETY: the set is valid.
+    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
+}
+
+/// Which of the held signals came while this process started.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct HeldSignals {
+    pub reload: bool,
+    pub hangup: bool,
+    pub terminate: bool,
+}
+
+static HELD_CAME: [std::sync::atomic::AtomicBool; 3] =
+    [const { std::sync::atomic::AtomicBool::new(false) }; 3];
+static HELD_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn record_held(signal: libc::c_int) {
+    use std::sync::atomic::Ordering;
+    if HELD_TAKEN.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(at) = HELD.iter().position(|&held| held == signal) {
+        HELD_CAME[at].store(true, Ordering::Relaxed);
+    }
+}
+
+/// First thing in a process: if it was started with [`HELD`] blocked (a
+/// supervisor exec'd by a reload), note which of them come from now on
+/// with a handler that only records them, and unblock them. A signal that
+/// arrived during the exec is recorded at once; the threads and children
+/// started after this have nothing blocked. The supervisor acts on the
+/// record ([`take_held_record`]) once its own handlers are in place, which
+/// call this one too.
+pub fn take_held_signals() {
+    // SAFETY: plain libc calls with valid arguments, while the process has
+    // a single thread.
+    unsafe {
+        let mut blocked: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut blocked);
+        let held: Vec<libc::c_int> = HELD
+            .into_iter()
+            .filter(|&signal| libc::sigismember(&blocked, signal) == 1)
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        for &signal in &held {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = record_held as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            libc::sigemptyset(&mut action.sa_mask);
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+        release_held_signals();
+    }
+}
+
+/// What [`take_held_signals`] recorded; from now on it records nothing.
+pub fn take_held_record() -> HeldSignals {
+    use std::sync::atomic::Ordering;
+    HELD_TAKEN.store(true, Ordering::Relaxed);
+    let came = |at: usize| HELD_CAME[at].swap(false, Ordering::Relaxed);
+    HeldSignals {
+        reload: came(0),
+        hangup: came(1),
+        terminate: came(2),
+    }
 }
 
 /// Where this supervisor puts the copy of its state its successor is

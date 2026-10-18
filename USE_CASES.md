@@ -56,6 +56,8 @@ The test's name is the statement of the use case.
 | Stopping removes the socket and the lock | `a_server_that_stops_removes_its_socket_and_lock` |
 | Server commands (`tilr token`) go over the Unix socket only, even with `--no-exec`; over TCP they are refused | `server_commands_run_for_local_clients_only` |
 | A server on its socket alone (`--no-listen`) does not reload into an executable that cannot take the socket (`state-formats` without `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
+| Nor does a server with a TCP port and its socket: the socket would be left with nobody serving it | `a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` |
+| † A reload refused by the check of the successor: the same connection, new connections through the socket, the lock still held | `a_refused_reload_keeps_the_socket_and_its_lock` |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
@@ -200,6 +202,9 @@ state format; platforms other than `linux-aarch64`.
 | † The check run of the new version never answers: killed after 10 s, no exec, the server served clients meanwhile | `a_successor_that_never_answers_the_check_is_not_reloaded_into` |
 | † A slow check run that passes: the server serves meanwhile, then reloads with the same pid | `a_successor_is_checked_while_the_server_serves_and_then_reloaded_into` |
 | † A pane process's check of its successor fails: the supervisor reloads, that pane carries on with the old code and its shell | `a_pane_whose_successor_fails_the_check_carries_on` |
+| † SIGHUP and SIGUSR1 while the successor starts, before its handlers: held for it; SIGHUP ignored, one more reload; a shell started afterwards has no signal blocked | `signals_arriving_while_the_successor_starts_are_held_for_it` |
+| † SIGTERM while the successor starts: a clean shutdown (exit 0), the shells end | `a_sigterm_while_the_successor_starts_stops_the_server_cleanly` |
+| † SIGUSR1 every 20 ms for 3 s: several reloads, the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
 
 ## Clipboard — `tests/clipboard.rs`
 

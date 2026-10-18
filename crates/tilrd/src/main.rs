@@ -244,6 +244,11 @@ fn main() -> anyhow::Result<ExitCode> {
         return Ok(reload::answer_check(|| check_resume(Path::new(&state))));
     }
 
+    // A supervisor exec'd by a reload starts with SIGUSR1, SIGHUP and
+    // SIGTERM held: note what came meanwhile and let them in again before
+    // any thread or child is started.
+    reload::take_held_signals();
+
     // Write errors are dropped: stderr may be a terminal that hung up (EIO),
     // and reporting that to stderr again would panic.
     // Colors for a terminal only: the log of a server `tilr` started is a file.

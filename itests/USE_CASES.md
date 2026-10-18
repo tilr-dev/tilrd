@@ -141,6 +141,7 @@ systemd нет в контейнере: `systemctl`, `loginctl`, `crontab` — �
 - UC-068. Перезагрузка в момент создания панели. → `uc_068.py::panes_created_while_the_server_reloads_are_whole_or_absent_and_every_reload_happens`
 - UC-069. 50 перезагрузок подряд под нагрузкой — сирот и утечек fd нет (дескрипторов ровно столько же, сколько до первой перезагрузки). → `uc_069.py::fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks`
 - UC-06A. Новая версия падает при возобновлении (в проверочном прогоне `TILR_RELOAD_CHECK` и в живом resume) — сервер в неё не exec'ается: тот же pid и слушающий сокет, клиент подключён, старая версия в `HelloAck`, весь софт в панелях жив, файлов состояния и проверки не осталось; `SIGUSR1` отказывается так же. → `uc_06a.py::a_version_that_crashes_resuming_is_not_reloaded_into_and_the_shells_live_on` (до проверки возобновления такое обновление убивало сервер и все шеллы)
+- UC-06B. Отказ от перезагрузки у сервера, поднятого `tilr` (`--socket`, `--lock-fd`): сокет и его lock остаются, `tilr ls` видит ту же панель, новый `tilr` цепляется к тому же tilrd (тот же шелл, `$KEPT`), второго демона нет. → `uc_06b.py::a_refused_reload_keeps_the_socket_and_tilr_finds_the_same_server`
 
 ## G. Передача: файлы, данные по каналу, команды
 

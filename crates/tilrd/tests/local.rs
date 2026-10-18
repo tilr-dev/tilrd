@@ -612,16 +612,10 @@ async fn server_commands_run_for_local_clients_only() {
     );
 }
 
-#[test]
-fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
-    // An older tilrd reads the same state but knows nothing of the socket.
-    let scratch = Scratch::new();
-    let exe = scratch.0.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
-    daemon.wait_listening();
-
-    let formats = Command::new(&exe).arg("state-formats").output().unwrap();
+/// An executable that reads the state but not the socket (no `unix-socket
+/// 1`) in place of `exe`.
+fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
+    let formats = Command::new(exe).arg("state-formats").output().unwrap();
     let formats = String::from_utf8(formats.stdout).unwrap();
     let older: String = formats
         .lines()
@@ -635,20 +629,83 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::rename(&staged, &exe).unwrap();
+    std::fs::rename(&staged, exe).unwrap();
+}
+
+fn wait_logged(daemon: &Daemon, needle: &str) {
     for _ in 0..500 {
-        if daemon.log_text().contains("not reloading") {
-            break;
+        if daemon.log_text().contains(needle) {
+            return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        daemon
-            .log_text()
-            .contains("cannot take over the Unix socket, the only one this server listens on"),
-        "{}",
-        daemon.log_text()
+    panic!("not logged: {needle}\n{}", daemon.log_text());
+}
+
+#[test]
+fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
+    // An older tilrd reads the same state but knows nothing of the socket.
+    let scratch = Scratch::new();
+    let exe = scratch.0.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
+    daemon.wait_listening();
+    replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    wait_logged(
+        &daemon,
+        "cannot take over the Unix socket this server serves",
     );
     assert!(daemon.running());
     assert!(daemon.ps().status.success());
+}
+
+/// With a TCP port too, the server used to reload into it serving TCP
+/// alone, leaving the socket file with nobody behind it: the next `tilr`
+/// started a second server.
+#[test]
+fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
+    let scratch = Scratch::new();
+    let exe = scratch.0.join("tilrd");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
+    daemon.wait_listening();
+    replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    wait_logged(
+        &daemon,
+        "cannot take over the Unix socket this server serves",
+    );
+    assert!(!daemon.log_text().contains("resumed after reload"));
+    assert!(daemon.running());
+    assert!(daemon.ps().status.success(), "served through the socket");
+}
+
+/// A reload refused by the check of the successor leaves the socket, its
+/// lock and the connections on it as they were.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_refused_reload_keeps_the_socket_and_its_lock() {
+    let scratch = Scratch::new();
+    let mut daemon = Daemon::start(&scratch.0, &[]);
+    let mut ws = connect(&daemon.socket).await;
+    let pane = create_pane(&mut ws).await;
+    std::fs::write(scratch.0.join("failpoints"), "supervisor-resume=panic").unwrap();
+    daemon.signal(libc::SIGUSR1);
+    wait_logged(
+        &daemon,
+        "not reloading: the new executable could not resume",
+    );
+    assert!(daemon.running(), "the same process");
+    // The same connection, and a new one through the socket.
+    assert!(panes(&mut ws).await.iter().any(|p| p.pane_id == pane));
+    let mut again = connect(&daemon.socket).await;
+    assert!(panes(&mut again).await.iter().any(|p| p.pane_id == pane));
+    assert!(daemon.ps().status.success());
+    // Still locked: another server cannot take the socket.
+    let mut other = Daemon::spawn(&scratch.0, &["--no-listen"]);
+    let (status, log) = other.exit();
+    assert!(!status.success());
+    assert!(
+        log.contains(&format!("another tilrd (pid {})", daemon.child.id())),
+        "{log}"
+    );
 }
