@@ -29,3 +29,5 @@ Itsaplan TILR-107 (phase 1, security bug). Commit 8274039 (archived change `2026
 ## Impact
 
 `crates/tilr-proto/src/local.rs` (the helper and its unit test), `crates/tilrd/src/host.rs` (`ask`), `crates/tilr/src/host.rs` (`ask`), `crates/tilr/src/conn.rs` (`check_peer` uses the helper), itests `UC-03A` (a new case), USE_CASES.md and itests/USE_CASES.md, README "Files and `tilr edit`" (`README.md:507-540`). No protocol change (the host socket's JSON lines are unchanged); nothing crosses a reload. An update from the previous release needs nothing: the pane's `tilr` is a symbolic link to the server's executable path (`crates/tilrd/src/clipboard.rs:91`), so it runs the installed version at once, and the `tilr` client is client-only. Not breaking for the user's own sockets.
+
+Implemented by: [`248dd56`](https://github.com/tilr-dev/tilrd/commit/248dd56) fix(host): send nothing to a host socket another user serves (2026-10-18).

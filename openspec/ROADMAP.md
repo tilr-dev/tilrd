@@ -118,6 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | service-install-ownership | 1d44e4b |
 | shims-path-robustness | 0590786 |
 | startup-signal-window | f8fb63b |
-| pane-socket-peer-check | recorded in the next commit |
+| pane-socket-peer-check | 248dd56 |
 
 Older work is in `openspec/changes/archive/`.
