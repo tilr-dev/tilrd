@@ -9,4 +9,4 @@
 
 ## 2. Land
 
-- [ ] 2.1 Commit on the owner's word and archive this change with that commit; verify `openspec list` no longer shows it
+- [x] 2.1 Commit on the owner's word and archive this change with that commit; verify `openspec list` no longer shows it

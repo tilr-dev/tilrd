@@ -1,22 +1,36 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Any pong reopens a closed bulk window
-While a client's bulk window is closed, every ping the server sends SHALL carry the current bulk position, so that a pong to any of them MUST let the window reopen.
+### Requirement: Bulk data in the network is bounded by pongs
+Of the bulk lane's data, the server SHALL keep at most 1 MiB written to a client and not yet read by it. It MUST learn how far the client has read from WebSocket pings whose payload is `tilr-bulk:` followed by the bulk byte position as a big-endian u64: one after every 128 KiB of bulk data and whenever the window fills, and every liveness ping SHALL carry the current position too, so that a pong to any ping the server sent moves the window. A position beyond the bulk bytes written to that client MUST count as the bytes written. A client that answers no pings MUST stall its bulk data (file reads, streams, execs) while its frames still flow.
+
+**Verified by**: the unit tests `the_bulk_window_closes_until_the_client_has_read_its_marks` and `a_pong_beyond_what_was_sent_opens_no_more_than_the_window` in crates/tilrd/src/outbox.rs, `files::a_client_answering_only_the_latest_ping_gets_the_whole_file`, and itests UC-072 (`uc_072.py::parallel_reads_leave_the_terminal_responsive`).
+
+#### Scenario: Window full
+- **WHEN** 1 MiB of bulk data is written to a client that has answered none of the marking pings
+- **THEN** no more bulk data goes to it until a pong carries a later position
 
 #### Scenario: Client answers only the newest ping
-- **WHEN** a client reading a large file answers only the most recent of several pings
+- **WHEN** a client of a server with `--client-timeout 1` reads a 16 MiB file and answers only the most recent of the pings it has read
 - **THEN** the whole file arrives
 
-### Requirement: A lagging client gets its last screen
-When output stops while a client lags, the server SHALL still send that client the latest full frame of each pane it watches, without waiting for more output.
+#### Scenario: Pong ahead of the data
+- **WHEN** a client answers a marking ping with a position beyond the bytes written to it
+- **THEN** the server writes it at most 1 MiB of bulk data more before a later pong
+
+### Requirement: A lagging client skips to the latest screen
+The server SHALL set `TCP_NOTSENT_LOWAT` to 4 KiB on TCP clients, so a backlog waits in its queue. A client whose interactive lane has held a packet over 250 ms lags: its frames of a pane MUST be skipped (see `metrics`) until its queue is written out; then the pane MUST be asked for a full frame, sent to all its viewers, whose `last_input_seq` carries the client's own latest seq a skipped frame echoed. The full frame MUST be asked for even when the queue was written out before the lag was recorded and the pane prints nothing more. A lagging client MUST NOT be dropped for it, nor slow other clients.
+
+**Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo`, `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`, the unit test `a_packet_held_too_long_is_lag_and_an_empty_queue_is_reported_once` in crates/tilrd/src/outbox.rs, and itests UC-049 (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`) and UC-043 (`uc_043.py::a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it`, `uc_043.py::a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect`).
+
+#### Scenario: Small receive buffer under heavy output
+- **WHEN** a client with a 4 KiB receive buffer stops reading while a pane prints 30 MB, sends input with seq S meanwhile, and then reads again
+- **THEN** it receives a full frame after the lag, a frame with `last_input_seq` S, and the end of the output
+- **AND** it received fewer frames than the pane produced, and stayed connected
 
 #### Scenario: Output stops during lag
 - **WHEN** a client lags while a pane prints and the pane then goes quiet
-- **THEN** the client receives a full frame matching the pane's final screen
+- **THEN** within 1 s of its queue being written out the client receives a full frame matching the pane's final screen
 
-### Requirement: A pong cannot widen the window
-The server SHALL take a pong's position as at most the number of bulk bytes it has sent to that client.
-
-#### Scenario: Pong ahead of the data
-- **WHEN** a client answers with a position beyond what was sent
-- **THEN** the unread amount is computed from the bytes sent and stays within 1 MiB
+#### Scenario: Others not slowed
+- **WHEN** one client is limited to 10 KB/s while another watches the same pane and types
+- **THEN** the fast client's input latency stays low and the server's memory stays bounded

@@ -21,4 +21,4 @@ Set up the spec-driven workflow for both agents, as in tilr-dev/gitpm (its `open
 
 ## Impact
 
-Uncommitted at the time of writing (branch `docs/openspec`). Archive this change with the commit that lands it ("Implemented by").
+Implemented by: [`27be1ea`](https://github.com/tilr-dev/tilrd/commit/27be1ea) chore: set up OpenSpec for Claude Code and Codex; [`40d6057`](https://github.com/tilr-dev/tilrd/commit/40d6057) test(itests): tag cases with spec requirements, add coverage report; [`552dcd9`](https://github.com/tilr-dev/tilrd/commit/552dcd9) docs(openspec): specs, history and backlog of tilrd (2026-10-18 10:34).

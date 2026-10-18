@@ -2,18 +2,23 @@
 
 ## Context
 
-The bulk lane is paced by pongs to pings that carry a byte position (`outbox.rs`); a ping without a position is also sent for liveness (`supervisor.rs:1048`). WebSocket pongs may answer only the latest ping (RFC 6455 allows a pong to the most recent ping only), so a position-less ping after the marked one can leave the window closed for ever.
+At 1163abd the writer task of each connection (`supervisor.rs:1098-1150`) sends empty liveness pings every third of the client timeout and, after bulk packets, marking pings from `BulkWindow::wrote` (every 128 KiB, and always once the window is full). The reader passes every pong payload to `BulkAcks::pong`, which ignores payloads without the `tilr-bulk:` prefix.
 
 ## Decisions
 
-- D1: while the window is closed, every ping (liveness ones too) carries the current position; when open, positions every 128 KiB as now.
-- D2: the full frame of a lagging client is queued with a notify of the writer task, the same path as ordinary frames.
-- D3: `acked = min(pong_position, sent)`.
+### D1. Every ping carries the position
+The liveness ping's payload becomes `BulkWindow::position()` (`tilr-bulk:` + `sent` as u64 BE, 18 bytes) instead of empty. Whichever ping a client answers, its pong says it has read at least up to the bulk sent when that ping was written. Rejected: "only while the window is closed" (one more state to get right, same cost), and resending the mark on a timer while closed (adds a timer per connection; the liveness tick already exists). With `--client-timeout 0` there are no liveness pings; the full-window mark is then the only ping and nothing can supersede it, so no stall.
+
+### D2. No lost wake-up at lag start
+In `on_pane_output`'s "starts lagging" branch, after `want_drained()` the supervisor checks `client.tx.drained()` and, if the lane is already empty, sets `ask_full`. The `Tick` handler (every `LAG_TICK`, 1 s) also asks for a full frame for each pane in a client's `lagging` map when that client's lane is drained; `ask_full_frame` is idempotent per pane (`full_asked`), so this costs nothing in the common case.
+
+### D3. Cap the acknowledged position
+`BulkWindow::open()` uses `min(read, sent)`; `BulkAcks` stays lock-free. A lying pong can then at most acknowledge everything written so far, which is the honest maximum.
 
 ## Backpressure and memory
 
-Bounds are unchanged: 4 MiB queued per client and 1 MiB in the network unread. D3 removes the only way a client could make the server believe less is in flight.
+Bounds unchanged: 4 MiB queued per client, 1 MiB unread in the network. D3 restores the 1 MiB bound for a misbehaving client.
 
 ## Reload and reconnect
 
-No state crosses a reload; a reconnect starts a fresh outbox, as now.
+No state crosses a reload; a reconnect starts a fresh outbox and window, as now.

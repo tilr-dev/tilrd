@@ -2,38 +2,39 @@
 
 ## Why
 
-The specs written on 2026-10-18 list requirements without a test in their Notes: `cloud-tunnels` 8 (login, link kept, logout, revoke, control connection retry, failing cloudflared restarted, no TCP port no Cloud, cloudflared after SIGKILL), `release-process` 13 (none of the release scripts and workflows is tested), `installation` 1 (manual install; plus the old-`tilr` restore of the installer), `update` 2 (`tilr update`), `tilr-cli` 2 (`kill`, one client id per run), `socks-proxy` 2, `panes` 2, `exec` 1, `metrics` 1, `reload` 1 (stale state files swept), `ssh-agent-forwarding` 1, `daemon-lifecycle` 1. Known flakes (Basic Memory `main/projects/tilr/tilrd-tests-integratsionnye-testy-tilrd-na-dagger-use-cases-resheniia`): `uc_043` p90 echo over 5 s in 2 of about 7 runs; under load `files::nothing_outside_the_shared_directories_is_served` and `reconnect::a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`; test servers from `target/debug` left running on the Mac after local cargo tests.
+The specs written on 2026-10-18 list requirements without a test in their Notes; `openspec/coverage/coverage.md` (`./itests/dt coverage`, last regenerated 2026-10-18) counts 349 requirements, 35 uncovered: `cloud-tunnels` 8, `release-process` 13, `installation` 1, `update` 2, `tilr-cli` 2, `socks-proxy` 2, `panes` 2, `exec` 1, `metrics` 1, `reload` 1, `ssh-agent-forwarding` 1, `daemon-lifecycle` 1. Checked at 1163abd: none of them has gained a test (`crates/tilrd/tests/cloud.rs` has five tests, none of login, logout, revoke, retry, a failing `cloudflared`, `--no-listen` or a SIGKILLed server; `crates/tilr/tests/client.rs` runs neither `tilr kill` nor `tilr update`). USE_CASES.md says Cloud login/logout were checked only by hand against a local Cloud.
 
-Updated after 47a8557: the installer's service and legacy requirements are gone and UC-004 is green, so `installation` drops from 4 to 1; the archive layout adds a release-process requirement. `openspec/coverage/coverage.md` (`./itests/dt coverage`) lists the uncovered requirements and is the current count.
+Known flakes (Basic Memory `main/projects/tilr/tilrd-tests-integratsionnye-testy-tilrd-na-dagger-use-cases-resheniia`): `uc_043` p90 echo over 5 s in 2 of about 7 runs; under load `files::nothing_outside_the_shared_directories_is_served` and `reconnect::a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`; test servers from `target/debug` left running on the Mac after local cargo tests. Not re-run for this proposal.
+
+## Scope
+
+- The 13 `release-process` requirements move to their own change, `release-process-tests` (scripts and workflows, phase "release infrastructure"); this one keeps the server and client requirements.
+- `daemon-lifecycle` "No shell outlives the server" is left to `sighup-ignoring-shell-reaped`, which fixes it and turns UC-086 green.
+- `cloud-tunnels` "cloudflared does not outlive the server" is left to `cloudflared-outlives-exec`, which fixes it and adds its tests (UC-088); this change covers the other 7 `cloud-tunnels` requirements.
+- `cloud-tunnels` "Login links the machine through a device code" is also modified by `cloud-default-url`: whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
 
 ## What Changes
 
-- A test per untested requirement, cargo where one machine suffices, itests otherwise; the release scripts get a dry-run test against a local directory CDN.
+- A test per remaining untested requirement (19), cargo where one machine suffices, itests otherwise; each named in its requirement's **Verified by** line (spec deltas below):
+  - `cloud-tunnels` (7): against the test-played Cloud of `crates/tilrd/tests/cloud.rs`, extended with the enrollment endpoints (`/v1/enroll`, `/v1/enroll/poll`, `DELETE /v1/machine`) and a stand-in `cloudflared` that can be made to exit.
+  - `exec`, `metrics`, `panes` (2), `reload`, `socks-proxy` (2), `ssh-agent-forwarding`: cargo tests in `crates/tilrd/tests/`.
+  - `tilr-cli` (2) and `update` (2): cargo tests in `crates/tilr/tests/client.rs`; `tilr update` against a local CDN directory as `crates/tilrd/tests/update.rs` uses.
+  - `installation` "Manual install from the CDN": a new itests case UC-007 doing the README's manual steps against `LocalCdn`.
 - Fix or quarantine each known flake with a recorded cause.
+- A test that finds the code differs from its requirement is kept red and the difference goes to its own change (no behavior change here).
 
 ## Capabilities
 
 ### Modified Capabilities
-- `cloud-tunnels`
-- `release-process`
-- `installation`
-- `update`
-- `tilr-cli`
-- `socks-proxy`
-- `panes`
-- `exec`
-- `metrics`
-- `reload`
-- `ssh-agent-forwarding`
-- `daemon-lifecycle`
+- `cloud-tunnels`, `exec`, `installation`, `metrics`, `panes`, `reload`, `socks-proxy`, `ssh-agent-forwarding`, `tilr-cli`, `update`: **Verified by** lines name the new tests (see `specs/`); requirement text unchanged.
 
-No spec delta: tests, docs or process only; `skip_specs: true`.
-
-## Out of scope
+## Non-goals
 
 - A real Cloudflare tunnel in tests (needs an account; stays manual).
 - Load thresholds (change `itests-stage-5`).
+- The release scripts and workflows (change `release-process-tests`).
+- Behavior changes.
 
 ## Impact
 
-Tests only (`crates/*/tests/`, `itests/scenarios/`), USE_CASES.md, the specs' Notes. No behaviour change.
+Tests only: `crates/tilrd/tests/{cloud,exec,metrics,panes,reload,socks,agent}.rs`, `crates/tilr/tests/client.rs`, `itests/scenarios/uc_007.py`, USE_CASES.md, itests/USE_CASES.md, the specs' **Verified by** lines and Notes. No behavior, protocol, reload or update impact. The deltas are MODIFIED copies of the current requirements with a new **Verified by** line: if another change modifies one of them first (e.g. `cloudflared-outlives-exec`), the copy is refreshed before this change is archived (task 6.2).

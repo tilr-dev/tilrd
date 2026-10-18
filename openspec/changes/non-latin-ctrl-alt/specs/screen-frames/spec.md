@@ -8,7 +8,7 @@
 ### Requirement: Ctrl goes by the physical key on a non-Latin layout
 `KeyInput.code` SHALL be the physical key, in W3C `KeyboardEvent.code` names (`KeyA`..`KeyZ`, `Digit0`..`Digit9`, `Backquote`, `Backslash`, `BracketLeft`, `BracketRight`, `Comma`, `Equal`, `Minus`, `Period`, `Quote`, `Semicolon`, `Slash`, `Space`); with Ctrl and a character that has no C0 control (`codepoint`, else `text`, not ASCII) the key SHALL be encoded as Ctrl with its US-layout character.
 
-**Verified by**: unit test `ghostty::tests::ctrl_and_alt_on_a_layout_that_is_not_latin_go_by_the_physical_key` and itests `UC-079` (`uc_079.py::ctrl_c_on_a_russian_layout_is_ctrl_c`).
+**Verified by**: unit test `ghostty::tests::ctrl_on_a_layout_that_is_not_latin_goes_by_the_physical_key` and itests `UC-079` (`uc_079.py::ctrl_c_on_a_russian_layout_is_ctrl_c`).
 
 #### Scenario: Ctrl+C on a Russian layout
 - **WHEN** a client sends `KeyInput{code: "KeyC", codepoint: 'с', mods: ctrl}`
@@ -25,7 +25,9 @@
 ## ADDED Requirements
 
 ### Requirement: Alt sends ESC and the character produced
-With Alt and without Ctrl, a key with a character SHALL be encoded as `ESC` followed by that character (`codepoint`, else `text`, Shift applied) in UTF-8, never remapped to the physical key; with Ctrl and Alt it SHALL be `ESC` followed by the Ctrl encoding above. The kitty keyboard protocol, when on, SHALL be encoded by its own rules.
+With Alt and without Ctrl, a key with a character SHALL be encoded as `ESC` followed by that character (`text`, else `codepoint`, Shift applied) in UTF-8, never remapped to the physical key, whether or not `code` is given; with Ctrl and Alt it SHALL be `ESC` followed by the Ctrl encoding above. The kitty keyboard protocol, when on, SHALL be encoded by its own rules.
+
+**Verified by**: unit test `ghostty::tests::alt_sends_esc_and_the_character_produced` and itests `UC-079` (`uc_079.py::ctrl_c_on_a_russian_layout_is_ctrl_c`).
 
 #### Scenario: Alt on a Russian layout
 - **WHEN** a client sends Alt+ж (`code` `Semicolon`) and Alt+Shift+Ф (text `Ф`, `code` `KeyA`)
@@ -39,8 +41,14 @@ With Alt and without Ctrl, a key with a character SHALL be encoded as `ESC` foll
 - **WHEN** a client sends Ctrl+Alt+с (`code` `KeyC`)
 - **THEN** the program reads `ESC` 0x03
 
+#### Scenario: Alt without a physical key
+- **WHEN** a client sends Alt with text `ж` and `code` empty
+- **THEN** the program reads `ESC ж`
+
 ### Requirement: Composed characters are sent as themselves
 A character the client sends without Alt or Ctrl (produced by AltGr or by macOS Option composing) SHALL be sent as that character; the server SHALL treat a key as Alt only when `KeyInput.mods` says Alt.
+
+**Verified by**: unit test `ghostty::tests::composed_characters_are_sent_as_themselves` and itests `UC-079` (`uc_079.py::ctrl_c_on_a_russian_layout_is_ctrl_c`).
 
 #### Scenario: AltGr and Option
 - **WHEN** a client sends `€` (AltGr+e), `ą` (AltGr+a) or `ç` (Option+c with Option not acting as Alt), each without Alt in `mods`

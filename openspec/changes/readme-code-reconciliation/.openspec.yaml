@@ -1,4 +1,2 @@
 schema: spec-driven
 created: 2026-10-18
-# Docs/tests/process only, or the requirements already exist in openspec/specs.
-skip_specs: true

@@ -1,15 +1,22 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: A stuck cloudflared does not hold back a reload
-When `cloudflared` does not exit within its stop wait during a reload, the server SHALL kill it and MUST go on with the exec; no `cloudflared` of the old image SHALL be left running.
+### Requirement: cloudflared does not outlive the server
+When the server stops, `cloudflared` SHALL stop with it; after the server is killed with SIGKILL no `cloudflared` it started MUST be left running: on Linux it SHALL get SIGTERM when the server dies, and on every platform a server starting on the same runtime directory SHALL stop a `cloudflared` recorded in `<runtime dir>/cloudflared/pid` that still runs with that directory's `config.yml` before starting its own. `cloudflared` SHALL run in a process group of its own, so a signal to the server's process group MUST NOT reach it.
 
-#### Scenario: cloudflared ignores SIGTERM
-- **WHEN** a reload starts while the tunnel's `cloudflared` ignores SIGTERM
-- **THEN** the reload completes and only the successor's `cloudflared` runs
+**Verified by**: `cloud::a_cloudflared_left_by_a_killed_server_is_stopped`, `cloud::cloudflared_is_not_in_the_servers_process_group`; itests `UC-088` (`uc_088.py::cloudflared_is_gone_after_the_server_is_sigkilled`).
 
-### Requirement: cloudflared is not in the server's process group
-`cloudflared` SHALL run in a process group of its own, so a signal to the server's group MUST NOT reach it.
+#### Scenario: The server stops
+- **WHEN** a server with its tunnel up stops (`tilr kill-server`, SIGTERM)
+- **THEN** its `cloudflared` is gone
+
+#### Scenario: SIGKILL
+- **WHEN** a server with its tunnel up is killed with SIGKILL on Linux
+- **THEN** within 5 s no `cloudflared` it started is left running
+
+#### Scenario: Leftover found at the next start
+- **WHEN** a `cloudflared` recorded in `<runtime dir>/cloudflared/pid` still runs with that directory's `config.yml` and a server starts on that runtime directory
+- **THEN** that `cloudflared` is stopped before any new one starts and the log says `stopped a cloudflared left by an earlier server`
 
 #### Scenario: Terminal hangup
-- **WHEN** a server started from a terminal with its tunnel up sees the terminal hang up
-- **THEN** `cloudflared` keeps its pid
+- **WHEN** SIGHUP is sent to the process group of a server with its tunnel up
+- **THEN** `cloudflared` keeps its pid and the tunnel stays `up`
