@@ -29,3 +29,5 @@
 ## Impact
 
 `crates/tilrd/src/cloud.rs` (spawn options, pid file, sweep), `crates/tilrd/tests/cloud.rs`, itests `uc_088.py` (new), README "tilr Cloud", USE_CASES.md, itests/USE_CASES.md (UC-088). No protocol change, no PROTOCOL_VERSION or feature change, no state file format change: the pid file is not reload state (the successor sweeps it as any start does). Survives a reload: the old supervisor still stops its `cloudflared` before the exec and the successor starts its own; the sweep finds nothing in the normal case. An update from the previous release is a reload into this one: the old image stops its `cloudflared` as before, and the first `cloudflared` started by the new image is the first one with a pid file. Not breaking.
+
+Implemented by: [`0aff8e0`](https://github.com/tilr-dev/tilrd/commit/0aff8e0) fix(cloud): never leave cloudflared running after the server (2026-10-18).

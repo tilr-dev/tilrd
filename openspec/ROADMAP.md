@@ -115,6 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | notify-socket-env | 4e7812b |
 | attach-robustness | d7d4e65 |
 | sighup-ignoring-shell-reaped | 47bce42 |
-| cloudflared-outlives-exec | recorded in the next commit |
+| cloudflared-outlives-exec | 0aff8e0 |
 
 Older work is in `openspec/changes/archive/`.
