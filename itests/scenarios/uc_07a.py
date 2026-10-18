@@ -21,7 +21,7 @@ from tt.cloud import fake_cloudflared
 
 TUNNEL = {
     "id": "6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4",
-    "account_tag": "8e0530af975a33f2f739127f75084531",
+    "account_tag": "0123456789abcdef0123456789abcdef",
     "secret": "c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0cw==",
     "hostname": "abc234.tilr.test",
 }

@@ -1,0 +1,37 @@
+# cargo-deny (CI job `cargo-deny`): RustSec advisories, the license allowlist, duplicate crates
+# and dependency sources, for the whole workspace (the `failpoints` test feature included).
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory (vulnerability, unmaintained, unsound, notice) fails; yanked versions too.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# The licenses the current dependency tree needs (`cargo deny list`). OR-expressions pass
+# when one side is allowed, so e.g. "LGPL-3.0-or-later OR MPL-2.0" passes via MPL-2.0.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause", # subtle, zstd-safe, zstd-sys
+    "CC0-1.0", # notify
+    "CDLA-Permissive-2.0", # webpki-roots (Mozilla's root certificates as data)
+    "ISC", # ring, rustls-webpki, untrusted, inotify, inotify-sys
+    "Unicode-3.0", # unicode-ident
+    "Zlib", # foldhash
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path dependencies (`tilr-proto = { path = ... }` in [workspace.dependencies])
+# have no version; they never reach crates.io (every crate here is publish = false).
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

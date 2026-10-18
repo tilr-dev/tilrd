@@ -2,7 +2,14 @@
 name = "tilr-screen"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish = false
+description = "Terminal screen model for tilrd: a VT engine (libghostty-vt) behind a backend-neutral trait that produces frames"
+readme = "../../README.md"
+keywords = ["terminal", "vt", "ghostty", "emulator", "tilr"]
+categories = ["command-line-interface", "text-processing"]
 
 [dependencies]
 tilr-proto.workspace = true

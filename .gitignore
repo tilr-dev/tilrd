@@ -1,4 +1,10 @@
 /target
 /dist
-# Local build workarounds (see README, "Building").
+# Local build workarounds (see README, "Build").
 /.cargo/
+.DS_Store
+.env*
+!.env.example
+*.pem
+*.key
+*.p12

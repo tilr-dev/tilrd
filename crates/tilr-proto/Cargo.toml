@@ -2,7 +2,14 @@
 name = "tilr-proto"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish = false
+description = "Wire protocol of tilrd and its clients: the protobuf schema (tilr.proto) and zstd packet framing"
+readme = "../../README.md"
+keywords = ["terminal", "protocol", "protobuf", "websocket", "tilr"]
+categories = ["network-programming", "encoding"]
 
 [dependencies]
 bytes.workspace = true

@@ -5,7 +5,11 @@ members = ["crates/tilr", "crates/tilr-driver", "crates/tilr-proto", "crates/til
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
+# libghostty-vt 0.2.2 requires 1.90 (checked with `cargo +1.90 check --workspace --all-targets`;
+# 1.89 fails). Keep in sync with the msrv job in .github/workflows/ci.yml.
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tilr-dev/tilrd"
 
 [workspace.dependencies]
 tilr-proto = { path = "crates/tilr-proto" }
@@ -14,7 +18,7 @@ anyhow = "1"
 bytes = "1"
 prost = "0.14"
 prost-build = "0.14"
-zstd = "0.13"
+zstd = "0.14"
 
 [profile.release]
 lto = "thin"

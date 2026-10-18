@@ -17,6 +17,8 @@ async fn a_client_that_reconnects_finds_its_pane_as_it_left_it() {
 
     let mut client = Client::connect(&server).await;
     client.hello().await;
+    // The server may not have seen the old connection close yet.
+    eventually_viewers(&mut client, 0).await;
     let panes = client.list_panes().await;
     assert_eq!(panes.len(), 1);
     assert_eq!(panes[0].pane_id, pane_id.to_string());
@@ -154,7 +156,7 @@ async fn a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped() {
     // The way from the server to `deaf` is cut: it reads nothing, so it
     // answers no ping, but what it sends (its own pings) still arrives.
     let talking = async {
-        for nonce in 0.. {
+        for nonce in 0..u64::MAX {
             let ping = ClientMessage::from(Msg::Ping(Ping { nonce }));
             let _ = deaf
                 .ws

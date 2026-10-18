@@ -2,8 +2,14 @@
 name = "tilr"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+publish = false
 description = "Terminal client of tilrd: attach to its panes from a terminal, tmux-style"
+readme = "../../README.md"
+keywords = ["terminal", "client", "tmux", "pty", "tilr"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 tilr-proto.workspace = true
@@ -16,7 +22,7 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "io-util", "signal"] }
-tokio-tungstenite = "0.28"
-toml = "0.9"
+tokio-tungstenite = "0.30"
+toml = "1.1"
 uuid = { version = "1", features = ["v4"] }
 

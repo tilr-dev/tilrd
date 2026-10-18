@@ -98,14 +98,39 @@ async fn a_pane_without_a_command_runs_the_users_login_shell() {
         "{}",
         client.screen.text()
     );
-    // The server's tools are still on its PATH after the login profile.
-    let check = "test -n \"$TILR_SHIMS\" && case \":$PATH:\" in *\":$TILR_SHIMS:\"*) true;; *) false;; esac";
+    // The server's tools are still on its PATH after the login profile,
+    // unless the system's profile sets PATH from scratch (Debian's
+    // /etc/profile does): then TILR_SHIMS is what brings them back.
+    let check = if system_profile_keeps_path() {
+        "test -n \"$TILR_SHIMS\" && case \":$PATH:\" in *\":$TILR_SHIMS:\"*) true;; *) false;; esac"
+    } else {
+        // Here the test puts TILR_SHIMS on PATH itself: this only checks that
+        // the login shell got TILR_SHIMS and the shims are there, not that a
+        // user's profile brings them back onto PATH.
+        "test -n \"$TILR_SHIMS\" && PATH=\"$TILR_SHIMS:$PATH\" && test \"$(command -v xclip)\" = \"$TILR_SHIMS/xclip\""
+    };
     assert_eq!(
         client.run(pane_id, check).await,
         0,
         "{}",
         client.screen.text()
     );
+}
+
+/// Whether the system-wide login profile keeps the PATH a login shell is
+/// started with, rather than setting one of its own.
+fn system_profile_keeps_path() -> bool {
+    let marker = "/tilr-test-path-marker";
+    let output = Command::new("/bin/sh")
+        .args(["-c", ". /etc/profile >/dev/null 2>&1; printf %s \"$PATH\""])
+        .env("PATH", format!("{marker}:/usr/bin:/bin"))
+        .env("HOME", std::env::temp_dir())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .split(':')
+        .any(|dir| dir == marker)
 }
 
 #[tokio::test]

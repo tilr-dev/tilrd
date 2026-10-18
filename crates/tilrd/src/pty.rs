@@ -76,7 +76,9 @@ fn open_pidfd(pid: u32) -> Option<Pidfd> {
     let fd = RawFd::try_from(fd).ok().filter(|&fd| fd >= 0)?;
     // SAFETY: the descriptor was just made and is owned by nobody else.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    Pidfd::with_interest(fd, Interest::READABLE).ok()
+    // SAFETY: `fd` is an `OwnedFd` moved into the `AsyncFd`, so it stays open
+    // and unchanged until the `AsyncFd` drops it, and nothing swaps it out.
+    unsafe { Pidfd::register_with_interest(fd, Interest::READABLE) }.ok()
 }
 
 #[cfg(not(target_os = "linux"))]

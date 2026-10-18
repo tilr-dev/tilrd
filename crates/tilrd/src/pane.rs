@@ -290,7 +290,9 @@ async fn serve(args: Args) -> Result<()> {
     let mut pane = Pane {
         id,
         state_path: reload::pane_state_path(&args.id),
-        pty: AsyncFd::new(master).context("register pty")?,
+        // SAFETY: `master` is an `OwnedFd`, so its descriptor stays open and unchanged
+        // until the `AsyncFd` drops it, and the pane never swaps it out.
+        pty: unsafe { AsyncFd::register(master) }.context("register pty")?,
         screen,
         to_supervisor,
         shell,

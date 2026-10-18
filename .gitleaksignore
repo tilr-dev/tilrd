@@ -1,0 +1,3 @@
+# Test fixtures, not secrets (gitleaks fingerprints: commit:file:rule:line).
+# cloud.rs unit test `described()`: a fake tunnel secret, base64 of "secret+secret/secret==".
+4cd2f845fd97542e7f21c660b541a2607e102652:crates/tilr-server/src/cloud.rs:generic-api-key:650
