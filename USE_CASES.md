@@ -184,6 +184,7 @@ state format; platforms other than `linux-aarch64`.
 | The new executable reads another state format (supervisor's or pane's), or cannot show it can resume (no `reload-check 1`): no reload, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
 | After a reload the server and pane processes look the same in `ps` as before; the files with the handed-over state are read and removed | `a_reload_shows_in_no_command_line_and_leaves_no_file_behind` |
 | A reload with no panes | `a_reload_with_no_panes_open_works` |
+| A second server of the same user (on `<server_id>-<pid>.sock`) keeps its host socket across a reload: `tilr edit` in a pane from before reaches its clients | `a_second_server_keeps_its_host_socket_across_a_reload` |
 | Several panes: each keeps its own shell and its own state | `every_pane_keeps_its_own_shell_across_a_reload` |
 | Output arriving during a reload is not lost | `output_printed_during_a_reload_is_not_lost` |
 | Input typed just before a reload reaches the shell, once | `input_typed_just_before_a_reload_reaches_the_shell` |
@@ -238,6 +239,7 @@ through the server's socket.
 | `--no-files` and `[files] enabled = false`: no feature, `fs_max_bytes` 0, requests get no answer and have no effect, the connection is alive | `files_can_be_turned_off` |
 | In a pane: `$TILR_PANE`, `$TILR_SERVER` (the server id) and `$TILR_SOCK` (the socket); `tilr edit notes.md` reaches every client watching the pane as a `HostEvent` with an absolute path; `tilr open URL -- args`, `--kind`; other `tilr` commands go to the next `tilr` on PATH | `tilr_edit_in_a_pane_asks_the_clients_watching_it_to_open_the_file` |
 | Nobody watching the pane: "no tilr client attached", exit code 1; outside a pane: "not inside a tilr pane", exit code 1; a foreign pane: "no such pane"; non-JSON: `bad request`; a stopped server removes the socket | `tilr_edit_fails_with_no_client_watching_or_outside_a_pane` |
+| One user's two servers (one state directory, so one server id) each keep a host socket: the first `<server_id>.sock`, the second `<server_id>-<pid>.sock`; `tilr edit` in a pane of each reaches its own clients, and stopping the second leaves the first one's socket | `two_servers_of_one_user_keep_their_host_sockets` |
 
 ## SOCKS proxy — `tests/socks.rs`
 

@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| host-socket-per-process | two tilrd of one user keep separate host-events sockets | S | - | no | ready |
 | notify-socket-env | panes and execs do not inherit `NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` | S | - | no | ready |
 | attach-robustness | `tilr attach` survives errors after a reconnect, detaches at once while connecting, restores the terminal on signals | S | - | no | ready |
 | sighup-ignoring-shell-reaped | a pane whose supervisor is gone ends its shell's and foreground groups (SIGHUP, 2 s, SIGKILL); ClosePane too | M | - | no | ready |
@@ -116,5 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | exec-escaped-descendants | 48efd35 |
 | client-socket-peer-check | 8274039 |
 | hello-deadline | f32643d |
+| host-socket-per-process | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

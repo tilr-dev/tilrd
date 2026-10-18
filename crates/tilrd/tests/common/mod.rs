@@ -208,6 +208,9 @@ impl Drop for Server {
             let uid = unsafe { libc::geteuid() };
             let sock = format!("/tmp/tilr-{uid}/{}.sock", id.trim());
             let _ = std::fs::remove_file(sock);
+            // That of a second server of the same id, named by its pid.
+            let sock = format!("/tmp/tilr-{uid}/{}-{}.sock", id.trim(), self.child.id());
+            let _ = std::fs::remove_file(sock);
         }
         if std::thread::panicking() {
             eprintln!(
@@ -528,6 +531,33 @@ pub fn script(server: &Server, name: &str, script: &str) -> String {
 }
 
 /// Wait for the server to drop the connection, then connect again.
+/// Start a second server in `dir`, the scratch directory of a running one:
+/// one user's two servers, with one state directory (so one server id and
+/// token) and Unix sockets of their own.
+pub fn start_second(dir: &Path) -> Server {
+    let socket = dir.join("second.sock");
+    Server::start_in(
+        dir.to_owned(),
+        Path::new(env!("CARGO_BIN_EXE_tilrd")),
+        &["--socket", socket.to_str().unwrap()],
+    )
+}
+
+/// What `$TILR_SOCK` is in the pane.
+pub async fn pane_sock(server: &Server, client: &mut Client, pane_id: PaneId) -> PathBuf {
+    let file = format!("sock-{pane_id}");
+    let command = format!("printf %s \"$TILR_SOCK\" > ~/{file}");
+    assert_eq!(client.run(pane_id, &command).await, 0);
+    PathBuf::from(std::fs::read_to_string(server.dir.join(file)).unwrap())
+}
+
+/// Wait until the server has exited after SIGTERM, without removing its
+/// directory (which a second server may share).
+pub async fn stop(server: &mut Server) {
+    server.signal("-TERM");
+    eventually("the server exits", || !server.is_running()).await;
+}
+
 pub async fn reconnect(server: &Server, mut client: Client) -> Client {
     while client.next().await.is_some() {}
     for _ in 0..100 {

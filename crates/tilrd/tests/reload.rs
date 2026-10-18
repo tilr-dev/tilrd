@@ -901,3 +901,38 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
     let client = Client::connect(&server).await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
+
+#[tokio::test]
+async fn a_second_server_keeps_its_host_socket_across_a_reload() {
+    let first = Server::start(&[]);
+    let second = start_second(&first.dir);
+    let mut client = Client::connect(&second).await;
+    let pane_id = client.open_pane().await;
+    let sock = pane_sock(&second, &mut client, pane_id).await;
+    assert!(
+        sock.file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with(&format!("-{}.sock", second.child.id())),
+        "{}",
+        sock.display()
+    );
+
+    let mut client = reload(&second, client).await;
+    client.subscribe(pane_id).await;
+    client
+        .wait_for(|msg| matches!(msg, server_message::Msg::Frame(_)).then_some(()))
+        .await;
+    // The pane from before the reload still reaches this server's clients.
+    assert_eq!(client.run(pane_id, "tilr edit kept.md").await, 0);
+    let event = loop {
+        if let Some(event) = client.host_events.pop_front() {
+            break event;
+        }
+        client.next().await.expect("connection closed");
+    };
+    assert_eq!(event.pane_id, pane_id.to_string());
+    assert!(sock.exists());
+    assert!(second.logged("reload"));
+}

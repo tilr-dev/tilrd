@@ -1,7 +1,7 @@
 //! Host events: a program in a pane asks the client to do something, e.g.
 //! `tilr edit notes.md` to open a file in the client's editor.
 //!
-//! The server listens on a Unix socket of its own ([`socket_path`]) and puts
+//! The server listens on a Unix socket of its own ([`choose_path`]) and puts
 //! its path in the environment of every pane ([`SOCK_ENV`], next to
 //! `TILR_PANE` and [`SERVER_ENV`]). A program writes one JSON object per line:
 //!
@@ -20,7 +20,7 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -109,9 +109,103 @@ pub fn runtime_socket(name: &Path) -> PathBuf {
     Path::new("/tmp").join(format!("tilr-{uid}")).join(name)
 }
 
+/// Where this server's host socket goes: `<server_id>.sock`, unless that
+/// is another live server's (two servers of one user share the state
+/// directory, hence the id) or this process already has a socket of its own
+/// from before a reload: then `<server_id>-<pid>.sock`. The pid survives a
+/// reload in place, so the successor finds the same path again.
+pub fn choose_path(server_id: &str) -> PathBuf {
+    choose(
+        &socket_path(server_id),
+        &own_path(server_id, std::process::id()),
+    )
+}
+
+fn own_path(server_id: &str, pid: u32) -> PathBuf {
+    runtime_socket(Path::new(&format!("{server_id}-{pid}.sock")))
+}
+
+/// `own` if it is there or `shared` is served (a connection is accepted),
+/// else `shared`, which is then free or a stale socket to take over.
+fn choose(shared: &Path, own: &Path) -> PathBuf {
+    if std::fs::symlink_metadata(own).is_ok() || UnixStream::connect(shared).is_ok() {
+        own.to_owned()
+    } else {
+        shared.to_owned()
+    }
+}
+
+/// Remove the `<server_id>-<pid>.sock` sockets of servers that are gone
+/// (killed outright, without removing them).
+pub fn sweep(server_id: &str) {
+    let mut dirs: Vec<PathBuf> = [
+        socket_path(server_id),
+        own_path(server_id, std::process::id()),
+    ]
+    .iter()
+    .filter_map(|path| path.parent().map(Path::to_owned))
+    .collect();
+    dirs.dedup();
+    for dir in dirs {
+        sweep_dir(&dir, server_id);
+    }
+}
+
+fn sweep_dir(dir: &Path, server_id: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("{server_id}-");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|rest| rest.strip_suffix(".sock"))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let is_socket = entry.file_type().is_ok_and(|kind| kind.is_socket());
+        if is_socket && pid != std::process::id() && !running(pid) {
+            tracing::debug!(path = %entry.path().display(), "removed the host socket of a server that is gone");
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Whether a process with this pid exists (one of another user's counts).
+fn running(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: kill with signal 0 only checks; it has no memory-safety
+    // preconditions.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    alive || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// A host socket this server bound: removed only while the file at its path
+/// is still that socket, so a server never removes another's.
+pub struct Bound {
+    pub path: PathBuf,
+    file: (u64, u64),
+}
+
+impl Bound {
+    /// Remove the socket file, when the server stops for good.
+    pub fn remove(&self) {
+        let still_ours = std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|meta| (meta.dev(), meta.ino()) == self.file);
+        if still_ours {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Listen at `path`, replacing what a server that did not get to clean up
 /// left there.
-pub fn bind(path: &Path) -> Result<UnixListener> {
+pub fn bind(path: &Path) -> Result<(UnixListener, Bound)> {
     let dir = path.parent().context("socket path has no directory")?;
     clipboard::private_dir(dir)?;
     match std::fs::symlink_metadata(path) {
@@ -125,12 +219,13 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
         UnixListener::bind(path).with_context(|| format!("listen on {}", path.display()))?;
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
         .with_context(|| format!("chmod {}", path.display()))?;
-    Ok(listener)
-}
-
-/// Remove the socket file, when the server stops for good.
-pub fn remove(path: &Path) {
-    let _ = std::fs::remove_file(path);
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    let bound = Bound {
+        path: path.to_owned(),
+        file: (meta.dev(), meta.ino()),
+    };
+    Ok((listener, bound))
 }
 
 /// Accept programs and pass on what they ask.
@@ -344,6 +439,87 @@ mod tests {
         assert!(has_scheme("git+ssh://host/repo"));
         assert!(!has_scheme("notes.md"));
         assert!(!has_scheme("dir/with://odd"));
+    }
+
+    /// A fresh directory with a short path, for sockets.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tilr-host-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_live_server_at_the_shared_path_moves_the_next_one() {
+        let dir = scratch("live");
+        let (shared, own) = (dir.join("srv.sock"), dir.join("srv-42.sock"));
+        assert_eq!(choose(&shared, &own), shared, "nothing there");
+        let live = std::os::unix::net::UnixListener::bind(&shared).unwrap();
+        assert_eq!(choose(&shared, &own), own, "another server answers");
+        drop(live);
+        // Its own socket from before a reload keeps it where it was.
+        std::os::unix::net::UnixListener::bind(&own).unwrap();
+        assert_eq!(choose(&shared, &own), own);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stale_socket_is_taken_over() {
+        let dir = scratch("stale");
+        let (shared, own) = (dir.join("srv.sock"), dir.join("srv-42.sock"));
+        // A server killed outright: the file stays, nobody accepts.
+        drop(std::os::unix::net::UnixListener::bind(&shared).unwrap());
+        // A child another test forked meanwhile holds the listener until it
+        // execs.
+        for _ in 0..200 {
+            if UnixStream::connect(&shared).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(choose(&shared, &own), shared);
+        let (_listener, bound) = bind(&shared).unwrap();
+        assert!(UnixStream::connect(&shared).is_ok());
+
+        // Another server replaced it: not removed as ours.
+        std::fs::remove_file(&shared).unwrap();
+        let _other = std::os::unix::net::UnixListener::bind(&shared).unwrap();
+        bound.remove();
+        assert!(shared.exists(), "another server's socket was removed");
+        std::fs::remove_file(&shared).unwrap();
+        let (_listener, bound) = bind(&shared).unwrap();
+        bound.remove();
+        assert!(!shared.exists(), "its own socket stayed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sockets_of_dead_pids_are_swept() {
+        let dir = scratch("sweep");
+        // Above any pid_max: no such process. (Not a child that came and
+        // went: forked while another test holds a listener, it would keep
+        // that one's socket open for a moment.)
+        let dead = 999_999_999;
+        let mine = std::process::id();
+        let names = [
+            format!("srv-{dead}.sock"),
+            format!("srv-{mine}.sock"),
+            "srv.sock".to_owned(),
+            format!("other-{dead}.sock"),
+        ];
+        let _listeners: Vec<_> = names
+            .iter()
+            .map(|name| std::os::unix::net::UnixListener::bind(dir.join(name)).unwrap())
+            .collect();
+        sweep_dir(&dir, "srv");
+        assert!(
+            !dir.join(&names[0]).exists(),
+            "a dead server's socket stayed"
+        );
+        for name in &names[1..] {
+            assert!(dir.join(name).exists(), "{name} was removed");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -1140,3 +1140,44 @@ async fn a_client_answering_only_the_latest_ping_gets_the_whole_file() {
     let (got, _) = read(&mut client, 1, "~/big.bin", 0, 0).await.unwrap();
     assert!(got == data, "the file arrived changed");
 }
+
+/// `tilr edit` in the pane reaches `client`, which watches it.
+async fn tilr_edit_reaches(client: &mut Client, pane_id: PaneId, name: &str) {
+    assert_eq!(client.run(pane_id, &format!("tilr edit {name}")).await, 0);
+    let event = host_event(client).await;
+    assert_eq!(event.pane_id, pane_id.to_string());
+    assert_eq!(Path::new(&event.path).file_name().unwrap(), name);
+}
+
+#[tokio::test]
+async fn two_servers_of_one_user_keep_their_host_sockets() {
+    let first = Server::start(&[]);
+    let mut second = start_second(&first.dir);
+    let mut a = Client::connect_silent(&first).await;
+    let server_id = a.hello().await.server_id;
+    let mut b = Client::connect(&second).await;
+    let pane_a = a.open_pane().await;
+    let pane_b = b.open_pane().await;
+
+    let sock_a = pane_sock(&first, &mut a, pane_a).await;
+    let sock_b = pane_sock(&second, &mut b, pane_b).await;
+    assert_eq!(
+        sock_a.file_name().unwrap(),
+        format!("{server_id}.sock").as_str()
+    );
+    assert_eq!(
+        sock_b.file_name().unwrap(),
+        format!("{server_id}-{}.sock", second.child.id()).as_str()
+    );
+    tilr_edit_reaches(&mut a, pane_a, "a.md").await;
+    tilr_edit_reaches(&mut b, pane_b, "b.md").await;
+
+    // The second stops: it takes its own socket, not the first one's.
+    stop(&mut second).await;
+    assert!(!sock_b.exists(), "the second server left its socket");
+    assert!(
+        sock_a.exists(),
+        "the second server removed the first one's socket"
+    );
+    tilr_edit_reaches(&mut a, pane_a, "again.md").await;
+}

@@ -524,6 +524,13 @@ watching that pane that announced `"host-events"`. With nobody to hear it, `tilr
 "no tilr client attached" and exits with 1; outside a pane, "not inside a tilr pane". Other
 `tilr` commands go to the next `tilr` on the `PATH`: the [client](#the-client-tilr).
 
+The host socket is `<server_id>.sock` in the runtime directory (under `/tmp/tilr-<uid>/`
+when that path is too long for a socket), 0600 in a 0700 directory. Two servers of one user
+share the state directory and so the server id: a server that finds another live server
+at `<server_id>.sock` uses `<server_id>-<pid>.sock` instead, and keeps it across a reload
+(same pid). A stopping server removes its socket only while the file is still the one it
+bound, and a starting one removes the `<server_id>-<pid>.sock` of pids no longer running.
+
 ## Telling panes apart
 
 A pane is named by a UUID the server makes up when the pane is created. It names that pane

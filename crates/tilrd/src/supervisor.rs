@@ -528,10 +528,10 @@ pub fn run(options: Options) -> Result<()> {
                     local.path().as_os_str().to_owned(),
                 ));
             }
-            if let Some(path) = &host_socket {
+            if let Some(bound) = &host_socket {
                 pane_env.push((
                     OsString::from(host::SOCK_ENV),
-                    path.clone().into_os_string(),
+                    bound.path.clone().into_os_string(),
                 ));
                 pane_env.push((
                     OsString::from(host::SERVER_ENV),
@@ -598,8 +598,8 @@ pub fn run(options: Options) -> Result<()> {
             crate::notify::ready();
             let local = supervisor.run(events_rx).await;
             // A reload does not get here: the successor binds the socket anew.
-            if let Some(path) = host_socket {
-                host::remove(&path);
+            if let Some(bound) = host_socket {
+                bound.remove();
             }
             if let Some(local) = local {
                 local.remove();
@@ -710,19 +710,24 @@ fn inherit_listener(fd: RawFd) -> std::io::Result<TcpListener> {
     TcpListener::from_std(listener)
 }
 
-/// Listen for host events (see [`crate::host`]) and return the socket's
-/// path. `None`, with a warning, if that cannot be done: the server works on
+/// Listen for host events (see [`crate::host`]) and return the socket.
+/// `None`, with a warning, if that cannot be done: the server works on
 /// without them.
-fn set_up_host_socket(server_id: &Uuid, events: mpsc::UnboundedSender<Event>) -> Option<PathBuf> {
-    let path = host::socket_path(&server_id.to_string());
+fn set_up_host_socket(
+    server_id: &Uuid,
+    events: mpsc::UnboundedSender<Event>,
+) -> Option<host::Bound> {
+    let server_id = server_id.to_string();
+    host::sweep(&server_id);
+    let path = host::choose_path(&server_id);
     match host::bind(&path) {
-        Ok(listener) => {
+        Ok((listener, bound)) => {
             tracing::info!(path = %path.display(), "host events on");
             tokio::spawn(host::serve(
                 listener,
                 Box::new(move |request, reply| events.send(Event::Host { request, reply }).is_ok()),
             ));
-            Some(path)
+            Some(bound)
         }
         Err(err) => {
             tracing::warn!("host events are off: {err:#}");

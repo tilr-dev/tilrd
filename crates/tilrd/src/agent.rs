@@ -360,7 +360,7 @@ fn bind(path: &Path) -> anyhow::Result<UnixListener> {
     if let Some(runtime_dir) = path.parent().and_then(Path::parent) {
         clipboard::private_dir(runtime_dir)?;
     }
-    let listener = host::bind(path)?;
+    let (listener, _) = host::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }
