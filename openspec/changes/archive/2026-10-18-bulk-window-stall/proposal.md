@@ -28,3 +28,5 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) found (finding
 ## Impact
 
 `crates/tilrd/src/outbox.rs` (`BulkWindow`: a position for every ping, the cap), `crates/tilrd/src/supervisor.rs` (writer's liveness ping; lag start and tick). Not breaking: clients already echo every ping payload. Nothing crosses a reload (the outbox is per connection); an update from the previous release changes nothing on disk.
+
+Implemented by: [`7d18ae3`](https://github.com/tilr-dev/tilrd/commit/7d18ae3) fix: keep the bulk window moving and bring a lagging client its last screen (2026-10-18).
