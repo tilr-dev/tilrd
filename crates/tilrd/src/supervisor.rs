@@ -1750,7 +1750,7 @@ impl Supervisor {
             // The shell has the socket's path from before; it is made again
             // at the same place.
             if let Some(agent) = &mut self.agent {
-                agent.listen(pane_id);
+                agent.listen_resumed(pane_id);
             }
             let (sender, link) = attach(
                 pane_id,

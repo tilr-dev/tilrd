@@ -56,7 +56,7 @@ def on_a_clean_system_tilr_makes_its_directories_private(t: T):
     found = private(t, runtime, user.uid)
     names = {p.name for p in found}
     t.ok({"tilrd.sock", "tilrd.sock.lock", "tilrd.log"} <= names, f"socket, lock and log in {runtime}: {names}")
-    t.ok(any(p.parent.name == "agent" for p in found), "the pane's agent socket is there too")
+    t.ok(any(p.parent.parent.name == "agent" for p in found), "the pane's agent socket is there too")
     state = user.home / ".local/state/tilr"
     private(t, state, user.uid)
     t.eq((state / "token").read_text().strip(), token.out.strip(), "tilr token prints the token kept there")

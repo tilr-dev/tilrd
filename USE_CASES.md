@@ -291,13 +291,14 @@ client's side in a `StreamOpen` / `StreamData` / `StreamClose` stream.
 | Use case | Test |
 |---|---|
 | The server announces the `agent` feature; with `--no-agent` and `agent = false` it does not, there is no socket, `SSH_AUTH_SOCK` in the pane is empty | `the_agent_is_forwarded_unless_turned_off` |
-| In a pane `SSH_AUTH_SOCK` points at its own socket (`agent/<pane>.sock`, 0600, directory 0700); every pane has its own; the pane closed: no socket | `a_pane_has_ssh_auth_sock_pointing_at_its_own_socket` |
+| In a pane `SSH_AUTH_SOCK` points at its own socket (`agent/<pid>/<pane>.sock`, 0600, directory 0700); every pane has its own; the pane closed: no socket | `a_pane_has_ssh_auth_sock_pointing_at_its_own_socket` |
 | A program connected: the client gets `StreamOpen` (`ssh-agent`, the pane); bytes go both ways, more than one message too; the program closed: `StreamClose`; the client closed: the program reads what was sent and gets the end; data for a closed or foreign stream is ignored | `a_program_talks_to_the_agent_of_the_client_through_the_panes_socket` |
 | The pane is watched by a client without `agent`, the client with `agent` does not watch it or unsubscribed: the connection is closed at once, the clients get nothing | `with_no_agent_client_attached_the_program_finds_no_agent` |
 | The agent client disconnected mid-stream: the program reads the end; the next client serves the same socket | `the_program_reads_the_end_when_the_agent_client_disconnects` |
 | Two clients with `agent`: the stream goes to the one that subscribed last (a client without `agent` does not count); it unsubscribed: the first gets it | `the_client_that_subscribed_last_serves_the_agent` |
 | Reload: an open stream ends, the socket at the same path accepts again and leads to the reconnected client | `the_panes_socket_works_after_a_reload` |
 | Agent sockets left by a server killed with SIGKILL are removed when the next one starts; the live sockets of another server stay | `the_sockets_a_killed_server_left_are_removed_when_the_next_starts` |
+| A second server of the user starts next to a live one: it does not connect to the live one's agent sockets (no stream for its client, no refused connection logged) nor remove them | `a_server_starting_leaves_the_agent_sockets_of_a_live_one_alone` |
 
 ## Exec — `tests/exec.rs`
 

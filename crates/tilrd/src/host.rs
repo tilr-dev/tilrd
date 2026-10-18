@@ -175,7 +175,7 @@ fn sweep_dir(dir: &Path, server_id: &str) {
 }
 
 /// Whether a process with this pid exists (one of another user's counts).
-fn running(pid: u32) -> bool {
+pub fn running(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };

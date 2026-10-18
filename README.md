@@ -477,14 +477,16 @@ What `ssh -A` does, over the tilr protocol: `ssh`, `git` or `ssh-add` in a pane 
 agent of the user's computer, the client's side, and the keys never leave it. On unless the
 server runs with `--no-agent` (or `agent = false` in the configuration file).
 
-- Every pane gets a Unix socket of its own, `agent/<pane id>.sock` in the runtime directory
-  (`$XDG_RUNTIME_DIR/tilr`; on macOS `~/Library/Application Support/tilr`; `/tmp/tilr-<uid>`
-  where that path is too long for a socket), and `SSH_AUTH_SOCK` pointing at it. The
-  directory and the socket are the user's only. A [reload](#reloading-without-closing-shells)
-  makes the socket again at the same path, so a shell's `SSH_AUTH_SOCK` stays good; the
-  socket goes when the pane does. A program of another uid is refused, even where the
-  permissions were opened by hand. Sockets a server killed with SIGKILL left behind are
-  removed when the next one starts (those nobody accepts on: another running server's stay).
+- Every pane gets a Unix socket of its own, `agent/<pid>/<pane id>.sock` in the runtime
+  directory (`$XDG_RUNTIME_DIR/tilr`; on macOS `~/Library/Application Support/tilr`;
+  `/tmp/tilr-<uid>` where that path is too long for a socket; `<pid>` the server's, so two
+  servers of one user keep theirs apart), and `SSH_AUTH_SOCK` pointing at it. The
+  directories and the socket are the user's only. A [reload](#reloading-without-closing-shells)
+  makes the socket again at the same path (the pid stays), so a shell's `SSH_AUTH_SOCK` stays
+  good; the socket goes when the pane does, the directory when the server stops. A program of
+  another uid is refused, even where the permissions were opened by hand. The sockets a server
+  killed with SIGKILL left behind are removed when the next one starts: the `agent/<pid>/`
+  directories of pids that are no longer running (a running server's are not touched).
 - A client that can serve the agent says `"agent"` in `Hello.features`; the server lists
   `"agent"` in `HelloAck.features` when forwarding is on.
 - A program that connects to the socket gets a stream to one client: of the clients watching

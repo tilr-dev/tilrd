@@ -60,7 +60,8 @@ def another_user_cannot_send_tilr_edit_to_the_pane(t: T):
 
     # The agent socket of the pane, opened by hand too.
     agent = Path(env["SSH_AUTH_SOCK"])
-    os.chmod(agent.parent, 0o755)
+    os.chmod(agent.parent.parent, 0o755)  # agent/
+    os.chmod(agent.parent, 0o755)  # agent/<pid>/
     os.chmod(agent, 0o666)
     r = t.sh(f"exec setpriv --reuid={NOBODY} --regid={NOBODY} --clear-groups python3 -c "
              f"'import socket; s = socket.socket(socket.AF_UNIX); s.connect(\"{agent}\"); s.recv(1)'")

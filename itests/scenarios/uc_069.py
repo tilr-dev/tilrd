@@ -108,7 +108,7 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
     t.check("no orphans: the same processes, all under the server", same_tree)
     t.check("no reload state is left behind", lambda: t.eq(state_files(server), [], "state files"))
     t.check("as many agent sockets as panes",
-            lambda: t.eq(len(list((runtime / "agent").glob("*.sock"))), 4, "agent sockets"))
+            lambda: t.eq(len(list((runtime / "agent").glob("*/*.sock"))), 4, "agent sockets"))
 
     t.check("the shell kept its variable and job",
             lambda: (t.eq(d.value(shell, "$MARK $$ $(jobs -r | grep -c sleep)"), shell_value, "shell")))

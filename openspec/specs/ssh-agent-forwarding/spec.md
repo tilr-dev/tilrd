@@ -21,13 +21,13 @@ The server SHALL forward the agent unless it runs with `--no-agent` or its confi
 - **AND** `printenv SSH_AUTH_SOCK` in a new pane prints nothing and `<runtime>/agent` does not exist
 
 ### Requirement: Every pane has its own agent socket
-While forwarding is on, every pane SHALL get a Unix socket of its own at `agent/<pane id>.sock` in the runtime directory (`$XDG_RUNTIME_DIR/tilr`, on macOS `~/Library/Application Support/tilr`, `/tmp/tilr-<uid>` where that path is too long for a socket), and `SSH_AUTH_SOCK` in the pane's environment MUST point at it. The socket MUST have mode 0600 and the `agent/` directory (and the runtime directory above it) mode 0700.
+While forwarding is on, every pane SHALL get a Unix socket of its own at `agent/<pid>/<pane id>.sock` in the runtime directory (`$XDG_RUNTIME_DIR/tilr`, on macOS `~/Library/Application Support/tilr`, `/tmp/tilr-<uid>` where that path is too long for a socket), `<pid>` being the server's, and `SSH_AUTH_SOCK` in the pane's environment MUST point at it. The socket MUST have mode 0600 and the `agent/<pid>/` and `agent/` directories (and the runtime directory above them) mode 0700.
 
 **Verified by**: `agent::a_pane_has_ssh_auth_sock_pointing_at_its_own_socket`.
 
 #### Scenario: Two panes
 - **WHEN** a client opens two panes
-- **THEN** each pane's `SSH_AUTH_SOCK` ends in `agent/<its pane id>.sock`, a socket of mode 0600 in a directory of mode 0700, and the two paths differ
+- **THEN** each pane's `SSH_AUTH_SOCK` ends in `agent/<the server's pid>/<its pane id>.sock`, a socket of mode 0600 in a directory of mode 0700, and the two paths differ
 
 ### Requirement: The socket goes with its pane
 A pane's agent socket SHALL be removed when the pane goes and when the server stops for good; streams already open through it go on after the pane is gone. If the socket cannot be made, the pane MUST still start, without `SSH_AUTH_SOCK`.
@@ -48,13 +48,17 @@ The server SHALL check the uid of every program that connects to an agent socket
 - **THEN** the server refuses the connection and logs `agent socket: refused a connection`
 
 ### Requirement: Sockets a killed server left are swept at start
-A server that starts fresh (not resuming after a reload) SHALL remove the sockets ending in `.sock` in the runtime `agent/` directory on which nobody accepts (connecting is refused), and MUST leave the sockets of another running server of the same user alone.
+A server that starts fresh (not resuming after a reload) SHALL remove the `agent/<pid>/` directories in the runtime directory whose pid is not running, logging `removed N agent socket(s) a server that is gone left`, and MUST leave the directory of every running server of the same user alone: it MUST NOT connect to their sockets (no stream is opened to their clients, nothing is logged by them) nor remove one, even while it is being made and does not accept yet.
 
-**Verified by**: `agent::the_sockets_a_killed_server_left_are_removed_when_the_next_starts` and itests `UC-036` (`uc_036.py::agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start`).
+**Verified by**: `agent::the_sockets_a_killed_server_left_are_removed_when_the_next_starts`, `agent::a_server_starting_leaves_the_agent_sockets_of_a_live_one_alone` and itests `UC-036` (`uc_036.py::agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start`).
 
 #### Scenario: SIGKILL, then a new server
 - **WHEN** a server with a pane is killed with SIGKILL while another server of the user runs with a pane of its own, and a new server starts
-- **THEN** the killed server's `agent/<pane>.sock` is gone and the live server's socket still exists
+- **THEN** the killed server's `agent/<pid>/<pane>.sock` and its `agent/<pid>/` directory are gone and the live server's socket still exists
+
+#### Scenario: A second server starts next to a live one
+- **WHEN** a server has a pane watched by a client with `"agent"`, and a second server of the user starts in the same runtime directory
+- **THEN** the first server's client receives no `StreamOpen`, the first server does not log `agent socket: refused a connection`, and the pane's socket is the same file and still serves the agent
 
 ### Requirement: The client that subscribed last serves the agent
 A client SHALL say it can serve the agent by listing `"agent"` in `Hello.features`. When a program connects to a pane's socket, the server MUST open the stream to the client that subscribed to that pane last among the clients currently subscribed to it with `"agent"`; clients without the feature do not count, and when that client unsubscribes the next most recent one serves.
@@ -164,7 +168,7 @@ The server SHALL queue at most 64 `StreamData` messages (about 4 MiB) from the c
 - **THEN** the client gets `StreamClose`, the program reads end of file having got at most 8 MiB, and the server's RSS grows by at most 16 MB
 
 ### Requirement: A reload ends open streams and keeps the socket path
-A reload or update SHALL end every open agent stream (the program reads end of file) and make each pane's socket again at the same path, so the shell's `SSH_AUTH_SOCK` stays valid and the next connection reaches a client that reconnects and watches the pane.
+A reload or update SHALL end every open agent stream (the program reads end of file) and make each pane's socket again at the same path, so the shell's `SSH_AUTH_SOCK` stays valid and the next connection reaches a client that reconnects and watches the pane. The path is the one the pane got: `agent/<pid>/<pane id>.sock` (the pid survives the exec), or `agent/<pane id>.sock` for a pane a server from before the per-server directories started, while that socket file is there.
 
 **Verified by**: `agent::the_panes_socket_works_after_a_reload` and itests `UC-064` (`uc_064.py::an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works`).
 
@@ -185,7 +189,7 @@ The forwarding SHALL serve the SSH agent protocol unchanged, so that `ssh-add -l
 
 ## Notes
 
-- Requirements without a test: "At most 64 streams per client". Parts without a test: a pane started without `SSH_AUTH_SOCK` when its socket cannot be made, streams surviving their pane's exit, sockets removed on a normal stop, a dropped `StreamOpen` when the client's queue is full.
+- Requirements without a test: "At most 64 streams per client". Parts without a test: a pane started without `SSH_AUTH_SOCK` when its socket cannot be made, streams surviving their pane's exit, sockets removed on a normal stop, a dropped `StreamOpen` when the client's queue is full, a pane from a server before the per-server directories keeping `agent/<pane id>.sock` after a reload (no older binary to reload from in the tests).
 - No itests case for these is currently red. `uc_073.py` was red until 2026-10-17 (packet-counted queue); it is green at HEAD per itests/USE_CASES.md.
 - The streams are generic in the proto (`StreamOpen.kind`), but `"ssh-agent"` is the only kind at HEAD; the SOCKS proxy does not use them (see the `socks-proxy` spec).
 - The itests case for real `ssh -A` / `git clone` is UC-078, not UC-075 (UC-075 is the clipboard).

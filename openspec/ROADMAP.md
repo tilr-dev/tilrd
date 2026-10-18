@@ -32,7 +32,8 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 ## Phase 1: correctness and security
 
-All of phase 1 is done (see "Done").
+All of phase 1 is done (see "Done"). `agent-socket-per-server` (TILR-118) joined it on
+2026-10-18: a bug in what the first release ships (the agent socket sweep is on dev only).
 
 ## Phase 2: protocol v3 and input
 
@@ -119,5 +120,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | reload-screen-fidelity | 53e7ff2 |
 | readme-code-reconciliation | e70d499 |
 | snapshot-origin-mode-cursor | af85db3 |
+| agent-socket-per-server | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

@@ -33,12 +33,15 @@ async fn agent_client(server: &Server) -> Client {
 
 /// The pane's socket. Where the scratch directory's path is too long for a
 /// socket (macOS) it is under /tmp, which a killed server leaves behind:
-/// removed when this goes.
+/// removed when this goes, and its server's directory once empty.
 struct Socket(PathBuf);
 
 impl Drop for Socket {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 }
 
@@ -50,11 +53,12 @@ async fn auth_sock(server: &Server, client: &mut Client, pane_id: PaneId) -> Str
     std::fs::read_to_string(&file).unwrap().trim().to_owned()
 }
 
-/// The pane's socket, checked to be where the server keeps them.
+/// The pane's socket, checked to be where the server keeps them: in a
+/// directory of its own, named by its pid.
 async fn pane_socket(server: &Server, client: &mut Client, pane_id: PaneId) -> Socket {
     let path = PathBuf::from(auth_sock(server, client, pane_id).await);
     assert!(
-        path.ends_with(format!("agent/{pane_id}.sock")),
+        path.ends_with(format!("agent/{}/{pane_id}.sock", server.child.id())),
         "{}",
         path.display()
     );
@@ -360,7 +364,11 @@ async fn the_panes_socket_works_after_a_reload() {
     let plain = reload(&server, client).await;
     drop(plain);
     assert_eq!(read_to_end(&mut program).await, b"");
-    assert!(server.logged("resumed after reload with 1 pane(s)"));
+    // The log is read by a thread of the harness: it may lag the reply.
+    eventually("the server logs the resume", || {
+        server.logged("resumed after reload with 1 pane(s)")
+    })
+    .await;
 
     let mut client = agent_client(&server).await;
     watch(&mut client, pane_id).await;
@@ -395,9 +403,50 @@ async fn the_sockets_a_killed_server_left_are_removed_when_the_next_starts() {
     server.child.kill().unwrap();
     server.child.wait().unwrap();
     drop(client);
-    assert!(socket.0.exists(), "SIGKILL leaves the socket");
+    // SIGKILL leaves the socket. (Not asserted: where the runtime directory
+    // is shared, as under /tmp on macOS, a server another test starts at
+    // this moment may sweep it first, rightly.)
 
     let next = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
     assert!(!socket.0.exists(), "{:?}", next.log.lock().unwrap());
+    assert!(
+        !socket.0.parent().unwrap().exists(),
+        "the killed server's directory stays"
+    );
     assert!(live.0.exists(), "the live server's socket stays");
+}
+
+#[tokio::test]
+async fn a_server_starting_leaves_the_agent_sockets_of_a_live_one_alone() {
+    use std::os::unix::fs::MetadataExt;
+
+    let first = Server::start(&[]);
+    let mut client = agent_client(&first).await;
+    let pane_id = client.open_pane().await;
+    let socket = pane_socket(&first, &mut client, pane_id).await;
+    let before = std::fs::symlink_metadata(&socket.0).unwrap().ino();
+
+    // A second server of the user starts while the first runs: one runtime
+    // directory, so its sweep at start sees the first one's sockets.
+    let second = start_second(&first.dir);
+    let mut other = agent_client(&second).await;
+    let other_pane = other.open_pane().await;
+    let _other_socket = pane_socket(&second, &mut other, other_pane).await;
+
+    // Nothing connected to the first one's socket: its client is not asked
+    // for the agent, and the socket is the one it bound.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        no_stream_message(&mut client, 1).await,
+        "a stream nobody opened"
+    );
+    assert!(
+        !first.logged("agent socket: refused a connection"),
+        "{:?}",
+        first.log.lock().unwrap()
+    );
+    let after = std::fs::symlink_metadata(&socket.0).unwrap().ino();
+    assert_eq!(before, after);
+    let _program = UnixStream::connect(&socket.0).await.unwrap();
+    assert_eq!(stream_open(&mut client).await.pane_id, pane_id.to_string());
 }

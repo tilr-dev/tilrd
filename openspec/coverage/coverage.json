@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T16:07:56.706589+00:00",
+   "started": "2026-10-18T16:41:31.070203+00:00",
    "commit": null,
    "counts": {
-    "PASS": 500,
+    "PASS": 502,
     "FAIL": 1,
     "BLOCKED": 0
    },
    "args": "",
-   "path": "itests/results/20261018T180739-73141"
+   "path": "itests/results/20261018T184112-53809"
   }
  },
  "capabilities": [
@@ -8510,13 +8510,21 @@
       "uc_036:agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start"
      ],
      "cargo_tests": [
-      "agent::the_sockets_a_killed_server_left_are_removed_when_the_next_starts"
+      "agent::the_sockets_a_killed_server_left_are_removed_when_the_next_starts",
+      "agent::a_server_starting_leaves_the_agent_sockets_of_a_live_one_alone"
      ],
      "scenarios": [
       {
        "slug": "sigkill-then-a-new-server",
        "title": "SIGKILL, then a new server",
        "tag": "ssh-agent-forwarding/sockets-a-killed-server-left-are-swept-at-start#sigkill-then-a-new-server",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "a-second-server-starts-next-to-a-live-one",
+       "title": "A second server starts next to a live one",
+       "tag": "ssh-agent-forwarding/sockets-a-killed-server-left-are-swept-at-start#a-second-server-starts-next-to-a-live-one",
        "cases": [],
        "covered": false
       }
