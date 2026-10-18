@@ -48,3 +48,27 @@ instead of sleeping 50 ms.
   they can pass too early, not fail spuriously.
 - Rejected: reading the log synchronously in `logged` (no thread). The server writes all
   the time; something has to drain the pipe or the server blocks on its stderr.
+
+## D3. Using a server before it has finished starting (5.13, 5.15; TILR-120, TILR-126)
+
+Cause: `Daemon::start` returned once a connection to the Unix socket succeeded. The
+server binds its socket before it writes its access token (`state/token`) and long before
+its event loop runs; connections wait in the backlog until then. So
+`local::server_commands_run_for_local_clients_only` could read `state/token` before it
+existed (NotFound), and a `tilrd ps` right after the start ran its own 5 s timeout down
+while the server was still starting under load (`local::a_socket_left_by_a_killed_server_is_replaced`,
+`local::a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket`).
+Fix: what a service manager waits for. Each `Daemon` gets a `NOTIFY_SOCKET` of its own and
+`Daemon::start` waits for `READY=1`, which the server sends once it has started all the
+way (`crate::notify::ready()` right before the event loop); a test that brings its own
+`NOTIFY_SOCKET` (`a_service_manager_is_told_when_the_server_is_ready`) keeps waiting for
+the socket, and `starting_with_a_window` too (it must return inside the start-up window,
+before READY). `tilrd ps` asserts go through `Daemon::assert_ps`, which prints the exit
+status, stdout and stderr of `ps` and the server's log when it fails.
+- Rejected: polling for `state/token`. It fixes the token read only; the `ps` timeouts
+  came from the same early return.
+- Rejected: waiting for a log line written late in the start (`SSH agent forwarding`). It
+  is not meant as a readiness signal and may move; READY=1 is part of the contract
+  (`a_service_manager_is_told_when_the_server_is_ready`).
+- Rejected: a longer `tilrd ps` timeout. It is the product's; waiting for the server to be
+  ready is what a caller of `ps` does.

@@ -18,6 +18,9 @@ struct Daemon {
     log: Arc<Mutex<Vec<String>>>,
     /// Set once the log has been read to its end.
     log_read: Arc<std::sync::atomic::AtomicBool>,
+    /// Where it says `READY=1` once it has started, as it does to a service
+    /// manager; `None` if the test hands it a `NOTIFY_SOCKET` of its own.
+    notify: Option<std::os::unix::net::UnixDatagram>,
 }
 
 impl Daemon {
@@ -33,7 +36,18 @@ impl Daemon {
 
     /// With more variables in its environment.
     fn spawn_env(exe: &Path, dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Self {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
         let mut command = Command::new(exe);
+        let notify = if env.iter().any(|(name, _)| *name == "NOTIFY_SOCKET") {
+            None
+        } else {
+            let path = dir.join(format!("notify-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir_all(dir).unwrap();
+            let _ = std::fs::remove_file(&path);
+            let socket = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+            command.env("NOTIFY_SOCKET", &path);
+            Some(socket)
+        };
         command.args(args).envs(env.iter().copied());
         Server::environment(&mut command, dir, "");
         // The TCP port a server has by default: not the one of the machine.
@@ -62,14 +76,41 @@ impl Daemon {
             socket,
             log,
             log_read,
+            notify,
         }
     }
 
-    /// Started and taking connections on its socket.
+    /// Started: it has said it is ready.
     fn start(dir: &Path, args: &[&str]) -> Self {
         let mut daemon = Self::spawn(dir, args);
-        daemon.wait_listening();
+        daemon.wait_ready();
         daemon
+    }
+
+    /// Wait for `READY=1`, which the server sends once it has started all
+    /// the way: its socket takes connections before that (and before its
+    /// token is written), and they are served only once it has.
+    fn wait_ready(&mut self) {
+        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
+        notify
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut message = [0; 64];
+        loop {
+            if let Ok(n) = notify.recv(&mut message) {
+                assert_eq!(&message[..n], b"READY=1");
+                return;
+            }
+            if let Some(status) = self.child.try_wait().unwrap() {
+                panic!("tilrd exited {status}: {}", self.log_text());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "tilrd not ready within {TIMEOUT:?}: {}",
+                self.log_text()
+            );
+        }
     }
 
     fn wait_listening(&mut self) {
@@ -127,6 +168,20 @@ impl Daemon {
         command.arg("ps");
         Server::environment(&mut command, &self.dir, "");
         command.env("TILR_SOCKET", &self.socket).output().unwrap()
+    }
+
+    /// `tilrd ps` succeeds; what it said and the server's log if not.
+    fn assert_ps(&self, what: &str) -> std::process::Output {
+        let ps = self.ps();
+        assert!(
+            ps.status.success(),
+            "{what}: tilrd ps {}\nstdout: {}\nstderr: {}\nserver log:\n{}",
+            ps.status,
+            String::from_utf8_lossy(&ps.stdout),
+            String::from_utf8_lossy(&ps.stderr),
+            self.log_text()
+        );
+        ps
     }
 }
 
@@ -262,8 +317,7 @@ async fn the_socket_is_the_users_alone_and_asks_no_token() {
     let mut ws = connect(&daemon.socket).await;
     let pane = create_pane(&mut ws).await;
     assert!(panes(&mut ws).await.iter().any(|p| p.pane_id == pane));
-    let ps = daemon.ps();
-    assert!(ps.status.success(), "{ps:?}");
+    let ps = daemon.assert_ps("the user gets in");
     assert!(String::from_utf8_lossy(&ps.stdout).contains(&pane));
     // And a TCP port, on loopback, by default.
     wait_logged(&daemon, "listening on ws://127.0.0.1:");
@@ -294,7 +348,7 @@ fn a_service_manager_is_told_when_the_server_is_ready() {
 fn no_listen_serves_the_socket_alone() {
     let scratch = Scratch::new();
     let daemon = Daemon::start(&scratch.0, &["--no-listen"]);
-    assert!(daemon.ps().status.success());
+    daemon.assert_ps("the server answers");
     wait_logged(&daemon, "no TCP port");
     let log = daemon.log_text();
     assert!(!log.contains("listening on ws://"), "{log}");
@@ -357,7 +411,7 @@ fn another_user_is_turned_away_even_where_the_permissions_let_it_in() {
     let refused = as_nobody(&scratch.0);
     assert!(!refused.status.success(), "{refused:?}");
     wait_logged(&daemon, "refused a connection on the Unix socket");
-    assert!(daemon.ps().status.success(), "the user still gets in");
+    daemon.assert_ps("the user still gets in");
 }
 
 #[test]
@@ -371,7 +425,7 @@ fn a_socket_left_by_a_killed_server_is_replaced() {
 
     let second = Daemon::start(&scratch.0, &[]);
     wait_logged(&second, "removing the socket of a server that is gone");
-    assert!(second.ps().status.success());
+    second.assert_ps("the server answers");
 }
 
 #[test]
@@ -460,7 +514,7 @@ fn of_servers_started_at_once_one_serves_the_socket() {
         std::fs::read_to_string(lock).unwrap().trim(),
         daemons[running[0]].child.id().to_string()
     );
-    assert!(daemons[running[0]].ps().status.success());
+    daemons[running[0]].assert_ps("the server answers");
 }
 
 #[test]
@@ -486,11 +540,10 @@ fn with_a_tcp_port_a_socket_in_use_is_only_a_warning() {
     );
 
     let mut tcp = Daemon::spawn(&scratch.0, &["--listen", "127.0.0.1:0"]);
-    wait_logged(&tcp, "listening on ws://");
-    std::thread::sleep(Duration::from_millis(200));
+    tcp.wait_ready();
     assert!(tcp.running(), "{}", tcp.log_text());
     wait_logged(&tcp, "no Unix socket for local clients: another tilrd");
-    assert!(first.ps().status.success(), "the first still serves it");
+    first.assert_ps("the first still serves it");
 }
 
 #[tokio::test]
@@ -536,7 +589,11 @@ fn starting_with_a_window(scratch: &Scratch) -> Daemon {
         "supervisor-before-signals=sleep:1000",
     )
     .unwrap();
-    Daemon::start(&scratch.0, &[])
+    // Not ready until after the window: back as soon as the socket takes
+    // connections.
+    let mut daemon = Daemon::spawn(&scratch.0, &[]);
+    daemon.wait_listening();
+    daemon
 }
 
 #[cfg(feature = "failpoints")]
@@ -696,14 +753,14 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
-    daemon.wait_listening();
+    daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",
     );
     assert!(daemon.running());
-    assert!(daemon.ps().status.success());
+    daemon.assert_ps("the server answers");
 }
 
 /// With a TCP port too, the server used to reload into it serving TCP
@@ -715,7 +772,7 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
-    daemon.wait_listening();
+    daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
     wait_logged(
         &daemon,
@@ -723,7 +780,7 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     );
     assert!(!daemon.log_text().contains("resumed after reload"));
     assert!(daemon.running());
-    assert!(daemon.ps().status.success(), "served through the socket");
+    daemon.assert_ps("served through the socket");
 }
 
 /// A reload refused by the check of the successor leaves the socket, its
@@ -746,7 +803,7 @@ async fn a_refused_reload_keeps_the_socket_and_its_lock() {
     assert!(panes(&mut ws).await.iter().any(|p| p.pane_id == pane));
     let mut again = connect(&daemon.socket).await;
     assert!(panes(&mut again).await.iter().any(|p| p.pane_id == pane));
-    assert!(daemon.ps().status.success());
+    daemon.assert_ps("the server answers");
     // Still locked: another server cannot take the socket.
     let mut other = Daemon::spawn(&scratch.0, &["--no-listen"]);
     let (status, log) = other.exit();
