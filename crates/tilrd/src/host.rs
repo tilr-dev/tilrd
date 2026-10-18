@@ -242,7 +242,11 @@ pub async fn serve(listener: UnixListener, deliver: Deliver) {
         };
         // The user's own programs only, whatever the permissions say.
         if let Err(err) = crate::local::peer(&stream) {
-            tracing::warn!("host socket: refused a connection: {err:#}");
+            if crate::local::peer_gone(&err) {
+                tracing::debug!("host socket: a connection closed before its check");
+            } else {
+                tracing::warn!("host socket: refused a connection: {err:#}");
+            }
             continue;
         }
         let deliver = std::sync::Arc::clone(&deliver);

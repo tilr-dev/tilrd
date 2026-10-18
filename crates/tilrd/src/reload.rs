@@ -567,12 +567,36 @@ fn pane_state_dir() -> PathBuf {
 /// fails (a full disk) removes the temporary file, so nothing half-written
 /// is left for a successor or for the sweep.
 pub fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    clipboard::private_dir(dir)?;
-    let temp = dir.join(format!(
+    let temp = format!(
         ".{}.tmp",
         path.file_name().unwrap_or_default().to_string_lossy()
-    ));
+    );
+    write_via(path, &temp, bytes)
+}
+
+/// Write a file every server of the user shares (the shell wrappers) as
+/// [`write_file`] does, unless it already holds `bytes`: a running server's
+/// panes read it while another starts. The temporary file is this write's
+/// own (`.<name>.<pid>-<n>.tmp`), so two servers writing at once do not
+/// rename each other's.
+pub fn write_shared_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if std::fs::read(path).is_ok_and(|old| old == bytes) {
+        return Ok(());
+    }
+    let temp = format!(
+        ".{}.{}-{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    write_via(path, &temp, bytes)
+}
+
+fn write_via(path: &Path, temp: &str, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    clipboard::private_dir(dir)?;
+    let temp = dir.join(temp);
     let written = File::options()
         .write(true)
         .create(true)

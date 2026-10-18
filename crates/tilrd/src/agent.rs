@@ -432,6 +432,9 @@ async fn accept(pane_id: Uuid, listener: UnixListener, sink: Sink) {
             // the agent holds their keys.
             Ok((stream, _)) => match crate::local::peer(&stream) {
                 Ok(_) => sink(Output::Connected { pane_id, stream }),
+                Err(err) if crate::local::peer_gone(&err) => {
+                    tracing::debug!(pane = %pane_id, "agent socket: a connection closed before its check")
+                }
                 Err(err) => {
                     tracing::warn!(pane = %pane_id, "agent socket: refused a connection: {err:#}")
                 }

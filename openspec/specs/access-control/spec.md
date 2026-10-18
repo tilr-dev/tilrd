@@ -167,9 +167,18 @@ A client that comes through the Cloud tunnel SHALL be an ordinary TCP client of 
 - **WHEN** Cloud's control connection sends a command other than `tunnel_open` / `tunnel_close`
 - **THEN** the server does nothing with it and no pane is touched
 
+### Requirement: A connection gone before its uid check is not refused
+On the Unix socket, the host socket and the agent sockets, a connection whose peer has closed before the server could read its credentials (a probe of whether a server is there; macOS cannot read them then) SHALL be closed without the `refused a connection` warning. A connection from another uid MUST still be refused and logged.
+
+**Verified by**: `files::a_second_server_starting_leaves_the_first_ones_panes_their_tools` (the host socket) and itests UC-035 (`uc_035.py::another_user_cannot_send_tilr_edit_to_the_pane`, another uid still refused).
+
+#### Scenario: A probe of the host socket
+- **WHEN** a second server of the same user connects to the first one's `<server_id>.sock` and closes at once
+- **THEN** the first server logs no `refused a connection` line
+
 ## Notes
 
-- Requirements without a test: none. Partly untested: the constant-time comparison of tokens; "a tunnelled client needs the token" (follows from the tunnel leading to the TCP port, not tested end to end).
+- Requirements without a test: none. Partly untested: the constant-time comparison of tokens; "a tunnelled client needs the token" (follows from the tunnel leading to the TCP port, not tested end to end). "A connection gone before its uid check is not refused" is tested on the host socket only (the Unix and agent sockets share `local::peer_gone`; the warning appears on macOS only).
 - `local::another_user_is_turned_away_even_where_the_permissions_let_it_in` returns early unless run as root, so on CI (`runner`) it checks nothing; itests UC-034 runs it as root.
 - Unit tests in crates/tilrd/src/config.rs are cited by bare name (they are not in a `tests/` file).
 - Code vs README: none found for these requirements.

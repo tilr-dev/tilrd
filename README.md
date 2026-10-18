@@ -47,6 +47,10 @@ there for `.zshenv`, the user's own restored at once, the fix in a one-shot `pre
 bash: `-bash --posix` with `$ENV`, which leaves posix mode and reads `/etc/profile` and the
 first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`; fish: `--init-command`). Other
 shells start as above; `PATH="$TILR_SHIMS:$PATH"` at the end of their profile does the same.
+All servers of one user share these tools and wrappers; a starting server leaves those that
+are already right alone and replaces the others by a rename, so the panes of a running one
+never find a tool or wrapper missing. The last server to start decides which executable the
+tools are.
 
 ## Install
 
@@ -585,7 +589,8 @@ by another user (uid N), …`. With nobody to hear it, `tilr` says
 The host socket is `<server_id>.sock` in the runtime directory (under `/tmp/tilr-<uid>/`
 when that path is too long for a socket), 0600 in a 0700 directory. Two servers of one user
 share the state directory and so the server id: a server that finds another live server
-at `<server_id>.sock` uses `<server_id>-<pid>.sock` instead, and keeps it across a reload
+at `<server_id>.sock` (it connects, as tmux's client does; the live server closes such a
+probe without a warning) uses `<server_id>-<pid>.sock` instead, and keeps it across a reload
 (same pid). A stopping server removes its socket only while the file is still the one it
 bound, and a starting one removes the `<server_id>-<pid>.sock` of pids no longer running.
 

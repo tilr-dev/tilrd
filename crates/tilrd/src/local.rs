@@ -305,3 +305,14 @@ pub fn peer(stream: &UnixStream) -> Result<Option<i32>> {
     }
     Ok(cred.pid())
 }
+
+/// Whether [`peer`] failed only because the other end had already closed:
+/// what a probe leaves (a connect to see whether a server is there, as a
+/// starting server makes and as tmux's client does), and nothing to warn
+/// about. macOS cannot tell who it was then (`ENOTCONN`); Linux can, so
+/// there the check passes and the connection simply ends.
+pub fn peer_gone(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|err| err.raw_os_error() == Some(libc::ENOTCONN))
+}

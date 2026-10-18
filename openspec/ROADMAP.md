@@ -36,6 +36,9 @@ All of phase 1 is done (see "Done"). `agent-socket-per-server` (TILR-118) joined
 2026-10-18: a bug in what the first release ships (the agent socket sweep is on dev only).
 `reload-signal-storm` (TILR-121) joined it on 2026-10-18: a signal during a reload's exec
 kills the server (macOS) or is lost, in what the first release ships.
+`shared-runtime-races` (TILR-122, TILR-123) joined it on 2026-10-18: a second server of the
+user starting takes `tilr` and the other pane tools away from the first one's panes for a
+moment (exit 127), in what the first release ships.
 
 ## Phase 2: protocol v3 and input
 
@@ -124,5 +127,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | snapshot-origin-mode-cursor | af85db3 |
 | agent-socket-per-server | 5e0f703 |
 | reload-signal-storm | 060c7e4 |
+| shared-runtime-races | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

@@ -104,9 +104,10 @@ pub fn install_wrappers(runtime_dir: &Path) -> Result<PathBuf> {
     let dir = wrapper_dir(runtime_dir);
     crate::clipboard::private_dir(&dir)?;
     for (name, text) in FILES {
-        // Written aside, synced and renamed: a pane starting meanwhile never
-        // reads half a file.
-        crate::reload::write_file(&dir.join(name), text.as_bytes())?;
+        // Written aside, synced and renamed, and only when it changed: a
+        // pane starting meanwhile, of this server or another of the user's,
+        // never reads half a file or finds none.
+        crate::reload::write_shared_file(&dir.join(name), text.as_bytes())?;
     }
     Ok(dir)
 }
@@ -146,6 +147,39 @@ mod tests {
         // An older or damaged copy is replaced, and nothing is left beside it.
         std::fs::write(dir.join("zsh/.zshenv"), "old").unwrap();
         install_wrappers(&runtime).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zsh/.zshenv")).unwrap(),
+            ZSHENV
+        );
+        let mut names: Vec<_> = std::fs::read_dir(dir.join("zsh"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, [".zshenv"]);
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn servers_starting_at_once_each_install_the_wrappers() {
+        let runtime = std::env::temp_dir().join(format!("tilrd-shell-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        let dir = install_wrappers(&runtime).unwrap();
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let (runtime, dir) = (runtime.clone(), dir.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        // An older copy each time, so every install writes.
+                        let _ = std::fs::write(dir.join("zsh/.zshenv"), "old");
+                        install_wrappers(&runtime).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
         assert_eq!(
             std::fs::read_to_string(dir.join("zsh/.zshenv")).unwrap(),
             ZSHENV

@@ -265,6 +265,8 @@ through the server's socket.
 | In a pane: `$TILR_PANE`, `$TILR_SERVER` (the server id) and `$TILR_SOCK` (the socket); `tilr edit notes.md` reaches every client watching the pane as a `HostEvent` with an absolute path; `tilr open URL -- args`, `--kind`; other `tilr` commands go to the next `tilr` on PATH | `tilr_edit_in_a_pane_asks_the_clients_watching_it_to_open_the_file` |
 | Nobody watching the pane, or only a client that did not say `"host-events"` in `Hello.features` (one built before them, which is not counted as a recipient): "no tilr client attached", exit code 1; outside a pane: "not inside a tilr pane", exit code 1; a foreign pane: "no such pane"; non-JSON: `bad request`; a stopped server removes the socket | `tilr_edit_fails_with_no_client_watching_or_outside_a_pane` |
 | One user's two servers (one state directory, so one server id) each keep a host socket: the first `<server_id>.sock`, the second `<server_id>-<pid>.sock`; `tilr edit` in a pane of each reaches its own clients, and stopping the second leaves the first one's socket | `two_servers_of_one_user_keep_their_host_sockets` |
+| A second server of the same user starting (three times) never takes `$TILR_SHIMS/tilr` away from the first one's pane, `tilr edit` there still works, and the first server logs no refused connection for the second one's probe of its host socket | `a_second_server_starting_leaves_the_first_ones_panes_their_tools` |
+| Unit: links in `bin/` replaced over and over (two executables in turn) are never missing for a reader, nothing is left beside them, a right one is not touched and one left out is removed (`src/clipboard.rs`) | `clipboard::tests::the_shims_are_never_missing_while_another_server_installs_them` |
 
 ## SOCKS proxy — `tests/socks.rs`
 
@@ -408,7 +410,8 @@ pane process. The server's counters are at `GET /metrics`.
   as before) and the wrappers in `<runtime dir>/shell/` are unit tests
   (`pty::tests::a_login_shell_is_wrapped_by_its_name`,
   `shell::tests::the_wrappers_are_written_private_and_replaced_whole`,
-  `shell::tests::no_wrappers_means_shells_start_as_before`); that the tools
+  `shell::tests::no_wrappers_means_shells_start_as_before`,
+  `shell::tests::servers_starting_at_once_each_install_the_wrappers`); that the tools
   stay first on `PATH` with profiles that reset it, in real bash, zsh, fish
   and dash, is itests UC-07B.
 - `tilr service install|uninstall`: `crates/tilr/tests` start no service

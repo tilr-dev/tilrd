@@ -1141,6 +1141,41 @@ async fn a_client_answering_only_the_latest_ping_gets_the_whole_file() {
     assert!(got == data, "the file arrived changed");
 }
 
+#[tokio::test]
+async fn a_second_server_starting_leaves_the_first_ones_panes_their_tools() {
+    let first = Server::start(&[]);
+    let mut a = Client::connect(&first).await;
+    let pane = a.open_pane().await;
+    // Watch the pane's `tilr` from the pane's shell while second servers
+    // of the same user come and go.
+    let watch = "(while [ ! -e ~/stop ]; do [ -e \"$TILR_SHIMS/tilr\" ] || echo gone >> ~/gone; done; touch ~/stopped) & true";
+    assert_eq!(a.run(pane, watch).await, 0);
+    // Kept until the end: a server dropped removes the shared directory.
+    let mut seconds = Vec::new();
+    for _ in 0..3 {
+        let mut second = start_second(&first.dir);
+        let mut b = Client::connect(&second).await;
+        b.open_pane().await;
+        drop(b);
+        stop(&mut second).await;
+        seconds.push(second);
+    }
+    std::fs::write(first.dir.join("stop"), "").unwrap();
+    eventually("the watch ends", || first.dir.join("stopped").exists()).await;
+    assert!(
+        !first.dir.join("gone").exists(),
+        "the pane's tilr went missing while a second server started"
+    );
+    tilr_edit_reaches(&mut a, pane, "still.md").await;
+    // The second server told the first one apart without a connection the
+    // first had to refuse.
+    let log = first.log.lock().unwrap().clone();
+    assert!(
+        !log.iter().any(|line| line.contains("refused a connection")),
+        "{log:?}"
+    );
+}
+
 /// `tilr edit` in the pane reaches `client`, which watches it.
 async fn tilr_edit_reaches(client: &mut Client, pane_id: PaneId, name: &str) {
     assert_eq!(client.run(pane_id, &format!("tilr edit {name}")).await, 0);

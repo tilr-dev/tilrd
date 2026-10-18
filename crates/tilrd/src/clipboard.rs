@@ -70,6 +70,11 @@ pub fn private_dir(dir: &Path) -> Result<()> {
 
 /// Put links to `exe` named `names` into the shim directory and return it.
 /// Those of `all` not in `names`, left by an earlier run, are removed.
+///
+/// The directory is shared by all servers of the user, and the panes of a
+/// running one use the links while another starts: a link already right is
+/// left alone, and one to replace is made aside and renamed over the old,
+/// so its name never goes missing.
 pub fn install_shims(
     runtime_dir: &Path,
     exe: &Path,
@@ -81,17 +86,27 @@ pub fn install_shims(
     private_dir(&dir)?;
     for name in all {
         let link = dir.join(name);
-        match fs::remove_file(&link) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => {
-                return Err(err).with_context(|| format!("replace {}", link.display()));
-            }
-            _ => {}
-        }
         if !names.contains(name) {
+            match fs::remove_file(&link) {
+                Err(err) if err.kind() != io::ErrorKind::NotFound => {
+                    return Err(err).with_context(|| format!("remove {}", link.display()));
+                }
+                _ => {}
+            }
             continue;
         }
-        std::os::unix::fs::symlink(exe, &link)
-            .with_context(|| format!("link {}", link.display()))?;
+        if fs::read_link(&link).is_ok_and(|target| target == exe) {
+            continue;
+        }
+        // Named for this process: two servers starting at once do not
+        // take each other's.
+        let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        let _ = fs::remove_file(&temp);
+        let linked = std::os::unix::fs::symlink(exe, &temp).and_then(|()| fs::rename(&temp, &link));
+        if let Err(err) = linked {
+            let _ = fs::remove_file(&temp);
+            return Err(err).with_context(|| format!("link {}", link.display()));
+        }
     }
     Ok(dir)
 }
@@ -553,6 +568,54 @@ pub fn shim_name(argv0: &OsStr) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shims_are_never_missing_while_another_server_installs_them() {
+        let runtime = std::env::temp_dir().join(format!("tilr-test-shims-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&runtime);
+        let (a, b) = (Path::new("/usr/bin/true"), Path::new("/usr/bin/false"));
+        let all = ["xclip", "wl-paste", "tilr"];
+        let dir = install_shims(&runtime, a, &all, &all).unwrap();
+        let link = dir.join("tilr");
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let (done, link) = (std::sync::Arc::clone(&done), link.clone());
+            std::thread::spawn(move || {
+                let mut missing = 0;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if fs::symlink_metadata(&link).is_err() {
+                        missing += 1;
+                    }
+                }
+                missing
+            })
+        };
+        // Two servers of different executables starting in turn.
+        for round in 0..2000 {
+            let exe = if round % 2 == 0 { b } else { a };
+            install_shims(&runtime, exe, &all, &all).unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(watcher.join().unwrap(), 0, "the link went missing");
+        assert_eq!(fs::read_link(&link).unwrap(), a);
+        // Nothing but the links is left in the directory.
+        let mut names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["tilr", "wl-paste", "xclip"]);
+
+        // One left out is removed; an unchanged one is not touched.
+        let before = fs::symlink_metadata(dir.join("xclip")).unwrap().ino();
+        install_shims(&runtime, a, &["xclip"], &all).unwrap();
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(
+            fs::symlink_metadata(dir.join("xclip")).unwrap().ino(),
+            before
+        );
+        fs::remove_dir_all(&runtime).unwrap();
+    }
 
     fn args(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_owned).collect()

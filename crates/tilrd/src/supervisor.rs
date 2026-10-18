@@ -911,6 +911,10 @@ async fn accept_local(
             Ok((stream, _)) => {
                 let pid = match local::peer(&stream) {
                     Ok(pid) => pid,
+                    Err(err) if local::peer_gone(&err) => {
+                        tracing::debug!("a connection to the Unix socket closed before its check");
+                        continue;
+                    }
                     Err(err) => {
                         tracing::warn!("refused a connection on the Unix socket: {err:#}");
                         continue;
