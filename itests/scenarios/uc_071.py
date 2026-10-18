@@ -48,7 +48,7 @@ NAMES = [
 def start(t: T):
     server = t.server(state=t.root / "state")
     d = t.driver()
-    d.connect(server, features=["ping", "files"])
+    d.connect(server, features=["files"])
     home = Path(server.env["HOME"])
     work = home / "names"
     work.mkdir()

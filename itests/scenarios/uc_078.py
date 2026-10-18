@@ -45,7 +45,7 @@ def setup(t: T, forward: bool = True):
     server = t.server(listen="0.0.0.0:0", state=t.root / "state")
     d = laptop.driver("client")
     d.connect(f"ws://{laptop.peer_ip}:{server.port}", token=server.token(),
-              features=["ping", "agent"] if forward else ["ping"])
+              features=["agent"] if forward else [])
     if forward:
         d.cmd("agent", mode="socket", socket=sock)
     pane = d.shell_pane(120, 30)

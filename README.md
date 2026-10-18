@@ -714,8 +714,29 @@ Defined in [`crates/tilr-proto/proto/tilr.proto`](crates/tilr-proto/proto/tilr.p
 packet is one binary WebSocket message: a flag byte (0 = plain, 1 = zstd) followed by a
 protobuf `ClientMessage` or `ServerMessage`.
 
-The protocol grows by adding message types. Both sides ignore messages they do not know, and
-say what they support in `Hello.features` / `HelloAck.features`.
+Both sides ignore message types and fields they do not know. The protocol version
+(`PROTOCOL_VERSION`, now 3) is the contract: a client and a server of a version implement
+every message and field of it, and a server refuses every other version, older or newer.
+A change a peer cannot ignore (a request a client relies on, a changed meaning, a new close
+code) bumps the version, with no compatibility for older clients or servers. A change a peer
+may ignore (a new push, a new field with a harmless default) needs neither a new version nor
+a feature. `Hello.client_id`, `KeyInput.code`, the `bytes` twins of file paths, `Ping`, the
+bulk window paced by pongs, `PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002
+are all part of version 3. The Tilr app's `server` plugin and tilr-mac need version 3 to
+talk to this server; `tilr` and `tilr-driver` are built with it.
+
+`HelloAck.features` lists only what a server can be run without, so a client checks it
+before sending that capability's requests, in this order:
+
+| feature | messages | off with |
+|---|---|---|
+| `clipboard` | `ClipboardPut` | `--no-clipboard` |
+| `files` | `FsList`, `FsStat`, `FsRead`, `FsWrite`, `FsMkdir`, `FsRename`, `FsDelete`, `FsWatch`, `FsUnwatch` | `--no-files`, `[files] enabled = false` |
+| `host-events` | `HostEvent` | the host-events socket not up |
+| `agent` | SSH agent forwarding (`StreamOpen` with kind `ssh-agent`) | `--no-agent`, `agent = false` |
+| `exec` | `ExecStart`, `ExecInput`, `ExecSignal`, `ExecCancel` | `--no-exec`, `exec = false` |
+
+`Hello.features` says what the client can serve (`host-events`, `agent`).
 
 A connection starts with `Hello`, which carries the protocol version of the client and the
 [access token](#who-may-connect). A server that speaks another version, or is sent anything
@@ -777,8 +798,9 @@ read, a program sending to a stream, or an exec's program writing output, waits 
 a client that takes data slowly holds the read or the program back, while the server's
 memory stays flat, and is not dropped for being slow.
 
-A page in a browser cannot see those pings, so for the other direction there is `Ping`
-(feature `"ping"`): the server answers `Pong` with the same nonce at once. A client that
+A page in a browser cannot see those pings, so for the other direction there is `Ping`,
+which every server has (no feature announces it): the server answers `Pong` with the same
+nonce at once. A client that
 pings regularly and gets no answer in time knows the server is out of reach, and
 reconnects.
 
@@ -798,9 +820,10 @@ for it. When Ctrl or Alt is held and the key's character is not ASCII, the serve
 the key as its character on a US layout (Ctrl+С `^C`, Ctrl+Я `^Z`, Alt+Ф `ESC a`). A
 character that is ASCII goes by itself wherever its key is: Ctrl+C on Dvorak (the I key) is
 `^C`, Ctrl+A on AZERTY (the Q key) `^A`. Typing without Ctrl or Alt is the text. With the
-kitty keyboard protocol on, the physical key is the base layout key it reports. A client
-that sends no `code` gets what it did before: keys taken as on a US layout, and nothing for
-Ctrl with a character that is not ASCII.
+kitty keyboard protocol on, the physical key is the base layout key it reports. A key
+without `code` has no physical key (synthetic input from a script, or a character key of
+`tilr`, which reads keys from its own terminal as characters): it is taken as on a US
+layout, and Ctrl with a character that is not ASCII sends nothing.
 
 ### File names that are not UTF-8
 
@@ -809,8 +832,8 @@ any bytes. A name that is not UTF-8 comes with its raw bytes as well (`FsEntry.n
 `path_bytes` in `FsEntries`, `FsInfo`, `FsChanged`), its string being for showing only
 (U+FFFD for each bad byte); every request has the same `bytes` twin of its path
 (`path_bytes`, `from_bytes`, `to_bytes`), which the server goes by when it is not empty. A
-client that keeps the bytes it was given and sends them back can read, write, rename and
-delete such a file; one that ignores them works as before for every other name.
+client sends back the bytes it was given, so it can read, write, rename and delete such a
+file.
 
 ### Measuring input latency
 

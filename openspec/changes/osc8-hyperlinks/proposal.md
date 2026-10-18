@@ -1,7 +1,5 @@
 # Proposal: OSC 8 hyperlinks in frames
 
-Зависит от: protocol-v3
-
 ## Why
 
 Hyperlinks (OSC 8) are listed as not done (Basic Memory `main/projects/tilr/tilr-zhurnal-reshenii`); `tilr.proto` has no hyperlink field at 13f9522.

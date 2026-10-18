@@ -1922,10 +1922,22 @@ mod tests {
             encoded(&mut screen, at("KeyC", '\u{441}', shift, "\u{421}")),
             "\u{421}".as_bytes()
         );
-        // Without the physical key (an older client): nothing to go by.
+    }
+
+    #[test]
+    fn a_key_without_a_physical_key_is_encoded_as_on_a_us_layout() {
+        // No `code`: synthetic input, or a character key of `tilr`.
+        let mut screen = screen();
+        let ctrl = mods::CTRL;
+        // Ctrl with a character that is not ASCII has nothing to go by.
         assert_eq!(
             encoded(&mut screen, key(NamedKey::Unspecified, '\u{441}', ctrl, "")),
             b""
+        );
+        // A Latin one is itself, as on a US layout.
+        assert_eq!(
+            encoded(&mut screen, key(NamedKey::Unspecified, 'c', ctrl, "")),
+            b"\x03"
         );
     }
 

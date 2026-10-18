@@ -132,10 +132,7 @@ async fn the_clipboard_can_be_turned_off() {
     let server = Server::start(&["--no-clipboard"]);
     let mut client = Client::connect(&server).await;
     let ack = client.hello().await;
-    assert_eq!(
-        ack.features,
-        ["ping", "files", "host-events", "agent", "exec"]
-    );
+    assert_eq!(ack.features, ["files", "host-events", "agent", "exec"]);
     assert_eq!(ack.clipboard_max_bytes, 0);
 
     client

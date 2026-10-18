@@ -1,7 +1,5 @@
 # Proposal: The Tilr app moves to tilrd (tracking change; the work is in desktop-mac)
 
-Зависит от: protocol-v3 (the app's `server` plugin must speak the version the first release speaks)
-
 ## Why
 
 - Merging the itests branch (rename `tilr-server` → `tilrd`, the release archive) breaks the Mac app (repository `tilr-dev/desktop-mac`): `bundle_server.py` (`-p tilr-server`, `release/tilr-server`), `ServerInstallation.swift` waiting for `tilr-server <ver> (`, `release_server.py`, `verify_release.py`, `ServerUpdates.swift`, tests and docs. A tilrd release must be published to the app's feed with `--min-app-build` = the first app build that supports tilrd; the old feed with component `tilr-server` is to be deleted or recreated on first publish. A daemon started by `tilr` may take port 7890 before the app, so the app must attach to a running tilrd (Basic Memory `main/projects/tilr/tilrd-tests-integratsionnye-testy-tilrd-na-dagger-use-cases-resheniia`, `main/projects/tilr/tilr-cli-tilr-iz-tilr-dev-plugin-razbor-i-resheniia`).

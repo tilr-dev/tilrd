@@ -1,7 +1,5 @@
 # Proposal: PaneActivity: tell clients that a pane rang the bell or finished a command
 
-Зависит от: protocol-v3
-
 ## Why
 
 A lightweight event from a pane nobody watches was requested on 2026-10-03; what counts as an "event" was open: output after silence, the foreground process finishing, a bell, a title change (Basic Memory `main/projects/tilr/tilr-zhurnal-reshenii`). A related idea is events, wake-up hooks and timers for agents (`main/projects/tilr/tilr-ideia-sobytiia-mcp-khuki-probuzhdeniia-agentov-i-taimery`).

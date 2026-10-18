@@ -25,7 +25,7 @@ from tt.live import wait_reloads
 def start(t: T):
     server = t.server(state=t.root / "state")
     d = t.driver()
-    hello = d.connect(server, features=["ping", "exec"])
+    hello = d.connect(server, features=["exec"])
     t.ok("exec" in hello["features"], f"the server offers exec (HelloAck.features {hello['features']})")
     return server, d
 
@@ -36,7 +36,7 @@ def exec_start_to_a_server_with_exec_off_is_refused_with_the_reason(t: T):
     with ExecStarted error "exec is turned off", and the connection goes on."""
     server = t.server("--no-exec", state=t.root / "state")
     d = t.driver()
-    hello = d.connect(server, features=["ping", "exec"])
+    hello = d.connect(server, features=["exec"])
     t.ok("exec" not in hello["features"], f"no exec offered (HelloAck.features {hello['features']})")
     r = d.cmd("exec", argv=["true"], force=True, ok=False)
     t.eq(r["ev"], "error", "the ExecStart is refused")

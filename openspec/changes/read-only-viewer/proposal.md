@@ -2,8 +2,6 @@
 
 Deferred: until a use is named.
 
-Зависит от: protocol-v3
-
 ## Why
 
 A read-only viewer was proposed on 2026-10-17: the client connects and sees a pane but cannot send anything into it; refused are Raw/Key/Paste/Resize/mouse/ClosePane/Fs*/Exec; read-only is a property of the connection (token or role), not a flag the client sets itself; a read-only viewer does not affect the pane's size; the use (a demo, watching) is to be found later. A per-device `device_id` was deferred in the same note (Basic Memory `main/projects/tilr/tilrd-idei-read-only-zritel-client-id`).

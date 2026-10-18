@@ -27,7 +27,7 @@ File and line numbers are as of the 2026-10-03 review; after the 2026-10-04 chan
 ## Protocol (before v1)
 
 - [x] `Hello`: the version is checked, `Hello` must be the first message; otherwise `Error` and the connection is closed.
-- [x] `Ping` / `Pong` in the protocol (feature `"ping"`), so a browser client notices a server that silently went away.
+- [x] `Ping` / `Pong` in the protocol (part of every server since protocol 3), so a browser client notices a server that silently went away.
 - [ ] Web client: send `Ping` and reconnect when no `Pong` comes back.
 - [x] Extensibility: unknown messages are ignored, features are announced in `Hello.features` / `HelloAck.features`.
 - [x] `KeyInput`: the physical key for non-Latin layouts (`KeyInput.code`; Ctrl+С on a Russian layout gives `^C`).

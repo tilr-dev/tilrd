@@ -146,7 +146,7 @@ every subscribed pane's screen from the frames.
 
 | Command | Arguments | Answer |
 | --- | --- | --- |
-| `connect` | `url`, `token`, `origin`, `features` (default `["ping"]`), `timeout_ms`, `client_id` (`Hello.client_id`; default: the driver's own, made up when it starts and kept across its reconnects) | `connected` with `server_version`, `features`, `seq_base`, `fs_max_bytes`, `clipboard_max_bytes`, `client_id` |
+| `connect` | `url`, `token`, `origin`, `features` (`Hello.features`, what the client serves: `host-events`, `agent`; default none), `timeout_ms`, `client_id` (`Hello.client_id`; default: the driver's own, made up when it starts and kept across its reconnects) | `connected` with `server_version`, `features`, `seq_base`, `fs_max_bytes`, `clipboard_max_bytes`, `client_id` |
 | `create_pane` | `cols`, `rows`, `cwd`, `command`, `subscribe` (default true) | `pane_created` with `pane`, `info` |
 | `subscribe` / `unsubscribe` / `close_pane` | `pane` | `ok` |
 | `input` / `paste` | `pane`, `text` (raw bytes, escapes are JSON's) | `ok` with the input `seq` |

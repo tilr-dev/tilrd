@@ -42,7 +42,7 @@ def install_next(exe: Path):
     staged.rename(exe)
 
 
-def start(t: T, *args, features=("ping",)):
+def start(t: T, *args, features=()):
     exe = t.install()
     server = t.server(*args, exe=exe, state=t.root / "state")
     d = t.driver()
@@ -71,7 +71,7 @@ def digest(path: Path) -> str:
 ])
 def a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works(t: T):
     """UC-064: an 8 MB write in chunks while the server updates: the file unchanged, no temp file, the retry succeeds."""
-    exe, server, d, shell = start(t, features=("ping", "files"))
+    exe, server, d, shell = start(t, features=("files",))
     home = Path(server.env["HOME"])
     target = home / "doc.txt"
     target.write_text("the original\n" * 1000)
@@ -182,7 +182,7 @@ while True:
 ])
 def an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works(t: T):
     """UC-064: a program talking to the agent through an update reads EOF; the next agent stream works."""
-    exe, server, d, shell = start(t, features=("ping", "agent"))
+    exe, server, d, shell = start(t, features=("agent",))
     program = t.root / "agent_program.py"
     program.write_text(AGENT_PROGRAM)
     pane = d.shell_pane()

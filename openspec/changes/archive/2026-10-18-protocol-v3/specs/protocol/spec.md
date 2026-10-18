@@ -19,7 +19,7 @@
 - **THEN** it is refused the same way, naming version 0
 
 ### Requirement: Server feature flags
-`HelloAck.features` SHALL list exactly the capabilities this server can be run without and currently offers, in this order: `"clipboard"` (unless `--no-clipboard`), `"files"` (unless `--no-files` / `[files] enabled = false`), `"host-events"` (when the host-events socket is up), `"agent"` (unless `--no-agent` / `agent = false`), `"exec"` (unless `--no-exec` / `exec = false`). A capability every server of this protocol version has (such as `Ping`) MUST NOT be listed. A client MUST NOT rely on a message of a feature the server did not list.
+`HelloAck.features` SHALL list exactly the capabilities this server can be run without and offers, in this order: `"clipboard"` (off: `--no-clipboard`), `"files"` (`--no-files` / `[files] enabled = false`), `"host-events"` (host-events socket not up), `"agent"` (`--no-agent` / `agent = false`), `"exec"` (`--no-exec` / `exec = false`). What every server of the version has (`Ping`) MUST NOT be listed. A client MUST NOT rely on a message of a feature not listed.
 
 **Verified by**: `panes::hello_announces_the_clipboard_and_its_limit`, `clipboard::the_clipboard_can_be_turned_off`, `files::files_can_be_turned_off`, `agent::the_agent_is_forwarded_unless_turned_off` and `exec::exec_is_offered_unless_turned_off`.
 

@@ -54,7 +54,7 @@ def agent_setup(t: T):
     server = t.server("--client-timeout", CLIENT_TIMEOUT_S, state=t.root / "state")
     proxy = t.proxy(server.port)
     client = t.driver("client")
-    client.connect(proxy.url, token=server.token(), features=["ping", "agent"])
+    client.connect(proxy.url, token=server.token(), features=["agent"])
     client.cmd("keepalive", interval_ms=1000, timeout_ms=4000, auto_reconnect=True, reconnect_timeout_ms=60_000)
     pane = client.shell_pane(100, 30)
     program = t.root / "agent_program.py"

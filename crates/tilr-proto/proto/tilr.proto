@@ -2,9 +2,18 @@ syntax = "proto3";
 
 package tilr.v1;
 
-// Both sides ignore messages they do not know, so new message types can be
-// added without breaking older peers. What a peer supports is announced in
-// Hello / HelloAck `features`.
+// Both sides ignore message types and fields they do not know.
+//
+// PROTOCOL_VERSION (Hello / HelloAck `protocol_version`, now 3) is the
+// mandatory contract: a peer of a version implements every message and field
+// of it, and a server refuses every other version. A change a peer cannot
+// ignore (a request a client relies on, a changed meaning, a new close code)
+// bumps the version. A change a peer may ignore (a new push, a new field with
+// a harmless default) needs neither a bump nor a feature. HelloAck `features`
+// names only capabilities a server can be run without (switched off by its
+// operator or missing in its environment), so a client checks one before
+// sending that capability's requests; Hello `features` says what the client
+// can serve.
 
 // ---------------------------------------------------------------------------
 // Client -> server
@@ -202,9 +211,10 @@ message KeyInput {
   // the physical key is also the "base layout key" it reports. Typing
   // without Ctrl or Alt is the text, as ever.
   //
-  // Empty: unknown (an older client); the key is then taken from
-  // `codepoint` as if the layout were US, and Ctrl or Alt with a character
-  // that is not ASCII sends nothing (Alt: the text alone).
+  // Empty: no physical key (synthetic input from a script, or a character
+  // key of a client that reads keys as characters, such as `tilr`); the key
+  // is then taken from `codepoint` as if the layout were US, and Ctrl or Alt
+  // with a character that is not ASCII sends nothing (Alt: the text alone).
   string code = 7;
 }
 
@@ -273,8 +283,8 @@ message ClipboardPut {
   bool last = 5;
 }
 
-// Ask whether the server is still there; it answers Pong at once. Requires
-// the "ping" feature.
+// Ask whether the server is still there; it answers Pong at once. Every
+// server has it: no feature announces it.
 //
 // A network that drops out without closing the connection leaves a client
 // waiting forever. A client that pings and hears nothing back for a while
@@ -311,10 +321,9 @@ message Ping {
 // name or path that is not UTF-8 comes with its raw bytes the same way
 // (FsEntry.name_bytes, FsEntries/FsInfo/FsChanged.path_bytes), its string
 // then being the bytes made UTF-8 with U+FFFD for what is not, for showing
-// only. A client that keeps the bytes of what it was given and sends them
-// back can name any file; one that ignores the bytes fields works as before
-// for every name that is UTF-8. The `bytes` fields are empty for UTF-8
-// names.
+// only. A client sends back the bytes of what it was given (the twin, when
+// it came with one), so it can name any file. The `bytes` fields are empty
+// for UTF-8 names.
 // ---------------------------------------------------------------------------
 
 // What is in a directory. Answered with FsEntries.
@@ -554,16 +563,17 @@ message ServerMessage {
 message HelloAck {
   uint32 protocol_version = 1;
   string server_version = 2;
-  // Optional capabilities the server supports:
-  //   "clipboard" - ClipboardPut
-  //   "ping" - Ping
+  // The capabilities this server can be run without and offers, in this
+  // order (what is part of the protocol version, such as Ping, is never
+  // listed):
+  //   "clipboard" - ClipboardPut (off with --no-clipboard)
   //   "files" - FsList, FsStat, FsRead, FsWrite, FsMkdir, FsRename, FsDelete,
-  //             FsWatch, FsUnwatch
-  //   "host-events" - HostEvent
+  //             FsWatch, FsUnwatch (off with --no-files)
+  //   "host-events" - HostEvent (when the host-events socket is up)
   //   "agent" - SSH agent forwarding: StreamOpen with kind "ssh-agent",
-  //             StreamData, StreamClose. Only towards a client that has
-  //             "agent" in its Hello.features.
-  //   "exec" - ExecStart, ExecInput, ExecSignal, ExecCancel
+  //             StreamData, StreamClose (off with --no-agent)
+  //   "exec" - ExecStart, ExecInput, ExecSignal, ExecCancel (off with
+  //            --no-exec)
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;

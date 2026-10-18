@@ -26,7 +26,7 @@ def configured(t: T, max_bytes: str):
     (config / "server.toml").write_text(f'[files]\nmax_bytes = "{max_bytes}"\n')
     server = t.server(state=t.root / "state", env={"TILR_CONFIG_DIR": str(config)})
     d = t.driver()
-    hello = d.connect(server, features=["ping", "files"])
+    hello = d.connect(server, features=["files"])
     return server, d, hello, Path(server.env["HOME"])
 
 

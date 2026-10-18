@@ -31,7 +31,7 @@ def another_user_cannot_send_tilr_edit_to_the_pane(t: T):
     t.eq(user.run("tilr", "new", "-d").code, 0, "tilr new -d")
     token = (user.home / ".local/state/tilr/token").read_text().strip()
     d = t.driver()
-    d.connect("ws://127.0.0.1:7890", token=token, features=["ping", "host-events", "agent"])
+    d.connect("ws://127.0.0.1:7890", token=token, features=["host-events", "agent"])
     pane = d.shell_pane()
     env = {name: d.value(pane, f"${name}") for name in ("TILR_SOCK", "TILR_PANE", "TILR_SERVER", "SSH_AUTH_SOCK")}
     sock = Path(env["TILR_SOCK"])

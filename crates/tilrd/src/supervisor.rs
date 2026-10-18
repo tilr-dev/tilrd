@@ -86,8 +86,6 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const UNSENT_LIMIT: libc::c_int = 4 * 1024;
 /// Feature name for the shared clipboard, see `HelloAck.features`.
 const FEATURE_CLIPBOARD: &str = "clipboard";
-/// Feature name for `Ping`, see `HelloAck.features`.
-const FEATURE_PING: &str = "ping";
 /// Feature name for the files protocol, see `HelloAck.features`.
 const FEATURE_FILES: &str = "files";
 /// Feature name for `HostEvent`, see `HelloAck.features`.
@@ -2125,7 +2123,6 @@ impl Supervisor {
                 let fs_max_bytes = self.files.as_ref().map(files::Files::max_bytes);
                 let features = [
                     (FEATURE_CLIPBOARD, clipboard_max_bytes.is_some()),
-                    (FEATURE_PING, true),
                     (FEATURE_FILES, fs_max_bytes.is_some()),
                     (FEATURE_HOST_EVENTS, self.host_events),
                     (FEATURE_AGENT, self.agent.is_some()),

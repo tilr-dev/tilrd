@@ -32,7 +32,7 @@ context: |
   Tilr app's `server` plugin via `npm run proto`, crates/tilr-driver, the test client), so any
   change there is a protocol change. Both sides ignore message types and fields they do not
   know. Rule (owner, 2026-10-18, change protocol-v3): PROTOCOL_VERSION
-  (crates/tilr-proto/src/lib.rs; 2 in code until protocol-v3 lands, then 3) is the mandatory
+  (crates/tilr-proto/src/lib.rs; 3 in code) is the mandatory
   wire contract: a change a peer cannot ignore bumps it, with no compatibility for older
   clients or servers; HelloAck.features lists only capabilities a server can be run without
   (clipboard, files, host-events, agent, exec), never a flag for a mandatory part. A server

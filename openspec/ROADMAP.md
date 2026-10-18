@@ -38,15 +38,14 @@ All of phase 1 is done (see "Done").
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| protocol-v3 | PROTOCOL_VERSION 3 as the mandatory contract; `ping` leaves `HelloAck.features`; the version/feature rule written down | S | - | no | ready |
-| non-latin-ctrl-alt | only Ctrl goes by the physical key; Alt = ESC + the character produced; composed characters as themselves | S | protocol-v3 | no | ready |
-| reload-screen-fidelity | carry soft wrap, pending wrap, the ClosePane deadline and kitty placements across a pane reload | M | protocol-v3 | no | ready |
+| non-latin-ctrl-alt | only Ctrl goes by the physical key; Alt = ESC + the character produced; composed characters as themselves | S | - | no | ready |
+| reload-screen-fidelity | carry soft wrap, pending wrap, the ClosePane deadline and kitty placements across a pane reload | M | - | no | ready |
 
 ## Phase 3: docs and tests
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| readme-code-reconciliation | README / USE_CASES match the code; a superseded `tilr attach` ends instead of reconnecting | S | protocol-v3 | no | ready |
+| readme-code-reconciliation | README / USE_CASES match the code; a superseded `tilr attach` ends instead of reconnecting | S | - | no | ready |
 | test-coverage-gaps | tests for the 19 untested server/client requirements; fix or quarantine the known flakes | L | - | no | ready |
 
 ## Phase 4: release infrastructure
@@ -57,18 +56,18 @@ All of phase 1 is done (see "Done").
 | scoped-cdn-token | the `cdn` environment gets a token scoped to the tilr-cdn bucket | S | - | no | ready (owner's Cloudflare access to create the token) |
 | cloud-default-url | `https://wss.tilr.dev` becomes the default Cloud URL | S | - | no | ready |
 | installer-atomic-install | the archive installer served at tilr.sh with the first release | S | release-process-tests | no | ready |
-| tilr-mac-rename-compatibility | the Tilr app moves to tilrd (tracking; work in desktop-mac) | S here, M there | protocol-v3 | no | ready |
+| tilr-mac-rename-compatibility | the Tilr app moves to tilrd (tracking; work in desktop-mac) | S here, M there | - | no | ready |
 
 ## Phase 5: features
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
 | log-level-from-env | `RUST_LOG` sets tilrd's log filter | S | - | no | ready |
-| pane-activity-notifications | `PaneActivity` push: bell and foreground command finished | M | protocol-v3 | no | ready |
+| pane-activity-notifications | `PaneActivity` push: bell and foreground command finished | M | - | no | ready |
 | pane-process-title | `ps` shows each pane's shell, cwd and command, kept across a reload | M | - (shares the `tcgetpgrp` check with pane-activity-notifications) | no | ready |
-| osc8-hyperlinks | OSC 8 links in frames (`Frame.links`, `Run.link`); `tilr attach` draws them | S/M | protocol-v3 | no | ready |
-| reverse-clipboard | a copy in a pane (OSC 52, xclip, wl-copy) reaches the watching clients | M | protocol-v3 | no | ready |
-| files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once | M | protocol-v3 | no | ready |
+| osc8-hyperlinks | OSC 8 links in frames (`Frame.links`, `Run.link`); `tilr attach` draws them | S/M | - | no | ready |
+| reverse-clipboard | a copy in a pane (OSC 52, xclip, wl-copy) reaches the watching clients | M | - | no | ready |
+| files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once | M | - | no | ready |
 | tilr-deploy | `tilr deploy user@host` installs and starts tilrd over the user's ssh | M | installer-atomic-install | no | ready (its `--cloud` part is not designed; after Cloud is in production) |
 | reload-exec-checked-file | the executable a reload checks is the one it execs (Linux `/proc/self/fd`, macOS a private copy) | M | - | no | ready |
 | metrics-no-hello-and-prefix | no-Hello closes counted in the drops metric (`no_hello`); one metric prefix `tilrd_` (the twelve `tilr_*` families renamed), **BREAKING** for dashboards | S | - | yes (prefix) | ready |
@@ -84,7 +83,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | quic-transport | a QUIC/UDP transport for bad networks, one stream per lane | L | - | - | design first |
 | directory-sync | `tilr-sync` crate embedded in tilrd: push sync over QUIC | L | - | - | design first |
 | multi-server | the client joins several machines (no tilrd change) | L | - | - | design first |
-| port-forwarding | `ssh -R` / `-L` style forwards; waits for the transport decision (iroh vs quinn); when built, off by default like SOCKS | L | protocol-v3, the transport decision | no | design first |
+| port-forwarding | `ssh -R` / `-L` style forwards; waits for the transport decision (iroh vs quinn); when built, off by default like SOCKS | L | the transport decision | no | design first |
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | test-coverage-gaps | - | design first |
 
 ## Deferred
@@ -95,7 +94,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | sandboxed-pane | panes in a sandbox for agents (App Sandbox, Landlock) | L | - | - | deferred |
 | public-repo-readiness | checklist for making the repository public | S | readme-code-reconciliation | - | deferred |
 | release-platforms | musl, macOS on the CDN, x86_64 builds | M | public-repo-readiness | - | deferred |
-| read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | protocol-v3 | no | deferred |
+| read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | - | no | deferred |
 | libghostty-upstream-fixes | report and carry fixes for libghostty-vt (also: OSC 8 in the reload snapshot, pending-wrap accessor) | S | - | - | deferred |
 
 ## Done
@@ -119,5 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | shims-path-robustness | 0590786 |
 | startup-signal-window | f8fb63b |
 | pane-socket-peer-check | 248dd56 |
+| protocol-v3 | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

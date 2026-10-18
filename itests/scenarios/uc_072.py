@@ -60,7 +60,7 @@ def transfers_while_typing(t: T, writes: int, reads: int):
     server = t.server(state=t.root / "state")
     home = Path(server.env["HOME"])
     d = t.driver()
-    d.connect(server, features=["ping", "files"])
+    d.connect(server, features=["files"])
     pane = d.shell_pane()
     local = t.scratch("client")
     ups = []

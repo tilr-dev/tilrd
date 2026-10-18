@@ -1,7 +1,5 @@
 # Proposal: Carry the remaining screen state and the close deadline across a pane reload
 
-Зависит от: protocol-v3
-
 ## Why
 
 Known losses on a pane reload, recorded since 2026-10-03 and still open (Basic Memory `main/projects/tilr/tilr-zhurnal-reshenii`, `main/projects/tilr/tilr-kitty-grafika-v-terminale-plan-cherez-libghostty-vt-i-vydelenie-teksta-sdelano`): the wrap flag at the history/screen border, a pending wrap, the `kill_at` timer, kitty placements whose top row is in the history, and non-text modes. Re-checked at 1163abd:

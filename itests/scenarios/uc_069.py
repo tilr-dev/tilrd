@@ -30,7 +30,7 @@ def fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks(t: T):
     """UC-069: 50 SIGUSR1 reloads with output, a counter and typing; pids kept, fds and memory flat, no orphans."""
     server = t.server(state=t.root / "state")
     d = t.driver()
-    d.connect(server, features=["ping", "agent"])
+    d.connect(server, features=["agent"])
     d.cmd("keepalive", interval_ms=500, timeout_ms=3000, auto_reconnect=True, reconnect_timeout_ms=30_000)
     shell = d.shell_pane()
     d.line(shell, "export MARK=kept; sleep 9999 &")

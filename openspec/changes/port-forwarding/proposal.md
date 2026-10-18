@@ -2,8 +2,6 @@
 
 Deferred: after the transport decision (iroh vs quinn; see `quic-transport`, `directory-sync`).
 
-Зависит от: protocol-v3
-
 ## Why
 
 TCP service forwarding (Postgres, Redis) was a direction recorded on 2026-10-03; `ssh -L`-style forwarding was deferred when SOCKS shipped; the stream protocol was designed generic (`StreamOpen{kind}`, first kind `ssh-agent`, later reverse ports) (Basic Memory `main/projects/tilr/tilr-zhurnal-reshenii`, `main/projects/tilr/tilr-proksi-v-brauzere-socks-over-ws-cherez-core-profili-wkweb-view-izvestnye-ogranicheniia`, `main/projects/tilr/tilr-probros-ssh-agenta-sshagent-most-mac-app-stranitsa-tilr-server-kak-ssh-a`). The owner is researching iroh as the transport for everything (Basic Memory `main/projects/tilr/tilr-iroh-kak-transport-dlia-vsego-vopros-na-prorabotku`, 2026-10-18).

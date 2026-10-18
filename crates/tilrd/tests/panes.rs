@@ -12,7 +12,7 @@ async fn hello_announces_the_clipboard_and_its_limit() {
     assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
     assert_eq!(
         ack.features,
-        ["clipboard", "ping", "files", "host-events", "agent", "exec"]
+        ["clipboard", "files", "host-events", "agent", "exec"]
     );
     assert_eq!(ack.clipboard_max_bytes, 3 << 20);
 }
@@ -503,6 +503,7 @@ async fn resizing_a_pane_resizes_the_terminal_the_shell_sees() {
 #[tokio::test]
 async fn a_client_built_for_another_protocol_version_is_turned_away() {
     let server = Server::start(&[]);
+    assert_eq!(PROTOCOL_VERSION, 3);
     // Newer than the server, older than it, and one that sent no version.
     for version in [PROTOCOL_VERSION + 1, PROTOCOL_VERSION - 1, 0] {
         if version == PROTOCOL_VERSION {

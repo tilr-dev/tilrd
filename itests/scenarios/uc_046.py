@@ -43,7 +43,7 @@ def prepare(t: T):
     before = digest(target)
     proxy = t.proxy(server.port)
     client = t.driver("client")
-    client.connect(proxy.url, token=server.token(), features=["ping", "files"])
+    client.connect(proxy.url, token=server.token(), features=["files"])
     client.cmd("keepalive", interval_ms=1000, timeout_ms=4000, auto_reconnect=True, reconnect_timeout_ms=60_000)
     seen_temp = []
 
@@ -106,7 +106,7 @@ def a_finished_write_is_synced_before_it_is_acknowledged(t: T):
     server = t.server(state=t.root / "state", wrap=strace(trace))
     home = server.env["HOME"]
     client = t.driver("client")
-    client.connect(server, features=["ping", "files"])
+    client.connect(server, features=["files"])
     ack = client.cmd("fs_write", path="~/notes.md", text="synced\n")
     t.eq(ack["error"], "", "the write succeeds")
     # The calls before the answer happened before it; strace may still hold their lines in

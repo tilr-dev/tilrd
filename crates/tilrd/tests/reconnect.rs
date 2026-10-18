@@ -214,7 +214,8 @@ async fn a_silent_client_is_kept_when_the_timeout_is_off() {
 async fn a_client_can_tell_that_the_server_vanished_without_closing() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
-    assert!(client.hello().await.features.contains(&"ping".to_owned()));
+    // Ping is part of the protocol: no feature announces it.
+    assert!(!client.hello().await.features.contains(&"ping".to_owned()));
     let pane_id = client.open_pane().await;
 
     // A server that is there answers a ping at once.

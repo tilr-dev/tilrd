@@ -153,7 +153,7 @@ async fn run(session: &mut Session, name: &str, c: &Value) -> Result<Value> {
                             .map(str::to_owned)
                             .collect()
                     })
-                    .unwrap_or_else(|| vec!["ping".into()]),
+                    .unwrap_or_default(),
                 timeout: millis(c, "timeout_ms", 10_000),
                 // One per driver, kept across its reconnects, as a client
                 // instance keeps it; a case may name another (a second tab of

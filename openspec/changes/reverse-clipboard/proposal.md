@@ -1,7 +1,5 @@
 # Proposal: Copy from a pane to the client's clipboard
 
-Зависит от: protocol-v3
-
 ## Why
 
 The clipboard goes one way only: `xclip -i` / `wl-copy` from a remote program do not reach the user's machine. Also open: a fallback that pastes the file path when nobody read the clipboard file in about 300 ms, programs that use X11 or Wayland directly (an Xvfb option), and a remote macOS (Basic Memory `main/projects/tilr/tilr-vstavka-kartinok-cherez-udalionnyi-bufer-v-pane`).

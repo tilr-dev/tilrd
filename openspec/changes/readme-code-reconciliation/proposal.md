@@ -1,7 +1,5 @@
 # Proposal: Reconcile README.md and USE_CASES.md with the code
 
-Зависит от: protocol-v3
-
 ## Why
 
 Writing `openspec/specs/` (2026-10-18) found statements in README.md, USE_CASES.md and AGENTS.md that the code contradicts; the specs follow the code and list each in their Notes. Re-checked against 47a8557 (README, USE_CASES.md and TODO.md rewritten in English with the merge of `main`): the merged README already fixed the release platforms, the installer's service, the Rust version (1.90+), the `agent` feature, Cloud needing the TCP port and the link to `../apps/mac/PRODUCTION.md`; those items are dropped. Re-checked again at 1163abd: every item below is still so; line numbers are at 1163abd. The code review of branch `itests` (2026-10-18, "Repo rules") also named the `TCP_NOTSENT_LOWAT` value.

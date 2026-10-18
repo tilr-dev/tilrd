@@ -103,9 +103,9 @@ def start(t: T, proxy: bool = False, server_args=()):
     d = t.driver()
     if proxy:
         p = t.proxy(server.port)
-        d.connect(p.url, token=server.token(), features=["ping", "agent"])
+        d.connect(p.url, token=server.token(), features=["agent"])
     else:
-        d.connect(server, features=["ping", "agent"])
+        d.connect(server, features=["agent"])
     pane = d.shell_pane()
     program = t.root / "streamer.py"
     program.write_text(STREAMER)

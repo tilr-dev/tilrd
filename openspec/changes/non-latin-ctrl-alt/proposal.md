@@ -1,7 +1,5 @@
 # Proposal: Ctrl and Alt with non-Latin and composed characters
 
-Зависит от: protocol-v3
-
 ## Why
 
 The code review of branch `itests` (79397e2..13f9522, 2026-10-18) (finding #14): with Ctrl or Alt and a non-ASCII character the server always encodes the physical key's US character. That fixed Ctrl+C on a Russian layout (UC-079) but breaks Option+c giving `ç` on macOS when the client reports it with Alt, AltGr characters a client reports with Alt, and Alt on non-Latin layouts (Alt+ж gives `ESC ;`, not `ESC ж`).

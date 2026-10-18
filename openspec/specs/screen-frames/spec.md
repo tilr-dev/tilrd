@@ -238,14 +238,18 @@ While the program has the kitty keyboard protocol on, the physical key SHALL be 
 - **WHEN** a client sends Ctrl+`c` with `code` `KeyI`
 - **THEN** the program reads `ESC[99::105;5u`
 
-### Requirement: A key without a physical key is taken as on a US layout
-A `KeyInput` with `code` empty (an older client) SHALL be encoded from `codepoint` as if the layout were US; Ctrl with a character that is not ASCII SHALL then send nothing.
+### Requirement: A key without a physical key is encoded as on a US layout
+A `KeyInput` with `code` empty (a key the client cannot place on a physical key: synthetic input from a script, or a character key of `tilr`, which reads keys from its own terminal as characters) SHALL be encoded from `codepoint` as if the layout were US; Ctrl with a character that is not ASCII SHALL then send nothing.
 
-**Verified by**: unit test `ghostty::tests::ctrl_and_alt_on_a_layout_that_is_not_latin_go_by_the_physical_key`.
+**Verified by**: unit test `ghostty::tests::a_key_without_a_physical_key_is_encoded_as_on_a_us_layout`.
 
-#### Scenario: An older client without code
+#### Scenario: Synthetic input without code
 - **WHEN** a client sends Ctrl with `codepoint` 'с' and `code` empty
 - **THEN** the program reads nothing
+
+#### Scenario: A Latin key without code
+- **WHEN** a client sends Ctrl with `codepoint` 'c' and `code` empty
+- **THEN** the program reads 0x03
 
 ### Requirement: Mouse input reaches only a program that asked for it
 `MouseInput{action, button, mods, x, y}` (zero-based cells) SHALL be encoded in the mouse protocol the program turned on, and SHALL write nothing while it has not asked for mouse events. In SGR mode a press or motion SHALL be `ESC[<b;x+1;y+1M` and a release `...m`, with wheel up/down as 64/65, a held button in motion adding 32 and Ctrl adding 16.
