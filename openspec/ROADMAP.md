@@ -115,6 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | bulk-window-stall | 7d18ae3 |
 | exec-escaped-descendants | 48efd35 |
 | client-socket-peer-check | 8274039 |
-| hello-deadline | recorded in the next commit |
+| hello-deadline | f32643d |
 
 Older work is in `openspec/changes/archive/`.
