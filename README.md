@@ -201,8 +201,11 @@ the Unix socket alone, without a tunnel, rather than another port nobody would k
 Tilr app's server or another user's may hold 7890; `tilr` on the machine works either way.
 A reload keeps what the server had: its TCP socket, or none. A connection on the port that
 has not finished its WebSocket handshake (or SOCKS or metrics request) within 10 s is
-closed, so connections that say nothing hold no descriptor longer; there is no limit on
-their number otherwise.
+closed, so connections that say nothing hold no descriptor longer. A main-protocol
+connection (on the port or the Unix socket) that has not sent `Hello` within 10 s of its
+WebSocket handshake is closed with close code 4002 (`timeout`), whatever `--client-timeout`
+is (also 0); the log says `client sent no Hello in 10s`. There is no limit on their number
+otherwise.
 
 **Sockets.** The Unix socket is always on unless `--no-socket` (not with `--no-listen`). The
 socket is `--socket PATH`, else `$TILR_SOCKET`, else `tilrd.sock` in the runtime directory:

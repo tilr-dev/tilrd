@@ -83,6 +83,7 @@ The test's name is the statement of the use case.
 | A client without the access token, or with someone else's, gets an error and is disconnected; with the token it gets in | `a_client_needs_the_access_token` |
 | The token is kept in a file readable by the user only (the state directory is 0700) and survives a restart; `tilrd token` prints the same one | `the_token_is_kept_for_the_user_only_and_across_restarts` |
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
+| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
 
 ## tilr Cloud — `tests/cloud.rs`
 

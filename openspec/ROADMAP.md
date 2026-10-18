@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| hello-deadline | a connection that says no `Hello` 10 s after its handshake is closed (4002), whatever `--client-timeout` | S | - | no | ready |
 | host-socket-per-process | two tilrd of one user keep separate host-events sockets | S | - | no | ready |
 | notify-socket-env | panes and execs do not inherit `NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` | S | - | no | ready |
 | attach-robustness | `tilr attach` survives errors after a reconnect, detaches at once while connecting, restores the terminal on signals | S | - | no | ready |
@@ -116,5 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | bulk-window-stall | 7d18ae3 |
 | exec-escaped-descendants | 48efd35 |
 | client-socket-peer-check | 8274039 |
+| hello-deadline | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

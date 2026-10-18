@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: A handshake has 10 seconds
-A connection SHALL be closed by the server when it has not completed its WebSocket handshake (or, on TCP, sent its first byte, finished its raw SOCKS5 negotiation or its `/metrics` request) within 10 s of being accepted, without an answer. A main-protocol connection (TCP or Unix socket) that has not sent `Hello` within 10 s of completing its WebSocket handshake SHALL be closed with close code 4002 and reason `timeout`, whatever `--client-timeout` is (also 0), and the log SHALL say `client sent no Hello in 10s`. The server MUST NOT otherwise limit the number of connections, and silent ones MUST NOT stop other clients. After `Hello` the client timeout applies instead (see `client-liveness`).
+A connection SHALL be closed by the server when it has not completed its WebSocket handshake (or, on TCP, sent its first byte, finished its raw SOCKS5 negotiation or its `/metrics` request) within 10 s of being accepted, and a main-protocol connection that has not sent `Hello` within 10 s of its handshake with 4002 `timeout`, whatever `--client-timeout` is. The server MUST NOT otherwise limit the number of connections, and silent ones MUST NOT stop other clients.
 
 **Verified by**: `auth::a_connection_that_never_says_hello_is_closed_after_10_s`, itests UC-039 (`uc_039.py::a_silent_connection_is_closed_by_the_handshake_timeout`, `uc_039.py::a_websocket_that_never_says_hello_is_closed_after_10_s`) and UC-038 (`uc_038.py::a_thousand_silent_connections_and_a_slowloris_leave_the_server_working`).
 

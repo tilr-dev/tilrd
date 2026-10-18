@@ -88,3 +88,36 @@ async fn a_server_started_without_authentication_asks_for_no_token() {
     assert_eq!(refusal(&server, "").await, None);
     assert!(server.logged("no authentication"));
 }
+
+#[tokio::test]
+async fn a_connection_that_never_says_hello_is_closed_after_10_s() {
+    // No client timeout: only the Hello deadline lets the silent one go.
+    let server = Server::start(&["--client-timeout", "0"]);
+    let started = std::time::Instant::now();
+    let mut silent = Client::connect_silent(&server).await;
+    let mut greets = Client::connect_silent(&server).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    greets.hello().await;
+
+    // Reading answers the server's pings, should it send any.
+    let close = loop {
+        match tokio::time::timeout(TIMEOUT, silent.ws.next()).await {
+            Ok(Some(Ok(Message::Close(frame)))) => break frame,
+            Ok(Some(Ok(_))) => {}
+            other => panic!("connection ended without a close frame: {other:?}"),
+        }
+    };
+    let waited = started.elapsed();
+    let frame = close.expect("a close frame with a code");
+    assert_eq!(u16::from(frame.code), 4002);
+    assert_eq!(frame.reason.as_str(), "timeout");
+    assert!(
+        (Duration::from_secs(9)..Duration::from_secs(13)).contains(&waited),
+        "closed after {waited:?}"
+    );
+    assert!(server.logged("client sent no Hello in 10s"));
+
+    // The one that said Hello after a second stays.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(greets.list_panes().await.is_empty());
+}

@@ -69,6 +69,10 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 /// its request a byte at a time, is closed then, and holds no descriptor
 /// longer.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a main-protocol connection may take from its open WebSocket to
+/// its `Hello`, whatever the client timeout (which may be off): one that
+/// never greets is closed then (checked on every [`LAG_TICK`]).
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Unsent bytes the kernel holds for a client before the writer waits
 /// (`TCP_NOTSENT_LOWAT`): what a slow client is behind on stays in its queue,
 /// where frames can still be skipped, instead of in the socket. On a lossy
@@ -206,6 +210,9 @@ struct Client {
     /// Came in on the Unix socket.
     local: bool,
     subscriptions: HashSet<PaneId>,
+    /// When its WebSocket opened: one that has not said `Hello`
+    /// [`HELLO_TIMEOUT`] later is closed.
+    connected: Instant,
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
     greeted: bool,
@@ -246,6 +253,8 @@ enum Gone {
     Disconnected,
     /// Turned away (see [`Supervisor::refuse`]).
     Refused,
+    /// Said no `Hello` within [`HELLO_TIMEOUT`] of its WebSocket opening.
+    NoHello,
     Dropped(ClientDrop),
 }
 
@@ -1580,6 +1589,7 @@ impl Supervisor {
                         addr,
                         local,
                         subscriptions: HashSet::new(),
+                        connected: Instant::now(),
                         greeted: false,
                         host_events: false,
                         agent: false,
@@ -1636,6 +1646,7 @@ impl Supervisor {
             Event::Tick(due) => {
                 self.metrics.loop_lag.observe(due.elapsed());
                 self.ask_lagging_for_full_frames();
+                self.close_ungreeted();
             }
             Event::Metrics { reply } => {
                 let _ = reply.send(self.metrics_snapshot());
@@ -2523,6 +2534,21 @@ impl Supervisor {
         }
     }
 
+    /// Every tick: a connection that has not said `Hello` within
+    /// [`HELLO_TIMEOUT`] of its WebSocket opening is closed, whatever the
+    /// client timeout, so an un-greeted one is held 20 s at most.
+    fn close_ungreeted(&mut self) {
+        let late: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, client)| !client.greeted && client.connected.elapsed() >= HELLO_TIMEOUT)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in late {
+            self.drop_client(id, Gone::NoHello);
+        }
+    }
+
     /// Every tick: a lagging client whose queue is written out gets the full
     /// frames it waits for, even if its `ClientDrained` was missed and the
     /// pane prints nothing more. Asking twice costs nothing (`full_asked`).
@@ -2591,6 +2617,15 @@ impl Supervisor {
                 None
             }
             Gone::Refused => Some(Closing::Flush),
+            Gone::NoHello => {
+                tracing::warn!(
+                    client = client_id,
+                    %addr,
+                    "client sent no Hello in {}s, dropping",
+                    HELLO_TIMEOUT.as_secs()
+                );
+                Some(Closing::Now(close::TIMEOUT, close::TIMEOUT_REASON))
+            }
             Gone::Dropped(drop) => {
                 self.metrics.count_drop(drop);
                 let (code, reason) = match drop {

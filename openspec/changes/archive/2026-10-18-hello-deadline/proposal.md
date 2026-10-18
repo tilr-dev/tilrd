@@ -27,4 +27,4 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) (finding #12):
 
 ## Impact
 
-`crates/tilrd/src/supervisor.rs` (`serve_websocket`'s reader loop: a Hello deadline told by the supervisor when the client is greeted, or a supervisor tick that closes un-greeted clients older than 10 s). All known clients send `Hello` at once, so none is affected. Nothing crosses a reload (connections are reopened after one); no protocol change; an update from the previous release changes nothing on disk.
+`crates/tilrd/src/supervisor.rs` (`serve_websocket`'s reader loop: a Hello deadline told by the supervisor when the client is greeted, or a supervisor tick that closes un-greeted clients older than 10 s). Implemented as the supervisor's once-a-second tick, so the close comes 10-11 s after the handshake; the drop is not counted in `tilr_client_drops_total` (its reasons are unchanged). All known clients send `Hello` at once, so none is affected. Nothing crosses a reload (connections are reopened after one); no protocol change; an update from the previous release changes nothing on disk.

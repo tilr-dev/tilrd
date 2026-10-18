@@ -1,17 +1,17 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 147,
+  "cases": 148,
   "last_run": {
-   "started": "2026-10-18T11:08:25.152052+00:00",
+   "started": "2026-10-18T11:22:47.217975+00:00",
    "commit": null,
    "counts": {
-    "PASS": 149,
+    "PASS": 150,
     "FAIL": 0,
     "BLOCKED": 0
    },
    "args": "--only scenarios",
-   "path": "itests/results/20261018T130808-44345"
+   "path": "itests/results/20261018T132229-72684"
   }
  },
  "capabilities": [
@@ -345,9 +345,12 @@
      ],
      "all_cases": [
       "uc_038:a_thousand_silent_connections_and_a_slowloris_leave_the_server_working",
-      "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout"
+      "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout",
+      "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s"
      ],
-     "cargo_tests": [],
+     "cargo_tests": [
+      "auth::a_connection_that_never_says_hello_is_closed_after_10_s"
+     ],
      "scenarios": [
       {
        "slug": "connect-and-say-nothing",
@@ -355,6 +358,15 @@
        "tag": "access-control/a-handshake-has-10-seconds#connect-and-say-nothing",
        "cases": [],
        "covered": false
+      },
+      {
+       "slug": "websocket-without-hello",
+       "title": "WebSocket without Hello",
+       "tag": "access-control/a-handshake-has-10-seconds#websocket-without-hello",
+       "cases": [
+        "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s"
+       ],
+       "covered": true
       },
       {
        "slug": "slowloris",
@@ -367,7 +379,8 @@
      "covered": true,
      "last_run": {
       "uc_038:a_thousand_silent_connections_and_a_slowloris_leave_the_server_working": "PASS",
-      "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout": "PASS"
+      "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout": "PASS",
+      "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s": "PASS"
      }
     },
     {
@@ -10078,6 +10091,13 @@
    "id": "uc_039:a_websocket_that_never_says_hello_is_dropped_by_the_client_timeout",
    "spec": [
     "client-liveness/a-silent-client-is-dropped"
+   ],
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s",
+   "spec": [
+    "access-control/a-handshake-has-10-seconds#websocket-without-hello"
    ],
    "last_run": "PASS"
   },
