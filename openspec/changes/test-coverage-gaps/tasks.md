@@ -34,6 +34,7 @@
 - [ ] 5.6 (TILR-111) `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect`: find why the output is missing after the reconnect under load (the test's `sleep 1` against the reconnect's timing, or a lost frame); fix with the cause recorded; verify 10 consecutive green Linux full runs
 - [ ] 5.7 itests `uc_063`: find the typed line lost during an update (the client's resend, or input written to the old pane process after its handover) and fix it or file the bug as its own change; verify `./itests/dt --filter uc_063` green 10 times in a row
 - [ ] 5.8 itests `uc_033`: give the case a port no other case or container takes (or wait for 7890 to be free) with the cause recorded; verify `./itests/dt --filter uc_033` green 10 times in a row inside a full scenarios run
+- [ ] 5.9 (TILR-112) `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`: find why the lagging client does not reach the last screen within 10 s under full-suite load (log the bulk window's marks and the frames sent to it); fix the server if the last full frame is not sent, else widen the wait with the cause recorded; verify 10 consecutive green full `cargo test --workspace --features tilrd/failpoints --locked` runs on macOS
 - `local::a_server_that_stops_removes_its_socket_and_lock` is not a test bug: its fix is `startup-signal-window` (TILR-106), whose tasks include the run under load.
 
 ## 6. Checks and archive

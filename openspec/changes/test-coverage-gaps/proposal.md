@@ -15,6 +15,7 @@ Flakes seen in phase 1 (2026-10-18, implementing attach-robustness, sighup-ignor
 - `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` (Linux container): timed out waiting for `printed later` on the screen after the reconnect (`tests/common/mod.rs:324`).
 - itests `uc_063` (a client typing through an update): one typed line lost during an update.
 - itests `uc_033`: port 7890 already in use (EADDRINUSE) in its container.
+- `reconnect::a_lagging_client_gets_the_last_screen_without_new_output` (macOS, 1 full run of 2 while implementing service-install-ownership; green 5 of 5 alone): `stale screen` after the test's 10 s (`crates/tilrd/tests/reconnect.rs:578-580`): the client that stopped reading never got the pane's last screen once it read again. Either the bulk window does not reopen in time under load or the last full frame is not sent; not yet known which.
 
 ## Scope
 
