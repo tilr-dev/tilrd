@@ -911,16 +911,16 @@ class User:
     """A Unix user made for the case (useradd -m: a home from /etc/skel, no sudo, no
     XDG_RUNTIME_DIR, no ~/.config), commands run as it with a clean login environment."""
 
-    def __init__(self, t: "T", name: str):
+    def __init__(self, t: "T", name: str, shell: str = "/bin/bash"):
         import pwd
-        self.t, self.name = t, name
-        t.run("useradd", "-m", "-s", "/bin/bash", name, check=True, quiet=True)
+        self.t, self.name, self.shell = t, name, shell
+        t.run("useradd", "-m", "-s", shell, name, check=True, quiet=True)
         pw = pwd.getpwnam(name)
         self.uid, self.gid, self.home = pw.pw_uid, pw.pw_gid, Path(pw.pw_dir)
 
     def env(self, **extra) -> dict:
         """What a login gives (no XDG_* variables), with `extra` (None removes)."""
-        env = {"HOME": str(self.home), "USER": self.name, "LOGNAME": self.name, "SHELL": "/bin/bash",
+        env = {"HOME": str(self.home), "USER": self.name, "LOGNAME": self.name, "SHELL": self.shell,
                "PATH": USER_PATH, "LANG": "C.UTF-8", "TERM": "xterm-256color", "NO_COLOR": "1"}
         env.update(extra)
         return {k: str(v) for k, v in env.items() if v is not None}
@@ -1248,10 +1248,10 @@ class T:
         self._cleanup.append(p.close)
         return p
 
-    def user(self, name: str = "alice") -> User:
-        """A Unix user of this container, made now (see User)."""
+    def user(self, name: str = "alice", shell: str = "/bin/bash") -> User:
+        """A Unix user of this container with that login shell, made now (see User)."""
         self.need("root", "container")
-        return User(self, name)
+        return User(self, name, shell)
 
     def cdn(self) -> LocalCdn:
         """A CDN served from this container (see LocalCdn)."""

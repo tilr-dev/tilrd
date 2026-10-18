@@ -18,6 +18,7 @@ mod pane;
 mod ps;
 mod pty;
 mod reload;
+mod shell;
 mod socks;
 mod supervisor;
 mod update;

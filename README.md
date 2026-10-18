@@ -37,6 +37,15 @@ system `PATH`). The pane gets `SHELL`, `HOME`, `USER`, `LOGNAME`, `TERM=xterm-25
 the server (`NOTIFY_SOCKET`, `LISTEN_FDS`, `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC`,
 `WATCHDOG_PID`) are dropped. A pane with a command runs it as given, without a shell.
 
+The server's tools for the panes (`xclip`, `wl-paste`, `tilr`; their directory is
+`$TILR_SHIMS`) come first on `PATH`, also when a startup file sets `PATH` from scratch: zsh,
+bash and fish start through small wrappers in `<runtime dir>/shell/` that run the user's
+files as that login shell would and then put `$TILR_SHIMS` first (zsh: `ZDOTDIR` pointed
+there for `.zshenv`, the user's own restored at once, the fix in a one-shot `precmd` hook;
+bash: `-bash --posix` with `$ENV`, which leaves posix mode and reads `/etc/profile` and the
+first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`; fish: `--init-command`). Other
+shells start as above; `PATH="$TILR_SHIMS:$PATH"` at the end of their profile does the same.
+
 ## Install
 
 Prebuilt binaries for macOS (arm64, x86_64) and Linux (x86_64, aarch64; glibc 2.36+) are
@@ -603,8 +612,9 @@ The server gives that machine a clipboard the client can fill:
    of both first on the `PATH` the pane starts with; they answer from the stored content.
    The login profile keeps them when it adds to `PATH` (macOS `path_helper` puts the system
    directories in front and keeps the rest; `export PATH="...:$PATH"`); a profile that sets
-   `PATH` from scratch (Debian's `/etc/profile`) drops them, and `PATH="$TILR_SHIMS:$PATH"`
-   at the end of it brings them back.
+   `PATH` from scratch (Debian's `/etc/profile`) would drop them: for zsh, bash and fish the
+   server puts them first again after the profile ran (see the pane environment above); for
+   other shells `PATH="$TILR_SHIMS:$PATH"` at the end of the profile brings them back.
 
 So the program pastes as it would on a desktop. Verified against the commands Claude Code
 2.1.289 runs on Linux; they are spelled out in `crates/tilrd/tests/common/mod.rs`.

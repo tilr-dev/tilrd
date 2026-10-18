@@ -179,6 +179,74 @@ fn login_arg0(shell: &str) -> String {
     format!("-{name}")
 }
 
+/// How a login shell is started: the name it runs under, its arguments and
+/// what is added to its environment.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LoginPlan {
+    pub arg0: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, std::ffi::OsString)>,
+}
+
+/// How to start the login shell `shell`: as `-<name>`, and for zsh, bash
+/// and fish through the server's startup wrapper (see `shell`) when the
+/// panes have tools to keep first on PATH (`shims`) and the wrapper is in
+/// `wrappers`. `env` reads the environment the shell would get.
+pub fn login_plan(
+    shell: &str,
+    wrappers: Option<&std::path::Path>,
+    shims: bool,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> LoginPlan {
+    use crate::shell;
+    let arg0 = login_arg0(shell);
+    let mut plan = LoginPlan {
+        arg0,
+        args: Vec::new(),
+        env: Vec::new(),
+    };
+    if !shims {
+        return plan;
+    }
+    let wrapped = |name| wrappers.filter(|dir| shell::has_wrapper(dir, name));
+    match plan.arg0.trim_start_matches('-') {
+        "zsh" => {
+            if let Some(dir) = wrapped("zsh") {
+                if let Some(own) = env("ZDOTDIR") {
+                    plan.env.push((shell::ZDOTDIR_ENV.into(), own));
+                }
+                plan.env
+                    .push(("ZDOTDIR".into(), dir.join("zsh").into_os_string()));
+            }
+        }
+        "bash" => {
+            if let Some(dir) = wrapped("bash") {
+                plan.args.push("--posix".into());
+                plan.env
+                    .push(("ENV".into(), dir.join("bash/env.sh").into_os_string()));
+                // In posix mode bash's history would be ~/.sh_history.
+                if env("HISTFILE").is_none()
+                    && let Some(home) = env("HOME")
+                {
+                    let mut file = std::path::PathBuf::from(home);
+                    file.push(".bash_history");
+                    plan.env.push(("HISTFILE".into(), file.into_os_string()));
+                    plan.env.push((shell::HISTFILE_ENV.into(), "1".into()));
+                }
+            }
+        }
+        "fish" => {
+            plan.args.extend([
+                "--login".into(),
+                "--init-command".into(),
+                shell::FISH_INIT.into(),
+            ]);
+        }
+        _ => {}
+    }
+    plan
+}
+
 /// Open a pty and start `command` on its slave side as a session leader;
 /// with no command, the user's login shell as a login shell, so that it reads
 /// the user's profile whatever environment the server itself was started in
@@ -201,8 +269,25 @@ pub fn spawn_shell(
             cmd
         }
         None => {
+            let shims =
+                std::env::var_os(crate::clipboard::SHIMS_ENV).is_some_and(|dir| !dir.is_empty());
+            let wrappers = crate::shell::wrapper_dir(&crate::clipboard::runtime_dir());
+            let home = user.home.clone();
+            let env = |name: &str| {
+                std::env::var_os(name)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        (name == "HOME")
+                            .then(|| home.clone().map(Into::into))
+                            .flatten()
+                    })
+            };
+            let plan = login_plan(&shell, Some(&wrappers), shims, &env);
             let mut cmd = Command::new(&shell);
-            cmd.arg0(login_arg0(&shell));
+            cmd.arg0(&plan.arg0).args(&plan.args);
+            for (name, value) in plan.env {
+                cmd.env(name, value);
+            }
             cmd
         }
     };
@@ -388,6 +473,64 @@ mod tests {
         assert_eq!(login_arg0("/bin/zsh"), "-zsh");
         assert_eq!(login_arg0("/opt/homebrew/bin/fish"), "-fish");
         assert_eq!(login_arg0("sh"), "-sh");
+    }
+
+    #[test]
+    fn a_login_shell_is_wrapped_by_its_name() {
+        let runtime = std::env::temp_dir().join(format!("tilrd-pty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        let dir = crate::shell::install_wrappers(&runtime).unwrap();
+        let env = |name: &str| match name {
+            "HOME" => Some("/home/u".into()),
+            "ZDOTDIR" => Some("/home/u/.config/zsh".into()),
+            _ => None,
+        };
+        let os = |text: &str| std::ffi::OsString::from(text);
+
+        let zsh = login_plan("/bin/zsh", Some(&dir), true, &env);
+        assert_eq!(zsh.arg0, "-zsh");
+        assert!(zsh.args.is_empty());
+        assert_eq!(
+            zsh.env,
+            [
+                ("TILR_ZDOTDIR".into(), os("/home/u/.config/zsh")),
+                ("ZDOTDIR".into(), dir.join("zsh").into_os_string()),
+            ]
+        );
+        // No ZDOTDIR of the user's: none to keep.
+        let bare = login_plan("/bin/zsh", Some(&dir), true, &|_| None);
+        assert_eq!(
+            bare.env,
+            [("ZDOTDIR".into(), dir.join("zsh").into_os_string())]
+        );
+
+        let bash = login_plan("/usr/local/bin/bash", Some(&dir), true, &env);
+        assert_eq!(bash.arg0, "-bash");
+        assert_eq!(bash.args, ["--posix"]);
+        assert_eq!(
+            bash.env,
+            [
+                ("ENV".into(), dir.join("bash/env.sh").into_os_string()),
+                ("HISTFILE".into(), os("/home/u/.bash_history")),
+                ("TILR_BASH_UNEXPORT_HISTFILE".into(), os("1")),
+            ]
+        );
+
+        let fish = login_plan("/usr/bin/fish", Some(&dir), true, &env);
+        assert_eq!(fish.arg0, "-fish");
+        assert_eq!(
+            fish.args,
+            ["--login", "--init-command", crate::shell::FISH_INIT]
+        );
+        assert!(fish.env.is_empty());
+
+        // Any other shell, or no tools for the panes: as before.
+        for (shell, shims) in [("/bin/sh", true), ("/bin/dash", true), ("/bin/zsh", false)] {
+            let plan = login_plan(shell, Some(&dir), shims, &env);
+            assert_eq!(plan.arg0, login_arg0(shell));
+            assert!(plan.args.is_empty() && plan.env.is_empty(), "{shell}");
+        }
+        std::fs::remove_dir_all(&runtime).unwrap();
     }
 
     #[test]

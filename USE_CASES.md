@@ -385,6 +385,14 @@ pane process. The server's counters are at `GET /metrics`.
   it, before the answer or `updated`) is not visible to these tests; itests
   UC-046 and UC-060 trace the system calls under `strace`. A power loss is not
   tested.
+- Login shells and their startup files: which shell is started how (zsh
+  through `ZDOTDIR`, bash `--posix` with `$ENV`, fish `--init-command`, others
+  as before) and the wrappers in `<runtime dir>/shell/` are unit tests
+  (`pty::tests::a_login_shell_is_wrapped_by_its_name`,
+  `shell::tests::the_wrappers_are_written_private_and_replaced_whole`,
+  `shell::tests::no_wrappers_means_shells_start_as_before`); that the tools
+  stay first on `PATH` with profiles that reset it, in real bash, zsh, fish
+  and dash, is itests UC-07B.
 - `tilr service install|uninstall`: `crates/tilr/tests` start no service
   manager. Unit tests in `crates/tilr/src/service.rs` check the unit, plist
   and crontab line, that a unit or plist without the `tilr service` mark is

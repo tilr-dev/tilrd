@@ -36,7 +36,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 |---|---|---|---|---|---|
 | startup-signal-window | a SIGTERM/SIGINT while the server starts (socket listening, handlers not yet in) stops it cleanly instead of killing it; SIGINT held across a reload too | S | - | no | ready |
 | pane-socket-peer-check | `tilr edit` / `tilr open` (and `tilrd edit`) check that `$TILR_SOCK` is served by the user before sending | S | - | no | ready |
-| shims-path-robustness | `$TILR_SHIMS` stays first on PATH in zsh, bash and fish when a profile resets PATH | M | - | no | ready |
 
 ## Phase 2: protocol v3 and input
 
@@ -120,5 +119,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | cloudflared-outlives-exec | 0aff8e0 |
 | durable-file-writes | 42a4cc2 |
 | service-install-ownership | 1d44e4b |
+| shims-path-robustness | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

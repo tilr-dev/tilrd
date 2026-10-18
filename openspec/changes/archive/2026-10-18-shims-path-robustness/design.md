@@ -30,3 +30,9 @@ Nothing new is handed over. A running shell has read its wrapper already. The su
 - A `PROMPT_COMMAND` in the environment for bash: lost when a user's file assigns `PROMPT_COMMAND`.
 - Starting a non-login shell: changes which files run; the login shell is a recorded decision (archived `2026-10-11-login-shell-panes`).
 - Rewriting the user's dotfiles: never.
+
+## Changed while implementing
+
+- bash in posix mode keeps its history in `~/.sh_history`; when the pane has no `HISTFILE`, it gets `HISTFILE=~/.bash_history` and `TILR_BASH_UNEXPORT_HISTFILE=1`, and the wrapper un-exports `HISTFILE` again (as kitty does), so history stays where bash keeps it.
+- fish needs no file (its fix is the `--init-command` text), so it is wrapped whenever the panes have tools, also when the files under `shell/` could not be written; zsh and bash start as today then. A failed write also removes `shell/`, so a stale copy is never used.
+- The wrappers are written by `set_up_shims` (supervisor.rs) only when there are tools for the panes, with `reload::write_file` (temp file, sync, rename; files 0600 in 0700 directories).

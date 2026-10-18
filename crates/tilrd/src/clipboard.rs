@@ -30,7 +30,9 @@ pub const DIR_ENV: &str = "TILR_CLIPBOARD_DIR";
 /// The directory of the tools the server puts first on the PATH of every pane
 /// (`xclip`, `wl-paste`, `tilr`). A pane runs a login shell, whose profile
 /// may set PATH from scratch (Debian's /etc/profile, a `PATH=...` without
-/// `$PATH` in ~/.profile); `PATH="$TILR_SHIMS:$PATH"` there brings them back.
+/// `$PATH` in ~/.profile): zsh, bash and fish start through the wrappers of
+/// `shell`, which put it first again; for other shells
+/// `PATH="$TILR_SHIMS:$PATH"` in the profile brings the tools back.
 pub const SHIMS_ENV: &str = "TILR_SHIMS";
 const CONTENT_FILE: &str = "content";
 const MAX_MIME_LEN: usize = 127;

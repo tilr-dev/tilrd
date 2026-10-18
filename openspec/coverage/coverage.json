@@ -1,17 +1,17 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 153,
+  "cases": 155,
   "last_run": {
-   "started": "2026-10-18T13:13:02.890350+00:00",
+   "started": "2026-10-18T13:34:17.824491+00:00",
    "commit": null,
    "counts": {
-    "PASS": 155,
+    "PASS": 3,
     "FAIL": 0,
     "BLOCKED": 0
    },
-   "args": "--only scenarios",
-   "path": "itests/results/20261018T151242-91111"
+   "args": "--only scenarios --filter uc_063",
+   "path": "itests/results/20261018T153405-20896"
   }
  },
  "capabilities": [
@@ -117,8 +117,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_031:listening_on_every_address_takes_ipv4_too_and_asks_for_the_token": "PASS",
-      "uc_031:listening_on_every_ipv4_address_asks_for_the_token": "PASS"
+      "uc_031:listening_on_every_address_takes_ipv4_too_and_asks_for_the_token": "NOT_RUN",
+      "uc_031:listening_on_every_ipv4_address_asks_for_the_token": "NOT_RUN"
      }
     },
     {
@@ -298,7 +298,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_034:another_user_cannot_use_the_socket": "PASS"
+      "uc_034:another_user_cannot_use_the_socket": "NOT_RUN"
      }
     },
     {
@@ -332,7 +332,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "PASS"
+      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "NOT_RUN"
      }
     },
     {
@@ -378,9 +378,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_038:a_thousand_silent_connections_and_a_slowloris_leave_the_server_working": "PASS",
-      "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout": "PASS",
-      "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s": "PASS"
+      "uc_038:a_thousand_silent_connections_and_a_slowloris_leave_the_server_working": "NOT_RUN",
+      "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout": "NOT_RUN",
+      "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s": "NOT_RUN"
      }
     },
     {
@@ -407,8 +407,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:a_server_without_authentication_gets_no_tunnel": "PASS",
-      "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on": "PASS"
+      "uc_07a:a_server_without_authentication_gets_no_tunnel": "NOT_RUN",
+      "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on": "NOT_RUN"
      }
     }
    ]
@@ -479,8 +479,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_039:a_websocket_that_never_says_hello_is_dropped_by_the_client_timeout": "PASS",
-      "uc_040:a_frozen_connection_is_dropped_by_both_sides_and_the_client_returns_to_the_same_pane": "PASS"
+      "uc_039:a_websocket_that_never_says_hello_is_dropped_by_the_client_timeout": "NOT_RUN",
+      "uc_040:a_frozen_connection_is_dropped_by_both_sides_and_the_client_returns_to_the_same_pane": "NOT_RUN"
      }
     },
     {
@@ -512,9 +512,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_041:a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server": "PASS",
-      "uc_041:a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs": "PASS",
-      "uc_041:a_cut_of_server_to_client_only_is_noticed_by_the_client_and_both_sides_let_go": "PASS"
+      "uc_041:a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server": "NOT_RUN",
+      "uc_041:a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs": "NOT_RUN",
+      "uc_041:a_cut_of_server_to_client_only_is_noticed_by_the_client_and_both_sides_let_go": "NOT_RUN"
      }
     },
     {
@@ -539,7 +539,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_049:a_client_too_slow_even_for_the_latest_screen_is_dropped_and_its_connection_ends": "PASS"
+      "uc_049:a_client_too_slow_even_for_the_latest_screen_is_dropped_and_its_connection_ends": "NOT_RUN"
      }
     },
     {
@@ -577,9 +577,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_045:a_reset_in_the_middle_of_a_frame_makes_the_client_reconnect_at_once": "PASS",
-      "uc_045:a_socket_reset_by_the_clients_kernel_is_cleaned_up_by_the_server_at_once": "PASS",
-      "uc_050:a_thousand_resets_leave_one_viewer_and_flat_server_memory_and_descriptors": "PASS"
+      "uc_045:a_reset_in_the_middle_of_a_frame_makes_the_client_reconnect_at_once": "NOT_RUN",
+      "uc_045:a_socket_reset_by_the_clients_kernel_is_cleaned_up_by_the_server_at_once": "NOT_RUN",
+      "uc_050:a_thousand_resets_leave_one_viewer_and_flat_server_memory_and_descriptors": "NOT_RUN"
      }
     },
     {
@@ -606,7 +606,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_041:a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs": "PASS"
+      "uc_041:a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs": "NOT_RUN"
      }
     },
     {
@@ -649,11 +649,11 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_042:a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection": "PASS",
-      "uc_042:a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_proxy": "PASS",
-      "uc_044:a_revived_connection_left_open_by_the_client_was_superseded_by_its_reconnect": "PASS",
-      "uc_044:a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connection": "PASS",
-      "uc_052:two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live": "PASS"
+      "uc_042:a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection": "NOT_RUN",
+      "uc_042:a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_proxy": "NOT_RUN",
+      "uc_044:a_revived_connection_left_open_by_the_client_was_superseded_by_its_reconnect": "NOT_RUN",
+      "uc_044:a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connection": "NOT_RUN",
+      "uc_052:two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live": "NOT_RUN"
      }
     },
     {
@@ -687,7 +687,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_052:the_same_client_id_under_another_token_supersedes_nobody": "PASS"
+      "uc_052:the_same_client_id_under_another_token_supersedes_nobody": "NOT_RUN"
      }
     },
     {
@@ -728,10 +728,10 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_048:input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled": "PASS",
-      "uc_048:input_held_in_a_connection_that_revives_arrives_once_at_most": "PASS",
-      "uc_048:input_typed_into_a_silent_connection_is_lost_but_never_doubled": "PASS",
-      "uc_052:a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected": "PASS"
+      "uc_048:input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled": "NOT_RUN",
+      "uc_048:input_held_in_a_connection_that_revives_arrives_once_at_most": "NOT_RUN",
+      "uc_048:input_typed_into_a_silent_connection_is_lost_but_never_doubled": "NOT_RUN",
+      "uc_052:a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected": "NOT_RUN"
      }
     },
     {
@@ -758,7 +758,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_052:two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live": "PASS"
+      "uc_052:two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live": "NOT_RUN"
      }
     },
     {
@@ -798,9 +798,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_072:parallel_reads_leave_the_terminal_responsive": "PASS",
-      "uc_072:parallel_transfers_both_ways_leave_the_terminal_responsive_and_the_files_intact": "PASS",
-      "uc_073:a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for": "PASS"
+      "uc_072:parallel_reads_leave_the_terminal_responsive": "NOT_RUN",
+      "uc_072:parallel_transfers_both_ways_leave_the_terminal_responsive_and_the_files_intact": "NOT_RUN",
+      "uc_073:a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for": "NOT_RUN"
      }
     },
     {
@@ -843,7 +843,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_072:parallel_reads_leave_the_terminal_responsive": "PASS"
+      "uc_072:parallel_reads_leave_the_terminal_responsive": "NOT_RUN"
      }
     },
     {
@@ -890,9 +890,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_043:a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it": "PASS",
-      "uc_043:a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect": "PASS",
-      "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others": "PASS"
+      "uc_043:a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it": "NOT_RUN",
+      "uc_043:a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect": "NOT_RUN",
+      "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others": "NOT_RUN"
      }
     },
     {
@@ -917,7 +917,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_049:a_client_too_slow_even_for_the_latest_screen_is_dropped_and_its_connection_ends": "PASS"
+      "uc_049:a_client_too_slow_even_for_the_latest_screen_is_dropped_and_its_connection_ends": "NOT_RUN"
      }
     }
    ]
@@ -999,7 +999,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_075:an_image_put_on_the_clipboard_is_pasted_byte_for_byte": "PASS"
+      "uc_075:an_image_put_on_the_clipboard_is_pasted_byte_for_byte": "NOT_RUN"
      }
     },
     {
@@ -1026,7 +1026,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_075:the_clipboard_takes_exactly_its_limit_and_refuses_one_byte_more_leaving_it_empty": "PASS"
+      "uc_075:the_clipboard_takes_exactly_its_limit_and_refuses_one_byte_more_leaving_it_empty": "NOT_RUN"
      }
     },
     {
@@ -1110,7 +1110,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_075:clipboard_content_expires": "PASS"
+      "uc_075:clipboard_content_expires": "NOT_RUN"
      }
     },
     {
@@ -1260,7 +1260,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "PASS"
+      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "NOT_RUN"
      }
     },
     {
@@ -1285,7 +1285,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "PASS"
+      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "NOT_RUN"
      }
     },
     {
@@ -1347,7 +1347,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_076:tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other": "PASS"
+      "uc_076:tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other": "NOT_RUN"
      }
     },
     {
@@ -1381,7 +1381,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_076:tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other": "PASS"
+      "uc_076:tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other": "NOT_RUN"
      }
     },
     {
@@ -1415,7 +1415,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_076:tilr_edit_with_nobody_listening_fails_and_says_why": "PASS"
+      "uc_076:tilr_edit_with_nobody_listening_fails_and_says_why": "NOT_RUN"
      }
     },
     {
@@ -1574,7 +1574,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "PASS"
+      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "NOT_RUN"
      }
     },
     {
@@ -1667,7 +1667,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "PASS"
+      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "NOT_RUN"
      }
     },
     {
@@ -1694,7 +1694,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "PASS"
+      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "NOT_RUN"
      }
     },
     {
@@ -1728,7 +1728,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on": "PASS"
+      "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on": "NOT_RUN"
      }
     },
     {
@@ -1755,7 +1755,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "PASS"
+      "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it": "NOT_RUN"
      }
     },
     {
@@ -1801,7 +1801,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:a_server_without_authentication_gets_no_tunnel": "PASS"
+      "uc_07a:a_server_without_authentication_gets_no_tunnel": "NOT_RUN"
      }
     },
     {
@@ -1826,7 +1826,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on": "PASS"
+      "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on": "NOT_RUN"
      }
     },
     {
@@ -1915,7 +1915,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled": "PASS"
+      "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled": "NOT_RUN"
      }
     }
    ]
@@ -1947,7 +1947,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_016:tilr_attaches_to_a_tilrd_running_in_the_foreground": "PASS"
+      "uc_016:tilr_attaches_to_a_tilrd_running_in_the_foreground": "NOT_RUN"
      }
     },
     {
@@ -1989,10 +1989,10 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_030:a_bare_tilrd_listens_on_loopback_only": "PASS",
-      "uc_030:a_tilrd_tilr_starts_listens_on_loopback_only": "PASS",
-      "uc_032:dual_stack_serves_both_loopbacks": "PASS",
-      "uc_032:ipv6_loopback_serves_ipv6_only": "PASS"
+      "uc_030:a_bare_tilrd_listens_on_loopback_only": "NOT_RUN",
+      "uc_030:a_tilrd_tilr_starts_listens_on_loopback_only": "NOT_RUN",
+      "uc_032:dual_stack_serves_both_loopbacks": "NOT_RUN",
+      "uc_032:ipv6_loopback_serves_ipv6_only": "NOT_RUN"
      }
     },
     {
@@ -2038,9 +2038,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_033:a_bare_tilrd_next_to_a_running_one_says_the_default_port_is_taken": "PASS",
-      "uc_033:a_taken_port_is_a_clear_error": "PASS",
-      "uc_033:a_tilrd_tilr_starts_goes_on_without_the_taken_port": "PASS"
+      "uc_033:a_bare_tilrd_next_to_a_running_one_says_the_default_port_is_taken": "NOT_RUN",
+      "uc_033:a_taken_port_is_a_clear_error": "NOT_RUN",
+      "uc_033:a_tilrd_tilr_starts_goes_on_without_the_taken_port": "NOT_RUN"
      }
     },
     {
@@ -2069,8 +2069,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "PASS",
-      "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects": "PASS"
+      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "NOT_RUN",
+      "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects": "NOT_RUN"
      }
     },
     {
@@ -2106,8 +2106,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "PASS",
-      "uc_034:another_user_cannot_use_the_socket": "PASS"
+      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "NOT_RUN",
+      "uc_034:another_user_cannot_use_the_socket": "NOT_RUN"
      }
     },
     {
@@ -2142,7 +2142,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_037:a_socket_path_longer_than_sun_path_is_a_clear_error": "PASS"
+      "uc_037:a_socket_path_longer_than_sun_path_is_a_clear_error": "NOT_RUN"
      }
     },
     {
@@ -2170,7 +2170,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_037:a_socket_path_longer_than_sun_path_is_a_clear_error": "PASS"
+      "uc_037:a_socket_path_longer_than_sun_path_is_a_clear_error": "NOT_RUN"
      }
     },
     {
@@ -2248,9 +2248,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "PASS",
-      "uc_015:a_file_that_is_not_a_socket_is_left_alone": "PASS",
-      "uc_015:another_programs_listener_at_the_socket_is_left_alone": "PASS"
+      "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "NOT_RUN",
+      "uc_015:a_file_that_is_not_a_socket_is_left_alone": "NOT_RUN",
+      "uc_015:another_programs_listener_at_the_socket_is_left_alone": "NOT_RUN"
      }
     },
     {
@@ -2298,7 +2298,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects": "PASS"
+      "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects": "NOT_RUN"
      }
     },
     {
@@ -2327,8 +2327,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_012:tilr_started_eight_times_at_once_starts_one_daemon": "PASS",
-      "uc_012:two_terminals_running_tilr_at_once_share_one_daemon": "PASS"
+      "uc_012:tilr_started_eight_times_at_once_starts_one_daemon": "NOT_RUN",
+      "uc_012:two_terminals_running_tilr_at_once_share_one_daemon": "NOT_RUN"
      }
     },
     {
@@ -2355,7 +2355,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_020:service_install_writes_a_notify_user_unit_and_enables_it": "PASS"
+      "uc_020:service_install_writes_a_notify_user_unit_and_enables_it": "NOT_RUN"
      }
     },
     {
@@ -2386,9 +2386,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_013:tilr_in_an_ssh_session_leaves_tilrd_and_its_shell_when_the_session_drops": "PASS",
-      "uc_013:tilrd_started_from_an_ssh_login_shell_survives_the_session_dropping": "PASS",
-      "uc_013:tilrd_started_with_setsid_keeps_its_panes_when_the_ssh_session_drops": "PASS"
+      "uc_013:tilr_in_an_ssh_session_leaves_tilrd_and_its_shell_when_the_session_drops": "NOT_RUN",
+      "uc_013:tilrd_started_from_an_ssh_login_shell_survives_the_session_dropping": "NOT_RUN",
+      "uc_013:tilrd_started_with_setsid_keeps_its_panes_when_the_ssh_session_drops": "NOT_RUN"
      }
     },
     {
@@ -2416,7 +2416,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_017:kill_server_leaves_no_process_and_no_socket": "PASS"
+      "uc_017:kill_server_leaves_no_process_and_no_socket": "NOT_RUN"
      }
     },
     {
@@ -2463,7 +2463,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server": "PASS"
+      "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server": "NOT_RUN"
      }
     },
     {
@@ -2488,7 +2488,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "PASS"
+      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "NOT_RUN"
      }
     },
     {
@@ -2571,7 +2571,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason": "PASS"
+      "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason": "NOT_RUN"
      }
     },
     {
@@ -2613,7 +2613,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:exec_runs_no_shell_so_nothing_is_expanded": "PASS"
+      "uc_077:exec_runs_no_shell_so_nothing_is_expanded": "NOT_RUN"
      }
     },
     {
@@ -2682,7 +2682,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:exec_returns_stdout_and_stderr_apart_and_the_exit_code": "PASS"
+      "uc_077:exec_returns_stdout_and_stderr_apart_and_the_exit_code": "NOT_RUN"
      }
     },
     {
@@ -2709,7 +2709,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:a_large_output_arrives_whole_and_in_order": "PASS"
+      "uc_077:a_large_output_arrives_whole_and_in_order": "NOT_RUN"
      }
     },
     {
@@ -2750,7 +2750,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:stdin_given_to_exec_reaches_the_program": "PASS"
+      "uc_077:stdin_given_to_exec_reaches_the_program": "NOT_RUN"
      }
     },
     {
@@ -2803,7 +2803,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:exec_reports_the_signal_that_killed_the_program": "PASS"
+      "uc_077:exec_reports_the_signal_that_killed_the_program": "NOT_RUN"
      }
     },
     {
@@ -2830,7 +2830,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:exec_with_a_time_limit_is_killed_and_leaves_nothing_behind": "PASS"
+      "uc_077:exec_with_a_time_limit_is_killed_and_leaves_nothing_behind": "NOT_RUN"
      }
     },
     {
@@ -2857,7 +2857,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:a_cancelled_exec_ends_at_once_with_its_children": "PASS"
+      "uc_077:a_cancelled_exec_ends_at_once_with_its_children": "NOT_RUN"
      }
     },
     {
@@ -2922,7 +2922,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:a_client_that_goes_takes_its_execs_and_their_children_with_it": "PASS"
+      "uc_077:a_client_that_goes_takes_its_execs_and_their_children_with_it": "NOT_RUN"
      }
     },
     {
@@ -2957,7 +2957,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:a_reload_ends_the_running_execs_with_their_children_and_says_why": "PASS"
+      "uc_077:a_reload_ends_the_running_execs_with_their_children_and_says_why": "NOT_RUN"
      }
     },
     {
@@ -2984,7 +2984,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_077:eight_execs_run_at_once": "PASS"
+      "uc_077:eight_execs_run_at_once": "NOT_RUN"
      }
     },
     {
@@ -3181,7 +3181,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_071:symbolic_links_are_listed_followed_and_written_through_but_not_out_of_the_shared_directories": "PASS"
+      "uc_071:symbolic_links_are_listed_followed_and_written_through_but_not_out_of_the_shared_directories": "NOT_RUN"
      }
     },
     {
@@ -3237,7 +3237,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_071:permission_bits_are_kept_by_writes_and_told_by_listings": "PASS"
+      "uc_071:permission_bits_are_kept_by_writes_and_told_by_listings": "NOT_RUN"
      }
     },
     {
@@ -3290,7 +3290,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_071:a_name_that_is_not_utf8_is_listed_so_that_it_can_be_read_back": "PASS"
+      "uc_071:a_name_that_is_not_utf8_is_listed_so_that_it_can_be_read_back": "NOT_RUN"
      }
     },
     {
@@ -3315,7 +3315,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_071:odd_and_unicode_names_go_both_ways_and_keep_their_exact_bytes": "PASS"
+      "uc_071:odd_and_unicode_names_go_both_ways_and_keep_their_exact_bytes": "NOT_RUN"
      }
     },
     {
@@ -3349,7 +3349,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_070:files_of_zero_one_and_exactly_the_limit_go_both_ways_intact": "PASS"
+      "uc_070:files_of_zero_one_and_exactly_the_limit_go_both_ways_intact": "NOT_RUN"
      }
     },
     {
@@ -3383,7 +3383,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_070:a_file_one_byte_over_the_limit_is_refused_whole_and_read_in_parts": "PASS"
+      "uc_070:a_file_one_byte_over_the_limit_is_refused_whole_and_read_in_parts": "NOT_RUN"
      }
     },
     {
@@ -3412,9 +3412,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_070:a_gigabyte_goes_up_and_comes_back_in_chunks_with_its_hash": "PASS",
-      "uc_072:parallel_reads_leave_the_terminal_responsive": "PASS",
-      "uc_072:parallel_writes_leave_the_terminal_responsive": "PASS"
+      "uc_070:a_gigabyte_goes_up_and_comes_back_in_chunks_with_its_hash": "NOT_RUN",
+      "uc_072:parallel_reads_leave_the_terminal_responsive": "NOT_RUN",
+      "uc_072:parallel_writes_leave_the_terminal_responsive": "NOT_RUN"
      }
     },
     {
@@ -3448,7 +3448,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_070:files_of_zero_one_and_exactly_the_limit_go_both_ways_intact": "PASS"
+      "uc_070:files_of_zero_one_and_exactly_the_limit_go_both_ways_intact": "NOT_RUN"
      }
     },
     {
@@ -3473,7 +3473,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_046:a_finished_write_is_synced_before_it_is_acknowledged": "PASS"
+      "uc_046:a_finished_write_is_synced_before_it_is_acknowledged": "NOT_RUN"
      }
     },
     {
@@ -3535,7 +3535,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_071:permission_bits_are_kept_by_writes_and_told_by_listings": "PASS"
+      "uc_071:permission_bits_are_kept_by_writes_and_told_by_listings": "NOT_RUN"
      }
     },
     {
@@ -3564,8 +3564,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_046:a_write_cut_by_a_reset_leaves_the_file_as_it_was_and_no_temporary_file": "PASS",
-      "uc_046:a_write_cut_by_a_silent_network_leaves_the_file_as_it_was_and_no_temporary_file": "PASS"
+      "uc_046:a_write_cut_by_a_reset_leaves_the_file_as_it_was_and_no_temporary_file": "NOT_RUN",
+      "uc_046:a_write_cut_by_a_silent_network_leaves_the_file_as_it_was_and_no_temporary_file": "NOT_RUN"
      }
     },
     {
@@ -3599,7 +3599,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_064:a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works": "PASS"
+      "uc_064:a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works": "NOT_RUN"
      }
     },
     {
@@ -3769,7 +3769,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "PASS"
+      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "NOT_RUN"
      }
     },
     {
@@ -3794,7 +3794,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "PASS"
+      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "NOT_RUN"
      }
     },
     {
@@ -3830,9 +3830,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_004:a_bad_checksum_installs_nothing": "PASS",
-      "uc_004:a_download_cut_short_installs_nothing": "PASS",
-      "uc_004:an_archive_cut_short_installs_nothing": "PASS"
+      "uc_004:a_bad_checksum_installs_nothing": "NOT_RUN",
+      "uc_004:a_download_cut_short_installs_nothing": "NOT_RUN",
+      "uc_004:an_archive_cut_short_installs_nothing": "NOT_RUN"
      }
     },
     {
@@ -3869,13 +3869,13 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_004:a_bad_checksum_installs_nothing": "PASS",
-      "uc_004:a_download_cut_short_installs_nothing": "PASS",
-      "uc_004:a_latest_version_without_its_archive_installs_nothing": "PASS",
-      "uc_004:a_program_that_does_not_run_installs_nothing": "PASS",
-      "uc_004:an_archive_cut_short_installs_nothing": "PASS",
-      "uc_004:an_archive_without_tilr_installs_nothing": "PASS",
-      "uc_004:no_release_for_the_platform_installs_nothing": "PASS"
+      "uc_004:a_bad_checksum_installs_nothing": "NOT_RUN",
+      "uc_004:a_download_cut_short_installs_nothing": "NOT_RUN",
+      "uc_004:a_latest_version_without_its_archive_installs_nothing": "NOT_RUN",
+      "uc_004:a_program_that_does_not_run_installs_nothing": "NOT_RUN",
+      "uc_004:an_archive_cut_short_installs_nothing": "NOT_RUN",
+      "uc_004:an_archive_without_tilr_installs_nothing": "NOT_RUN",
+      "uc_004:no_release_for_the_platform_installs_nothing": "NOT_RUN"
      }
     },
     {
@@ -3902,8 +3902,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_004:a_program_that_does_not_run_installs_nothing": "PASS",
-      "uc_004:an_archive_without_tilr_installs_nothing": "PASS"
+      "uc_004:a_program_that_does_not_run_installs_nothing": "NOT_RUN",
+      "uc_004:an_archive_without_tilr_installs_nothing": "NOT_RUN"
      }
     },
     {
@@ -3930,8 +3930,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_004:a_latest_version_without_its_archive_installs_nothing": "PASS",
-      "uc_004:no_release_for_the_platform_installs_nothing": "PASS"
+      "uc_004:a_latest_version_without_its_archive_installs_nothing": "NOT_RUN",
+      "uc_004:no_release_for_the_platform_installs_nothing": "NOT_RUN"
      }
     },
     {
@@ -3956,7 +3956,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_003:installing_the_same_release_again_changes_nothing": "PASS"
+      "uc_003:installing_the_same_release_again_changes_nothing": "NOT_RUN"
      }
     },
     {
@@ -3981,7 +3981,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells": "PASS"
+      "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells": "NOT_RUN"
      }
     },
     {
@@ -4006,7 +4006,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_004:a_broken_update_leaves_the_installation_and_its_server_alone": "PASS"
+      "uc_004:a_broken_update_leaves_the_installation_and_its_server_alone": "NOT_RUN"
      }
     },
     {
@@ -4031,7 +4031,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_002:without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing": "PASS"
+      "uc_002:without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing": "NOT_RUN"
      }
     },
     {
@@ -4058,8 +4058,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "PASS",
-      "uc_023:nothing_starts_tilrd_at_boot_unless_asked": "PASS"
+      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "NOT_RUN",
+      "uc_023:nothing_starts_tilrd_at_boot_unless_asked": "NOT_RUN"
      }
     },
     {
@@ -4084,7 +4084,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_006:without_root_sudo_or_systemd_everything_works": "PASS"
+      "uc_006:without_root_sudo_or_systemd_everything_works": "NOT_RUN"
      }
     },
     {
@@ -4109,7 +4109,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "PASS"
+      "uc_005:on_a_clean_system_tilr_makes_its_directories_private": "NOT_RUN"
      }
     },
     {
@@ -4384,7 +4384,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others": "PASS"
+      "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others": "NOT_RUN"
      }
     },
     {
@@ -4567,7 +4567,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others": "PASS"
+      "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others": "NOT_RUN"
      }
     },
     {
@@ -4622,7 +4622,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_052:a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected": "PASS"
+      "uc_052:a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected": "NOT_RUN"
      }
     },
     {
@@ -4712,7 +4712,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_051:a_shell_stays_usable_on_a_3g_network_and_input_latency_is_recorded": "PASS"
+      "uc_051:a_shell_stays_usable_on_a_3g_network_and_input_latency_is_recorded": "NOT_RUN"
      }
     }
    ]
@@ -4944,7 +4944,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_020:service_install_writes_a_notify_user_unit_and_enables_it": "PASS"
+      "uc_020:service_install_writes_a_notify_user_unit_and_enables_it": "NOT_RUN"
      }
     },
     {
@@ -5349,6 +5349,60 @@
      ],
      "covered": true,
      "last_run": {}
+    },
+    {
+     "slug": "the-tools-stay-first-on-path-after-the-login-profile",
+     "title": "The tools stay first on PATH after the login profile",
+     "tag": "panes/the-tools-stay-first-on-path-after-the-login-profile",
+     "cases": [],
+     "all_cases": [
+      "uc_07b:the_tools_stay_first_on_path_when_the_profile_resets_it",
+      "uc_07b:the_users_startup_files_still_run"
+     ],
+     "cargo_tests": [],
+     "scenarios": [
+      {
+       "slug": "bash-with-a-profile-that-resets-path",
+       "title": "bash with a profile that resets PATH",
+       "tag": "panes/the-tools-stay-first-on-path-after-the-login-profile#bash-with-a-profile-that-resets-path",
+       "cases": [
+        "uc_07b:the_tools_stay_first_on_path_when_the_profile_resets_it"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "zsh-and-fish",
+       "title": "zsh and fish",
+       "tag": "panes/the-tools-stay-first-on-path-after-the-login-profile#zsh-and-fish",
+       "cases": [
+        "uc_07b:the_tools_stay_first_on_path_when_the_profile_resets_it"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "the-user-s-files-still-run",
+       "title": "The user's files still run",
+       "tag": "panes/the-tools-stay-first-on-path-after-the-login-profile#the-user-s-files-still-run",
+       "cases": [
+        "uc_07b:the_users_startup_files_still_run"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "another-shell",
+       "title": "Another shell",
+       "tag": "panes/the-tools-stay-first-on-path-after-the-login-profile#another-shell",
+       "cases": [
+        "uc_07b:the_tools_stay_first_on_path_when_the_profile_resets_it"
+       ],
+       "covered": true
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_07b:the_tools_stay_first_on_path_when_the_profile_resets_it": "NOT_RUN",
+      "uc_07b:the_users_startup_files_still_run": "NOT_RUN"
+     }
     }
    ]
   },
@@ -5780,7 +5834,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "PASS"
+      "uc_001:the_installer_puts_tilrd_and_tilr_in_local_bin_without_root": "NOT_RUN"
      }
     },
     {
@@ -6063,11 +6117,11 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_061:htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse": "PASS",
-      "uc_061:vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it": "PASS",
-      "uc_062:a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c": "PASS",
-      "uc_062:ctrl_c_after_a_reload_interrupts_a_foreground_sleep": "PASS",
-      "uc_062:ctrl_z_and_fg_after_a_reload_stop_and_resume_a_job": "PASS"
+      "uc_061:htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse": "NOT_RUN",
+      "uc_061:vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it": "NOT_RUN",
+      "uc_062:a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c": "NOT_RUN",
+      "uc_062:ctrl_c_after_a_reload_interrupts_a_foreground_sleep": "NOT_RUN",
+      "uc_062:ctrl_z_and_fg_after_a_reload_stop_and_resume_a_job": "NOT_RUN"
      }
     },
     {
@@ -6094,7 +6148,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells": "PASS"
+      "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells": "NOT_RUN"
      }
     },
     {
@@ -6178,7 +6232,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_067:a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live_on": "PASS"
+      "uc_067:a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live_on": "NOT_RUN"
      }
     },
     {
@@ -6205,7 +6259,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive": "PASS"
+      "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive": "NOT_RUN"
      }
     },
     {
@@ -6230,7 +6284,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_065:a_reload_with_no_room_for_its_state_keeps_the_server_and_its_panes": "PASS"
+      "uc_065:a_reload_with_no_room_for_its_state_keeps_the_server_and_its_panes": "NOT_RUN"
      }
     },
     {
@@ -6255,7 +6309,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_065:a_reload_with_room_for_the_servers_state_but_not_the_panes_keeps_every_pane": "PASS"
+      "uc_065:a_reload_with_room_for_the_servers_state_but_not_the_panes_keeps_every_pane": "NOT_RUN"
      }
     },
     {
@@ -6301,7 +6355,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells": "PASS"
+      "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells": "NOT_RUN"
      }
     },
     {
@@ -6424,7 +6478,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_068:panes_created_while_the_server_reloads_are_whole_or_absent_and_every_reload_happens": "PASS"
+      "uc_068:panes_created_while_the_server_reloads_are_whole_or_absent_and_every_reload_happens": "NOT_RUN"
      }
     },
     {
@@ -6547,8 +6601,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive": "PASS",
-      "uc_069:fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks": "PASS"
+      "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive": "NOT_RUN",
+      "uc_069:fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks": "NOT_RUN"
      }
     },
     {
@@ -6627,8 +6681,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_064:a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works": "PASS",
-      "uc_064:an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works": "PASS"
+      "uc_064:a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works": "NOT_RUN",
+      "uc_064:an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works": "NOT_RUN"
      }
     },
     {
@@ -6653,7 +6707,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_064:a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works": "PASS"
+      "uc_064:a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works": "NOT_RUN"
      }
     },
     {
@@ -6678,7 +6732,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_064:a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works": "PASS"
+      "uc_064:a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works": "NOT_RUN"
      }
     },
     {
@@ -6703,7 +6757,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_066:rolling_back_and_forward_again_keeps_the_panes_and_their_programs": "PASS"
+      "uc_066:rolling_back_and_forward_again_keeps_the_panes_and_their_programs": "NOT_RUN"
      }
     },
     {
@@ -6745,7 +6799,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_06a:a_version_that_crashes_resuming_is_not_reloaded_into_and_the_shells_live_on": "PASS"
+      "uc_06a:a_version_that_crashes_resuming_is_not_reloaded_into_and_the_shells_live_on": "NOT_RUN"
      }
     },
     {
@@ -6875,7 +6929,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_06b:a_refused_reload_keeps_the_socket_and_tilr_finds_the_same_server": "PASS"
+      "uc_06b:a_refused_reload_keeps_the_socket_and_tilr_finds_the_same_server": "NOT_RUN"
      }
     }
    ]
@@ -7104,8 +7158,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_061:vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it": "PASS",
-      "uc_079:the_mouse_reaches_an_application_that_asked_for_it_and_no_other": "PASS"
+      "uc_061:vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it": "NOT_RUN",
+      "uc_079:the_mouse_reaches_an_application_that_asked_for_it_and_no_other": "NOT_RUN"
      }
     },
     {
@@ -7301,7 +7355,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_079:ctrl_alt_function_and_cursor_keys_reach_the_program_as_xterm_sends_them": "PASS"
+      "uc_079:ctrl_alt_function_and_cursor_keys_reach_the_program_as_xterm_sends_them": "NOT_RUN"
      }
     },
     {
@@ -7371,7 +7425,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c": "PASS"
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c": "NOT_RUN"
      }
     },
     {
@@ -7405,7 +7459,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c": "PASS"
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c": "NOT_RUN"
      }
     },
     {
@@ -7495,7 +7549,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_079:the_mouse_reaches_an_application_that_asked_for_it_and_no_other": "PASS"
+      "uc_079:the_mouse_reaches_an_application_that_asked_for_it_and_no_other": "NOT_RUN"
      }
     },
     {
@@ -7531,8 +7585,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_079:a_paste_without_bracketed_mode_is_plain_text": "PASS",
-      "uc_079:bracketed_paste_wraps_the_text_and_cannot_be_ended_by_the_text": "PASS"
+      "uc_079:a_paste_without_bracketed_mode_is_plain_text": "NOT_RUN",
+      "uc_079:bracketed_paste_wraps_the_text_and_cannot_be_ended_by_the_text": "NOT_RUN"
      }
     },
     {
@@ -7840,7 +7894,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_047:a_socks_stream_on_a_silent_connection_ends_for_the_service_and_the_next_one_works": "PASS"
+      "uc_047:a_socks_stream_on_a_silent_connection_ends_for_the_service_and_the_next_one_works": "NOT_RUN"
      }
     },
     {
@@ -7953,7 +8007,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_074:curl_on_the_clients_machine_reaches_a_service_on_the_servers_loopback": "PASS"
+      "uc_074:curl_on_the_clients_machine_reaches_a_service_on_the_servers_loopback": "NOT_RUN"
      }
     },
     {
@@ -8008,8 +8062,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_074:a_big_response_through_socks_arrives_whole": "PASS",
-      "uc_074:twenty_sessions_at_once_each_get_their_own_file": "PASS"
+      "uc_074:a_big_response_through_socks_arrives_whole": "NOT_RUN",
+      "uc_074:twenty_sessions_at_once_each_get_their_own_file": "NOT_RUN"
      }
     },
     {
@@ -8043,8 +8097,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_047:a_socks_stream_cut_by_a_reset_ends_for_the_service_and_the_next_one_works": "PASS",
-      "uc_064:a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works": "PASS"
+      "uc_047:a_socks_stream_cut_by_a_reset_ends_for_the_service_and_the_next_one_works": "NOT_RUN",
+      "uc_064:a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works": "NOT_RUN"
      }
     }
    ]
@@ -8144,7 +8198,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "PASS"
+      "uc_035:another_user_cannot_send_tilr_edit_to_the_pane": "NOT_RUN"
      }
     },
     {
@@ -8171,7 +8225,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_036:agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start": "PASS"
+      "uc_036:agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start": "NOT_RUN"
      }
     },
     {
@@ -8226,7 +8280,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_078:without_the_clients_agent_the_clone_is_refused": "PASS"
+      "uc_078:without_the_clients_agent_the_clone_is_refused": "NOT_RUN"
      }
     },
     {
@@ -8283,8 +8337,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_073:a_big_stream_to_the_client_arrives_whole_and_in_order": "PASS",
-      "uc_073:a_stream_echoed_by_the_client_comes_back_whole_in_order": "PASS"
+      "uc_073:a_big_stream_to_the_client_arrives_whole_and_in_order": "NOT_RUN",
+      "uc_073:a_stream_echoed_by_the_client_comes_back_whole_in_order": "NOT_RUN"
      }
     },
     {
@@ -8362,8 +8416,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_047:an_agent_stream_cut_by_a_reset_ends_for_the_program_and_the_next_one_works": "PASS",
-      "uc_047:an_agent_stream_on_a_silent_connection_ends_for_the_program_and_the_next_one_works": "PASS"
+      "uc_047:an_agent_stream_cut_by_a_reset_ends_for_the_program_and_the_next_one_works": "NOT_RUN",
+      "uc_047:an_agent_stream_on_a_silent_connection_ends_for_the_program_and_the_next_one_works": "NOT_RUN"
      }
     },
     {
@@ -8407,7 +8461,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_073:a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for": "PASS"
+      "uc_073:a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for": "NOT_RUN"
      }
     },
     {
@@ -8439,7 +8493,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_073:a_client_running_ahead_of_a_slow_program_is_held_to_the_queue_and_then_loses_the_stream": "PASS"
+      "uc_073:a_client_running_ahead_of_a_slow_program_is_held_to_the_queue_and_then_loses_the_stream": "NOT_RUN"
      }
     },
     {
@@ -8466,7 +8520,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_064:an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works": "PASS"
+      "uc_064:an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works": "NOT_RUN"
      }
     },
     {
@@ -8493,8 +8547,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_078:git_clone_over_ssh_uses_the_forwarded_agent_and_ssh_a_forwards_it_further": "PASS",
-      "uc_078:ssh_add_in_a_pane_lists_the_keys_of_the_clients_agent": "PASS"
+      "uc_078:git_clone_over_ssh_uses_the_forwarded_agent_and_ssh_a_forwards_it_further": "NOT_RUN",
+      "uc_078:ssh_add_in_a_pane_lists_the_keys_of_the_clients_agent": "NOT_RUN"
      }
     }
    ]
@@ -8673,8 +8727,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "PASS",
-      "uc_017:kill_server_leaves_no_process_and_no_socket": "PASS"
+      "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "NOT_RUN",
+      "uc_017:kill_server_leaves_no_process_and_no_socket": "NOT_RUN"
      }
     },
     {
@@ -8706,7 +8760,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_015:another_programs_listener_at_the_socket_is_left_alone": "PASS"
+      "uc_015:another_programs_listener_at_the_socket_is_left_alone": "NOT_RUN"
      }
     },
     {
@@ -8759,7 +8813,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_011:a_second_tilr_attaches_to_the_same_daemon_and_pane": "PASS"
+      "uc_011:a_second_tilr_attaches_to_the_same_daemon_and_pane": "NOT_RUN"
      }
     },
     {
@@ -8890,7 +8944,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_017:kill_server_leaves_no_process_and_no_socket": "PASS"
+      "uc_017:kill_server_leaves_no_process_and_no_socket": "NOT_RUN"
      }
     },
     {
@@ -9001,7 +9055,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects": "PASS"
+      "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects": "NOT_RUN"
      }
     },
     {
@@ -9058,8 +9112,8 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_016:tilr_attaches_to_a_tilrd_running_in_the_foreground": "PASS",
-      "uc_017:kill_server_leaves_no_process_and_no_socket": "PASS"
+      "uc_016:tilr_attaches_to_a_tilrd_running_in_the_foreground": "NOT_RUN",
+      "uc_017:kill_server_leaves_no_process_and_no_socket": "NOT_RUN"
      }
     },
     {
@@ -9156,7 +9210,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "PASS"
+      "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "NOT_RUN"
      }
     },
     {
@@ -9252,9 +9306,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_020:a_running_tilrd_is_left_alone": "PASS",
-      "uc_020:service_install_writes_a_notify_user_unit_and_enables_it": "PASS",
-      "uc_020:with_lingering_off_install_turns_it_on_and_notes_it": "PASS"
+      "uc_020:a_running_tilrd_is_left_alone": "NOT_RUN",
+      "uc_020:service_install_writes_a_notify_user_unit_and_enables_it": "NOT_RUN",
+      "uc_020:with_lingering_off_install_turns_it_on_and_notes_it": "NOT_RUN"
      }
     },
     {
@@ -9320,9 +9374,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_021:with_neither_systemd_nor_crontab_install_fails_and_writes_nothing": "PASS",
-      "uc_021:without_lingering_a_crontab_reboot_line_is_written": "PASS",
-      "uc_021:without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own": "PASS"
+      "uc_021:with_neither_systemd_nor_crontab_install_fails_and_writes_nothing": "NOT_RUN",
+      "uc_021:without_lingering_a_crontab_reboot_line_is_written": "NOT_RUN",
+      "uc_021:without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own": "NOT_RUN"
      }
     },
     {
@@ -9390,11 +9444,11 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_022:uninstall_leaves_lingering_it_did_not_turn_on": "PASS",
-      "uc_022:uninstall_leaves_what_it_did_not_write": "PASS",
-      "uc_022:uninstall_removes_its_crontab_line_and_keeps_the_users": "PASS",
-      "uc_022:uninstall_removes_the_crontab_it_made": "PASS",
-      "uc_022:uninstall_removes_the_unit_it_wrote_and_nothing_else": "PASS"
+      "uc_022:uninstall_leaves_lingering_it_did_not_turn_on": "NOT_RUN",
+      "uc_022:uninstall_leaves_what_it_did_not_write": "NOT_RUN",
+      "uc_022:uninstall_removes_its_crontab_line_and_keeps_the_users": "NOT_RUN",
+      "uc_022:uninstall_removes_the_crontab_it_made": "NOT_RUN",
+      "uc_022:uninstall_removes_the_unit_it_wrote_and_nothing_else": "NOT_RUN"
      }
     },
     {
@@ -9419,7 +9473,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_023:nothing_starts_tilrd_at_boot_unless_asked": "PASS"
+      "uc_023:nothing_starts_tilrd_at_boot_unless_asked": "NOT_RUN"
      }
     },
     {
@@ -9467,9 +9521,9 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_034:another_user_cannot_use_the_socket": "PASS",
-      "uc_03a:a_runtime_directory_another_user_made_in_tmp_is_not_entered": "PASS",
-      "uc_03a:a_socket_another_user_serves_at_a_named_path_is_refused_before_a_byte": "PASS"
+      "uc_034:another_user_cannot_use_the_socket": "NOT_RUN",
+      "uc_03a:a_runtime_directory_another_user_made_in_tmp_is_not_entered": "NOT_RUN",
+      "uc_03a:a_socket_another_user_serves_at_a_named_path_is_refused_before_a_byte": "NOT_RUN"
      }
     },
     {
@@ -9503,7 +9557,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_020:install_leaves_a_unit_it_did_not_write": "PASS"
+      "uc_020:install_leaves_a_unit_it_did_not_write": "NOT_RUN"
      }
     },
     {
@@ -9703,7 +9757,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_060:an_update_is_synced_before_it_reports_success": "PASS"
+      "uc_060:an_update_is_synced_before_it_reports_success": "NOT_RUN"
      }
     },
     {
@@ -9751,7 +9805,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive": "PASS",
+      "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive": "NOT_RUN",
       "uc_063:a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled": "PASS"
      }
     },
@@ -9840,7 +9894,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_065:an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_breaks_nothing": "PASS"
+      "uc_065:an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_breaks_nothing": "NOT_RUN"
      }
     },
     {
@@ -9886,7 +9940,7 @@
      ],
      "covered": true,
      "last_run": {
-      "uc_066:rolling_back_and_forward_again_keeps_the_panes_and_their_programs": "PASS"
+      "uc_066:rolling_back_and_forward_again_keeps_the_panes_and_their_programs": "NOT_RUN"
      }
     },
     {
@@ -9981,21 +10035,21 @@
     "installation/the-installer-sets-up-no-service",
     "release-process/the-cdn-layout-is-one-archive-per-platform"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_002:without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing",
    "spec": [
     "installation/path-is-advised-never-edited"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_003:installing_the_same_release_again_changes_nothing",
    "spec": [
     "installation/installing-the-same-release-again-changes-nothing"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_003:installing_a_new_release_reloads_the_running_server_and_keeps_its_shells",
@@ -10004,7 +10058,7 @@
     "reload/a-replaced-executable-is-reloaded-into-automatically",
     "reload/the-tcp-listener-carries-over"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:a_bad_checksum_installs_nothing",
@@ -10012,7 +10066,7 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/the-release-is-checked-in-a-temporary-directory-first"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:a_download_cut_short_installs_nothing",
@@ -10020,7 +10074,7 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/the-release-is-checked-in-a-temporary-directory-first"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:an_archive_cut_short_installs_nothing",
@@ -10028,7 +10082,7 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/the-release-is-checked-in-a-temporary-directory-first"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:an_archive_without_tilr_installs_nothing",
@@ -10036,7 +10090,7 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/both-programs-are-installed-or-neither"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:a_program_that_does_not_run_installs_nothing",
@@ -10044,7 +10098,7 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/both-programs-are-installed-or-neither"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:no_release_for_the_platform_installs_nothing",
@@ -10052,7 +10106,7 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/no-release-for-the-platform-is-a-clear-error"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:a_latest_version_without_its_archive_installs_nothing",
@@ -10060,14 +10114,14 @@
     "installation/a-release-that-cannot-be-installed-leaves-nothing",
     "installation/no-release-for-the-platform-is-a-clear-error"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_004:a_broken_update_leaves_the_installation_and_its_server_alone",
    "spec": [
     "installation/a-failed-update-leaves-the-installation-and-its-server-alone"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_005:on_a_clean_system_tilr_makes_its_directories_private",
@@ -10077,14 +10131,14 @@
     "daemon-lifecycle/unix-socket-location",
     "installation/the-first-run-makes-private-directories"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_006:without_root_sudo_or_systemd_everything_works",
    "spec": [
     "installation/without-systemd-the-install-still-works"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_010:tilr_without_a_running_daemon_starts_tilrd_detached_and_connects",
@@ -10093,49 +10147,49 @@
     "daemon-lifecycle/unix-socket-location",
     "tilr-cli/attached-terminal"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_011:a_second_tilr_attaches_to_the_same_daemon_and_pane",
    "spec": [
     "tilr-cli/default-pane"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_012:tilr_started_eight_times_at_once_starts_one_daemon",
    "spec": [
     "daemon-lifecycle/concurrent-starts-start-one-server"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_012:two_terminals_running_tilr_at_once_share_one_daemon",
    "spec": [
     "daemon-lifecycle/concurrent-starts-start-one-server"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_013:tilr_in_an_ssh_session_leaves_tilrd_and_its_shell_when_the_session_drops",
    "spec": [
     "daemon-lifecycle/sighup-is-ignored-and-panes-have-their-own-sessions"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_013:tilrd_started_from_an_ssh_login_shell_survives_the_session_dropping",
    "spec": [
     "daemon-lifecycle/sighup-is-ignored-and-panes-have-their-own-sessions"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_013:tilrd_started_with_setsid_keeps_its_panes_when_the_ssh_session_drops",
    "spec": [
     "daemon-lifecycle/sighup-is-ignored-and-panes-have-their-own-sessions"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon",
@@ -10144,7 +10198,7 @@
     "tilr-cli/reconnect-while-attached",
     "tilr-cli/which-commands-start-the-local-server"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_015:another_programs_listener_at_the_socket_is_left_alone",
@@ -10152,14 +10206,14 @@
     "daemon-lifecycle/what-is-found-at-the-socket-path",
     "tilr-cli/connecting-and-saying-hello"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_015:a_file_that_is_not_a_socket_is_left_alone",
    "spec": [
     "daemon-lifecycle/what-is-found-at-the-socket-path"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_016:tilr_attaches_to_a_tilrd_running_in_the_foreground",
@@ -10167,7 +10221,7 @@
     "daemon-lifecycle/foreground-service-with-its-log-on-stderr",
     "tilr-cli/how-an-attach-ends"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_017:kill_server_leaves_no_process_and_no_socket",
@@ -10177,7 +10231,7 @@
     "tilr-cli/kill-server",
     "tilr-cli/which-commands-start-the-local-server"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_020:service_install_writes_a_notify_user_unit_and_enables_it",
@@ -10186,84 +10240,84 @@
     "tilr-cli/service-install-with-systemd",
     "panes/user-variables-of-a-pane"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_020:with_lingering_off_install_turns_it_on_and_notes_it",
    "spec": [
     "tilr-cli/service-install-with-systemd"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_020:a_running_tilrd_is_left_alone",
    "spec": [
     "tilr-cli/service-install-with-systemd"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_020:install_leaves_a_unit_it_did_not_write",
    "spec": [
     "tilr-cli/service-install-leaves-a-unit-or-plist-it-did-not-write#a-unit-it-did-not-write"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_021:without_lingering_a_crontab_reboot_line_is_written",
    "spec": [
     "tilr-cli/service-install-with-cron"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_021:without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own",
    "spec": [
     "tilr-cli/service-install-with-cron"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_021:with_neither_systemd_nor_crontab_install_fails_and_writes_nothing",
    "spec": [
     "tilr-cli/service-install-with-cron"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_022:uninstall_removes_the_unit_it_wrote_and_nothing_else",
    "spec": [
     "tilr-cli/service-uninstall-removes-only-its-own"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_022:uninstall_leaves_lingering_it_did_not_turn_on",
    "spec": [
     "tilr-cli/service-uninstall-removes-only-its-own"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_022:uninstall_removes_its_crontab_line_and_keeps_the_users",
    "spec": [
     "tilr-cli/service-uninstall-removes-only-its-own"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_022:uninstall_removes_the_crontab_it_made",
    "spec": [
     "tilr-cli/service-uninstall-removes-only-its-own"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_022:uninstall_leaves_what_it_did_not_write",
    "spec": [
     "tilr-cli/service-uninstall-removes-only-its-own"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_023:nothing_starts_tilrd_at_boot_unless_asked",
@@ -10271,70 +10325,70 @@
     "installation/the-installer-sets-up-no-service",
     "tilr-cli/nothing-starts-tilrd-at-boot-unless-asked"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_030:a_tilrd_tilr_starts_listens_on_loopback_only",
    "spec": [
     "daemon-lifecycle/tcp-port-defaults-to-loopback-7890"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_030:a_bare_tilrd_listens_on_loopback_only",
    "spec": [
     "daemon-lifecycle/tcp-port-defaults-to-loopback-7890"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_031:listening_on_every_ipv4_address_asks_for_the_token",
    "spec": [
     "access-control/tcp-clients-present-the-token-in-hello"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_031:listening_on_every_address_takes_ipv4_too_and_asks_for_the_token",
    "spec": [
     "access-control/tcp-clients-present-the-token-in-hello"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_032:ipv6_loopback_serves_ipv6_only",
    "spec": [
     "daemon-lifecycle/tcp-port-defaults-to-loopback-7890"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_032:dual_stack_serves_both_loopbacks",
    "spec": [
     "daemon-lifecycle/tcp-port-defaults-to-loopback-7890"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_033:a_taken_port_is_a_clear_error",
    "spec": [
     "daemon-lifecycle/a-taken-port"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_033:a_bare_tilrd_next_to_a_running_one_says_the_default_port_is_taken",
    "spec": [
     "daemon-lifecycle/a-taken-port"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_033:a_tilrd_tilr_starts_goes_on_without_the_taken_port",
    "spec": [
     "daemon-lifecycle/a-taken-port"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_034:another_user_cannot_use_the_socket",
@@ -10343,7 +10397,7 @@
     "daemon-lifecycle/runtime-directory-and-socket-modes",
     "tilr-cli/tilr-checks-who-serves-the-socket"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_035:another_user_cannot_send_tilr_edit_to_the_pane",
@@ -10353,14 +10407,14 @@
     "clipboard-host-events/the-host-socket-serves-the-user-s-own-programs-only",
     "ssh-agent-forwarding/only-the-user-s-own-programs-may-use-the-socket"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_036:agent_sockets_left_by_a_killed_server_are_removed_at_the_next_start",
    "spec": [
     "ssh-agent-forwarding/sockets-a-killed-server-left-are-swept-at-start"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_037:a_socket_path_longer_than_sun_path_is_a_clear_error",
@@ -10368,70 +10422,70 @@
     "daemon-lifecycle/socket-path-length",
     "daemon-lifecycle/socket-required-or-optional"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_038:a_thousand_silent_connections_and_a_slowloris_leave_the_server_working",
    "spec": [
     "access-control/a-handshake-has-10-seconds"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_039:a_silent_connection_is_closed_by_the_handshake_timeout",
    "spec": [
     "access-control/a-handshake-has-10-seconds"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_039:a_websocket_that_never_says_hello_is_dropped_by_the_client_timeout",
    "spec": [
     "client-liveness/a-silent-client-is-dropped"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_039:a_websocket_that_never_says_hello_is_closed_after_10_s",
    "spec": [
     "access-control/a-handshake-has-10-seconds#websocket-without-hello"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_03a:a_runtime_directory_another_user_made_in_tmp_is_not_entered",
    "spec": [
     "tilr-cli/tilr-checks-who-serves-the-socket#another-user-s-runtime-directory"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_03a:a_socket_another_user_serves_at_a_named_path_is_refused_before_a_byte",
    "spec": [
     "tilr-cli/tilr-checks-who-serves-the-socket#a-socket-served-by-another-user"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_040:a_frozen_connection_is_dropped_by_both_sides_and_the_client_returns_to_the_same_pane",
    "spec": [
     "client-liveness/a-silent-client-is-dropped"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_041:a_cut_of_server_to_client_only_is_noticed_by_the_client_and_both_sides_let_go",
    "spec": [
     "client-liveness/a-client-that-no-longer-hears-the-server-is-dropped"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_041:a_client_that_still_talks_but_no_longer_hears_is_dropped_by_the_server",
    "spec": [
     "client-liveness/a-client-that-no-longer-hears-the-server-is-dropped"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_041:a_cut_of_client_to_server_only_is_noticed_by_the_server_and_by_a_client_that_counts_pongs",
@@ -10439,133 +10493,133 @@
     "client-liveness/a-client-that-no-longer-hears-the-server-is-dropped",
     "client-liveness/clients-ping-the-server-with-ping"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_042:a_client_back_from_a_new_ip_leaves_no_ghost_of_its_half_open_connection",
    "spec": [
     "client-liveness/a-client-s-newer-connection-supersedes-its-older-one"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_042:a_client_back_from_a_new_ip_leaves_no_ghost_when_its_old_path_froze_in_a_proxy",
    "spec": [
     "client-liveness/a-client-s-newer-connection-supersedes-its-older-one"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_043:a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it",
    "spec": [
     "client-liveness/a-lagging-client-skips-to-the-latest-screen"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_043:a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect",
    "spec": [
     "client-liveness/a-lagging-client-skips-to-the-latest-screen"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_044:a_revived_connection_the_client_closed_ends_at_once_leaving_one_live_connection",
    "spec": [
     "client-liveness/a-client-s-newer-connection-supersedes-its-older-one"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_044:a_revived_connection_left_open_by_the_client_was_superseded_by_its_reconnect",
    "spec": [
     "client-liveness/a-client-s-newer-connection-supersedes-its-older-one"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_045:a_reset_in_the_middle_of_a_frame_makes_the_client_reconnect_at_once",
    "spec": [
     "client-liveness/a-connection-that-ends-is-forgotten-at-once"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_045:a_socket_reset_by_the_clients_kernel_is_cleaned_up_by_the_server_at_once",
    "spec": [
     "client-liveness/a-connection-that-ends-is-forgotten-at-once"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_046:a_write_cut_by_a_reset_leaves_the_file_as_it_was_and_no_temporary_file",
    "spec": [
     "files/an-abandoned-write-leaves-the-file-and-no-temporary-file"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_046:a_write_cut_by_a_silent_network_leaves_the_file_as_it_was_and_no_temporary_file",
    "spec": [
     "files/an-abandoned-write-leaves-the-file-and-no-temporary-file"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_046:a_finished_write_is_synced_before_it_is_acknowledged",
    "spec": [
     "files/a-finished-write-is-on-disk-before-it-is-acknowledged#synced-before-the-answer"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_047:an_agent_stream_cut_by_a_reset_ends_for_the_program_and_the_next_one_works",
    "spec": [
     "ssh-agent-forwarding/a-client-that-goes-takes-its-streams-with-it"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_047:an_agent_stream_on_a_silent_connection_ends_for_the_program_and_the_next_one_works",
    "spec": [
     "ssh-agent-forwarding/a-client-that-goes-takes-its-streams-with-it"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_047:a_socks_stream_cut_by_a_reset_ends_for_the_service_and_the_next_one_works",
    "spec": [
     "socks-proxy/a-session-ends-with-its-connection-and-with-the-server"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_047:a_socks_stream_on_a_silent_connection_ends_for_the_service_and_the_next_one_works",
    "spec": [
     "socks-proxy/a-silent-socks-websocket-is-dropped"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_048:input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled",
    "spec": [
     "client-liveness/a-new-connection-starts-afresh"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_048:input_typed_into_a_silent_connection_is_lost_but_never_doubled",
    "spec": [
     "client-liveness/a-new-connection-starts-afresh"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_048:input_held_in_a_connection_that_revives_arrives_once_at_most",
    "spec": [
     "client-liveness/a-new-connection-starts-afresh"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_049:a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others",
@@ -10574,7 +10628,7 @@
     "metrics/a-lagging-client-skips-to-the-latest-screen",
     "metrics/per-pane-frame-counters"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_049:a_client_too_slow_even_for_the_latest_screen_is_dropped_and_its_connection_ends",
@@ -10582,21 +10636,21 @@
     "client-liveness/a-client-whose-queue-fills-is-dropped",
     "client-liveness/a-dropped-connection-really-ends"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_050:a_thousand_resets_leave_one_viewer_and_flat_server_memory_and_descriptors",
    "spec": [
     "client-liveness/a-connection-that-ends-is-forgotten-at-once"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_051:a_shell_stays_usable_on_a_3g_network_and_input_latency_is_recorded",
    "spec": [
     "metrics/latency-is-measurable-over-a-bad-network"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_052:two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live",
@@ -10604,14 +10658,14 @@
     "client-liveness/a-client-s-newer-connection-supersedes-its-older-one",
     "client-liveness/panes-say-who-watches-them"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_052:the_same_client_id_under_another_token_supersedes_nobody",
    "spec": [
     "client-liveness/another-token-supersedes-nobody"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_052:a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected",
@@ -10619,7 +10673,7 @@
     "client-liveness/a-new-connection-starts-afresh",
     "metrics/clients-let-go-by-reason"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_060:update_from_the_cdn_keeps_every_program_in_the_panes_alive",
@@ -10628,14 +10682,14 @@
     "reload/inherited-processes-are-waited-without-leaks",
     "update/live-programs-survive-an-update"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_060:an_update_is_synced_before_it_reports_success",
    "spec": [
     "update/the-installed-release-is-on-disk-before-success#synced-before-success"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_061:vim_keeps_its_screen_modes_and_buffer_across_a_reload_and_writes_it",
@@ -10643,35 +10697,35 @@
     "reload/screens-scrollback-and-programs-carry-over",
     "screen-frames/terminal-modes-in-frames"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_061:htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse",
    "spec": [
     "reload/screens-scrollback-and-programs-carry-over"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_062:ctrl_c_after_a_reload_interrupts_a_foreground_sleep",
    "spec": [
     "reload/screens-scrollback-and-programs-carry-over"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_062:a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c",
    "spec": [
     "reload/screens-scrollback-and-programs-carry-over"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_062:ctrl_z_and_fg_after_a_reload_stop_and_resume_a_job",
    "spec": [
     "reload/screens-scrollback-and-programs-carry-over"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_063:a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled",
@@ -10688,7 +10742,7 @@
     "reload/a-file-write-cut-by-a-reload-leaves-the-file-as-it-was",
     "reload/temporary-files-of-cut-writes-are-swept-at-start"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_064:a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works",
@@ -10696,7 +10750,7 @@
     "reload/socks-sessions-and-agent-streams-end-at-a-reload",
     "socks-proxy/a-session-ends-with-its-connection-and-with-the-server"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_064:an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works",
@@ -10704,28 +10758,28 @@
     "reload/socks-sessions-and-agent-streams-end-at-a-reload",
     "ssh-agent-forwarding/a-reload-ends-open-streams-and-keeps-the-socket-path"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_065:an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_breaks_nothing",
    "spec": [
     "update/a-disk-full-during-the-download-installs-nothing"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_065:a_reload_with_no_room_for_its_state_keeps_the_server_and_its_panes",
    "spec": [
     "reload/state-files-are-private-and-written-whole-or-not-at-all"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_065:a_reload_with_room_for_the_servers_state_but_not_the_panes_keeps_every_pane",
    "spec": [
     "reload/a-pane-that-cannot-save-its-state-stays-as-it-is"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_066:rolling_back_and_forward_again_keeps_the_panes_and_their_programs",
@@ -10733,42 +10787,42 @@
     "reload/rollback-and-roll-forward-keep-the-panes",
     "update/rolling-back-is-an-update-to-an-older-release"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_067:a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live_on",
    "spec": [
     "reload/state-formats-names-what-this-executable-reads"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_068:panes_created_while_the_server_reloads_are_whole_or_absent_and_every_reload_happens",
    "spec": [
     "reload/a-stuck-pane-process-is-closed-not-carried-over"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_069:fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks",
    "spec": [
     "reload/inherited-processes-are-waited-without-leaks"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_06a:a_version_that_crashes_resuming_is_not_reloaded_into_and_the_shells_live_on",
    "spec": [
     "reload/the-successor-shows-it-can-resume-before-the-exec"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_06b:a_refused_reload_keeps_the_socket_and_tilr_finds_the_same_server",
    "spec": [
     "reload/a-refused-reload-keeps-the-socket-serving"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_070:files_of_zero_one_and_exactly_the_limit_go_both_ways_intact",
@@ -10776,42 +10830,42 @@
     "files/reads-come-in-chunks",
     "files/writes-are-whole-or-not-at-all"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_070:a_file_one_byte_over_the_limit_is_refused_whole_and_read_in_parts",
    "spec": [
     "files/a-read-is-bounded-by-the-limit-and-fails-whole"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_070:a_gigabyte_goes_up_and_comes_back_in_chunks_with_its_hash",
    "spec": [
     "files/file-content-goes-by-the-bulk-lane"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_071:odd_and_unicode_names_go_both_ways_and_keep_their_exact_bytes",
    "spec": [
     "files/answers-carry-the-bytes-of-names-that-are-not-utf-8"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_071:a_name_that_is_not_utf8_is_listed_so_that_it_can_be_read_back",
    "spec": [
     "files/requests-name-files-by-bytes-when-given"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_071:symbolic_links_are_listed_followed_and_written_through_but_not_out_of_the_shared_directories",
    "spec": [
     "files/only-the-shared-directories-are-served"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_071:permission_bits_are_kept_by_writes_and_told_by_listings",
@@ -10819,14 +10873,14 @@
     "files/listings-describe-entries-without-following-links",
     "files/writes-keep-permissions-and-go-through-links"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_072:parallel_transfers_both_ways_leave_the_terminal_responsive_and_the_files_intact",
    "spec": [
     "client-liveness/frames-go-ahead-of-data-in-quantity"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_072:parallel_reads_leave_the_terminal_responsive",
@@ -10835,28 +10889,28 @@
     "client-liveness/frames-go-ahead-of-data-in-quantity",
     "files/file-content-goes-by-the-bulk-lane"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_072:parallel_writes_leave_the_terminal_responsive",
    "spec": [
     "files/file-content-goes-by-the-bulk-lane"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_073:a_stream_echoed_by_the_client_comes_back_whole_in_order",
    "spec": [
     "ssh-agent-forwarding/bytes-go-both-ways-unchanged-and-in-order"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_073:a_big_stream_to_the_client_arrives_whole_and_in_order",
    "spec": [
     "ssh-agent-forwarding/bytes-go-both-ways-unchanged-and-in-order"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_073:a_slow_client_holds_the_program_back_and_is_neither_dropped_nor_buffered_for",
@@ -10864,56 +10918,56 @@
     "client-liveness/frames-go-ahead-of-data-in-quantity",
     "ssh-agent-forwarding/a-slow-client-holds-the-program-back"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_073:a_client_running_ahead_of_a_slow_program_is_held_to_the_queue_and_then_loses_the_stream",
    "spec": [
     "ssh-agent-forwarding/a-client-running-ahead-of-the-program-loses-the-stream"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_074:curl_on_the_clients_machine_reaches_a_service_on_the_servers_loopback",
    "spec": [
     "socks-proxy/names-are-resolved-on-the-server-and-localhost-is-its-loopback"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_074:twenty_sessions_at_once_each_get_their_own_file",
    "spec": [
     "socks-proxy/sessions-run-side-by-side-and-with-the-terminal"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_074:a_big_response_through_socks_arrives_whole",
    "spec": [
     "socks-proxy/sessions-run-side-by-side-and-with-the-terminal"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_075:an_image_put_on_the_clipboard_is_pasted_byte_for_byte",
    "spec": [
     "clipboard-host-events/an-upload-becomes-the-clipboard-on-its-last-chunk"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_075:the_clipboard_takes_exactly_its_limit_and_refuses_one_byte_more_leaving_it_empty",
    "spec": [
     "clipboard-host-events/the-first-chunk-empties-the-clipboard"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_075:clipboard_content_expires",
    "spec": [
     "clipboard-host-events/content-expires"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_076:tilr_edit_and_open_reach_every_client_watching_the_pane_and_no_other",
@@ -10921,133 +10975,133 @@
     "clipboard-host-events/host-events-reach-every-listening-client-watching-the-pane",
     "clipboard-host-events/tilr-edit-and-tilr-open-say-what-to-open"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_076:tilr_edit_with_nobody_listening_fails_and_says_why",
    "spec": [
     "clipboard-host-events/tilr-edit-fails-with-a-reason-when-nobody-listens"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:exec_start_to_a_server_with_exec_off_is_refused_with_the_reason",
    "spec": [
     "exec/exec-is-offered-unless-turned-off"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:exec_returns_stdout_and_stderr_apart_and_the_exit_code",
    "spec": [
     "exec/output-comes-apart-per-stream-then-execexit"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:exec_runs_no_shell_so_nothing_is_expanded",
    "spec": [
     "exec/the-program-runs-as-given-without-a-shell"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:exec_reports_the_signal_that_killed_the_program",
    "spec": [
     "exec/the-program-leads-its-own-process-group-which-execsignal-reaches"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:exec_with_a_time_limit_is_killed_and_leaves_nothing_behind",
    "spec": [
     "exec/a-time-limit-kills-the-program-and-its-group"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:a_cancelled_exec_ends_at_once_with_its_children",
    "spec": [
     "exec/execcancel-kills-at-once"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:a_large_output_arrives_whole_and_in_order",
    "spec": [
     "exec/output-is-paced-by-the-client"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:stdin_given_to_exec_reaches_the_program",
    "spec": [
     "exec/stdin-is-fed-within-a-4-mib-window"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:eight_execs_run_at_once",
    "spec": [
     "exec/execs-run-side-by-side"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:a_reload_ends_the_running_execs_with_their_children_and_says_why",
    "spec": [
     "exec/execs-do-not-survive-a-reload-or-a-stop"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_077:a_client_that_goes_takes_its_execs_and_their_children_with_it",
    "spec": [
     "exec/a-client-s-execs-end-with-its-connection"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_078:ssh_add_in_a_pane_lists_the_keys_of_the_clients_agent",
    "spec": [
     "ssh-agent-forwarding/real-ssh-and-git-use-the-forwarded-agent"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_078:git_clone_over_ssh_uses_the_forwarded_agent_and_ssh_a_forwards_it_further",
    "spec": [
     "ssh-agent-forwarding/real-ssh-and-git-use-the-forwarded-agent"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_078:without_the_clients_agent_the_clone_is_refused",
    "spec": [
     "ssh-agent-forwarding/with-no-agent-client-the-program-finds-no-agent"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_079:ctrl_alt_function_and_cursor_keys_reach_the_program_as_xterm_sends_them",
    "spec": [
     "screen-frames/keys-are-encoded-as-the-terminal-s-modes-say"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_079:bracketed_paste_wraps_the_text_and_cannot_be_ended_by_the_text",
    "spec": [
     "screen-frames/pasting"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_079:a_paste_without_bracketed_mode_is_plain_text",
    "spec": [
     "screen-frames/pasting"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_079:the_mouse_reaches_an_application_that_asked_for_it_and_no_other",
@@ -11055,7 +11109,7 @@
     "screen-frames/mouse-input-reaches-only-a-program-that-asked-for-it",
     "screen-frames/terminal-modes-in-frames"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c",
@@ -11063,7 +11117,7 @@
     "screen-frames/an-ascii-character-wins-over-the-physical-key",
     "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_07a:tunnel_open_starts_cloudflared_at_this_server_and_tunnel_close_stops_it",
@@ -11073,7 +11127,7 @@
     "cloud-tunnels/tunnel-close-stops-cloudflared-and-removes-its-secret",
     "cloud-tunnels/tunnel-open-runs-cloudflared-aimed-at-this-server-s-port"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_07a:nothing_but_tunnel_commands_from_cloud_is_acted_on",
@@ -11082,7 +11136,7 @@
     "cloud-tunnels/cloud-cannot-point-the-tunnel-elsewhere",
     "cloud-tunnels/nothing-but-tunnel-commands-from-cloud-is-acted-on"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_07a:a_server_without_authentication_gets_no_tunnel",
@@ -11090,7 +11144,23 @@
     "access-control/cloud-does-not-decide-who-connects",
     "cloud-tunnels/a-server-without-authentication-takes-no-tunnel"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
+  },
+  {
+   "id": "uc_07b:the_tools_stay_first_on_path_when_the_profile_resets_it",
+   "spec": [
+    "panes/the-tools-stay-first-on-path-after-the-login-profile#bash-with-a-profile-that-resets-path",
+    "panes/the-tools-stay-first-on-path-after-the-login-profile#zsh-and-fish",
+    "panes/the-tools-stay-first-on-path-after-the-login-profile#another-shell"
+   ],
+   "last_run": "NOT_RUN"
+  },
+  {
+   "id": "uc_07b:the_users_startup_files_still_run",
+   "spec": [
+    "panes/the-tools-stay-first-on-path-after-the-login-profile#the-user-s-files-still-run"
+   ],
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_086:a_shell_ignoring_sighup_does_not_outlive_the_server",
@@ -11099,14 +11169,14 @@
     "daemon-lifecycle/no-shell-outlives-the-server#foreground-job-ignoring-sighup",
     "daemon-lifecycle/no-shell-outlives-the-server#nohup-job"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   },
   {
    "id": "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled",
    "spec": [
     "cloud-tunnels/cloudflared-does-not-outlive-the-server#sigkill"
    ],
-   "last_run": "PASS"
+   "last_run": "NOT_RUN"
   }
  ],
  "untagged_by_spec": []

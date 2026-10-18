@@ -47,7 +47,8 @@ use crate::metrics::{self, ClientDrop};
 use crate::outbox::{self, Outgoing, ToClient};
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
 use crate::{
-    agent, auth, clipboard, cloud, exec, files, host, identity, link, local, pty, reload, socks,
+    agent, auth, clipboard, cloud, exec, files, host, identity, link, local, pty, reload, shell,
+    socks,
 };
 
 const READ_BUF: usize = 64 * 1024;
@@ -782,6 +783,12 @@ fn set_up_shims(
     };
     if names.is_empty() {
         return (receiver, env);
+    }
+    // The login shells' startup wrappers, which keep the tools first on PATH;
+    // without them shells start as before (and stale ones must not be used).
+    if let Err(err) = shell::install_wrappers(&runtime_dir) {
+        tracing::warn!("shell startup wrappers are off: {err:#}");
+        let _ = std::fs::remove_dir_all(shell::wrapper_dir(&runtime_dir));
     }
     env.push((
         OsString::from(clipboard::SHIMS_ENV),
