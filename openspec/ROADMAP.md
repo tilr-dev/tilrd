@@ -117,6 +117,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | pane-socket-peer-check | 248dd56 |
 | protocol-v3 | 3dc42e2 |
 | non-latin-ctrl-alt | 92e4f43 |
-| reload-screen-fidelity | recorded in the next commit |
+| reload-screen-fidelity | 53e7ff2 |
 
 Older work is in `openspec/changes/archive/`.

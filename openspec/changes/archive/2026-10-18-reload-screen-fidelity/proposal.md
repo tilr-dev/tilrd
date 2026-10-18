@@ -30,3 +30,5 @@ Known losses on a pane reload, recorded since 2026-10-03 and still open (Basic M
 ## Impact
 
 `crates/tilr-screen/src/ghostty.rs` (snapshot) and its unit tests, `crates/tilrd/src/pane.rs` (handover, deadline), `crates/tilr-proto/proto/tilr.proto` (`PaneHandover`: two fields; internal reload state, not a wire message: no PROTOCOL_VERSION or feature change; it lands after `protocol-v3` only to keep proto edits in order), `crates/tilrd/tests/reload.rs`, USE_CASES.md, README "Reloading without closing shells". Survives a reload by definition. No pane state format bump (design D5): the new fields are additive with "none" as the zero value and the snapshot stays a VT byte stream any reader replays, so `tilrd state-formats` is unchanged; an update from the previous release reloads into this one with today's behavior for that first reload (no deadline handed over), and a rollback ignores the new fields. Not breaking.
+
+Implemented by: [`53e7ff2`](https://github.com/tilr-dev/tilrd/commit/53e7ff2) fix(reload): carry wraps, images in the history and the close deadline (2026-10-18).
