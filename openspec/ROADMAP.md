@@ -32,13 +32,20 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 ## Phase 1: correctness and security
 
-All of phase 1 is done (see "Done"). `agent-socket-per-server` (TILR-118) joined it on
-2026-10-18: a bug in what the first release ships (the agent socket sweep is on dev only).
+All of phase 1 but `reload-exec-signal-followups` is done (see "Done").
+`agent-socket-per-server` (TILR-118) joined it on 2026-10-18: a bug in what the first release
+ships (the agent socket sweep is on dev only).
 `reload-signal-storm` (TILR-121) joined it on 2026-10-18: a signal during a reload's exec
 kills the server (macOS) or is lost, in what the first release ships.
 `shared-runtime-races` (TILR-122, TILR-123) joined it on 2026-10-18: a second server of the
 user starting takes `tilr` and the other pane tools away from the first one's panes for a
 moment (exit 127), in what the first release ships.
+`reload-exec-signal-followups` (TILR-124) joined it on 2026-10-18: after a failed reload exec
+a broken pipe kills the server, and a SIGTERM while a reload prepares its exec is lost.
+
+| change | goal | size | depends on | blocker | status |
+|---|---|---|---|---|---|
+| reload-exec-signal-followups | SIGPIPE ignored again after a failed reload exec; a SIGTERM/SIGINT while a reload prepares its exec is not lost; `spawn_unblocked` guarded; the SIGTERM test made deterministic | S | - | no | ready |
 
 ## Phase 2: protocol v3 and input
 
