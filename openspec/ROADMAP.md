@@ -115,6 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | host-socket-per-process | ddcc453 |
 | notify-socket-env | 4e7812b |
 | attach-robustness | d7d4e65 |
-| sighup-ignoring-shell-reaped | recorded in the next commit |
+| sighup-ignoring-shell-reaped | 47bce42 |
 
 Older work is in `openspec/changes/archive/`.

@@ -33,3 +33,5 @@
 ## Decision (2026-10-18)
 
 Confirmed as designed: on stop, SIGHUP then (after 2 s) SIGKILL to the shell's process group and the foreground group. `nohup`'d and background jobs survive, as with `tmux kill-server` and an ssh disconnect. Rejected: systemd `KillMode=control-group` style (kill everything of the pane), which breaks `nohup` expectations and is not portable to macOS.
+
+Implemented by: [`47bce42`](https://github.com/tilr-dev/tilrd/commit/47bce42) fix: end what ignores SIGHUP in a pane when the server stops (2026-10-18).
