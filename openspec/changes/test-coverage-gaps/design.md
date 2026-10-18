@@ -87,3 +87,22 @@ second and returns once the second has logged its own `host events on`. Its call
 - The macOS symptom `tilr edit` exiting 127 in the same test was TILR-122, the shared
   `bin/tilr` removed and linked again by a starting server: fixed in the product by
   72b0422 (links renamed over the old ones). Not seen again here (see "Stability").
+
+## D5. The reload check outlasting the test's wait (5.16, 5.3; TILR-127)
+
+Cause: after the executable is replaced, the server sees it within two looks a
+`WATCH_INTERVAL` (1 s) apart and gives the new file up to `CHECK_TIMEOUT` (10 s,
+`crates/tilrd/src/reload.rs`) to answer `state-formats`; on macOS under the full reload
+suite that child (`/bin/sh <exe>`) sat in `_dyld_start` for more than 8 s. The test gave up
+after 10 s in all, before the server, still within its own bounds, logged `not reloading`.
+Fix: `reload.rs` (tests) names the two bounds (`WATCH_INTERVAL`, `CHECK_TIMEOUT`, with a
+comment pointing at src/reload.rs) and waits `JUDGED` = 2 × WATCH_INTERVAL + CHECK_TIMEOUT
++ 5 s, in `a_broken_executable_is_not_reloaded_into` and in
+`an_executable_that_reads_another_state_format_is_not_reloaded_into`, which waits for the
+same verdict. A longer wait is right here: the thing waited on is a process start the
+server itself allows 10 s for.
+- Rejected: a test-only shorter `CHECK_TIMEOUT`. Under that load the check would time out
+  instead and the test would pass through `did not finish` rather than the exit status of
+  the broken file: it would test another path.
+- Rejected: importing the constants. They live in the binary crate, which tests cannot
+  import; the copies say where they come from.

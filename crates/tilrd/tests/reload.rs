@@ -114,6 +114,21 @@ async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
     assert!(!server.logged("reloading"));
 }
 
+/// How often the server looks at its executable on disk, and how long it
+/// gives a new one to answer `state-formats` (`WATCH_INTERVAL` and
+/// `CHECK_TIMEOUT` in src/reload.rs).
+const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// By when a server has logged what it makes of a new executable on disk:
+/// it sees the file within two looks at it and gives it up to
+/// `CHECK_TIMEOUT` to say what it reads, which under load the shell that
+/// runs it can take most of. Waiting less gives up on a server still within
+/// its bounds.
+const JUDGED: Duration = WATCH_INTERVAL
+    .saturating_mul(2)
+    .saturating_add(CHECK_TIMEOUT)
+    .saturating_add(Duration::from_secs(5));
+
 #[tokio::test]
 async fn a_broken_executable_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
@@ -131,13 +146,7 @@ async fn a_broken_executable_is_not_reloaded_into() {
     std::fs::set_permissions(&staged, mode).unwrap();
     std::fs::rename(&staged, &exe).unwrap();
 
-    for _ in 0..100 {
-        if server.logged("not reloading") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(server.logged("not reloading"));
+    server.wait_logged_within("not reloading", JUDGED).await;
     // The server carries on with the code it has.
     assert!(server.is_running());
     assert_eq!(client.run(pane_id, "true").await, 0);
@@ -185,13 +194,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
         std::fs::set_permissions(&staged, mode).unwrap();
         std::fs::rename(&staged, &exe).unwrap();
 
-        for _ in 0..100 {
-            if server.logged(refusal) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(server.logged(refusal));
+        server.wait_logged_within(refusal, JUDGED).await;
         // Same server, same connection, same shell.
         assert!(server.is_running());
         assert_eq!(client.run(pane_id, "true").await, 0);
