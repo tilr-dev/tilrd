@@ -38,3 +38,5 @@ Still so at 1163abd: `PROTOCOL_VERSION: u32 = 2` (`crates/tilr-proto/src/lib.rs:
 ## Impact
 
 `crates/tilr-proto` (`PROTOCOL_VERSION`, proto comments), `crates/tilrd/src/supervisor.rs` (features list, `FEATURE_PING`), `crates/tilrd/tests/panes.rs` (features expectation), `crates/tilr` and `crates/tilr-driver` (built against the constant; the driver's default `Hello.features` of `["ping"]` is dropped), README "Protocol", `openspec/config.yaml` (Protocol paragraph), itests that start a driver (all of them speak v3 after the rebuild). Reload: nothing crosses a reload (version and features are per connection); clients reconnect after the reload into the v3 server and must speak v3. Update from the previous release: works for the server (no state format change, `tilrd state-formats` unchanged); its v2 clients are refused until they update.
+
+Implemented by: [`3dc42e2`](https://github.com/tilr-dev/tilrd/commit/3dc42e2) feat!: protocol version 3 is the mandatory wire contract (2026-10-18).

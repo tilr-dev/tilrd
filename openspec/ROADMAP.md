@@ -118,6 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | shims-path-robustness | 0590786 |
 | startup-signal-window | f8fb63b |
 | pane-socket-peer-check | 248dd56 |
-| protocol-v3 | recorded in the next commit |
+| protocol-v3 | 3dc42e2 |
 
 Older work is in `openspec/changes/archive/`.
