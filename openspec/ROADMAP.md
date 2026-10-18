@@ -115,6 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | client-socket-peer-check | 8274039 |
 | hello-deadline | f32643d |
 | host-socket-per-process | ddcc453 |
-| notify-socket-env | recorded in the next commit |
+| notify-socket-env | 4e7812b |
 
 Older work is in `openspec/changes/archive/`.

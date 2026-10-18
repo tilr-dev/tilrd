@@ -23,3 +23,5 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) (finding #21):
 ## Impact
 
 `crates/tilrd/src/pty.rs` (the removed-variables list, shared), `crates/tilrd/src/exec.rs` (remove before the `ExecStart` env is applied). Holds after a reload: the successor builds pane and exec environments the same way, and panes started before an update keep the environment they had. No protocol change, no state change.
+
+Implemented by: [`4e7812b`](https://github.com/tilr-dev/tilrd/commit/4e7812b) fix: keep the service manager's variables out of panes and execs (2026-10-18).
