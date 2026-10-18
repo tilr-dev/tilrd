@@ -171,7 +171,7 @@ Exec) — в README. Пороги задержки щедрые, как в E: м
 - UC-085. Чужой Origin, DNS rebinding на `/metrics` и `/socks`.
 - UC-086. Шелл, игнорирующий SIGHUP, при остановке сервера — не остаётся сиротой. → `uc_086.py::a_shell_ignoring_sighup_does_not_outlive_the_server` (программа панели и foreground-задача с `trap '' HUP` убиты к возврату `tilr kill-server`; `nohup`-задача в фоне жива, больше ничего от сервера не осталось)
 - UC-087. Soak: сутки работы с переподключениями и обновлениями — память и fd ровные.
-- UC-088. `cloudflared` после SIGKILL сервера не остаётся.
+- UC-088. `cloudflared` после SIGKILL сервера не остаётся. → `uc_088.py::cloudflared_is_gone_after_the_server_is_sigkilled` (`cloudflared` в своей process group; после SIGKILL сервера получает SIGTERM (parent-death signal, Linux) и уходит за 5 с)
 
 ## Отложено
 

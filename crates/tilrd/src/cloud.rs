@@ -502,6 +502,123 @@ fn tunnel_dir() -> PathBuf {
     clipboard::runtime_dir().join("cloudflared")
 }
 
+/// Where the pid of the running `cloudflared` is kept, for a server that
+/// starts after this one was killed.
+fn pid_file() -> PathBuf {
+    tunnel_dir().join("pid")
+}
+
+/// Note the pid of the `cloudflared` just started.
+fn write_pid(pid: u32) {
+    let file = pid_file();
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&file)
+        .and_then(|mut out| std::io::Write::write_all(&mut out, format!("{pid}\n").as_bytes()));
+    if let Err(err) = written {
+        tracing::warn!("tunnel: write {}: {err}", file.display());
+    }
+}
+
+/// Stop a `cloudflared` that an earlier server on this runtime directory
+/// left running (it was killed with SIGKILL, or crashed): the one its pid
+/// file names, if that process still runs this directory's configuration.
+/// A pid that is gone or runs something else is left alone.
+async fn stop_leftover() {
+    let file = pid_file();
+    let Ok(text) = fs::read_to_string(&file) else {
+        return;
+    };
+    let _ = fs::remove_file(&file);
+    let Ok(pid) = text.trim().parse::<libc::pid_t>() else {
+        return;
+    };
+    if pid <= 0 || !runs_config(pid, &tunnel_dir().join("config.yml")) {
+        return;
+    }
+    let gone = || {
+        // SAFETY: kill with signal 0 only checks.
+        let signalled = unsafe { libc::kill(pid, 0) };
+        signalled != 0 || command_line(pid).is_none_or(|line| line.is_empty())
+    };
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let deadline = tokio::time::Instant::now() + TUNNEL_STOP;
+    while !gone() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if !gone() {
+        // SAFETY: as above.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    tracing::info!("stopped a cloudflared left by an earlier server (pid {pid})");
+}
+
+/// Whether process `pid` runs with `config` among its arguments.
+fn runs_config(pid: libc::pid_t, config: &Path) -> bool {
+    let wanted = config.as_os_str().as_encoded_bytes();
+    command_line(pid).is_some_and(|line| line.split(|&byte| byte == 0).any(|arg| arg == wanted))
+}
+
+/// The command line of process `pid`, its arguments separated by NULs; empty
+/// for a zombie.
+#[cfg(target_os = "linux")]
+fn command_line(pid: libc::pid_t) -> Option<Vec<u8>> {
+    fs::read(format!("/proc/{pid}/cmdline")).ok()
+}
+
+/// The command line of process `pid`, its arguments separated by NULs:
+/// `KERN_PROCARGS2` (argc, the executable's path, padding, the arguments,
+/// the environment).
+#[cfg(target_os = "macos")]
+fn command_line(pid: libc::pid_t) -> Option<Vec<u8>> {
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    // SAFETY: sysctl writes at most `size` bytes into `argmax`.
+    let got = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            (&raw mut argmax).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if got != 0 || argmax <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; argmax as usize];
+    let mut size = buf.len();
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    // SAFETY: sysctl writes at most `size` bytes into `buf`.
+    let got = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if got != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    // Past argc: the path, the arguments.
+    Some(buf.split_off(std::mem::size_of::<libc::c_int>().min(buf.len())))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn command_line(_pid: libc::pid_t) -> Option<Vec<u8>> {
+    None
+}
+
 /// Write what `cloudflared` needs to run `spec` and return the command.
 /// Where the tunnel leads is said here: this server's port and nothing else.
 fn prepare(spec: &Spec, local: SocketAddr, cloudflared: &Path) -> Result<Command> {
@@ -545,7 +662,32 @@ fn prepare(spec: &Spec, local: SocketAddr, cloudflared: &Path) -> Result<Command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        // A group of its own: what goes to the server's process group (a
+        // terminal's SIGHUP, Ctrl-C) is not for cloudflared.
+        .process_group(0);
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: getpid has no preconditions.
+        let server = unsafe { libc::getpid() };
+        // SAFETY: prctl, getppid and _exit are async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                // SIGTERM when the server dies, killed or not, so it signs
+                // off at Cloudflare. It is the death of the thread that
+                // forked: a worker of the runtime, which lives as long as
+                // the server.
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The server died before that was set.
+                if libc::getppid() != server {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+    }
     Ok(command)
 }
 
@@ -565,6 +707,7 @@ async fn run_tunnel(
         });
     };
     let mut held = false;
+    stop_leftover().await;
     loop {
         if held {
             match control.recv().await {
@@ -604,6 +747,9 @@ async fn run_tunnel(
                 continue;
             }
         };
+        if let Some(pid) = child.id() {
+            write_pid(pid);
+        }
         tracing::info!(hostname = spec.hostname, "tunnel starting");
         let stderr = child.stderr.take().expect("cloudflared stderr is piped");
         let mut lines = BufReader::new(stderr).lines();
@@ -630,6 +776,11 @@ async fn run_tunnel(
                 },
             }
         };
+        // Once it is gone the pid file goes; a server killed before that
+        // leaves it for the next one (`stop_leftover`).
+        let forget = || {
+            let _ = fs::remove_file(pid_file());
+        };
         match ended {
             // Not wanted any more, or another one is.
             Ended::Unwanted => {
@@ -641,11 +792,13 @@ async fn run_tunnel(
             // Cloud knows it, and the successor starts its own.
             Ended::Held(done) => {
                 stop(&mut child).await;
+                forget();
                 tracing::info!(hostname = spec.hostname, "tunnel held");
                 held = true;
                 let _ = done.send(());
             }
             Ended::Exited(exit) => {
+                forget();
                 let why = match exit {
                     Ok(status) => format!("cloudflared stopped: {status}"),
                     Err(err) => format!("cloudflared stopped: {err}"),
@@ -701,6 +854,34 @@ async fn stop(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_process_running_this_configuration_is_taken_for_a_leftover() {
+        let config = Path::new("/nowhere/tilr-test/cloudflared/config.yml");
+        // `; :` keeps the shell from exec'ing sleep, which would drop its
+        // arguments.
+        let mut ours = std::process::Command::new("sh")
+            .args(["-c", "sleep 30; :", "cloudflared", "tunnel", "--config"])
+            .arg(config)
+            .arg("run")
+            .spawn()
+            .unwrap();
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = |child: &std::process::Child| child.id() as libc::pid_t;
+        assert!(runs_config(pid(&ours), config));
+        assert!(!runs_config(pid(&other), config));
+        assert!(!runs_config(pid(&ours), Path::new("/elsewhere/config.yml")));
+        // SAFETY: getpid has no preconditions.
+        assert!(!runs_config(unsafe { libc::getpid() }, config));
+        for child in [&mut ours, &mut other] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(!runs_config(pid(&ours), config), "gone");
+    }
 
     fn described(hostname: &str) -> Value {
         json!({

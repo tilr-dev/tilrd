@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: cloudflared does not outlive the server
-When the server stops, `cloudflared` SHALL stop with it; after the server is killed with SIGKILL no `cloudflared` it started MUST be left running: on Linux it SHALL get SIGTERM when the server dies, and on every platform a server starting on the same runtime directory SHALL stop a `cloudflared` recorded in `<runtime dir>/cloudflared/pid` that still runs with that directory's `config.yml` before starting its own. `cloudflared` SHALL run in a process group of its own, so a signal to the server's process group MUST NOT reach it.
+`cloudflared` SHALL stop with the server and run in a process group of its own, which a signal to the server's group MUST NOT reach. After a SIGKILL of the server none MUST be left: on Linux it SHALL get SIGTERM when the server dies, and everywhere a server starting on the same runtime directory SHALL first stop the `cloudflared` named in `<runtime dir>/cloudflared/pid` if it still runs that directory's `config.yml`.
 
 **Verified by**: `cloud::a_cloudflared_left_by_a_killed_server_is_stopped`, `cloud::cloudflared_is_not_in_the_servers_process_group`; itests `UC-088` (`uc_088.py::cloudflared_is_gone_after_the_server_is_sigkilled`).
 

@@ -24,3 +24,9 @@ The old supervisor stops and reaps its `cloudflared` before the exec (unchanged)
 ## Backpressure
 
 Not applicable: no client data.
+
+## As implemented
+
+- The sweep runs in the tunnel task before its loop (`stop_leftover`), so it precedes any `cloudflared` this server starts; a server without a TCP port runs no tunnel task and sweeps nothing. The pid file is written with mode 0600 when the child has started and removed when it is reaped (stopped, held for a reload, or exited); a tunnel closed removes the whole directory as before.
+- The command line is matched argument by argument against `<runtime dir>/cloudflared/config.yml` (Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`); a leftover is polled until gone (a process that is not this server's child cannot be waited for), SIGKILLed after `TUNNEL_STOP`.
+- The cargo test of the sweep uses a stand-in that ignores SIGTERM, so on Linux the parent-death signal leaves it running and the sweep is exercised on both platforms; the itests case UC-088 checks the parent-death signal itself.

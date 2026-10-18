@@ -160,19 +160,29 @@ Before a reload replaces the executable, the server SHALL stop its `cloudflared`
 - **THEN** a `cloudflared` with a new pid runs and the old one is gone
 
 ### Requirement: cloudflared does not outlive the server
-When the server stops, `cloudflared` SHALL stop with it; after the server is killed with SIGKILL no `cloudflared` it started MUST be left running.
+`cloudflared` SHALL stop with the server and run in a process group of its own, which a signal to the server's group MUST NOT reach. After a SIGKILL of the server none MUST be left: on Linux it SHALL get SIGTERM when the server dies, and everywhere a server starting on the same runtime directory SHALL first stop the `cloudflared` named in `<runtime dir>/cloudflared/pid` if it still runs that directory's `config.yml`.
+
+**Verified by**: `cloud::a_cloudflared_left_by_a_killed_server_is_stopped`, `cloud::cloudflared_is_not_in_the_servers_process_group`; itests `UC-088` (`uc_088.py::cloudflared_is_gone_after_the_server_is_sigkilled`).
 
 #### Scenario: The server stops
 - **WHEN** a server with its tunnel up stops (`tilr kill-server`, SIGTERM)
 - **THEN** its `cloudflared` is gone
 
 #### Scenario: SIGKILL
-- **WHEN** a server with its tunnel up is killed with SIGKILL
-- **THEN** no `cloudflared` it started is left running
+- **WHEN** a server with its tunnel up is killed with SIGKILL on Linux
+- **THEN** within 5 s no `cloudflared` it started is left running
+
+#### Scenario: Leftover found at the next start
+- **WHEN** a `cloudflared` recorded in `<runtime dir>/cloudflared/pid` still runs with that directory's `config.yml` and a server starts on that runtime directory
+- **THEN** that `cloudflared` is stopped before any new one starts and the log says `stopped a cloudflared left by an earlier server`
+
+#### Scenario: Terminal hangup
+- **WHEN** SIGHUP is sent to the process group of a server with its tunnel up
+- **THEN** `cloudflared` keeps its pid and the tunnel stays `up`
 
 ## Notes
 
-- Requirements without a test: "Login links the machine through a device code", "Login keeps the link once confirmed", "Logout unlinks the machine", "Cloud may revoke the link", "The control connection is kept alive and retried", "A cloudflared that fails is reported and restarted", "No TCP port, no Cloud", "cloudflared does not outlive the server". USE_CASES.md says login/logout were checked only by hand against a local Cloud and a real `cloudflared` / Cloudflare tunnel never.
+- Requirements without a test: "Login links the machine through a device code", "Login keeps the link once confirmed", "Logout unlinks the machine", "Cloud may revoke the link", "The control connection is kept alive and retried", "A cloudflared that fails is reported and restarted", "No TCP port, no Cloud". USE_CASES.md says login/logout were checked only by hand against a local Cloud and a real `cloudflared` / Cloudflare tunnel never.
 - The unit tests in `crates/tilrd/src/cloud.rs` (`a_tunnel_that_would_rewrite_the_config_is_refused`, `the_control_address_follows_the_cloud_address`) also cover the field checks and the control URL.
-- "cloudflared does not outlive the server" is intended behavior, not met at HEAD for SIGKILL: `cloudflared` is a plain child (killed on drop when the server's runtime ends, no parent-death signal), so a SIGKILLed server leaves it running. USE_CASES.md says so ("`cloudflared`, оставшийся после аварийной смерти сервера (SIGKILL), никто не убирает"); itests UC-088 is listed in itests/USE_CASES.md (group H) without a scenario. The normal-stop half has no test either.
+- "cloudflared does not outlive the server": the terminal-hangup scenario is covered by checking that `cloudflared` leads a process group of its own (`cloud::cloudflared_is_not_in_the_servers_process_group`); no test sends SIGHUP to a server's group, which in the test harness is the test runner's. The SIGKILL scenario on macOS (no parent-death signal) is covered by the sweep at the next start only.
 - No itests case cited here is currently red.

@@ -1,17 +1,17 @@
 {
  "generated_from": {
   "specs": "openspec/specs",
-  "cases": 149,
+  "cases": 150,
   "last_run": {
-   "started": "2026-10-18T12:27:59.577502+00:00",
+   "started": "2026-10-18T12:45:16.298601+00:00",
    "commit": null,
    "counts": {
-    "PASS": 151,
+    "PASS": 152,
     "FAIL": 0,
     "BLOCKED": 0
    },
    "args": "--only scenarios",
-   "path": "itests/results/20261018T142745-86692"
+   "path": "itests/results/20261018T144458-31261"
   }
  },
  "capabilities": [
@@ -1874,8 +1874,13 @@
      "title": "cloudflared does not outlive the server",
      "tag": "cloud-tunnels/cloudflared-does-not-outlive-the-server",
      "cases": [],
-     "all_cases": [],
-     "cargo_tests": [],
+     "all_cases": [
+      "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled"
+     ],
+     "cargo_tests": [
+      "cloud::a_cloudflared_left_by_a_killed_server_is_stopped",
+      "cloud::cloudflared_is_not_in_the_servers_process_group"
+     ],
      "scenarios": [
       {
        "slug": "the-server-stops",
@@ -1888,12 +1893,30 @@
        "slug": "sigkill",
        "title": "SIGKILL",
        "tag": "cloud-tunnels/cloudflared-does-not-outlive-the-server#sigkill",
+       "cases": [
+        "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled"
+       ],
+       "covered": true
+      },
+      {
+       "slug": "leftover-found-at-the-next-start",
+       "title": "Leftover found at the next start",
+       "tag": "cloud-tunnels/cloudflared-does-not-outlive-the-server#leftover-found-at-the-next-start",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "terminal-hangup",
+       "title": "Terminal hangup",
+       "tag": "cloud-tunnels/cloudflared-does-not-outlive-the-server#terminal-hangup",
        "cases": [],
        "covered": false
       }
      ],
-     "covered": false,
-     "last_run": {}
+     "covered": true,
+     "last_run": {
+      "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled": "PASS"
+     }
     }
    ]
   },
@@ -6489,13 +6512,21 @@
      "cases": [],
      "all_cases": [],
      "cargo_tests": [
-      "cloud::a_reload_replaces_cloudflared_with_one_of_the_new_server"
+      "cloud::a_reload_replaces_cloudflared_with_one_of_the_new_server",
+      "cloud::a_cloudflared_ignoring_sigterm_does_not_hold_back_a_reload"
      ],
      "scenarios": [
       {
        "slug": "linked-server-reloads",
        "title": "Linked server reloads",
        "tag": "reload/cloudflared-is-stopped-before-the-exec#linked-server-reloads",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "cloudflared-ignores-sigterm",
+       "title": "cloudflared ignores SIGTERM",
+       "tag": "reload/cloudflared-is-stopped-before-the-exec#cloudflared-ignores-sigterm",
        "cases": [],
        "covered": false
       }
@@ -10920,6 +10951,13 @@
     "daemon-lifecycle/no-shell-outlives-the-server#shell-ignoring-sighup",
     "daemon-lifecycle/no-shell-outlives-the-server#foreground-job-ignoring-sighup",
     "daemon-lifecycle/no-shell-outlives-the-server#nohup-job"
+   ],
+   "last_run": "PASS"
+  },
+  {
+   "id": "uc_088:cloudflared_is_gone_after_the_server_is_sigkilled",
+   "spec": [
+    "cloud-tunnels/cloudflared-does-not-outlive-the-server#sigkill"
    ],
    "last_run": "PASS"
   }

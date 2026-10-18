@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| cloudflared-outlives-exec | cloudflared in its own process group, stopped by a starting server if left behind | S | - | no | ready |
 | durable-file-writes | fsync file and directory around the rename in FsWrite and `tilrd update` | S | - | no | ready |
 | service-install-ownership | install does not replace a foreign unit/plist; locale-independent crontab detection; state directory tightened to 0700 | S | - | no | ready |
 | shims-path-robustness | `$TILR_SHIMS` stays first on PATH in zsh, bash and fish when a profile resets PATH | M | - | no | ready |
@@ -116,5 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | notify-socket-env | 4e7812b |
 | attach-robustness | d7d4e65 |
 | sighup-ignoring-shell-reaped | 47bce42 |
+| cloudflared-outlives-exec | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

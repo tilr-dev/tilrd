@@ -106,6 +106,10 @@ Cloud repository.
 | A tunnel description that would extend the `cloudflared` config (another service) is rejected | `a_tunnel_that_would_lead_elsewhere_is_refused` |
 | On a server reload the old `cloudflared` is stopped and the successor starts its own | `a_reload_replaces_cloudflared_with_one_of_the_new_server` |
 | A server linked while running connects on its own; one unlinked disconnects | `a_server_linked_while_it_runs_connects_on_its_own` |
+| `cloudflared` runs in a process group of its own, not the server's | `cloudflared_is_not_in_the_servers_process_group` |
+| A server killed with SIGKILL leaves a `cloudflared` (one that ignores SIGTERM, so even Linux's parent-death signal leaves it): the next server on the runtime directory stops it before it starts its own, and says so | `a_cloudflared_left_by_a_killed_server_is_stopped` |
+| A `cloudflared` that ignores SIGTERM is killed 3 s into a reload, which then completes; only the successor's runs | `a_cloudflared_ignoring_sigterm_does_not_hold_back_a_reload` |
+| Unit: only a process running this runtime directory's `config.yml` is taken for a leftover `cloudflared` (`src/cloud.rs`) | `cloud::tests::only_a_process_running_this_configuration_is_taken_for_a_leftover` |
 
 ## Reconnecting — `tests/reconnect.rs`
 

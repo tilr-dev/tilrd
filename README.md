@@ -376,7 +376,12 @@ tilr cloud logout     # Cloud forgets the machine and removes its tunnel
 A linked server keeps one outgoing connection to Cloud. When Cloud tells it to, it runs
 `cloudflared` (which must be installed) with a configuration it writes itself: the tunnel
 leads to the server's own port and nowhere else. A running server notices a login or a
-logout within a few seconds.
+logout within a few seconds. `cloudflared` runs in a process group of its own (a terminal's
+SIGHUP or Ctrl-C sent to the server's group does not reach it) and does not outlive the
+server: a stop or a reload ends it (SIGTERM, then SIGKILL after 3 s); on Linux it gets
+SIGTERM when the server dies, even of SIGKILL; elsewhere a server killed that way leaves it
+running until the next server starts on that runtime directory, which stops the one named
+in `cloudflared/pid` there if it still runs that directory's `config.yml`.
 
 What Cloud can and cannot do:
 

@@ -100,16 +100,28 @@ async fn cloud() -> (String, mpsc::UnboundedReceiver<Control>) {
 
 /// A server linked to the Cloud at `url`, with the stand-in `cloudflared`.
 fn linked_server(url: &str, args: &[&str]) -> Server {
+    linked_server_in(
+        Server::scratch_dir(),
+        url,
+        args,
+        "cloudflared",
+        "exec sleep 600\n",
+    )
+}
+
+/// A server linked to the Cloud at `url` in `dir`, with a stand-in
+/// `cloudflared` there named `name` that, once it said it registered, runs
+/// `then`.
+fn linked_server_in(dir: PathBuf, url: &str, args: &[&str], name: &str, then: &str) -> Server {
     use std::os::unix::fs::PermissionsExt;
 
-    let dir = Server::scratch_dir();
     std::fs::create_dir_all(dir.join("state")).unwrap();
     std::fs::write(
         dir.join("state/cloud.json"),
         json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
     )
     .unwrap();
-    let cloudflared = dir.join("cloudflared");
+    let cloudflared = dir.join(name);
     std::fs::write(
         &cloudflared,
         format!(
@@ -119,7 +131,7 @@ fn linked_server(url: &str, args: &[&str]) -> Server {
              cat \"$3\" > cloudflared.config\n\
              echo $$ > cloudflared.pid\n\
              echo 'INF Registered tunnel connection connIndex=0' >&2\n\
-             exec sleep 600\n",
+             {then}",
             dir = dir.display()
         ),
     )
@@ -287,4 +299,126 @@ async fn a_server_linked_while_it_runs_connects_on_its_own() {
             Some(Ok(_)) => {}
         }
     }
+}
+
+/// The process group of `pid`, as `ps` shows it.
+fn process_group(pid: &str) -> String {
+    let output = Command::new("ps")
+        .args(["-o", "pgid=", "-p", pid])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+#[tokio::test]
+async fn cloudflared_is_not_in_the_servers_process_group() {
+    let (url, mut connections) = cloud().await;
+    let server = linked_server(&url, &[]);
+    let mut control = connections.recv().await.unwrap();
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+    let pid = std::fs::read_to_string(server.dir.join("cloudflared.pid")).unwrap();
+    let pid = pid.trim();
+    // A group of its own, which a signal to the server's group (a terminal
+    // hanging up, Ctrl-C) does not reach.
+    assert_eq!(process_group(pid), pid);
+    assert_ne!(
+        process_group(pid),
+        process_group(&server.child.id().to_string())
+    );
+}
+
+/// A stand-in that ignores SIGTERM and keeps its command line (the
+/// configuration among its arguments) while it runs.
+const IGNORES_SIGTERM: &str = "trap '' TERM\nwhile :; do sleep 1; done\n";
+
+#[tokio::test]
+async fn a_cloudflared_left_by_a_killed_server_is_stopped() {
+    let (url, mut connections) = cloud().await;
+    let mut killed = linked_server_in(
+        Server::scratch_dir(),
+        &url,
+        &[],
+        "cloudflared",
+        IGNORES_SIGTERM,
+    );
+    let mut control = connections.recv().await.unwrap();
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+    let pid = std::fs::read_to_string(killed.dir.join("cloudflared.pid")).unwrap();
+    let pid = pid.trim().to_owned();
+    assert!(
+        killed.dir.join("runtime/cloudflared/pid").exists(),
+        "the server notes the pid"
+    );
+
+    // No cleanup runs: a SIGKILL. Even with the parent-death signal (Linux)
+    // this one is still there, as it ignores SIGTERM.
+    killed.child.kill().unwrap();
+    killed.child.wait().unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(alive(&pid), "left behind");
+
+    // The next server on the same runtime directory stops it.
+    let next = linked_server_in(
+        killed.dir.clone(),
+        &url,
+        &[],
+        "cloudflared-next",
+        "exec sleep 600\n",
+    );
+    until("the leftover is stopped", || {
+        next.logged(&format!(
+            "stopped a cloudflared left by an earlier server (pid {pid})"
+        ))
+    })
+    .await;
+    until("the leftover is gone", || !alive(&pid)).await;
+    // And the next tunnel is its own.
+    let mut control = connections.recv().await.unwrap();
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+    let started = std::fs::read_to_string(next.dir.join("cloudflared.pid")).unwrap();
+    assert_ne!(started.trim(), pid);
+}
+
+#[tokio::test]
+async fn a_cloudflared_ignoring_sigterm_does_not_hold_back_a_reload() {
+    let (url, mut connections) = cloud().await;
+    let server = linked_server_in(
+        Server::scratch_dir(),
+        &url,
+        &[],
+        "cloudflared",
+        "trap '' TERM\nexec sleep 600\n",
+    );
+    let mut control = connections.recv().await.unwrap();
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+    let pid_file = server.dir.join("cloudflared.pid");
+    let before = std::fs::read_to_string(&pid_file).unwrap();
+
+    let reloaded = std::time::Instant::now();
+    server.signal("-USR1");
+    let mut control = connections.recv().await.unwrap();
+    // Killed once the SIGTERM went unheeded for 3 s, then the exec.
+    assert!(
+        reloaded.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        reloaded.elapsed()
+    );
+    assert!(
+        !alive(before.trim()),
+        "the old cloudflared is gone before the exec"
+    );
+    control.greet().await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+    let after = std::fs::read_to_string(&pid_file).unwrap();
+    assert_ne!(before, after);
+    assert!(alive(after.trim()));
 }
