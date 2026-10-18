@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| attach-robustness | `tilr attach` survives errors after a reconnect, detaches at once while connecting, restores the terminal on signals | S | - | no | ready |
 | sighup-ignoring-shell-reaped | a pane whose supervisor is gone ends its shell's and foreground groups (SIGHUP, 2 s, SIGKILL); ClosePane too | M | - | no | ready |
 | cloudflared-outlives-exec | cloudflared in its own process group, stopped by a starting server if left behind | S | - | no | ready |
 | durable-file-writes | fsync file and directory around the rename in FsWrite and `tilrd update` | S | - | no | ready |
@@ -116,5 +115,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | hello-deadline | f32643d |
 | host-socket-per-process | ddcc453 |
 | notify-socket-env | 4e7812b |
+| attach-robustness | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

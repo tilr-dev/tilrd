@@ -3,7 +3,7 @@
   "specs": "openspec/specs",
   "cases": 148,
   "last_run": {
-   "started": "2026-10-18T11:54:55.859576+00:00",
+   "started": "2026-10-18T12:16:30.630170+00:00",
    "commit": null,
    "counts": {
     "PASS": 150,
@@ -11,7 +11,7 @@
     "BLOCKED": 0
    },
    "args": "--only scenarios",
-   "path": "itests/results/20261018T135438-63235"
+   "path": "itests/results/20261018T141615-7806"
   }
  },
  "capabilities": [
@@ -8892,6 +8892,27 @@
      }
     },
     {
+     "slug": "signals-while-attached",
+     "title": "Signals while attached",
+     "tag": "tilr-cli/signals-while-attached",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "client::a_terminated_attach_restores_the_terminal"
+     ],
+     "scenarios": [
+      {
+       "slug": "sigterm-while-attached",
+       "title": "SIGTERM while attached",
+       "tag": "tilr-cli/signals-while-attached#sigterm-while-attached",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
      "slug": "how-an-attach-ends",
      "title": "How an attach ends",
      "tag": "tilr-cli/how-an-attach-ends",
@@ -9024,6 +9045,35 @@
      "last_run": {
       "uc_014:after_a_sigkill_the_next_tilr_replaces_the_socket_and_starts_a_new_daemon": "PASS"
      }
+    },
+    {
+     "slug": "reconnect-attempts",
+     "title": "Reconnect attempts",
+     "tag": "tilr-cli/reconnect-attempts",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "client::an_error_right_after_a_reconnect_is_retried",
+      "client::detach_works_while_a_reconnect_attempt_hangs"
+     ],
+     "scenarios": [
+      {
+       "slug": "error-right-after-a-reconnect",
+       "title": "Error right after a reconnect",
+       "tag": "tilr-cli/reconnect-attempts#error-right-after-a-reconnect",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "detach-while-an-attempt-hangs",
+       "title": "Detach while an attempt hangs",
+       "tag": "tilr-cli/reconnect-attempts#detach-while-an-attempt-hangs",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     },
     {
      "slug": "errors-and-exit-status",

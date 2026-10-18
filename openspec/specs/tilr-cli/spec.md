@@ -224,6 +224,15 @@ Attaching SHALL need stdin to be a terminal, else fail with ``attaching needs a 
 - **WHEN** no tilrd runs and the user starts `tilr` in a terminal
 - **THEN** the terminal shows the shell prompt of a new pane, and typed input reaches it
 
+### Requirement: Signals while attached
+When an attached `tilr` gets SIGTERM, SIGHUP or SIGINT it SHALL restore the terminal (cooked mode, cursor shown, main screen, mouse capture and bracketed paste off) and then end by that signal, printing nothing; the pane goes on.
+
+**Verified by**: `client::a_terminated_attach_restores_the_terminal`.
+
+#### Scenario: SIGTERM while attached
+- **WHEN** `kill -TERM` is sent to an attached `tilr`
+- **THEN** `tilr` ends by SIGTERM, `stty -a` on its terminal shows `icanon` and `echo`, the cursor is shown, and the pane is still listed by `tilr ls`
+
 ### Requirement: How an attach ends
 An attach SHALL end with one line on stdout and exit status 0: `[detached from pane XXXXXXXX]` (the first 8 characters of the id) on Ctrl+] d or end of input, `[pane XXXXXXXX exited with code N]` on `PaneExited`, `[pane XXXXXXXX is gone]` when a `PaneList` lacks the pane or it is gone after a reconnect, and `[tilrd stopped]` when the local server stopped.
 
@@ -279,6 +288,19 @@ An attached client SHALL ping every 5 s and SHALL take 15 s without hearing anyt
 #### Scenario: Failed attempt
 - **WHEN** a reconnect attempt fails for another reason
 - **THEN** the status line shows the error and the attempt number, and the next attempt waits twice as long, at most 2 s
+
+### Requirement: Reconnect attempts
+A reconnect attempt that connects but then fails to list the panes or to subscribe SHALL count as a failed attempt (status line, backoff), not end the attach. Keys SHALL be read while an attempt runs, so Ctrl+] d MUST detach at once also then.
+
+**Verified by**: `client::an_error_right_after_a_reconnect_is_retried`, `client::detach_works_while_a_reconnect_attempt_hangs`.
+
+#### Scenario: Error right after a reconnect
+- **WHEN** a reconnect attempt connects and the connection is lost before `ListPanes` is answered
+- **THEN** `tilr` stays attached, shows the error on the status line and connects again, and keys typed once it is back reach the pane
+
+#### Scenario: Detach while an attempt hangs
+- **WHEN** a reconnect attempt is waiting on a socket that accepts but never answers and the user types Ctrl+] d
+- **THEN** `tilr` prints `[detached from pane …]` and exits 0 at once, not after the 5 s connect timeout (the test allows 1 s)
 
 ### Requirement: Errors and exit status
 Every failure SHALL print one message `tilr: <error with its causes>` on stderr and exit with status 1, except server commands, whose status comes from `ExecExit`, and usage errors, which are clap's (status 2). Successful commands SHALL exit 0.

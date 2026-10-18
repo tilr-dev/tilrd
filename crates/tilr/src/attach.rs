@@ -8,8 +8,10 @@
 //!
 //! A connection that drops (the network, the server reloading) is made
 //! again with the same client id; meanwhile the bottom row says so, and
-//! what is typed is dropped, not sent later. A local server that is gone for
-//! good (its socket nobody's) ends the attach.
+//! what is typed is dropped, not sent later, and Ctrl+] d still detaches. A
+//! local server that is gone for good (its socket nobody's) ends the attach.
+//!
+//! SIGTERM, SIGHUP and SIGINT restore the terminal, then end the process.
 
 use std::io::Write;
 use std::time::Duration;
@@ -96,7 +98,7 @@ impl Attach<'_> {
         let mut input = EventStream::new();
         let mut conn = Some(conn);
         if let Some(conn) = &mut conn {
-            self.subscribe(conn).await?;
+            subscribe(conn, self.pane_id).await?;
         }
         let mut ping = tokio::time::interval(PING_EVERY);
         let mut retry = RETRY_FIRST;
@@ -104,41 +106,44 @@ impl Attach<'_> {
         let mut next_attempt = Instant::now();
         loop {
             let Some(live) = &mut conn else {
-                // Disconnected: keys other than the prefix's are dropped.
-                tokio::select! {
-                    event = input.next() => {
-                        let Some(event) = event else { return Ok(Exit::Detached) };
-                        if let Event::Key(key) = event?
-                            && let Keyed::Detach = self.key(&key)
-                        {
-                            return Ok(Exit::Detached);
+                // Disconnected: keys other than the prefix's are dropped,
+                // and they are read while an attempt runs, so Ctrl+] d
+                // drops the attempt.
+                let (target, client_id, pane_id) = (self.target, self.client_id, self.pane_id);
+                let wait = next_attempt;
+                let mut pending = std::pin::pin!(async move {
+                    tokio::time::sleep_until(wait).await;
+                    reconnect(target, client_id, pane_id).await
+                });
+                let outcome = loop {
+                    tokio::select! {
+                        outcome = &mut pending => break outcome,
+                        event = input.next() => {
+                            let Some(event) = event else { return Ok(Exit::Detached) };
+                            if let Event::Key(key) = event?
+                                && let Keyed::Detach = self.key(&key)
+                            {
+                                return Ok(Exit::Detached);
+                            }
                         }
                     }
-                    () = tokio::time::sleep_until(next_attempt) => {
-                        attempts += 1;
-                        match Conn::connect(self.target, self.client_id).await {
-                            Ok(mut fresh) => {
-                                if !fresh.list_panes().await?.iter().any(|pane| pane.pane_id == self.pane_id) {
-                                    return Ok(Exit::PaneGone);
-                                }
-                                self.subscribe(&mut fresh).await?;
-                                conn = Some(fresh);
-                                retry = RETRY_FIRST;
-                                attempts = 0;
-                            }
-                            Err(ConnectError::NoServer(_))
-                                if matches!(self.target, Target::Local(path) if daemon::stopped(path)) =>
-                            {
-                                return Ok(Exit::ServerGone);
-                            }
-                            // Another user's socket now: nothing to wait for.
-                            Err(ConnectError::Untrusted(err)) => return Err(err),
-                            Err(err) => {
-                                status(&format!("tilr: disconnected ({err}), reconnecting… (attempt {attempts}; Ctrl+] d detaches)"))?;
-                                next_attempt = Instant::now() + retry;
-                                retry = (retry * 2).min(RETRY_LAST);
-                            }
-                        }
+                };
+                attempts += 1;
+                match outcome {
+                    Attempt::Connected(fresh) => {
+                        conn = Some(fresh);
+                        retry = RETRY_FIRST;
+                        attempts = 0;
+                    }
+                    Attempt::PaneGone => return Ok(Exit::PaneGone),
+                    Attempt::ServerGone => return Ok(Exit::ServerGone),
+                    Attempt::Untrusted(err) => return Err(err),
+                    Attempt::Failed(err) => {
+                        status(&format!(
+                            "tilr: disconnected ({err}), reconnecting… (attempt {attempts}; Ctrl+] d detaches)"
+                        ))?;
+                        next_attempt = Instant::now() + retry;
+                        retry = (retry * 2).min(RETRY_LAST);
                     }
                 }
                 continue;
@@ -202,17 +207,6 @@ impl Attach<'_> {
         }
     }
 
-    /// Size the pane to this terminal and watch it; the server answers with
-    /// a full frame.
-    async fn subscribe(&self, conn: &mut Conn) -> Result<()> {
-        let (cols, rows) = crate::size();
-        conn.send(resize(self.pane_id, cols, rows)).await?;
-        conn.send(Msg::Subscribe(Subscribe {
-            pane_id: self.pane_id.to_owned(),
-        }))
-        .await
-    }
-
     fn capture_mouse(&mut self, wanted: bool) -> Result<()> {
         if wanted != self.mouse_captured {
             if wanted {
@@ -245,6 +239,52 @@ impl Attach<'_> {
         }
         key_message(self.pane_id, key).map_or(Keyed::Nothing, Keyed::Send)
     }
+}
+
+/// How one reconnect attempt went.
+enum Attempt {
+    Connected(Conn),
+    PaneGone,
+    ServerGone,
+    /// Another user's socket now: nothing to wait for.
+    Untrusted(anyhow::Error),
+    /// Worth another attempt: the reason, for the status line.
+    Failed(String),
+}
+
+/// Connect again, check the pane is still there and subscribe to it. A
+/// connection lost or a request unanswered on the way is a failed attempt,
+/// as a refused connect is.
+async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
+    let mut fresh = match Conn::connect(target, client_id).await {
+        Ok(fresh) => fresh,
+        Err(ConnectError::NoServer(_)) if matches!(target, Target::Local(path) if daemon::stopped(path)) =>
+        {
+            return Attempt::ServerGone;
+        }
+        Err(ConnectError::Untrusted(err)) => return Attempt::Untrusted(err),
+        Err(err) => return Attempt::Failed(err.to_string()),
+    };
+    match fresh.list_panes().await {
+        Ok(panes) if !panes.iter().any(|pane| pane.pane_id == pane_id) => return Attempt::PaneGone,
+        Ok(_) => {}
+        Err(err) => return Attempt::Failed(format!("{err:#}")),
+    }
+    match subscribe(&mut fresh, pane_id).await {
+        Ok(()) => Attempt::Connected(fresh),
+        Err(err) => Attempt::Failed(format!("{err:#}")),
+    }
+}
+
+/// Size the pane to this terminal and watch it; the server answers with
+/// a full frame.
+async fn subscribe(conn: &mut Conn, pane_id: &str) -> Result<()> {
+    let (cols, rows) = crate::size();
+    conn.send(resize(pane_id, cols, rows)).await?;
+    conn.send(Msg::Subscribe(Subscribe {
+        pane_id: pane_id.to_owned(),
+    }))
+    .await
 }
 
 /// Ctrl+]. Terminals without the kitty keyboard protocol send it as the
@@ -283,11 +323,74 @@ fn status(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Restores the terminal on drop, including on error paths.
-struct TerminalGuard;
+/// Restores the terminal on drop, including on error paths, and on
+/// SIGTERM, SIGHUP or SIGINT before the process ends by it.
+struct TerminalGuard {
+    /// What those signals did before.
+    previous: Vec<(libc::c_int, libc::sigaction)>,
+}
+
+/// The signals that end an attached `tilr` once the terminal is restored.
+const ENDING_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGINT];
+
+/// The terminal's modes before raw mode, for the signal handler.
+static COOKED: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
+
+/// What [`TerminalGuard`]'s drop writes, as bytes the signal handler can
+/// write: the end of a frame being drawn, bracketed paste and mouse capture
+/// off, line wrap on, attributes reset, the default cursor shown, the main
+/// screen.
+const RESTORE: &[u8] = b"\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?7h\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
+
+/// SIGTERM, SIGHUP or SIGINT while attached. It runs whatever the event
+/// loop is doing, even blocked writing to a terminal that does not read:
+/// only async-signal-safe calls, the terminal written without blocking.
+extern "C" fn on_ending_signal(signal: libc::c_int) {
+    // SAFETY: fcntl, write, tcsetattr, signal and raise are
+    // async-signal-safe; COOKED is set before this handler is installed and
+    // never changes.
+    unsafe {
+        let flags = libc::fcntl(1, libc::F_GETFL);
+        if flags != -1 {
+            libc::fcntl(1, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        libc::write(1, RESTORE.as_ptr().cast(), RESTORE.len());
+        if flags != -1 {
+            // The descriptor is shared with the shell that started tilr.
+            libc::fcntl(1, libc::F_SETFL, flags);
+        }
+        if let Some(cooked) = COOKED.get() {
+            libc::tcsetattr(0, libc::TCSANOW, cooked);
+        }
+        // Ends the process once this handler returns and the signal is
+        // unblocked again.
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+}
 
 impl TerminalGuard {
     fn enter() -> Result<Self> {
+        // SAFETY: tcgetattr writes the termios it is given.
+        let mut cooked: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(0, &raw mut cooked) } == 0 {
+            let _ = COOKED.set(cooked);
+        }
+        let mut previous = Vec::new();
+        for signal in ENDING_SIGNALS {
+            // SAFETY: sigaction with a handler that only makes
+            // async-signal-safe calls; the old action is kept to put back.
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = on_ending_signal as extern "C" fn(libc::c_int) as usize;
+                libc::sigemptyset(&raw mut action.sa_mask);
+                let mut old: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signal, &raw const action, &raw mut old) == 0 {
+                    previous.push((signal, old));
+                }
+            }
+        }
+        let guard = Self { previous };
         terminal::enable_raw_mode()?;
         execute!(
             std::io::stdout(),
@@ -295,7 +398,7 @@ impl TerminalGuard {
             DisableLineWrap,
             EnableBracketedPaste,
         )?;
-        Ok(Self)
+        Ok(guard)
     }
 }
 
@@ -312,6 +415,10 @@ impl Drop for TerminalGuard {
             LeaveAlternateScreen,
         );
         let _ = terminal::disable_raw_mode();
+        for (signal, old) in &self.previous {
+            // SAFETY: putting back the action sigaction gave us.
+            unsafe { libc::sigaction(*signal, old, std::ptr::null_mut()) };
+        }
     }
 }
 

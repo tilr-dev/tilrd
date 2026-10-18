@@ -76,6 +76,9 @@ The test's name is the statement of the use case.
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
+| `kill -TERM` of an attached `tilr`: it ends by SIGTERM, the terminal back in cooked mode (`icanon`, `echo`), cursor shown, main screen, nothing printed; the pane stays | `a_terminated_attach_restores_the_terminal` |
+| A reconnect that connects but loses the connection before the pane list comes (a stand-in server on a TCP port): a failed attempt on the status line, the next one attaches and typing gets through | `an_error_right_after_a_reconnect_is_retried` |
+| Ctrl+] d while a reconnect attempt waits on a server that accepts and never answers: detached at once, not after the 5 s connect timeout | `detach_works_while_a_reconnect_attempt_hangs` |
 
 ## Access — `tests/auth.rs`
 

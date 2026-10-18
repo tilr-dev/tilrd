@@ -499,6 +499,22 @@ impl Terminal {
         self.master.write_all(text.as_bytes()).unwrap();
     }
 
+    /// Whether the terminal is in canonical mode with echo, as `stty -a`
+    /// says `icanon` and `echo`. Read on the master: once the session's
+    /// leader is gone the slave descriptors are revoked (macOS).
+    fn cooked(&self) -> bool {
+        // SAFETY: tcgetattr writes the termios it is given.
+        let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(self.master.as_raw_fd(), &raw mut modes) },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        let wanted = libc::ICANON | libc::ECHO;
+        modes.c_lflag & wanted == wanted
+    }
+
     fn expect(&mut self, what: &str) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
@@ -548,4 +564,247 @@ fn attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches() {
     assert!(status.success());
     // Still there for the next tilr.
     assert_eq!(machine.ok(&["ls", "-q"]).lines().count(), 1);
+}
+
+#[test]
+fn a_terminated_attach_restores_the_terminal() {
+    use std::os::unix::process::ExitStatusExt;
+    let machine = Machine::new();
+    let mut terminal = Terminal::spawn(machine.command(&[]));
+    terminal.write("echo \"one-$((40+2))\"\r");
+    terminal.expect("one-42");
+    assert!(!terminal.cooked(), "raw while attached");
+    // Whatever tilr was still drawing, read: a terminal reads as it comes.
+    std::thread::sleep(Duration::from_millis(300));
+    terminal.read();
+    let seen = terminal.seen.len();
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(terminal.child.id() as i32, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        terminal.read();
+        if let Some(status) = terminal.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "tilr goes on after SIGTERM");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+    assert!(terminal.cooked(), "icanon and echo again");
+    terminal.read();
+    let after = &terminal.seen[seen..];
+    assert!(
+        after.contains("\x1b[?25h") && after.contains("\x1b[?1049l"),
+        "cursor shown, main screen: {after:?}"
+    );
+    assert!(!after.contains("detached"), "nothing printed: {after:?}");
+    assert_eq!(
+        machine.ok(&["ls", "-q"]).lines().count(),
+        1,
+        "the pane goes on"
+    );
+}
+
+/// The pane a [`FakeServer`] has.
+const FAKE_PANE: &str = "fake-pane-0123456789";
+
+/// How a [`FakeServer`] serves one connection.
+#[derive(Clone, Copy)]
+enum Serve {
+    /// Hello, the pane list, a frame on Subscribe; then it closes.
+    ThenClose,
+    /// Hello, then it closes on `ListPanes` without answering.
+    CloseOnListPanes,
+    /// Accepts and says nothing, not even the WebSocket handshake.
+    Silent,
+    /// Everything, for as long as the client stays.
+    Fully,
+}
+
+/// A stand-in for tilrd on a TCP port: its connections served in turn as
+/// `script` says, the last way for any after that.
+struct FakeServer {
+    url: String,
+    accepted: std::sync::Arc<AtomicU32>,
+    /// The text of the keys it was sent.
+    keys: std::sync::mpsc::Receiver<String>,
+}
+
+impl FakeServer {
+    fn start(script: Vec<Serve>) -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let accepted = std::sync::Arc::new(AtomicU32::new(0));
+        let (key_tx, keys) = std::sync::mpsc::channel();
+        let counter = accepted.clone();
+        std::thread::spawn(move || {
+            for (n, stream) in listener.incoming().enumerate() {
+                let Ok(stream) = stream else { return };
+                let serve = script[n.min(script.len() - 1)];
+                counter.fetch_add(1, Ordering::SeqCst);
+                let keys = key_tx.clone();
+                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys));
+            }
+        });
+        Self {
+            url,
+            accepted,
+            keys,
+        }
+    }
+
+    fn accepted(&self) -> u32 {
+        self.accepted.load(Ordering::SeqCst)
+    }
+}
+
+fn fake_connection(
+    stream: std::net::TcpStream,
+    serve: Serve,
+    number: usize,
+    keys: &std::sync::mpsc::Sender<String>,
+) {
+    use tilr_proto::{
+        ClientMessage, Frame, HelloAck, PaneInfo, PaneList, Row, Run, ServerMessage,
+        client_message, server_message,
+    };
+    use tokio_tungstenite::tungstenite::{Message, accept};
+    if let Serve::Silent = serve {
+        std::thread::sleep(Duration::from_secs(60));
+        drop(stream);
+        return;
+    }
+    let Ok(mut ws) = accept(stream) else { return };
+    let send = |ws: &mut tokio_tungstenite::tungstenite::WebSocket<_>, msg| {
+        ws.send(Message::Binary(tilr_proto::encode(&ServerMessage::from(
+            msg,
+        ))))
+    };
+    while let Ok(message) = ws.read() {
+        let Message::Binary(packet) = message else {
+            continue;
+        };
+        let Ok(ClientMessage { msg: Some(msg), .. }) = tilr_proto::decode(&packet) else {
+            continue;
+        };
+        let sent = match msg {
+            client_message::Msg::Hello(_) => send(
+                &mut ws,
+                server_message::Msg::HelloAck(HelloAck {
+                    protocol_version: tilr_proto::PROTOCOL_VERSION,
+                    server_version: "fake".into(),
+                    ..Default::default()
+                }),
+            ),
+            client_message::Msg::ListPanes(_) if matches!(serve, Serve::CloseOnListPanes) => {
+                return;
+            }
+            client_message::Msg::ListPanes(list) => send(
+                &mut ws,
+                server_message::Msg::PaneList(PaneList {
+                    panes: vec![PaneInfo {
+                        pane_id: FAKE_PANE.into(),
+                        cols: 80,
+                        rows: 24,
+                        ..Default::default()
+                    }],
+                    request_id: list.request_id,
+                }),
+            ),
+            client_message::Msg::Subscribe(_) => {
+                let frame = send(
+                    &mut ws,
+                    server_message::Msg::Frame(Frame {
+                        pane_id: FAKE_PANE.into(),
+                        full: true,
+                        cols: 80,
+                        rows: 24,
+                        changed: vec![Row {
+                            y: 0,
+                            runs: vec![Run {
+                                text: format!("fake screen {number}"),
+                                ..Default::default()
+                            }],
+                        }],
+                        ..Default::default()
+                    }),
+                );
+                if let Serve::ThenClose = serve {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _ = ws.close(None);
+                    let _ = ws.flush();
+                    return;
+                }
+                frame
+            }
+            client_message::Msg::Key(key) => {
+                let _ = keys.send(key.text);
+                Ok(())
+            }
+            _ => Ok(()),
+        };
+        if sent.is_err() {
+            return;
+        }
+    }
+}
+
+/// `tilr attach` of the fake server's pane, in a terminal.
+fn attach_to_fake(machine: &Machine, server: &FakeServer) -> Terminal {
+    let mut command = machine.command(&[
+        "--connect",
+        &server.url,
+        "--token",
+        "fake-token",
+        "attach",
+        FAKE_PANE,
+    ]);
+    command.env_remove("TILR_TOKEN");
+    let mut terminal = Terminal::spawn(command);
+    terminal.expect("fake screen 1");
+    terminal
+}
+
+#[test]
+fn an_error_right_after_a_reconnect_is_retried() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![
+        Serve::ThenClose,
+        Serve::CloseOnListPanes,
+        Serve::Fully,
+    ]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    // The second connection is lost before the pane list comes: another
+    // attempt, not the end. The status line says so a second time (the
+    // terminal cuts it at 80 columns, before the attempt's number).
+    terminal.expect("fake screen 3");
+    assert_eq!(
+        terminal.seen.matches("tilr: disconnected (").count(),
+        2,
+        "{:?}",
+        terminal.seen
+    );
+    terminal.write("x");
+    let key = server.keys.recv_timeout(Duration::from_secs(15)).unwrap();
+    assert_eq!(key, "x");
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
+    assert_eq!(server.accepted(), 3);
+}
+
+#[test]
+fn detach_works_while_a_reconnect_attempt_hangs() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::ThenClose, Serve::Silent]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    eventually("tilr connects again", || server.accepted() == 2);
+    // Well inside the attempt, which would wait 5 s for an answer.
+    std::thread::sleep(Duration::from_millis(300));
+    let start = Instant::now();
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    let took = start.elapsed();
+    assert!(took < Duration::from_secs(1), "detached after {took:?}");
+    assert!(terminal.child.wait().unwrap().success());
 }

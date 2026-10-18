@@ -150,9 +150,14 @@ wheel scrolls the history). The pane used last is the one with the latest
 **Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as it runs. A
 connection that drops (a reload of the server, the network) is made again with it at once,
 then every 0.1 s doubling to 2 s; the bottom row says `disconnected …, reconnecting…`
-meanwhile, and what is typed then is dropped, not sent later. Over TCP it pings every 5 s
-and takes 15 s of silence as a dropped connection. A pane gone after the reconnect, or a
-local server that stopped (socket gone, lock free), ends the attach (`[tilrd stopped]`).
+meanwhile, and what is typed then is dropped, not sent later. An attempt that connects but
+loses the connection (or gets no answer) before the pane is listed and subscribed is a
+failed attempt like a refused one, and Ctrl+] d detaches at once also while an attempt
+waits. Over TCP it pings every 5 s and takes 15 s of silence as a dropped connection. A
+pane gone after the reconnect, or a local server that stopped (socket gone, lock free),
+ends the attach (`[tilrd stopped]`). SIGTERM, SIGHUP or SIGINT (`kill -INT`; Ctrl+C is a
+key for the pane) restore the terminal (cooked mode, cursor, main screen) and end `tilr` by
+that signal, printing nothing; the pane goes on.
 
 **Which server.** `--socket PATH` / `TILR_SOCKET`, or `--connect ws://HOST:PORT` /
 `TILR_CONNECT` with `--token` / `TILR_TOKEN` for a server's TCP port (not started from
