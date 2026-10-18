@@ -120,6 +120,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | reload-screen-fidelity | 53e7ff2 |
 | readme-code-reconciliation | e70d499 |
 | snapshot-origin-mode-cursor | af85db3 |
-| agent-socket-per-server | recorded in the next commit |
+| agent-socket-per-server | 5e0f703 |
 
 Older work is in `openspec/changes/archive/`.

@@ -37,3 +37,5 @@ So it is a product bug, not a test-isolation one: with two servers of one user (
 ## Impact
 
 `crates/tilrd/src/agent.rs` (path, sweep, removal of the directory, the legacy path on resume), `crates/tilrd/src/host.rs` (`running` shared), `crates/tilrd/src/supervisor.rs` (the resume path), tests in `crates/tilrd/tests/agent.rs`, itests UC-005, UC-035, UC-036, UC-069 (paths), README "SSH agent forwarding", USE_CASES.md, itests/USE_CASES.md. Survives a reload: same pid, same directory; no state file change. Update from the previous release: 0.1.1 (`tilr-server`) cannot update into this one (the loose names are no longer published since 2a8b425; its users reinstall), and a pane started by a server from before this change keeps the flat path after a reload into it. No protocol change; size S.
+
+Implemented by: [`5e0f703`](https://github.com/tilr-dev/tilrd/commit/5e0f703) fix(agent): keep each server's agent sockets in a directory of its own (2026-10-18).
