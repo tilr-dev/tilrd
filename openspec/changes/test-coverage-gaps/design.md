@@ -106,3 +106,18 @@ server itself allows 10 s for.
   the broken file: it would test another path.
 - Rejected: importing the constants. They live in the binary crate, which tests cannot
   import; the copies say where they come from.
+
+## D6. The leftover check reading a child's arguments once (5.12; TILR-119)
+
+Cause: `cloud::tests::only_a_process_running_this_configuration_is_taken_for_a_leftover`
+(`crates/tilrd/src/cloud.rs`) read the arguments of the `sh` it had just spawned once;
+under full-suite load on macOS they were not there once. Not reproduced in 60 runs under
+load (the first read always found them); `spawn` returns after the exec, and macOS's
+`/bin/sh` is a launcher that execs the real shell again, which is the likely window.
+Fix: the test polls `runs_config` until it holds (10 s deadline), then checks the rest as
+before. The product's `stop_leftover` reads a long-running `cloudflared`, not one in its
+first microseconds, so it is not affected.
+- Rejected: having the child report after its exec (a pipe written by the script). It
+  would work, but the command line is what the test is about (`sh -c 'sleep 30; :'
+  cloudflared tunnel --config ...`, as the product's leftover looks) and would change;
+  polling keeps it.

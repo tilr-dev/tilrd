@@ -870,7 +870,19 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = |child: &std::process::Child| child.id() as libc::pid_t;
-        assert!(runs_config(pid(&ours), config));
+        // Read once right after `spawn`, the shell's arguments were once not
+        // found under load: macOS's /bin/sh is a launcher that execs the
+        // real shell again, likely showing no arguments in the middle of
+        // that exec. A cloudflared found later counts all the same: wait for
+        // them rather than read them once.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !runs_config(pid(&ours), config) {
+            assert!(
+                Instant::now() < deadline,
+                "the shell never showed its arguments"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(!runs_config(pid(&other), config));
         assert!(!runs_config(pid(&ours), Path::new("/elsewhere/config.yml")));
         // SAFETY: getpid has no preconditions.
