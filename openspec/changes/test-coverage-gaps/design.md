@@ -158,3 +158,68 @@ kernel and the scheduler; it now looks for up to `TIMEOUT` (`eventually_within`,
 helper next to `eventually`, which keeps its 5 s), with the reason in the test.
 - Rejected: changing `eventually`'s 5 s for everyone: the other waits were not seen
   failing.
+
+## Not fixed here
+
+### 5.6 `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` (TILR-111)
+
+Not reproduced: 60 runs on macOS beside two loops of the other test executables, 40 runs
+in `scripts/linux.sh` beside three such loops, and 30 runs of the whole reconnect
+executable there (its tests run in parallel, as in the failing full run). Read in the
+code: a `Subscribe` adds the client to the pane's subscribers and asks the pane process
+for a full frame; a diff that reaches the new client before that full frame is dropped by
+the test's `Screen` (no rows yet) and is in the full frame anyway; frames skipped for a
+lagging client are followed by a full frame (on `ClientDrained` and on every tick). Either
+order of the test's `sleep 1` and the reconnect brings the row, in the full frame or in a
+diff after it. No cause found and nothing changed; the task stays open. If it recurs, the
+panic prints the screen, and the server log at debug shows `client lags, skipping frames`.
+
+### 5.7 itests `uc_063` (no tracker issue): the case asks more than its requirement
+
+`reload/client-connections-end-and-clients-reconnect` says "Input the server had not read
+from a client socket when it exec'd is lost with it, but nothing sent SHALL be doubled";
+its scenario and `uc_063.py` require every line typed to arrive. In the failing run
+(results 20261018T202443-37539) line 367 of 467 was lost and nothing else, at the update:
+the driver types a line about every 21 ms from 0.27 s and saw the connection reset at
+8.21 s, so line 367 went out about then. The driver had handed it to its socket (no
+error, so no resend) and the server exec'd without reading it: what the requirement
+allows. Not a test-harness flake; deciding it is the owner's:
+- (a) product: before the exec, read what the client sockets already hold and pass it to
+  the panes (a bounded drain, as an nginx binary upgrade lets old workers finish their
+  requests); the requirement then drops the "is lost" sentence and the case stays.
+  Recommended: the loss is a user's keystrokes, and only the server can avoid it.
+- (b) case to requirement: allow lines lost only right before the disconnect (those sent
+  after the server's last read), never in the middle, never doubled.
+- (c) client: resend what the server has not acknowledged (`last_input_seq`): does not
+  work here, `stty -echo; cat` draws no frame to carry the ack.
+
+### 5.8 itests `uc_033` (no tracker issue)
+
+`a_tilrd_tilr_starts_goes_on_without_the_taken_port` failed at its first line, binding
+127.0.0.1:7890 (EADDRINUSE, 0.1 s into the case), in 2 of about 170 result folders
+(20261017T101237-82418, 20261018T120125-25181). The case runs in a container of its own;
+nothing in the case or its fixture listens on 7890 before that line, and a fresh network
+namespace has no TIME_WAIT socket on it. Cause not found, nothing changed: whether Dagger
+can run two case containers in one network namespace (then any case whose `tilr` starts a
+tilrd on the default port collides) is the next thing to check; a port of the case's own
+cannot replace 7890, the default port is what the case is about.
+
+### itests `uc_043` (no tracker issue)
+
+Green in the last full runs before this change (its proxy case p90 1.6-1.9 s, limit 5 s);
+the red ones in `itests/results` are from `--repeat` runs. Nothing changed; see
+"Stability".
+
+## Stability (at fe0fdcb, macOS)
+
+- `cargo test --workspace --features tilrd/failpoints --locked`: 5 full runs in a row,
+  all green; no `target/debug/tilrd` left running afterwards (`pgrep`).
+- Each test fixed here 20 times on its own (prebuilt executables, no cargo in between):
+  0 failures in 13 × 20 (the four local.rs tests of D1/D3, the two reconnect liveness
+  tests of D2, the two second-server tests of D4, both reload-check tests of D5, the
+  cloud leftover test of D6, the lagging-client and hang-up tests of D7 and D8).
+- fmt, both clippy runs, `cargo deny check`, gitleaks, MSRV 1.90 `cargo check` (with and
+  without failpoints): clean.
+- Not run yet: `scripts/linux.sh` full runs and `scripts/linux.sh ... --test local` /
+  `--test files` 20 times (5.4, 5.10, 5.14, 5.15 name those), `./itests/dt` and
+  `./itests/dt coverage`.
