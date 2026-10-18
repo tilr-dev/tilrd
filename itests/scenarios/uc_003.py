@@ -1,9 +1,10 @@
 """UC-003: the installer run again over an installation whose tilrd is running.
 
-The same release again changes nothing: the files stay as they are (same inode, same
-mtime) and the server is not reloaded. A new release replaces the files; the running
-server, which watches its executable, reloads into it and keeps its shells: the same
-pid, the same panes, a shell's variable and job. The server was started by `tilr` (no
+The same release again changes nothing: the installed versions are asked, nothing is
+downloaded, the files stay as they are (same inode, same mtime) and the server is not
+reloaded. A new release replaces both files; the running server, which watches its
+executable, reloads into it and keeps its shells: the same pid, the same panes, a
+shell's variable and job. The server was started by `tilr` (no
 service); a driver reaches it over its TCP port with the user's token.
 """
 
@@ -11,7 +12,7 @@ import os
 import time
 from pathlib import Path
 
-from tt import NEXT_EXE, USER_PATH, T, case
+from tt import CLIENT_NEXT_EXE, NEXT_EXE, USER_PATH, T, case
 
 
 def setup(t: T):
@@ -39,11 +40,13 @@ def installing_the_same_release_again_changes_nothing(t: T):
     user, cdn, url, env, bin, daemon = setup(t)
     files = {n: os.stat(bin / n) for n in ("tilrd", "tilr")}
     panes = user.run(str(bin / "tilr"), "ls", "-q").out
+    fetched = len(cdn.requests)
 
     r = user.sh(f"curl -fsSL {url} | sh", env=env)
     t.eq(r.code, 0, f"the second install:\n{r.text}")
     version = t.manifest()["version"]
-    t.has(r.err, f"tilrd {version} is already installed", f"tilr {version} is already installed")
+    t.has(r.err, f"tilr {version} is already installed")
+    t.eq([p for p in cdn.requests[fetched:] if ".tar.gz" in p], [], "nothing downloaded")
     for name, st in files.items():
         now = os.stat(bin / name)
         t.eq((now.st_ino, now.st_mtime_ns), (st.st_ino, st.st_mtime_ns), f"{name} is the same file, untouched")
@@ -66,10 +69,12 @@ def installing_a_new_release_reloads_the_running_server_and_keeps_its_shells(t: 
     shell = int(d.value(pane, "$$"))
     panes = user.run(str(bin / "tilr"), "ls", "-q").out
 
-    cdn.publish(m["next_version"], server=NEXT_EXE)
+    cdn.publish(m["next_version"], server=NEXT_EXE, client=CLIENT_NEXT_EXE)
     r = user.sh(f"curl -fsSL {url} | sh", env=env)
     t.eq(r.code, 0, f"the update:\n{r.text}")
-    t.has(r.err, f"downloading tilrd {m['next_version']}")
+    t.has(r.err, f"downloading tilr {m['next_version']}", "the running tilrd reloads itself and keeps its shells")
+    for name in ("tilrd", "tilr"):
+        t.has(user.run(str(bin / name), "--version").out, m["next_version"])
     t.eventually(lambda: "resumed after reload" in log(user), "the server reloads into the new release", timeout=30)
     t.has(user.run(str(bin / "tilr"), "version").out, f"tilrd {m['next_version']}")
     t.eq([x.pid for x in t.tilrd_daemons()], [daemon.pid], "the same server process")

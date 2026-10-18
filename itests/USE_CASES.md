@@ -32,17 +32,20 @@
 
 Реализовано (2026-10-17): все UC-001…006. Инсталлер — копия из репо sh
 (`itests/installer/install.sh`, в контейнере `/opt/tt/install.sh`), его отдаёт `t.cdn()`
-вместе с релизом из этого дерева (`tilrd-`, `tilr-server-`, `tilr-<platform>` и `.sha256`,
-`LocalCdn.publish`); ставит пользователь, созданный кейсом (`t.user()`: `useradd -m`,
-чистое окружение логина без `XDG_*`, без sudo, без systemd). Красные — дефекты инсталлера,
-описаны в `uc_004.py`.
+вместе с релизом из этого дерева (один архив `tilr-<version>-<platform>.tar.gz` с `tilrd`
+и `tilr` и его `.sha256`, `LocalCdn.publish`); ставит пользователь, созданный кейсом
+(`t.user()`: `useradd -m`, чистое окружение логина без `XDG_*`, без sudo, без systemd).
+Инсталлер качает архив во временный каталог (`mktemp -d`), проверяет сумму, распаковывает,
+запускает `--version` обоих и только потом создаёт `~/.local/bin` и кладёт оба; сервис не
+ставит, в конце печатает подсказки (`tilr`, `tilr service install`, `tilr token`,
+`tilr cloud login`).
 
-- UC-001. `curl tilr.sh | sh` без root: бинарь в `~/.local/bin`, контрольная сумма сошлась, версия печатается. → `uc_001.py::the_installer_puts_tilrd_and_tilr_in_local_bin_without_root` (оба бинаря 0755 пользователя, sha256 = релиз, `.sha256` запрошены, `/usr/local/bin` и `/etc` не тронуты; `tilr` поднимает установленный tilrd от пользователя)
-- UC-002. `~/.local/bin` нет в PATH — инсталлер говорит, что добавить; ничего не правит молча. → `uc_002.py::without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing` (в доме новые только `~/.local/bin/{tilrd,tilr}`)
-- UC-003. Повторная установка поверх: идемпотентно, работающий tilrd не убит (или перезагружается без потери шеллов). → `uc_003.py::installing_the_same_release_again_changes_nothing` (те же inode и mtime, нет reload), `::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells` (тот же pid, панели, `$KEPT`, `$$` и job; драйвер по TCP 7890 с токеном)
-- UC-004. Битая контрольная сумма / оборванная загрузка / нет релиза под платформу — ничего не установлено, мусора нет. → `uc_004.py::a_bad_checksum_installs_nothing` (FAIL: остаётся пустой `~/.local/bin`), `::a_download_cut_short_installs_nothing` (FAIL: то же), `::no_release_for_the_platform_installs_nothing`, `::a_bad_client_checksum_installs_neither` (FAIL: tilrd ставится, инсталлер выходит с 0), `::a_broken_update_leaves_the_installation_and_its_server_alone`
+- UC-001. `curl tilr.sh | sh` без root: бинарь в `~/.local/bin`, контрольная сумма сошлась, версия печатается. → `uc_001.py::the_installer_puts_tilrd_and_tilr_in_local_bin_without_root` (оба бинаря 0755 пользователя, sha256 = файлы архива, запрошены архив и его `.sha256`, в доме новое только `~/.local/bin/{tilrd,tilr}`, в `/tmp` ничего не осталось, подсказки напечатаны, `/usr/local/bin` и `/etc` не тронуты; `tilr` поднимает установленный tilrd от пользователя)
+- UC-002. `~/.local/bin` нет в PATH — инсталлер говорит, что добавить; ничего не правит молча. → `uc_002.py::without_local_bin_on_path_the_installer_says_what_to_add_and_edits_nothing` (готовая строка `export PATH="$HOME/.local/bin:$PATH"` для `~/.profile`, и она работает; в доме новые только `~/.local/bin/{tilrd,tilr}`)
+- UC-003. Повторная установка поверх: идемпотентно, работающий tilrd не убит (или перезагружается без потери шеллов). → `uc_003.py::installing_the_same_release_again_changes_nothing` (та же версия: ничего не скачано, те же inode и mtime, нет reload), `::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells` (тот же pid, панели, `$KEPT`, `$$` и job; драйвер по TCP 7890 с токеном)
+- UC-004. Битая контрольная сумма / оборванная загрузка / битый архив / в архиве нет бинаря или бинарь не запускается / нет релиза под платформу — ничего не установлено, мусора нет (ни в доме, ни в `/tmp`), код выхода не 0. → `uc_004.py::a_bad_checksum_installs_nothing`, `::a_download_cut_short_installs_nothing`, `::an_archive_cut_short_installs_nothing`, `::an_archive_without_tilr_installs_nothing`, `::a_program_that_does_not_run_installs_nothing`, `::no_release_for_the_platform_installs_nothing`, `::a_latest_version_without_its_archive_installs_nothing`, `::a_broken_update_leaves_the_installation_and_its_server_alone`
 - UC-005. Чистая система без `$XDG_RUNTIME_DIR`, без `$HOME/.config` — пути создаются, права 0700/0600. → `uc_005.py::on_a_clean_system_tilr_makes_its_directories_private` (`/tmp/tilr-<uid>` и всё в нём, `~/.local/state/tilr` 0700, токен и server-id 0600)
-- UC-006. Запуск не от root, без sudo, в контейнере без systemd — всё работает. → `uc_006.py::without_root_sudo_or_systemd_everything_works` (sudo — ловушка, не вызван), `::tilr_no_service_installs_the_executables_only` (`TILR_NO_SERVICE=1`: systemctl не спрошен)
+- UC-006. Запуск не от root, без sudo, в контейнере без systemd — всё работает. → `uc_006.py::without_root_sudo_or_systemd_everything_works` (sudo — ловушка, не вызван)
 
 ## B. Модель как у tmux — жизнь демона
 
@@ -69,8 +72,8 @@ systemd нет в контейнере: `systemctl`, `loginctl`, `crontab` — �
 
 - UC-020. `tilr service install`: user unit записан верно (`ExecStart`, `Type=notify`, Restart), `enable` вызван. → `uc_020.py::service_install_writes_a_notify_user_unit_and_enables_it` (tilrd шлёт `READY=1`), `::with_lingering_off_install_turns_it_on_and_notes_it`, `::a_running_tilrd_is_left_alone` (`enable` без `--now`)
 - UC-021. linger недоступен → crontab `@reboot` записан, вывод говорит, какой способ выбран. → `uc_021.py::without_lingering_a_crontab_reboot_line_is_written`, `::without_systemd_a_crontab_reboot_line_is_written_next_to_the_users_own` (строка пользователя цела, повторный install не дублирует), `::with_neither_systemd_nor_crontab_install_fails_and_writes_nothing`; строка `@reboot`, запущенная как cron, поднимает tilrd на сокете пользователя
-- UC-022. `tilr service uninstall` убирает всё, что поставил install, и только это. → `uc_022.py::uninstall_removes_the_unit_it_wrote_and_nothing_else` (disable, linger выключен, другой юнит цел, сервер и панели живы), `::uninstall_leaves_lingering_it_did_not_turn_on`, `::uninstall_removes_its_crontab_line_and_keeps_the_users`, `::uninstall_removes_the_crontab_it_made`, `::uninstall_leaves_what_it_did_not_write` (юнит инсталлера не трогает)
-- UC-023. Без `service install` нигде нет автозапуска (явность, не руткит). → `uc_023.py::nothing_starts_tilrd_at_boot_unless_asked` (установка и все команды `tilr`: ни юнита, ни crontab, ни autostart, профили и `/etc` не тронуты; без systemd — инсталлер со своим юнитом при systemd здесь не проверяется)
+- UC-022. `tilr service uninstall` убирает всё, что поставил install, и только это. → `uc_022.py::uninstall_removes_the_unit_it_wrote_and_nothing_else` (disable, linger выключен, другой юнит цел, сервер и панели живы), `::uninstall_leaves_lingering_it_did_not_turn_on`, `::uninstall_removes_its_crontab_line_and_keeps_the_users`, `::uninstall_removes_the_crontab_it_made`, `::uninstall_leaves_what_it_did_not_write` (написанный руками юнит не трогает)
+- UC-023. Без `service install` нигде нет автозапуска (явность, не руткит). → `uc_023.py::nothing_starts_tilrd_at_boot_unless_asked` (systemd user manager есть, linger выключен; установка и все команды `tilr`: ни юнита, ни crontab, ни linger, ни autostart, профили и `/etc` не тронуты; инсталлер не спрашивает systemctl, loginctl и crontab вообще)
 
 ## D. Сокеты — unix и TCP
 
@@ -122,7 +125,7 @@ systemd нет в контейнере: `systemctl`, `loginctl`, `crontab` — �
 `vim` с несохранённым буфером, `htop`, `less` по большому файлу, `python` REPL,
 долгий `sleep`, программа с открытым TCP-соединением наружу.
 
-Реализовано (2026-10-17): все UC-060…06A, `scenarios/uc_0NN.py::<кейс>`; живой софт в
+Реализовано (2026-10-17): все UC-060…069, `scenarios/uc_0NN.py::<кейс>`; живой софт в
 панелях — `tt/live.py` (`LivePanes`), эхо-сервис наружу — контейнер `echo`, свой CDN
 кейса — `t.cdn()`, маленький диск — `t.tmpfs()`.
 
@@ -132,11 +135,10 @@ systemd нет в контейнере: `systemctl`, `loginctl`, `crontab` — �
 - UC-063. Клиент подключён во время обновления — переподключается сам, ввод не теряется, не дублируется. → `uc_063.py::a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled`
 - UC-064. Обновление при открытой передаче файла / SOCKS / агенте. → `uc_064.py::a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works, ::a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works, ::an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works`. Был красным до 2026-10-17 (временный файл прерванной записи оставался навсегда): теперь запись отмечает свой временный файл в `writes/` каталога выполнения, и запустившийся или перезагрузившийся сервер убирает файлы записей, чей процесс умер или был им самим
 - UC-065. Кончилось место на диске (маленький tmpfs) посреди скачивания и при записи состояния — ничего не сломано, шеллы целы. → `uc_065.py::an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_breaks_nothing, ::a_reload_with_no_room_for_its_state_keeps_the_server_and_its_panes, ::a_reload_with_room_for_the_servers_state_but_not_the_panes_keeps_every_pane`. Был красным до 2026-10-17 (недописанный файл состояния оставался): теперь состояние пишется во временный файл рядом, fsync, rename; при ошибке временный удаляется (reload.rs `write_file`)
-- UC-066. Откат на старую версию и обратно с открытыми панелями. → `uc_066.py::rolling_back_and_forward_again_keeps_the_panes_and_their_programs`
+- UC-066. Откат на старую версию и обратно с открытыми панелями. → `uc_066.py::rolling_back_and_forward_again_keeps_the_panes_and_their_programs` (обновление ставит `tilrd` и `tilr` из архива; после каждого шага у обоих версия шага)
 - UC-067. Новая версия с другим форматом состояния — перезагрузки нет, шеллы целы. → `uc_067.py::a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live_on`
 - UC-068. Перезагрузка в момент создания панели. → `uc_068.py::panes_created_while_the_server_reloads_are_whole_or_absent_and_every_reload_happens`
 - UC-069. 50 перезагрузок подряд под нагрузкой — сирот и утечек fd нет (дескрипторов ровно столько же, сколько до первой перезагрузки). → `uc_069.py::fifty_reloads_under_load_leave_no_orphans_and_no_descriptor_leaks`
-- UC-06A. Обновление через переименование: сервер, установленный как `tilr-server` (последний коммит до переименования, `PREVIOUS` в `dt`), делает `tilr-server update` — релиз опубликован под обоими именами, новый `tilrd` ложится на место старого файла под его именем, перезагрузка, pid и софт в панелях те же; следующее обновление — уже по имени `tilrd`. → `uc_06a.py::a_server_named_tilr_server_updates_to_tilrd_in_place_and_keeps_its_panes`
 
 ## G. Передача: файлы, данные по каналу, команды
 

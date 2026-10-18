@@ -1,17 +1,18 @@
 """UC-004: a release that cannot be installed leaves nothing: a bad checksum, a download
-cut short, no release for the platform. Nothing of the release is installed and nothing
-is left in the home (no temporary file, no directory made for it); an installation
-already there, and its running server, stay as they were.
+cut short, an archive cut short (its checksum made of what is left), an archive missing
+a program, a program in it that does not run, no release for the platform, a version
+named whose archive is not there. Nothing of the release is installed and nothing is
+left (no temporary file in the home or in /tmp, no directory made for it), and the
+installer exits non-zero; an installation already there, and its running server, stay
+as they were.
 
-Observed (installer/install.sh): install_binary makes ~/.local/bin (`mkdir -p
-"$BIN_DIR"`, line 69) before the download is checked, so a failed first install
-leaves an empty ~/.local and ~/.local/bin (red: the bad checksum and the cut download).
-tilrd is put in place before tilr is fetched (main, lines 226-227) and a tilr that fails
-is "said and skipped" (lines 102-120): a bad tilr leaves the new tilrd installed and the
-installer exits 0 (red: a bad client checksum).
+The installer (installer/install.sh) downloads the archive into a directory of mktemp,
+checks and unpacks it there and runs both programs before it makes ~/.local/bin.
 """
 
-from tt import NEXT_EXE, USER_PATH, T, case, changes, snapshot
+from pathlib import Path
+
+from tt import CLIENT_NEXT_EXE, NEXT_EXE, USER_PATH, T, case, changes, snapshot
 
 
 def setup(t: T):
@@ -23,34 +24,69 @@ def setup(t: T):
     return user, cdn, url, env
 
 
-def nothing_installed(t: T, user, before: dict, r, *said: str):
+def install_fails(t: T, user, url: str, env: dict, *said: str):
+    """Run the installer where nothing is installed yet: it fails, saying `said`, and
+    leaves nothing in the home or in /tmp."""
+    home = snapshot(user.home)
+    tmp = snapshot(Path("/tmp"), skip=("tt",))
+    r = user.sh(f"curl -fsSL {url} | sh", env=env)
     t.ok(r.code != 0, f"the installer fails:\n{r.text}")
     t.has(r.err, *said)
     t.check("nothing is installed or left in the home",
-            lambda: t.eq(changes(before, snapshot(user.home)), [], "what changed in the home"))
+            lambda: t.eq(changes(home, snapshot(user.home)), [], "what changed in the home"))
+    t.check("nothing is left in /tmp",
+            lambda: t.eq(changes(tmp, snapshot(Path("/tmp"), skip=("tt",))), [], "what changed in /tmp"))
     t.eq(t.tilrd_daemons(), [], "no server started")
 
 
 @case()
 def a_bad_checksum_installs_nothing(t: T):
-    """UC-004: tilrd's checksum does not match: nothing installed, nothing left."""
+    """UC-004: the archive's checksum does not match: nothing installed, nothing left."""
     user, cdn, url, env = setup(t)
-    files = cdn.publish(t.manifest()["version"])
-    files["tilrd"].with_name(files["tilrd"].name + ".sha256").write_text("0" * 64 + "\n")
-    before = snapshot(user.home)
-    r = user.sh(f"curl -fsSL {url} | sh", env=env)
-    nothing_installed(t, user, before, r, "checksum mismatch, nothing installed")
+    archive = cdn.publish(t.manifest()["version"])
+    cdn.checksum(archive).write_text("0" * 64 + "\n")
+    install_fails(t, user, url, env, "checksum mismatch, nothing installed")
 
 
 @case()
 def a_download_cut_short_installs_nothing(t: T):
-    """UC-004: the connection drops halfway through tilrd: nothing installed, nothing left."""
+    """UC-004: the connection drops halfway through the archive: nothing installed, nothing left."""
     user, cdn, url, env = setup(t)
-    files = cdn.publish(t.manifest()["version"])
-    cdn.cut[cdn.path(files["tilrd"])] = files["tilrd"].stat().st_size // 2
-    before = snapshot(user.home)
-    r = user.sh(f"curl -fsSL {url} | sh", env=env)
-    nothing_installed(t, user, before, r, "download failed")
+    archive = cdn.publish(t.manifest()["version"])
+    cdn.cut[cdn.path(archive)] = archive.stat().st_size // 2
+    install_fails(t, user, url, env, "download failed, nothing installed")
+
+
+@case()
+def an_archive_cut_short_installs_nothing(t: T):
+    """UC-004: an archive cut in half, its checksum made of the half: unpacking fails, nothing installed."""
+    user, cdn, url, env = setup(t)
+    version = t.manifest()["version"]
+    archive = cdn.publish(version)
+    data = archive.read_bytes()
+    archive.write_bytes(data[: len(data) // 2])
+    cdn.write_checksum(archive)
+    install_fails(t, user, url, env, f"the archive of {version} is damaged or lacks tilrd or tilr, nothing installed")
+
+
+@case()
+def an_archive_without_tilr_installs_nothing(t: T):
+    """UC-004: the archive has tilrd but no tilr: tilrd is not installed either."""
+    user, cdn, url, env = setup(t)
+    version = t.manifest()["version"]
+    cdn.publish(version, client=None)
+    install_fails(t, user, url, env, f"the archive of {version} is damaged or lacks tilrd or tilr, nothing installed")
+
+
+@case()
+def a_program_that_does_not_run_installs_nothing(t: T):
+    """UC-004: tilr in the archive is not a program: tilrd is not installed either."""
+    user, cdn, url, env = setup(t)
+    version = t.manifest()["version"]
+    broken = t.scratch("broken") / "tilr"
+    broken.write_bytes(b"\x7fELF not really\n")
+    cdn.publish(version, client=broken)
+    install_fails(t, user, url, env, f"tilr {version} does not run on this system", "nothing installed")
 
 
 @case()
@@ -60,25 +96,21 @@ def no_release_for_the_platform_installs_nothing(t: T):
     other = cdn.dir / "releases" / "linux-riscv64" / "latest"
     other.parent.mkdir(parents=True)
     other.write_text("9.9.9\n")
-    before = snapshot(user.home)
-    r = user.sh(f"curl -fsSL {url} | sh", env=env)
-    nothing_installed(t, user, before, r, f"no release for linux {cdn.platform.split('-', 1)[1]}")
+    install_fails(t, user, url, env, f"no release for linux {cdn.platform.split('-', 1)[1]}")
 
 
 @case()
-def a_bad_client_checksum_installs_neither(t: T):
-    """UC-004: tilr's checksum does not match: tilrd is not installed either."""
+def a_latest_version_without_its_archive_installs_nothing(t: T):
+    """UC-004: `latest` names a version whose archive is not there (yet): nothing installed."""
     user, cdn, url, env = setup(t)
-    files = cdn.publish(t.manifest()["version"])
-    files["tilr"].with_name(files["tilr"].name + ".sha256").write_text("0" * 64 + "\n")
-    before = snapshot(user.home)
-    r = user.sh(f"curl -fsSL {url} | sh", env=env)
-    nothing_installed(t, user, before, r, "checksum mismatch for tilr")
+    cdn.latest("9.9.9-missing")
+    install_fails(t, user, url, env, f"no release 9.9.9-missing for linux {cdn.platform.split('-', 1)[1]}",
+                  "nothing installed")
 
 
 @case()
 def a_broken_update_leaves_the_installation_and_its_server_alone(t: T):
-    """UC-004: a new release with a bad checksum over a running install: files and server as they were."""
+    """UC-004: a new release with a bad checksum, then one without tilr, over a running install: all as it was."""
     user, cdn, url, env = setup(t)
     m = t.manifest()
     cdn.publish(m["version"])
@@ -86,14 +118,20 @@ def a_broken_update_leaves_the_installation_and_its_server_alone(t: T):
     bin = user.home / ".local/bin"
     t.eq(user.run(str(bin / "tilr"), "new", "-d").code, 0, "tilr new -d")
     daemon = t.tilrd_daemons()[0]
-    files = cdn.publish(m["next_version"], server=NEXT_EXE)
-    files["tilrd"].with_name(files["tilrd"].name + ".sha256").write_text("0" * 64 + "\n")
     # What the running server keeps in its state directory is its own business.
     before = snapshot(user.home, skip=(".local/state",))
 
+    archive = cdn.publish(m["next_version"], server=NEXT_EXE, client=CLIENT_NEXT_EXE)
+    cdn.checksum(archive).write_text("0" * 64 + "\n")
     r = user.sh(f"curl -fsSL {url} | sh", env=env)
     t.ok(r.code != 0, f"the installer fails:\n{r.text}")
     t.has(r.err, "checksum mismatch, nothing installed")
+
+    cdn.publish(m["next_version"], server=NEXT_EXE, client=None)
+    r = user.sh(f"curl -fsSL {url} | sh", env=env)
+    t.ok(r.code != 0, f"the installer fails:\n{r.text}")
+    t.has(r.err, "lacks tilrd or tilr, nothing installed")
+
     t.eq(changes(before, snapshot(user.home, skip=(".local/state",))), [], "what changed in the home")
     t.eq([d.pid for d in t.tilrd_daemons()], [daemon.pid], "the same server")
-    t.has(user.run(str(bin / "tilr"), "version").out, f"tilrd {m['version']}")
+    t.has(user.run(str(bin / "tilr"), "version").out, f"tilr {m['version']}", f"tilrd {m['version']}")

@@ -6,8 +6,8 @@ container of its own) busy. The version changes, the server keeps its pid, and e
 program is alive, answers, and looks as it did (screens, alternate screen, mouse
 tracking, hidden cursor); nothing is left orphaned and no descriptor leaks.
 
-The CDN serves the layout of crates/tilrd/src/update.rs; its release is the same
-source built with another version string (/opt/tt/tilrd-next). The update runs
+The CDN serves the layout of crates/tilrd/src/update.rs; its release is an archive of
+the same source built with another version string (/opt/tt/tilrd-next and tilr-next). The update runs
 outside the panes, as `scripts/update-test.sh` runs it on a real host. Each outcome is a
 separate check (tt/live.py), so one broken program does not hide the others.
 """
@@ -50,6 +50,8 @@ def update_from_the_cdn_keeps_every_program_in_the_panes_alive(t: T):
     live.wait_settled()
 
     t.check("the executable is the next version", lambda: t.eq(server.version(), manifest["next_version"], "version"))
+    t.check("the tilr next to it is the next version",
+            lambda: t.has(t.run(str(exe.with_name("tilr")), "--version", quiet=True).out, manifest["next_version"]))
     t.check("the server says it is the next version",
             lambda: t.eq(back["server_version"], manifest["next_version"], "HelloAck.server_version"))
     t.check("the server keeps its pid and its listening socket",

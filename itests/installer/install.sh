@@ -3,23 +3,24 @@
 # Served from R2: https://cdn.tilr.dev/install.sh
 #
 # Puts tilrd (the tilr server) and tilr (its client, the command you type) into
-# ~/.local/bin and runs tilrd as a systemd user service. Run it again to update:
-# a running server picks the new executable up on its own and keeps every shell.
-# A release from before the client has no tilr; then only tilrd is installed.
+# ~/.local/bin. A release is one archive with both, which is downloaded into a
+# temporary directory, checked against its checksum and unpacked there; both
+# programs must run before either is put in place. Anything that fails leaves
+# the installation as it was (or none at all) and exits non-zero.
 #
-# The server was called tilr-server before. An install from then
-# (~/.local/bin/tilr-server) moves to tilrd and tilr-server becomes a link to
-# it: the running server, which watches the file it started from, takes the
-# update through the link and keeps its shells; the service runs tilrd.
+# Run it again to update: both are replaced, and a running server picks the
+# new executable up on its own and keeps every shell. The same release again
+# changes nothing.
+#
+# Nothing starts tilrd at boot: `tilr` starts it when none runs, and
+# `tilr service install` sets that up when you ask for it.
 #
 #   TILR_BIN_DIR     where the executables go (default: ~/.local/bin)
-#   TILR_NO_SERVICE  set to 1 to install the executables only
 #   TILR_CDN         where releases are fetched from
 set -eu
 
 CDN="${TILR_CDN:-https://cdn.tilr.dev}"
 BIN_DIR="${TILR_BIN_DIR:-$HOME/.local/bin}"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 say() {
   echo "tilr: $*" >&2
@@ -48,164 +49,96 @@ sha256() {
   fi
 }
 
-# Download the release into $bin unless it is there already. The new file is
-# renamed into place, which is what a running server watches for. A release is
-# published as tilrd-<platform>; one from before the rename only as
-# tilr-server-<platform>.
-install_binary() {
-  version=$(fetch "$CDN/releases/linux-$arch/latest") || die "no release for linux $arch at $CDN"
-  url="$CDN/releases/$version/tilrd-linux-$arch"
-  if ! sum=$(fetch "$url.sha256" 2>/dev/null); then
-    url="$CDN/releases/$version/tilr-server-linux-$arch"
-    sum=$(fetch "$url.sha256") || die "no release $version for linux $arch"
-  fi
-  want=${sum%% *}
-
-  if [ -x "$bin" ] && [ "$(sha256 "$bin")" = "$want" ]; then
-    say "tilrd $version is already installed"
-    return
-  fi
-
-  mkdir -p "$BIN_DIR"
-  new="$bin.new.$$"
-  trap 'rm -f "$new"' EXIT
-  say "downloading tilrd $version (linux $arch)"
-  fetch "$url" >"$new" || die "download failed"
-  [ "$(sha256 "$new")" = "$want" ] || die "checksum mismatch, nothing installed"
-  chmod 755 "$new"
-  "$new" --version >/dev/null 2>&1 ||
-    die "tilrd $version does not run on this system (it needs glibc 2.36 or newer), nothing installed"
-  mv "$new" "$bin"
-  trap - EXIT
-  updated=1
-  say "installed $bin"
+# The version a program says it is (`tilrd 0.1.0-26449dd (linux-x86_64)`),
+# empty if it is not there or does not run.
+version_of() {
+  [ -x "$1" ] || return 0
+  "$1" --version 2>/dev/null | cut -d' ' -f2
 }
 
-# The client, tilr-<platform> of the same release, next to tilrd (tilr starts
-# the tilrd next to it when none runs). A release without it is no error: the
-# client is left as it is, or not installed.
-install_client() {
-  url="$CDN/releases/$version/tilr-linux-$arch"
-  if ! sum=$(fetch "$url.sha256" 2>/dev/null); then
-    say "release $version has no tilr client yet; only tilrd is installed"
-    [ ! -x "$client" ] || has_client=1
-    return
-  fi
+# Whatever this run leaves behind is removed on the way out: the temporary
+# directory, files staged next to the installed ones and, if nothing was
+# installed, the directories it made for them.
+cleanup() {
+  [ -z "$tmp" ] || rm -rf "$tmp"
+  rm -f "$BIN_DIR/.tilr.new.$$" "$BIN_DIR/.tilrd.new.$$" "$BIN_DIR/.tilr.old.$$"
+  [ -n "$installed" ] || [ -z "$made" ] || rm -rf "$made"
+}
+
+# The release, checked and unpacked into $tmp/release. Changes nothing yet.
+download() {
+  archive="tilr-$version-linux-$arch.tar.gz"
+  url="$CDN/releases/$version/$archive"
+  sum=$(fetch "$url.sha256" 2>/dev/null) || die "no release $version for linux $arch at $CDN, nothing installed"
   want=${sum%% *}
 
-  if [ -x "$client" ] && [ "$(sha256 "$client")" = "$want" ]; then
-    say "tilr $version is already installed"
-    has_client=1
-    return
-  fi
-
-  # tilrd is in by now, so a client that fails is said and skipped.
-  new="$client.new.$$"
-  trap 'rm -f "$new"' EXIT
   say "downloading tilr $version (linux $arch)"
-  if ! fetch "$url" >"$new"; then
-    problem="download failed"
-  elif [ "$(sha256 "$new")" != "$want" ]; then
-    problem="checksum mismatch"
-  elif ! chmod 755 "$new" || ! "$new" --version >/dev/null 2>&1; then
-    problem="it does not run on this system"
-  else
-    problem=
+  fetch "$url" >"$tmp/$archive" || die "download failed, nothing installed"
+  [ "$(sha256 "$tmp/$archive")" = "$want" ] || die "checksum mismatch, nothing installed"
+  mkdir "$tmp/release"
+  tar -xzf "$tmp/$archive" -C "$tmp/release" tilrd tilr >/dev/null 2>&1 ||
+    die "the archive of $version is damaged or lacks tilrd or tilr, nothing installed"
+  for name in tilrd tilr; do
+    file="$tmp/release/$name"
+    [ -f "$file" ] && [ ! -L "$file" ] || die "$name in the archive of $version is not a file, nothing installed"
+    chmod 755 "$file"
+    "$file" --version >/dev/null 2>&1 ||
+      die "$name $version does not run on this system (it needs glibc 2.36 or newer), nothing installed"
+  done
+}
+
+# Both programs into $BIN_DIR, each renamed into place: tilr first, tilrd
+# last, since that rename is what a running server reloads on. If tilrd
+# cannot be put in place, the tilr that was there is put back.
+put_in_place() {
+  # The highest directory that is not there yet: removed again on failure.
+  dir=$BIN_DIR
+  while [ ! -e "$dir" ]; do
+    made=$dir
+    dir=$(dirname "$dir")
+  done
+  mkdir -p "$BIN_DIR" || die "cannot make $BIN_DIR, nothing installed"
+  for name in tilrd tilr; do
+    { cp "$tmp/release/$name" "$BIN_DIR/.$name.new.$$" && chmod 755 "$BIN_DIR/.$name.new.$$"; } ||
+      die "cannot write to $BIN_DIR, nothing installed"
+  done
+
+  had_client=
+  if [ -f "$client" ]; then
+    ln "$client" "$BIN_DIR/.tilr.old.$$" 2>/dev/null || cp -p "$client" "$BIN_DIR/.tilr.old.$$" ||
+      die "cannot write to $BIN_DIR, nothing installed"
+    had_client=1
   fi
-  if [ -n "$problem" ]; then
-    rm -f "$new"
-    trap - EXIT
-    say "tilr not installed: $problem"
-    [ -x "$client" ] && has_client=1
-    return 0
-  fi
-  mv "$new" "$client"
-  trap - EXIT
-  has_client=1
-  say "installed $client"
-}
-
-# What to type next: tilr, if it is there.
-hints() {
-  if [ -n "$has_client" ]; then
-    case ":$PATH:" in
-      *":$BIN_DIR:"*) ;;
-      *) say "$BIN_DIR is not on your PATH; add it to run tilr" ;;
-    esac
-    say "open a shell: tilr; the access token for the app: tilr token; link this machine to Tilr Cloud: tilr cloud login"
-  else
-    say "the access token for the app: $bin token; link this machine to Tilr Cloud: $bin cloud login"
-  fi
-}
-
-# An install from before the rename: tilr-server, a file, and no tilrd yet.
-# tilrd becomes a hard link to it (the same file, so a running server sees no
-# change) before the download, and tilr-server a link to tilrd after it.
-adopt_legacy() {
-  [ -f "$legacy" ] && [ ! -L "$legacy" ] && [ ! -e "$bin" ] || return 0
-  ln "$legacy" "$bin" 2>/dev/null || cp -p "$legacy" "$bin" || die "cannot move $legacy to $bin"
-  migrated=1
-}
-
-link_legacy() {
-  [ -n "$migrated" ] || return 0
-  { ln -s tilrd "$legacy.new.$$" && mv -f "$legacy.new.$$" "$legacy"; } ||
-    die "cannot link $legacy to $bin"
-  say "tilr-server is tilrd now: $legacy links to $bin"
-}
-
-# The server starts from a login shell so that panes get the PATH and the
-# environment of ~/.profile, as they would over SSH.
-write_unit() {
-  cat <<EOF
-[Unit]
-Description=tilr terminal server
-
-[Service]
-ExecStart=/bin/sh -lc 'exec "$bin"'
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-EOF
-}
-
-install_service() {
-  if [ "${TILR_NO_SERVICE:-}" = 1 ]; then
-    return
-  fi
-  if ! systemctl --user show-environment >/dev/null 2>&1; then
-    if [ -n "$has_client" ]; then
-      say "no systemd user session here, so no service was set up; tilr starts the server when none runs"
+  mv -f "$BIN_DIR/.tilr.new.$$" "$client" || die "cannot replace $client, nothing installed"
+  if ! mv -f "$BIN_DIR/.tilrd.new.$$" "$bin"; then
+    if [ -n "$had_client" ]; then
+      mv -f "$BIN_DIR/.tilr.old.$$" "$client"
     else
-      say "no systemd user session here, so no service was set up; start the server with: $bin"
+      rm -f "$client"
     fi
-    return
+    die "cannot replace $bin, nothing installed"
   fi
+  installed=1
+  say "installed tilrd and tilr $version in $BIN_DIR"
+}
 
-  unit="$UNIT_DIR/tilr.service"
-  mkdir -p "$UNIT_DIR"
-  if [ ! -f "$unit" ] || [ "$(write_unit)" != "$(cat "$unit")" ]; then
-    write_unit >"$unit"
-    systemctl --user daemon-reload
-  fi
-
-  if systemctl --user is-active --quiet tilr.service; then
-    [ -z "$updated" ] || say "the running server reloads itself and keeps its shells"
-    [ -z "$migrated" ] || say "tilr.service runs $bin from its next start"
-  else
-    systemctl --user enable --now tilr.service >/dev/null 2>&1 || true
-    sleep 1
-    systemctl --user is-active --quiet tilr.service ||
-      die "the service did not start, see: journalctl --user -u tilr.service"
-    say "started tilr.service, listening on ws://127.0.0.1:7890"
-  fi
-
-  # Without lingering the service, and every shell in it, ends at logout.
-  if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
-    loginctl enable-linger "$(id -un)" >/dev/null 2>&1 ||
-      say "to keep the server running after you log out: sudo loginctl enable-linger $(id -un)"
-  fi
+# What to type next. A PATH without $BIN_DIR gets the line that adds it.
+hints() {
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+      case "$BIN_DIR" in
+        "$HOME"/*) shown="\$HOME/${BIN_DIR#"$HOME"/}" ;;
+        *) shown=$BIN_DIR ;;
+      esac
+      say "$BIN_DIR is not on your PATH; add this line to ~/.profile and log in again:"
+      echo "  export PATH=\"$shown:\$PATH\"" >&2
+      ;;
+  esac
+  say "open a shell: tilr"
+  say "start tilrd at boot: tilr service install"
+  say "the access token for the app: tilr token"
+  say "link this machine to Tilr Cloud: tilr cloud login"
 }
 
 main() {
@@ -217,16 +150,29 @@ main() {
   esac
   bin="$BIN_DIR/tilrd"
   client="$BIN_DIR/tilr"
-  legacy="$BIN_DIR/tilr-server"
-  updated=
-  migrated=
-  has_client=
+  tmp=
+  made=
+  installed=
+  trap cleanup EXIT
+  trap 'exit 1' INT TERM HUP
 
-  adopt_legacy
-  install_binary
-  install_client
-  link_legacy
-  install_service
+  version=$(fetch "$CDN/releases/linux-$arch/latest" 2>/dev/null) || die "no release for linux $arch at $CDN"
+  # It becomes part of a URL.
+  case "$version" in
+    "" | *[!A-Za-z0-9.+_-]*) die "$CDN names a release that is not a version, nothing installed" ;;
+  esac
+
+  if [ "$(version_of "$bin")" = "$version" ] && [ "$(version_of "$client")" = "$version" ]; then
+    say "tilr $version is already installed in $BIN_DIR"
+    installed=1
+  else
+    tmp=$(mktemp -d) || die "cannot make a temporary directory, nothing installed"
+    download
+    put_in_place
+    if command -v pgrep >/dev/null 2>&1 && pgrep -u "$(id -u)" -x tilrd >/dev/null 2>&1; then
+      say "the running tilrd reloads itself and keeps its shells"
+    fi
+  fi
   hints
 }
 

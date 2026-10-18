@@ -1,13 +1,14 @@
 """UC-066: roll back to the old version and forward again with panes open: the current
-release updates to the next (the CDN container), back to the current one (a CDN of the
-case's own that names it the latest: `tilrd update` installs whatever the CDN
-calls latest), and forward again. Each step is a reload into another executable; after
-each the server says its version, keeps its pid and every program in its panes.
+release updates to the next (the CDN container), back to the current one (an archive of
+this build's tilrd and tilr on a CDN of the case's own that names it the latest: `tilrd
+update` installs whatever the CDN calls latest), and forward again. Each step is a
+reload into another executable; after each the server says its version, the tilr next to
+it is the same version, and the server keeps its pid and every program in its panes.
 """
 
 import time
 
-from tt import SERVER_EXE, T, case
+from tt import T, case
 from tt.live import LivePanes, reload_times, wait_reloads
 
 PROGRAMS = ("shell", "counter", "vim", "less", "python", "sleep", "tcp")
@@ -19,7 +20,7 @@ def rolling_back_and_forward_again_keeps_the_panes_and_their_programs(t: T):
     manifest = t.manifest()
     current, nxt = manifest["version"], manifest["next_version"]
     old_cdn = t.cdn()
-    old_cdn.release(current, t.run("which", SERVER_EXE, quiet=True).out.strip())
+    old_cdn.publish(current)
     exe = t.install()
     server = t.server(exe=exe, state=t.root / "state")
     d = t.driver()
@@ -38,7 +39,8 @@ def rolling_back_and_forward_again_keeps_the_panes_and_their_programs(t: T):
         live.wait_settled()
         t.check(f"the server runs {version} after the update {what}",
                 lambda: (t.eq(back["server_version"], version, "HelloAck.server_version"),
-                         t.eq(server.version(), version, "the executable's version")))
+                         t.eq(server.version(), version, "the executable's version"),
+                         t.has(t.run(str(exe.with_name("tilr")), "--version", quiet=True).out, version)))
         t.check(f"the server keeps its listening socket after the update {what}",
                 lambda: t.eq(t.listener_pid(server.port), server.pid, "listener pid"))
         live.check(f"the update {what}")

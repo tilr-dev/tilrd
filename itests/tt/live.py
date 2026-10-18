@@ -50,7 +50,7 @@ while True:
 """
 
 # Long-lived processes of the programs, by what their command line is.
-LONG_LIVED = r"^((\S*/)?-?bash|vim |htop|less |python3|sleep (1000|9999)$|.*(tilrd|tilr-server).* pane --id )"
+LONG_LIVED = r"^((\S*/)?-?bash|vim |htop|less |python3|sleep (1000|9999)$|.*tilrd.* pane --id )"
 
 
 class LivePanes:
@@ -171,7 +171,7 @@ class LivePanes:
 
         def no_orphans():
             mine = {p.pid for p in descendants(self.server.pid)}
-            strays = [f"{p.pid} {p.cmdline}" for p in t.procs(r"(tilrd|tilr-server).* pane --id |^vim |^htop|^less ")
+            strays = [f"{p.pid} {p.cmdline}" for p in t.procs(r"tilrd.* pane --id |^vim |^htop|^less ")
                       if p.pid not in mine]
             t.eq(strays, [], "pane processes and programs outside the server's tree")
         t.check(f"no orphans after {what}", no_orphans)
@@ -288,7 +288,7 @@ def reload_times(server: Server) -> list[float]:
     last pane's `resumed after reload` before the next one."""
     import datetime
     spans, start, end = [], None, None
-    for m in re.finditer(r"(?m)^(\S+Z)\s+INFO (?:tilrd|tilr_server)::(supervisor|pane): (reloading|resumed after reload)",
+    for m in re.finditer(r"(?m)^(\S+Z)\s+INFO tilrd::(supervisor|pane): (reloading|resumed after reload)",
                          server.log_text()):
         at = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp()
         if m.group(2) == "supervisor" and m.group(3) == "reloading":

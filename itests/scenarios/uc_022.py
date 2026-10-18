@@ -1,8 +1,8 @@
 """UC-022: `tilr service uninstall` removes what `tilr service install` added, and only
 that: its unit (disabled first, lingering turned off if install turned it on), its
 @reboot line (the crontab itself if install made it), nothing else of the user's. It
-stops nothing: the running tilrd and its panes go on. A unit it did not write (the
-installer's own tilr.service) is left alone.
+stops nothing: the running tilrd and its panes go on. A unit it did not write (a
+tilr.service the user wrote by hand) is left alone.
 
 systemctl, loginctl and crontab are scripts (tt.FakeServiceTools).
 """
@@ -12,7 +12,7 @@ import os
 from tt import FakeServiceTools, T, case, changes, snapshot
 
 MINE = "0 3 * * * /usr/bin/backup --quiet"
-INSTALLERS_UNIT = """[Unit]
+HAND_WRITTEN_UNIT = """[Unit]
 Description=tilr terminal server
 
 [Service]
@@ -93,13 +93,13 @@ def uninstall_removes_the_crontab_it_made(t: T):
 
 @case()
 def uninstall_leaves_what_it_did_not_write(t: T):
-    """UC-022: nothing installed: nothing removed; the installer's own unit is left alone."""
+    """UC-022: nothing installed: nothing removed; a hand-written unit is left alone."""
     user = t.user()
     fake = FakeServiceTools(t, owner=user, systemd=True, linger="yes")
     env = {"PATH": fake.path()}
     unit = user.home / ".config/systemd/user/tilr.service"
     unit.parent.mkdir(parents=True)
-    unit.write_text(INSTALLERS_UNIT)
+    unit.write_text(HAND_WRITTEN_UNIT)
     t.sh(f"chown -R {user.name}: {user.home}/.config", check=True)
     before = snapshot(user.home)
     r = user.run("tilr", "service", "uninstall", env=env)

@@ -1,12 +1,13 @@
-"""UC-065: the disk runs out of space in the middle of an update: while the new executable
-is downloaded next to the old one, and while the server writes the state it hands its
+"""UC-065: the disk runs out of space in the middle of an update: while the new release
+(tilrd and tilr) is unpacked next to the old executable, and while the server writes the state it hands its
 successor at a reload. Nothing breaks: the installed executable stays as it was with
 nothing left beside it, the server keeps its pid and its panes, shells keep their state,
 no half-written state file is left behind, and once there is room again the update and
 the reload go through.
 
 The small disk is a tmpfs (mount needs the root capabilities of net_admin=True): one the
-size of the executable plus a little for its directory, one of a few MB for the
+size of the executable plus a little for its directory (no room for both programs of the
+release), one of a few MB for the
 server's runtime directory (TILR_RUNTIME_DIR: reload state, pane state, sockets, the
 clipboard), filled up with a file of zeros.
 
@@ -22,7 +23,7 @@ import signal
 import time
 from pathlib import Path
 
-from tt import SERVER_EXE, T, Counter, case
+from tt import CLIENT_NEXT_EXE, SERVER_EXE, T, Counter, case
 from tt.live import state_files, wait_reloads
 
 
@@ -95,10 +96,15 @@ def an_update_that_runs_out_of_disk_while_downloading_installs_nothing_and_break
     t.eq(server.logged("reloading"), 0, "the server did not reload")
     all_well(t, server, d, shell, before, counter, pids, "after the failed update")
 
-    t.run("mount", "-o", f"remount,size={2 * size // 1024 + 1024}k", disk, check=True)
+    # The old executable stays in use by the server after the update, beside the new
+    # tilrd and tilr.
+    client = Path(CLIENT_NEXT_EXE).stat().st_size
+    t.run("mount", "-o", f"remount,size={(2 * size + client) // 1024 + 1024}k", disk, check=True)
     since = d.mark()
     r = server.cmd("update", "--cdn", t.service("cdn"), timeout=180)
-    t.eq(r.code, 0, "with room, the update succeeds")
+    t.eq(r.code, 0, f"with room, the update succeeds:\n{r.text}")
+    t.eq(sorted(p.name for p in disk.iterdir()), ["tilr", "tilrd"],
+         "both programs are installed")
     wait_reloads(t, server, 1)
     d.wait_event("disconnected", since=since, timeout=10)
     back = d.cmd("reconnect", timeout_ms=20_000)

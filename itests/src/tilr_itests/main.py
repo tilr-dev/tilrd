@@ -10,9 +10,8 @@ Every test runs in its own container, concurrently:
              runtime image of a distribution (Ubuntu LTS for now).
 
 The build runs once per source change: the server (plain and with failpoints), the
-driver, the test executables and a "next release" — the same source with another
-version string — for the update scenarios; and, once, the last release named
-tilr-server (the source ./dt passes as --previous) for the update across the rename.
+driver, the test executables and a "next release" — tilrd and tilr of the same source
+with another version string — for the update scenarios.
 """
 
 import asyncio
@@ -39,12 +38,10 @@ SRC = "/src/tilrd"
 TARGET = "/target"
 # Version string of the "next release" the update scenarios install.
 NEXT_PACKAGE_VERSION = "0.1.1"
-# Version string of the last release named tilr-server, built from --previous.
-PREVIOUS_PACKAGE_VERSION = "0.0.9"
 
 SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "crates/*/target/", "!rustfmt.toml",
                  "!.rustfmt.toml", "!clippy.toml"]
-ITESTS_IGNORE = ["sdk/", ".venv/", "results/", ".previous/", "**/__pycache__/", "src/"]
+ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
 # Runs one test command and writes a single JSON result, so the module reads one file
 # per test. The test's exit code never fails the exec: a red test is data, not an error.
@@ -183,9 +180,10 @@ for line in p.stdout.splitlines():
 shutil.copy2("/target/debug/tilrd", f"{out}/bin/tilrd-failpoints")
 shutil.copy2("/target/debug/tilr", f"{out}/bin/tilr-tests")
 
-cargo("build", "--locked", "-p", "tilrd",
+cargo("build", "--locked", "-p", "tilrd", "-p", "tilr",
       env={"CARGO_TARGET_DIR": "/target-next", "TILR_BUILD_VERSION": os.environ["TT_NEXT_PACKAGE_VERSION"]})
 shutil.copy2("/target-next/debug/tilrd", f"{out}/bin/tilrd-next")
+shutil.copy2("/target-next/debug/tilr", f"{out}/bin/tilr-next")
 
 def version(exe):
     words = subprocess.run([exe, "--version"], stdout=subprocess.PIPE, check=True, text=True).stdout.split()
@@ -197,32 +195,23 @@ with open(f"{out}/manifest.json", "w") as f:
     json.dump({"suites": suites, "version": current, "next_version": nxt, "platform": platform}, f, indent=1)
 '''
 
-# Builds the last release named tilr-server from its own source (--previous).
-BUILD_PREVIOUS = r'''#!/usr/bin/env python3
-import os, shutil, subprocess
-os.makedirs(".git/logs", exist_ok=True)
-if not os.path.exists(".git/logs/HEAD"):
-    open(".git/logs/HEAD", "w").close()
-    os.utime(".git/logs/HEAD", (0, 0))
-subprocess.run(["cargo", "build", "--locked", "-p", "tilr-server"], check=True)
-os.makedirs("/out")
-shutil.copy2("/target/debug/tilr-server", "/out/tilr-server-previous")
-'''
-
 # Lays out a CDN as crates/tilrd/src/update.rs and the installer read it, offering the
-# next release under both names and the client next to it, as scripts/release.sh
-# publishes it.
+# next release (tilrd and tilr in one archive), as scripts/release.sh publishes it.
 CDN = r'''#!/usr/bin/env python3
-import hashlib, json, os, shutil
+import hashlib, json, os, tarfile
 m = json.load(open("/build/manifest.json"))
 version, platform = m["next_version"], m["platform"]
 os.makedirs(f"/cdn/releases/{platform}", exist_ok=True)
 os.makedirs(f"/cdn/releases/{version}", exist_ok=True)
-for name, exe in ((f"tilrd-{platform}", "tilrd-next"), (f"tilr-server-{platform}", "tilrd-next"),
-                  (f"tilr-{platform}", "tilr")):
-    shutil.copy2(f"/build/bin/{exe}", f"/cdn/releases/{version}/{name}")
-    digest = hashlib.sha256(open(f"/cdn/releases/{version}/{name}", "rb").read()).hexdigest()
-    open(f"/cdn/releases/{version}/{name}.sha256", "w").write(f"{digest}  {name}\n")
+name = f"tilr-{version}-{platform}.tar.gz"
+with tarfile.open(f"/cdn/releases/{version}/{name}", "w:gz") as tar:
+    for member, exe in (("tilrd", "tilrd-next"), ("tilr", "tilr-next")):
+        info = tar.gettarinfo(f"/build/bin/{exe}", arcname=member)
+        info.mode, info.uid, info.gid, info.uname, info.gname = 0o755, 0, 0, "root", "root"
+        with open(f"/build/bin/{exe}", "rb") as f:
+            tar.addfile(info, f)
+digest = hashlib.sha256(open(f"/cdn/releases/{version}/{name}", "rb").read()).hexdigest()
+open(f"/cdn/releases/{version}/{name}.sha256", "w").write(f"{digest}  {name}\n")
 open(f"/cdn/releases/{platform}/latest", "w").write(version + "\n")
 '''
 
@@ -266,10 +255,6 @@ class TilrItests:
                       Ignore(ITESTS_IGNORE)]
     commit: Annotated[str, Doc("commit baked into the version string (TILR_BUILD_COMMIT)")] = "itest"
     distro: Annotated[str, Doc(f"runtime image of the scenarios: {', '.join(DISTROS)}")] = "ubuntu"
-    previous: Annotated[dagger.Directory | None,
-                        Doc("source of the last release named tilr-server (./dt passes it); without it "
-                            "the update across the rename is BLOCKED"), Ignore(SOURCE_IGNORE)] = None
-    previous_commit: Annotated[str, Doc("the commit of --previous, baked into its version string")] = "previous"
 
     # ---------------------------------------------------------------- containers
 
@@ -314,7 +299,7 @@ class TilrItests:
 
     @function
     def build(self) -> dagger.Directory:
-        """bin/ (tilrd, tilr, tilrd-failpoints, tilr-tests, tilrd-next, tilr-driver), tests/ and
+        """bin/ (tilrd, tilr, tilrd-failpoints, tilr-tests, tilrd-next, tilr-next, tilr-driver), tests/ and
         manifest.json (test suites, versions, platform)."""
         return (
             self._rust("tt-target")
@@ -323,20 +308,6 @@ class TilrItests:
             .with_new_file("/usr/local/bin/tt-build", BUILD, permissions=0o755)
             .with_exec(["tt-fresh", TARGET, "/target-next", "--", "tt-build"])
             .directory("/out")
-        )
-
-    @function
-    def previous_server(self) -> dagger.File:
-        """The last release named tilr-server, as version 0.0.9 (needs --previous)."""
-        if self.previous is None:
-            raise ValueError("no --previous source")
-        return (
-            self._rust("tt-target-previous", self.previous)
-            .with_env_variable("TILR_BUILD_VERSION", PREVIOUS_PACKAGE_VERSION)
-            .with_env_variable("TILR_BUILD_COMMIT", self.previous_commit)
-            .with_new_file("/usr/local/bin/tt-build-previous", BUILD_PREVIOUS, permissions=0o755)
-            .with_exec(["tt-fresh", TARGET, "--", "tt-build-previous"])
-            .file("/out/tilr-server-previous")
         )
 
     @function
@@ -351,14 +322,12 @@ class TilrItests:
 
     def _with_binaries(self, ctr: dagger.Container) -> dagger.Container:
         out = self.build()
-        ctr = (ctr.with_file("/usr/local/bin/tilrd", out.file("bin/tilrd"))
+        return (ctr.with_file("/usr/local/bin/tilrd", out.file("bin/tilrd"))
                 .with_file("/usr/local/bin/tilr", out.file("bin/tilr"))
                 .with_file("/usr/local/bin/tilr-driver", out.file("bin/tilr-driver"))
                 .with_file("/opt/tt/tilrd-next", out.file("bin/tilrd-next"))
+                .with_file("/opt/tt/tilr-next", out.file("bin/tilr-next"))
                 .with_file("/opt/tt/manifest.json", out.file("manifest.json")))
-        if self.previous is not None:
-            ctr = ctr.with_file("/opt/tt/tilr-server-previous", self.previous_server())
-        return ctr
 
     async def _run(self, sem: asyncio.Semaphore, ctr: dagger.Container, argv: list[str],
                    rid: str, kind: str, net_admin: bool = False) -> Result:

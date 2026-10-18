@@ -2,11 +2,11 @@
 server does not reload into it (it would misread the panes and lose every shell), keeps
 running the old code with all its panes, and says so in its log.
 
-The release is a wrapper around the next build (a CDN of the case's own serves it) that
-answers `state-formats` with formats one higher than this server writes and passes
-everything else to the next build under the same argv[0]: it runs (`--version`, so the
-update installs it) but cannot take over (crates/tilrd/src/reload.rs,
-check_executable). Panes started after it is installed run the executable on disk, the
+The release's tilrd is a wrapper around the next build (a CDN of the case's own serves
+the archive, with the next tilr) that answers `state-formats` with formats one higher
+than this server writes and passes everything else to the next build under the same
+argv[0]: it runs (`--version`, so the update installs it) but cannot take over
+(crates/tilrd/src/reload.rs, check_executable). Panes started after it is installed run the executable on disk, the
 new one, under the old supervisor; they must work too.
 """
 
@@ -14,7 +14,7 @@ import re
 import signal
 import time
 
-from tt import NEXT_EXE, T, case
+from tt import CLIENT_NEXT_EXE, NEXT_EXE, T, case
 from tt.live import LivePanes
 
 WRAPPER = """#!/bin/bash
@@ -34,7 +34,7 @@ def a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live
     release.write_text(WRAPPER.format(next=NEXT_EXE))
     release.chmod(0o755)
     cdn = t.cdn()
-    cdn.release("9.9.9-otherformat", release)
+    cdn.publish("9.9.9-otherformat", server=release, client=CLIENT_NEXT_EXE)
     exe = t.install()
     server = t.server(exe=exe, state=t.root / "state")
     d = t.driver()

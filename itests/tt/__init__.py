@@ -15,7 +15,7 @@ Layout of a container (backend `dagger`, see src/tilr_itests/main.py):
     tilr                   its terminal client, next to it
     tilr-driver            the scripted client, on PATH
     /opt/tt/tilrd-next     the same source built as the next version
-    /opt/tt/tilr-server-previous  the last release named tilr-server (0.0.9)
+    /opt/tt/tilr-next      its client, built so too
     /opt/tt/manifest.json  versions and platform of both builds
     /opt/tt/install.sh     the installer (itests/installer/install.sh)
     $TT_SERVICE_<NAME>     URL of a service container the case asked for (cdn)
@@ -44,8 +44,7 @@ SERVER_EXE = os.environ.get("TT_SERVER", "tilrd")
 DRIVER_EXE = os.environ.get("TT_DRIVER", "tilr-driver")
 CLIENT_EXE = os.environ.get("TT_CLIENT", "tilr")
 NEXT_EXE = os.environ.get("TT_SERVER_NEXT", "/opt/tt/tilrd-next")
-# The last release named tilr-server (src/tilr_itests/main.py builds it from ./dt's --previous).
-PREVIOUS_EXE = os.environ.get("TT_SERVER_PREVIOUS", "/opt/tt/tilr-server-previous")
+CLIENT_NEXT_EXE = os.environ.get("TT_CLIENT_NEXT", "/opt/tt/tilr-next")
 MANIFEST = Path(os.environ.get("TT_MANIFEST", "/opt/tt/manifest.json"))
 # The installer (`curl tilr.sh | sh`), a copy of the sh repository's (itests/installer).
 INSTALLER = Path(os.environ.get("TT_INSTALLER", "/opt/tt/install.sh"))
@@ -845,35 +844,41 @@ class LocalCdn:
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
-    def release(self, version: str, exe: Path | str, latest: bool = True,
-                names: tuple[str, ...] = ("tilrd",)) -> Path:
-        """Offer `exe` as release `version` (with its checksum), and as the latest. `names`:
-        the file names it is offered under, `tilr-server` as well for servers from before
-        the rename, which ask for that one (scripts/release.sh publishes both); `tilr` for
-        the client."""
-        import hashlib
-        for n in names:
-            name = f"{n}-{self.platform}"
-            dest = self.dir / "releases" / version / name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(shutil.which(str(exe)) or exe, dest)
-            os.chmod(dest, 0o644)
-            digest = hashlib.sha256(dest.read_bytes()).hexdigest()
-            (dest.parent / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+    def publish(self, version: str, server: Path | str | None = SERVER_EXE,
+                client: Path | str | None = CLIENT_EXE, latest: bool = True) -> Path:
+        """A release as scripts/release.sh lays it out: one archive,
+        tilr-<version>-<platform>.tar.gz, holding the server (tilrd) and the client
+        (tilr), and its checksum next to it; None leaves that program out (a broken
+        release). Named the latest unless `latest` is False. The archive's path."""
+        import tarfile
+        name = f"tilr-{version}-{self.platform}.tar.gz"
+        archive = self.dir / "releases" / version / name
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "w:gz") as tar:
+            for member, exe in (("tilrd", server), ("tilr", client)):
+                if exe is None:
+                    continue
+                path = shutil.which(str(exe)) or str(exe)
+                info = tar.gettarinfo(path, arcname=member)
+                info.mode, info.uid, info.gid, info.uname, info.gname = 0o755, 0, 0, "root", "root"
+                with open(path, "rb") as f:
+                    tar.addfile(info, f)
+        os.chmod(archive, 0o644)
+        self.write_checksum(archive)
         if latest:
             self.latest(version)
-        return self.dir / "releases" / version / f"{names[0]}-{self.platform}"
+        return archive
 
-    def publish(self, version: str, server: Path | str = SERVER_EXE, client: Path | str | None = CLIENT_EXE,
-                latest: bool = True) -> dict[str, Path]:
-        """A whole release as scripts/release.sh lays it out: the server (as tilrd and
-        tilr-server) and the client (tilr; None: a release from before the client)."""
-        files = {"tilrd": self.release(version, server, latest=False, names=("tilrd", "tilr-server"))}
-        if client is not None:
-            files["tilr"] = self.release(version, client, latest=False, names=("tilr",))
-        if latest:
-            self.latest(version)
-        return files
+    @staticmethod
+    def checksum(archive: Path) -> Path:
+        """The checksum file of a release archive."""
+        return archive.with_name(archive.name + ".sha256")
+
+    def write_checksum(self, archive: Path):
+        """(Re)write the checksum file of an archive as it is now."""
+        import hashlib
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        self.checksum(archive).write_text(f"{digest}  {archive.name}\n")
 
     def path(self, file: Path) -> str:
         """The URL path of a file the CDN serves."""

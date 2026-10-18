@@ -52,14 +52,11 @@ root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scrip
 1. **build** — one Rust container (rust 1.94 bookworm, zig 0.15.2, protoc; `CARGO_HOME`
    and the target dirs are cache volumes on pb) builds the server and its client `tilr`
    (debug), `tilr-driver`
-   (release: it plays a real client, and a debug one reads at ~30 MB/s), the test executables with failpoints (listing their tests), and the *next release*: the
-   same source with `TILR_BUILD_VERSION=0.1.1`, in a target dir of its own so the two
-   version strings never rebuild each other. Cached by Dagger until the source changes.
-   Every build runs through `tt-fresh` (see [Fresh builds](#fresh-builds)). The last
-   release named `tilr-server` is built once, from the tree of `PREVIOUS` in `dt`
-   (`git archive` into `.previous/`, passed as `--previous`), in a target dir of its
-   own, for the update across the rename (UC-06A); without that commit the case is
-   BLOCKED.
+   (release: it plays a real client, and a debug one reads at ~30 MB/s), the test executables with failpoints (listing their tests), and the *next release*:
+   tilrd and tilr of the same source with `TILR_BUILD_VERSION=0.1.1`, in a target dir
+   of its own so the two version strings never rebuild each other. Cached by Dagger
+   until the source changes. Every build runs through `tt-fresh` (see
+   [Fresh builds](#fresh-builds)).
 2. **rust** — one runtime container per test, running the copied executable with
    `--exact NAME --test-threads=1`. Sources sit at `/src/tilrd`, the failpoints server at
    `/target/debug/tilrd` and `tilr` next to it (`crates/tilr/tests` run that `tilr`,
@@ -93,7 +90,7 @@ tree's code, down to code generated from another `tilr.proto` (build.rs not reru
 a tree could fail to compile against it.
 
 `tt-fresh DIR... -- CMD` (main.py `FRESH`) wraps every cargo call on a shared target
-dir (`build`, the next release, the previous release, clippy and fmt): it takes the
+dir (`build`, the next release, clippy and fmt): it takes the
 dir's lock (concurrent runs of other trees wait), compares the sha256 of every source
 file with `DIR/.tt-sources.json` (the tree the dir was last given), sets the mtime of
 each file that differs to now, records the new tree and runs CMD. A changed file is
@@ -133,7 +130,7 @@ itests/
 /tmp/tt                   scratch: each server's runtime/state/config dirs and log, driver stderr
 tilrd, tilr, tilr-driver  on PATH (tilr next to tilrd); root's login shell is bash with PS1='$ '
 /opt/tt/tilrd-next        the next release; /opt/tt/manifest.json its version and platform
-/opt/tt/tilr-server-previous  the last release named tilr-server, as 0.0.9 (UC-06A)
+/opt/tt/tilr-next         its client
 /opt/tt/install.sh        the installer (installer/install.sh), group A
 $TT_SERVICE_CDN           http://cdn:8080, the fake CDN, for cases with services=["cdn"]
 ```
@@ -237,7 +234,7 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `Counter(t, driver, pane, period)` | a counter in a pane: `.last(d) .check_screen(d)` (moving, lines consecutive) `.check_log()` (the pane's own log: nothing skipped, longest gap as `counter_max_gap_ms`) |
 | driver extras | `.interrupt(pane)` (Ctrl-C until the prompt is back), `.viewers(pane)` (as the server counts them), `.latency(reset)`, `.connected()`, `.wait_event(("dead", "disconnected"), since=)` |
 | `service(name)` | URL of a service container named in `@case(services=[...])` |
-| `cdn()` | `LocalCdn`: releases served from the case's own container, `.release(version, exe, names=)`, `.publish(version, server=, client=)` (tilrd, tilr-server and tilr with checksums), `.latest(version)`, `.installer()` (serves the installer, its URL), `.cut[path] = n` (a download closed after n bytes), `.requests`, `.url` for `update --cdn` and `TILR_CDN` |
+| `cdn()` | `LocalCdn`: releases served from the case's own container, `.publish(version, server=, client=, latest=)` (the archive `tilr-<version>-<platform>.tar.gz` of tilrd and tilr, None leaving one out, and its `.sha256`; returns the archive's path), `.checksum(archive)`, `.write_checksum(archive)`, `.latest(version)`, `.installer()` (serves the installer, its URL), `.cut[path] = n` (a download closed after n bytes), `.requests`, `.url` for `update --cdn` and `TILR_CDN` |
 | `user(name)` | a Unix user made for the case (`useradd -m`): `.run(*argv, env=)` / `.sh()` as it with a login's environment only (no `XDG_*`, `USER_PATH`), `.env()`, `.prompt()` (`PS1='$ '`), `.home .uid` |
 | `FakeServiceTools(t, owner, systemd=, linger=, linger_ok=, crontab=)` | `systemctl`, `loginctl`, `crontab` as scripts in `.bin` (`.path()`): `.called()` lists their calls, `.crontab()` the crontab file |
 | `snapshot(dir, skip=)`, `changes(a, b)` | every file and directory with mode, owner and hash; what differs |
@@ -314,9 +311,9 @@ All of it is undone when the case ends.
 
 A case asks for a service container by name: `@case(services=["cdn"])`. The module
 builds it (`_service` in main.py), binds it under that hostname and passes its URL as
-`TT_SERVICE_<NAME>`. `cdn` serves `releases/<platform>/latest` and the next release with
-its checksum, as `tilrd update` and the installer read them (the client `tilr-<platform>`
-too). `echo` is a TCP echo service on port
+`TT_SERVICE_<NAME>`. `cdn` serves `releases/<platform>/latest` and the next release, the
+archive of tilrd-next and tilr-next with its checksum, as `tilrd update` and the
+installer read them. `echo` is a TCP echo service on port
 7007 (`tcp://echo:7007`), the far end of a pane's connection that must outlive a reload.
 
 ## Gotchas

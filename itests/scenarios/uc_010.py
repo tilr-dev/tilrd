@@ -25,7 +25,7 @@ def tilr_without_a_running_daemon_starts_tilrd_detached_and_connects(t: T):
     home = t.scratch("home")
     env = {"PATH": f"{bin}:{os.environ['PATH']}", "XDG_RUNTIME_DIR": str(xdg), "XDG_STATE_HOME": str(home / "state"),
            "XDG_CONFIG_HOME": str(home / "config"), "TERM": "xterm-256color"}
-    t.eq(t.procs(r"(^|/)(tilrd|tilr-server)( |$)"), [], "no daemon runs before")
+    t.eq(t.procs(r"(^|/)tilrd( |$)"), [], "no daemon runs before")
 
     client = t.session("tilr", env=env, name="tilr")
     daemon = t.eventually(t.tilrd_daemons,
