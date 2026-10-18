@@ -143,12 +143,18 @@ fn check_formats(printed: &str) -> Result<bool> {
 /// would leave it, before betting every pane on it. `Ok(true)` if it also
 /// takes over the Unix socket.
 pub async fn check_executable(exe: &Path) -> Result<bool> {
-    let output = tokio::process::Command::new(exe)
+    let mut command = tokio::process::Command::new(exe);
+    command
         .arg("state-formats")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .output();
+        .kill_on_drop(true);
+    let output = async {
+        spawn_unblocked(|| command.spawn())?
+            .wait_with_output()
+            .await
+    };
     match tokio::time::timeout(CHECK_TIMEOUT, output).await {
         Ok(Ok(output)) if output.status.success() => {
             check_formats(&String::from_utf8_lossy(&output.stdout))
@@ -172,15 +178,16 @@ pub async fn check_successor(
 ) -> Result<()> {
     write_file(&check_file, state).context("write the state to check")?;
     let check_file = Removed(check_file);
-    let child = tokio::process::Command::new(exe)
+    let mut command = tokio::process::Command::new(exe);
+    command
         .args(args)
         .env(CHECK_ENV, &check_file.0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("run {}", exe.display()))?;
+        .kill_on_drop(true);
+    let child =
+        spawn_unblocked(|| command.spawn()).with_context(|| format!("run {}", exe.display()))?;
     match tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(output)) => verdict(&output),
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
@@ -281,7 +288,7 @@ fn held_set() -> libc::sigset_t {
 /// Have `command`, about to be exec'd in place, start with [`HELD`]
 /// blocked: they wait, pending, for the successor ([`take_held_signals`]).
 /// Done in `pre_exec`, after whatever the standard library does to the mask.
-/// If the exec fails, [`release_held_signals`] undoes it.
+/// The other threads must not take them meanwhile ([`hold_everywhere`]).
 pub fn hold_signals(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     // SAFETY: pthread_sigmask is async-signal-safe, and the set is built
@@ -295,12 +302,142 @@ pub fn hold_signals(command: &mut std::process::Command) {
     }
 }
 
-/// Unblock [`HELD`] on this thread again: the exec that was to carry them
-/// over did not happen.
-pub fn release_held_signals() {
+/// Unblock [`HELD`] on this thread.
+fn release_held_signals() {
     let set = held_set();
     // SAFETY: the set is valid.
     unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
+}
+
+/// Start a child with none of [`HELD`] blocked: `spawn` runs with them let
+/// in on this thread, whose mask a child inherits. The supervisor's threads
+/// have them blocked ([`serve_signals`]); a reload's exec waits until no
+/// thread is in here ([`hold_everywhere`]).
+pub fn spawn_unblocked<T>(spawn: impl FnOnce() -> T) -> T {
+    let Some(thread) = SIGNAL_THREAD.get() else {
+        return spawn();
+    };
+    let mut state = thread.lock();
+    while state.holding {
+        state = thread.wait(state);
+    }
+    state.spawning += 1;
+    drop(state);
+    let set = held_set();
+    // SAFETY: the set is valid.
+    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
+    let spawned = spawn();
+    // SAFETY: the set is valid.
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
+    let mut state = thread.lock();
+    state.spawning -= 1;
+    thread.changed.notify_all();
+    spawned
+}
+
+/// The thread [`HELD`] are taken on, and what the others ask of it.
+struct SignalThread {
+    state: std::sync::Mutex<SignalState>,
+    changed: std::sync::Condvar,
+}
+
+struct SignalState {
+    /// Whether the signal thread is to have them blocked.
+    block: bool,
+    /// Whether it has.
+    blocked: bool,
+    /// An exec is under way: no child is started meanwhile.
+    holding: bool,
+    /// How many threads are starting a child, with them let in.
+    spawning: usize,
+}
+
+impl SignalThread {
+    fn lock(&self) -> std::sync::MutexGuard<'_, SignalState> {
+        self.state.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn wait<'a>(
+        &self,
+        state: std::sync::MutexGuard<'a, SignalState>,
+    ) -> std::sync::MutexGuard<'a, SignalState> {
+        self.changed
+            .wait(state)
+            .unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+static SIGNAL_THREAD: std::sync::OnceLock<SignalThread> = std::sync::OnceLock::new();
+
+/// For a server, before it starts any other thread: [`HELD`] stay blocked
+/// on this thread, and so on every thread started from it, all but one: a
+/// thread of their own, the only one their handlers run on. Before the
+/// supervisor execs a successor that thread blocks them too
+/// ([`hold_everywhere`]), so that what comes during the exec waits, pending,
+/// for the successor: a signal the system hands to another thread while
+/// the exec replaces the image ends the process (macOS).
+pub fn serve_signals() -> std::io::Result<()> {
+    let set = held_set();
+    // SAFETY: the set is valid.
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
+    let thread = SIGNAL_THREAD.get_or_init(|| SignalThread {
+        // It starts with them blocked, as this thread has them.
+        state: std::sync::Mutex::new(SignalState {
+            block: false,
+            blocked: true,
+            holding: false,
+            spawning: 0,
+        }),
+        changed: std::sync::Condvar::new(),
+    });
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            let mut state = thread.lock();
+            loop {
+                if state.block != state.blocked {
+                    let how = if state.block {
+                        libc::SIG_BLOCK
+                    } else {
+                        libc::SIG_UNBLOCK
+                    };
+                    // SAFETY: the set is valid.
+                    unsafe { libc::pthread_sigmask(how, &set, std::ptr::null_mut()) };
+                    state.blocked = state.block;
+                    thread.changed.notify_all();
+                }
+                state = thread.wait(state);
+            }
+        })?;
+    // Let them in on the signal thread now.
+    set_signal_thread(thread, false, false);
+    Ok(())
+}
+
+/// Before an exec in place: have no thread of this process take [`HELD`],
+/// so that what comes waits for the successor. Undone by
+/// [`release_everywhere`] if the exec fails.
+pub fn hold_everywhere() {
+    if let Some(thread) = SIGNAL_THREAD.get() {
+        set_signal_thread(thread, true, true);
+    }
+}
+
+/// Let the signal thread take [`HELD`] again, and children be started.
+pub fn release_everywhere() {
+    if let Some(thread) = SIGNAL_THREAD.get() {
+        set_signal_thread(thread, false, false);
+    }
+}
+
+fn set_signal_thread(thread: &SignalThread, block: bool, holding: bool) {
+    let mut state = thread.lock();
+    state.holding = holding;
+    state.block = block;
+    thread.changed.notify_all();
+    while state.blocked != block || (holding && state.spawning > 0) {
+        state = thread.wait(state);
+    }
 }
 
 /// Which of the held signals came while this process started.
@@ -329,8 +466,9 @@ extern "C" fn record_held(signal: libc::c_int) {
 /// First thing in a process: if it was started with [`HELD`] blocked (a
 /// supervisor exec'd by a reload), note which of them come from now on
 /// with a handler that only records them, and unblock them. A signal that
-/// arrived during the exec is recorded at once; the threads and children
-/// started after this have nothing blocked. The supervisor acts on the
+/// arrived during the exec is recorded at once. A server then blocks them
+/// again on all its threads but one ([`serve_signals`]); its children start
+/// with nothing blocked ([`spawn_unblocked`]). The supervisor acts on the
 /// record ([`take_held_record`]) once its own handlers are in place, which
 /// call this one too.
 pub fn take_held_signals() {

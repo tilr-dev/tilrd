@@ -34,6 +34,8 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 All of phase 1 is done (see "Done"). `agent-socket-per-server` (TILR-118) joined it on
 2026-10-18: a bug in what the first release ships (the agent socket sweep is on dev only).
+`reload-signal-storm` (TILR-121) joined it on 2026-10-18: a signal during a reload's exec
+kills the server (macOS) or is lost, in what the first release ships.
 
 ## Phase 2: protocol v3 and input
 
@@ -121,5 +123,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | readme-code-reconciliation | e70d499 |
 | snapshot-origin-mode-cursor | af85db3 |
 | agent-socket-per-server | 5e0f703 |
+| reload-signal-storm | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

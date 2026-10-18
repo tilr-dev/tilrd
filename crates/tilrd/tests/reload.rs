@@ -1018,6 +1018,40 @@ async fn a_sigint_while_the_successor_starts_stops_the_server_cleanly() {
 
 #[cfg(feature = "failpoints")]
 #[tokio::test]
+async fn a_sigterm_while_the_supervisor_execs_waits_for_the_successor() {
+    // The supervisor stops right before its exec; any of its threads could
+    // take a signal there, and the one that did would hand it to an image
+    // about to be replaced.
+    let (mut server, _) = failing_server("reload-exec=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    server.signal("-USR1");
+    wait_logged(&server, "reloading exe=", TIMEOUT).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    server.signal("-TERM");
+    let started = tokio::time::Instant::now();
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(started.elapsed() < TIMEOUT, "the server keeps running");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        status.success(),
+        "a clean shutdown, not the signal: {status}"
+    );
+    // The log thread may still be reading the last lines.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(server.logged("SIGTERM came during the reload"));
+    assert!(server.logged("shutting down"));
+    eventually("the shell exits", || !process_alive(pid)).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
 async fn a_storm_of_reload_signals_costs_no_shell() {
     // A short pause before the handlers: some of the signals land there.
     let (mut server, _) = failing_server("supervisor-resume-live=sleep:100");

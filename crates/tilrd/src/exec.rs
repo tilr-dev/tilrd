@@ -475,7 +475,7 @@ fn spawn(start: &ExecStart) -> Result<Child, String> {
             Ok(())
         });
     }
-    cmd.spawn().map_err(|err| format!("{program}: {err}"))
+    crate::reload::spawn_unblocked(|| cmd.spawn()).map_err(|err| format!("{program}: {err}"))
 }
 
 /// Signal a process group.

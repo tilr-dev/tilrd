@@ -730,8 +730,7 @@ async fn run_tunnel(
         };
         say(State::new("starting", ""));
         let started = prepare(&spec, local, &cloudflared).and_then(|mut command| {
-            command
-                .spawn()
+            crate::reload::spawn_unblocked(|| command.spawn())
                 .with_context(|| format!("start {}", cloudflared.display()))
         });
         let mut child = match started {

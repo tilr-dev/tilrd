@@ -231,6 +231,7 @@ state format; platforms other than `linux-aarch64`.
 | † SIGHUP and SIGUSR1 while the successor starts, before its handlers: held for it; SIGHUP ignored, one more reload; a shell started afterwards has no signal blocked | `signals_arriving_while_the_successor_starts_are_held_for_it` |
 | † SIGTERM while the successor starts: a clean shutdown (exit 0), the shells end | `a_sigterm_while_the_successor_starts_stops_the_server_cleanly` |
 | † SIGINT while the successor starts: held across the exec like SIGTERM, a clean shutdown (exit 0), the shells end, socket and lock removed | `a_sigint_while_the_successor_starts_stops_the_server_cleanly` |
+| † SIGTERM right before the supervisor's exec (failpoint `reload-exec`): no thread of the old image takes it; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_supervisor_execs_waits_for_the_successor` |
 | † SIGUSR1 every 20 ms for 3 s: several reloads, the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
 
 ## Clipboard — `tests/clipboard.rs`

@@ -726,9 +726,11 @@ What to know:
   (`panes/<pane id>.check.state`) and carries on with its code if the check fails. A new
   version that passes its check and then crashes taking over still ends the server and its
   shells.
-- `SIGUSR1`, `SIGHUP`, `SIGTERM` and `SIGINT` that arrive while the new executable starts
-  are held across the exec and handled once it is up: one more reload, ignored, a clean
-  shutdown (SIGTERM and SIGINT).
+- `SIGUSR1`, `SIGHUP`, `SIGTERM` and `SIGINT` that arrive during the exec or while the new
+  executable starts are held across the exec and handled once it is up: one more reload,
+  ignored, a clean shutdown (SIGTERM and SIGINT). The server takes them on one thread of its
+  own (blocked on all the others), which blocks them too before the exec, so that no thread of
+  the old image takes one; its children start with none of them blocked.
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 

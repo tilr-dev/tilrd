@@ -283,6 +283,9 @@ fn main() -> anyhow::Result<ExitCode> {
             // supervisor's handlers is recorded for them, not fatal. No
             // thread runs yet (tracing's subscriber starts none).
             reload::record_signals();
+            // From here on they are blocked on every thread but the one
+            // their handlers run on, so that a reload can hold them all.
+            reload::serve_signals()?;
             let options = server_options(cli)?;
             tracing::info!(origins = ?options.allow_origins, "browser origins allowed");
             supervisor::run(options)?

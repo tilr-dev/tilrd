@@ -2043,11 +2043,15 @@ impl Supervisor {
             Ok(()) => {
                 let mut command = std::process::Command::new(exe);
                 command.args(std::env::args_os().skip(1));
-                // What comes between the exec and the successor's handlers
-                // waits for them.
+                // What comes from here to the successor's handlers waits for
+                // them: no thread of this image takes it.
                 reload::hold_signals(&mut command);
-                let err = command.exec();
-                reload::release_held_signals();
+                reload::hold_everywhere();
+                let err = match crate::fail::point("reload-exec") {
+                    Ok(()) => command.exec(),
+                    Err(err) => std::io::Error::other(err.to_string()),
+                };
+                reload::release_everywhere();
                 anyhow::Error::new(err).context(format!("exec {}", exe.display()))
             }
             Err(err) => anyhow::Error::new(err).context("make descriptors inheritable"),
@@ -3014,7 +3018,7 @@ fn start_pane_process(
             Ok(())
         });
     }
-    let mut child = cmd.spawn().context("spawn pane process")?;
+    let mut child = reload::spawn_unblocked(|| cmd.spawn()).context("spawn pane process")?;
     let pid = child.id().context("pane process pid")?;
     // Plain pipes rather than tokio's child handles: on a reload they are
     // handed to the next supervisor as bare descriptors.

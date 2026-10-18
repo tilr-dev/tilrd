@@ -324,9 +324,13 @@ A `tilrd` started with `TILR_RELOAD_CHECK` SHALL parse its command line, load th
 - **THEN** it answers `error: panicked ...`, and the pane process it checked for keeps its pty and shell
 
 ### Requirement: Signals are held across the exec
-SIGUSR1, SIGHUP, SIGTERM and SIGINT arriving between the supervisor's exec and its successor's handlers SHALL NOT kill the supervisor: they SHALL be held across the exec and handled by the successor as the server handles them (SIGUSR1 one reload, SIGHUP ignored, SIGTERM and SIGINT a clean shutdown). Panes, shells and programs the successor starts SHALL NOT inherit them blocked.
+SIGUSR1, SIGHUP, SIGTERM and SIGINT arriving between the moment the supervisor commits to its exec and its successor's handlers SHALL NOT kill the supervisor and SHALL NOT be taken by any thread of the image being replaced: they SHALL be held across the exec and handled by the successor as the server handles them (SIGUSR1 one reload, SIGHUP ignored, SIGTERM and SIGINT a clean shutdown). Panes, shells and programs the supervisor or its successor starts SHALL NOT inherit them blocked.
 
-**Verified by**: `reload::signals_arriving_while_the_successor_starts_are_held_for_it`, `reload::a_sigterm_while_the_successor_starts_stops_the_server_cleanly`, `reload::a_sigint_while_the_successor_starts_stops_the_server_cleanly`, `reload::a_storm_of_reload_signals_costs_no_shell`.
+**Verified by**: `reload::a_sigterm_while_the_supervisor_execs_waits_for_the_successor`, `reload::signals_arriving_while_the_successor_starts_are_held_for_it`, `reload::a_sigterm_while_the_successor_starts_stops_the_server_cleanly`, `reload::a_sigint_while_the_successor_starts_stops_the_server_cleanly`, `reload::a_storm_of_reload_signals_costs_no_shell`.
+
+#### Scenario: SIGTERM while the supervisor execs
+- **WHEN** the supervisor receives SIGTERM right before its exec (`reload-exec=sleep:1500`)
+- **THEN** no thread of the old image takes it: the successor logs `SIGTERM came during the reload`, shuts down cleanly (exit status 0, `shutting down` in the log) and the shells end
 
 #### Scenario: SIGHUP and SIGUSR1 right after the exec
 - **WHEN** the supervisor receives SIGHUP and SIGUSR1 while its successor is starting (`supervisor-resume-live=sleep:1500`)
