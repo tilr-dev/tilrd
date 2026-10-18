@@ -34,3 +34,5 @@ Dropped from TILR-124 after the check: "the pane process's own reload exec (`pan
 ## Impact
 
 `crates/tilrd/src/reload.rs` (recording handler, SIGPIPE restore, `spawn_unblocked` guard), `crates/tilrd/src/supervisor.rs` (`reload()`, `exec_successor`), `crates/tilrd/src/pane.rs` (SIGPIPE restore), `crates/tilrd/tests/reload.rs`, README reload section, USE_CASES.md. No protocol change; nothing new crosses a reload except a signal raised pending, which the successor already reads (`take_held_signals`); `state-formats` unchanged. A reload from the previous release into this one: the predecessor's gap stays (its code); the successor handles a pending signal as before. Update from the previous release needs nothing else. Not breaking.
+
+Implemented by: [`c6deafc`](https://github.com/tilr-dev/tilrd/commit/c6deafc) fix(reload): keep a stop and SIGPIPE right around the exec (2026-10-18).
