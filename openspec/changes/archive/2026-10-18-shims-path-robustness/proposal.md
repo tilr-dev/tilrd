@@ -28,3 +28,5 @@
 ## Impact
 
 `crates/tilrd/src/pty.rs` (how a login shell is started), `crates/tilrd/src/supervisor.rs` / `clipboard.rs` (writing the wrappers with the shims), README pane environment, itests runtime image (zsh, fish) and a new case, the `panes` spec. Not breaking; no protocol, PROTOCOL_VERSION or feature change. Survives a reload with nothing handed over: running shells already read their startup files; the successor rewrites the wrappers at its start for panes made after it. An update from the previous release changes only panes made after it.
+
+Implemented by: [`0590786`](https://github.com/tilr-dev/tilrd/commit/0590786) fix(pane): keep the pane tools first on PATH after the login profile (2026-10-18).

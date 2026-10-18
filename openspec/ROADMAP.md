@@ -119,6 +119,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | cloudflared-outlives-exec | 0aff8e0 |
 | durable-file-writes | 42a4cc2 |
 | service-install-ownership | 1d44e4b |
-| shims-path-robustness | recorded in the next commit |
+| shims-path-robustness | 0590786 |
 
 Older work is in `openspec/changes/archive/`.
