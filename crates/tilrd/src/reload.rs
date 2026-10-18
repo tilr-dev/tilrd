@@ -261,9 +261,9 @@ fn answer(line: &str) {
     let _ = stdout.flush();
 }
 
-/// The signals held across a supervisor's exec: what arrives between the
-/// exec and the successor's handlers would otherwise end the server.
-const HELD: [libc::c_int; 3] = [libc::SIGUSR1, libc::SIGHUP, libc::SIGTERM];
+/// The signals held across a supervisor's exec, and recorded while a server
+/// starts: what arrives before the server's handlers would otherwise end it.
+const HELD: [libc::c_int; 4] = [libc::SIGUSR1, libc::SIGHUP, libc::SIGTERM, libc::SIGINT];
 
 fn held_set() -> libc::sigset_t {
     // SAFETY: sigemptyset initializes the set; sigaddset takes valid
@@ -309,10 +309,11 @@ pub struct HeldSignals {
     pub reload: bool,
     pub hangup: bool,
     pub terminate: bool,
+    pub interrupt: bool,
 }
 
-static HELD_CAME: [std::sync::atomic::AtomicBool; 3] =
-    [const { std::sync::atomic::AtomicBool::new(false) }; 3];
+static HELD_CAME: [std::sync::atomic::AtomicBool; HELD.len()] =
+    [const { std::sync::atomic::AtomicBool::new(false) }; HELD.len()];
 static HELD_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn record_held(signal: libc::c_int) {
@@ -345,14 +346,31 @@ pub fn take_held_signals() {
         if held.is_empty() {
             return;
         }
-        for &signal in &held {
+        install_recorder(&held);
+        release_held_signals();
+    }
+}
+
+/// For a server starting afresh, before it binds anything: record [`HELD`]
+/// from now on whatever the mask, so a SIGTERM, SIGINT, SIGHUP or SIGUSR1
+/// before the supervisor's handlers is acted on once they are in place
+/// ([`take_held_record`]) instead of ending the server. A disposition is
+/// process-wide: it covers the runtime's threads started later.
+pub fn record_signals() {
+    install_recorder(&HELD);
+}
+
+/// Install [`record_held`] for `signals`.
+fn install_recorder(signals: &[libc::c_int]) {
+    for &signal in signals {
+        // SAFETY: a zeroed sigaction with a valid handler and an empty mask.
+        unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = record_held as extern "C" fn(libc::c_int) as libc::sighandler_t;
             libc::sigemptyset(&mut action.sa_mask);
             action.sa_flags = libc::SA_RESTART;
             libc::sigaction(signal, &action, std::ptr::null_mut());
         }
-        release_held_signals();
     }
 }
 
@@ -365,6 +383,7 @@ pub fn take_held_record() -> HeldSignals {
         reload: came(0),
         hangup: came(1),
         terminate: came(2),
+        interrupt: came(3),
     }
 }
 

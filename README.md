@@ -285,7 +285,10 @@ the background that ignores SIGHUP (`nohup cmd &`) is left, as after an SSH hang
 closing a pane (`ClosePane`, `tilr kill`) ends the same two groups the same way. `SIGUSR1`
 [reloads](#reloading-without-closing-shells) it. `SIGHUP` is ignored: a server started from
 a terminal (`tilrd &` in an SSH session) outlives it, and so do its panes, each in a session
-of its own. Its log then goes nowhere; redirect stderr to keep it.
+of its own. Its log then goes nowhere; redirect stderr to keep it. A signal that arrives
+while the server starts (its socket or port already served, its handlers not yet in place)
+is noted and handled once it is up: SIGTERM or SIGINT a clean stop (socket and lock file
+removed, exit 0), SIGHUP ignored, SIGUSR1 one reload.
 
 ### Who may connect
 
@@ -696,8 +699,9 @@ What to know:
   (`panes/<pane id>.check.state`) and carries on with its code if the check fails. A new
   version that passes its check and then crashes taking over still ends the server and its
   shells.
-- `SIGUSR1`, `SIGHUP` and `SIGTERM` that arrive while the new executable starts are held
-  across the exec and handled once it is up: one more reload, ignored, a clean shutdown.
+- `SIGUSR1`, `SIGHUP`, `SIGTERM` and `SIGINT` that arrive while the new executable starts
+  are held across the exec and handled once it is up: one more reload, ignored, a clean
+  shutdown (SIGTERM and SIGINT).
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 

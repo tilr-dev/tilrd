@@ -872,6 +872,42 @@ async fn a_sigterm_while_the_successor_starts_stops_the_server_cleanly() {
 
 #[cfg(feature = "failpoints")]
 #[tokio::test]
+async fn a_sigint_while_the_successor_starts_stops_the_server_cleanly() {
+    let (mut server, _) = failing_server("supervisor-resume-live=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+    let socket = server.dir.join("runtime/tilrd.sock");
+    assert!(socket.exists(), "the server has its Unix socket");
+
+    in_the_successor_starting(&server).await;
+    server.signal("-INT");
+    let started = tokio::time::Instant::now();
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(started.elapsed() < TIMEOUT, "the server keeps running");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        status.success(),
+        "a clean shutdown, not the signal: {status}"
+    );
+    // The log thread may still be reading the last lines.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(server.logged("SIGINT came during the reload"));
+    assert!(server.logged("shutting down"));
+    eventually("the shell exits", || !process_alive(pid)).await;
+    assert!(!socket.exists(), "the socket is left");
+    assert!(
+        !tilr_proto::local::lock_path(&socket).exists(),
+        "the lock file is left"
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
 async fn a_storm_of_reload_signals_costs_no_shell() {
     // A short pause before the handlers: some of the signals land there.
     let (mut server, _) = failing_server("supervisor-resume-live=sleep:100");

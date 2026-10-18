@@ -246,8 +246,8 @@ fn main() -> anyhow::Result<ExitCode> {
         return Ok(reload::answer_check(|| check_resume(Path::new(&state))));
     }
 
-    // A supervisor exec'd by a reload starts with SIGUSR1, SIGHUP and
-    // SIGTERM held: note what came meanwhile and let them in again before
+    // A supervisor exec'd by a reload starts with SIGUSR1, SIGHUP, SIGTERM
+    // and SIGINT held: note what came meanwhile and let them in again before
     // any thread or child is started.
     reload::take_held_signals();
 
@@ -279,6 +279,10 @@ fn main() -> anyhow::Result<ExitCode> {
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
         Some(Command::Host(command)) => return Ok(host::run(command)),
         None => {
+            // Before anything is bound: a signal from here until the
+            // supervisor's handlers is recorded for them, not fatal. No
+            // thread runs yet (tracing's subscriber starts none).
+            reload::record_signals();
             let options = server_options(cli)?;
             tracing::info!(origins = ?options.allow_origins, "browser origins allowed");
             supervisor::run(options)?

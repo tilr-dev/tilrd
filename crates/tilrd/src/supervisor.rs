@@ -498,23 +498,38 @@ pub fn run(options: Options) -> Result<()> {
             // The handlers are in place before anything else can happen;
             // then come the signals held across the exec that started this
             // process, if one did.
+            crate::fail::point("supervisor-before-signals")?;
             use tokio::signal::unix::{SignalKind, signal};
             let term = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+            let int = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
             let usr1 = signal(SignalKind::user_defined1()).context("install SIGUSR1 handler")?;
             let hup = signal(SignalKind::hangup()).context("install SIGHUP handler")?;
-            tokio::spawn(shutdown_signal(term, events_tx.clone()));
+            tokio::spawn(shutdown_signal(term, int, events_tx.clone()));
             tokio::spawn(reload_signal(usr1, events_tx.clone()));
             tokio::spawn(hangup_signal(hup));
             let held = reload::take_held_record();
+            let during = if state.is_some() {
+                "during the reload"
+            } else {
+                "while the server started"
+            };
             if held.hangup {
                 tracing::info!("SIGHUP ignored: the server keeps running without its terminal");
             }
             if held.reload {
-                tracing::info!("SIGUSR1 came during the reload: reloading again");
+                if state.is_some() {
+                    tracing::info!("SIGUSR1 came during the reload: reloading again");
+                } else {
+                    tracing::info!("SIGUSR1 came while the server started: reloading");
+                }
                 let _ = events_tx.send(Event::Reload);
             }
-            if held.terminate {
-                tracing::info!("SIGTERM came during the reload");
+            for (came, name) in [(held.terminate, "SIGTERM"), (held.interrupt, "SIGINT")] {
+                if came {
+                    tracing::info!("{name} came {during}");
+                }
+            }
+            if held.terminate || held.interrupt {
                 let _ = events_tx.send(Event::Shutdown);
             }
             if options.auto_reload {
@@ -808,10 +823,11 @@ fn set_up_shims(
 
 async fn shutdown_signal(
     mut term: tokio::signal::unix::Signal,
+    mut int: tokio::signal::unix::Signal,
     events: mpsc::UnboundedSender<Event>,
 ) {
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
+        _ = int.recv() => {}
         _ = term.recv() => {}
     }
     let _ = events.send(Event::Shutdown);

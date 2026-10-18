@@ -545,6 +545,66 @@ fn a_server_that_stops_removes_its_socket_and_lock() {
     assert!(!tilr_proto::local::lock_path(&daemon.socket).exists());
 }
 
+/// A server started with a pause between serving its socket and installing
+/// its signal handlers (the failpoint `supervisor-before-signals`), once its
+/// socket takes connections: the moment a signal used to kill it.
+#[cfg(feature = "failpoints")]
+fn starting_with_a_window(scratch: &Scratch) -> Daemon {
+    std::fs::write(
+        scratch.0.join("failpoints"),
+        "supervisor-before-signals=sleep:1000",
+    )
+    .unwrap();
+    Daemon::start(&scratch.0, &[])
+}
+
+#[cfg(feature = "failpoints")]
+fn stops_cleanly_on(signal: libc::c_int, name: &str) {
+    let scratch = Scratch::new();
+    let mut daemon = starting_with_a_window(&scratch);
+    daemon.signal(signal);
+    let (status, log) = daemon.exit();
+    assert!(
+        status.success(),
+        "a clean stop, not the signal: {status}\n{log}"
+    );
+    assert!(
+        log.contains(&format!("{name} came while the server started")),
+        "{log}"
+    );
+    assert!(log.contains("shutting down"), "{log}");
+    assert!(!daemon.socket.exists(), "the socket is left");
+    assert!(
+        !tilr_proto::local::lock_path(&daemon.socket).exists(),
+        "the lock file is left"
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn a_sigterm_while_the_server_starts_stops_it_cleanly() {
+    stops_cleanly_on(libc::SIGTERM, "SIGTERM");
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn a_sigint_while_the_server_starts_stops_it_cleanly() {
+    stops_cleanly_on(libc::SIGINT, "SIGINT");
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_sighup_while_the_server_starts_is_ignored() {
+    let scratch = Scratch::new();
+    let mut daemon = starting_with_a_window(&scratch);
+    daemon.signal(libc::SIGHUP);
+    wait_logged(&daemon, "SIGHUP ignored");
+    assert!(daemon.running(), "the server keeps running");
+    let mut ws = connect(&daemon.socket).await;
+    let pane = create_pane(&mut ws).await;
+    assert!(panes(&mut ws).await.iter().any(|p| p.pane_id == pane));
+}
+
 #[tokio::test]
 async fn server_commands_run_for_local_clients_only() {
     let scratch = Scratch::new();
