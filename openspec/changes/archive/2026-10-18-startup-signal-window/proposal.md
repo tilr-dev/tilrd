@@ -31,3 +31,5 @@ Itsaplan TILR-106 (phase 1, bug). Seen as a flake of `local::a_server_that_stops
 ## Impact
 
 `crates/tilrd/src/main.rs` (record the startup set for the server command), `crates/tilrd/src/reload.rs` (the held set gains SIGINT; `HeldSignals` gains `interrupt`; a recording install that does not need the signals to arrive blocked), `crates/tilrd/src/supervisor.rs` (SIGINT stream installed with the others; the record acted on with a log line fitting a fresh start; failpoint), `crates/tilrd/tests/local.rs`, `crates/tilrd/tests/reload.rs`, USE_CASES.md, README "Signals" (`README.md:268-272`). No protocol change; nothing new crosses a reload (the held signals are the process's mask and pending set, as before). An update from the previous release needs nothing: a predecessor without SIGINT in its held set simply does not hold it. Not breaking.
+
+Implemented by: [`f8fb63b`](https://github.com/tilr-dev/tilrd/commit/f8fb63b) fix: handle a signal that arrives while the server starts (2026-10-18).
