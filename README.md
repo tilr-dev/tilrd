@@ -90,7 +90,9 @@ server, in its environment), then reconnects and prints the version the server r
 into. It asks the CDN which version is ready for its platform, downloads its archive, checks
 it against its checksum, unpacks it into a directory next to the executable, checks that
 both programs run, and renames them over the installed ones: `tilr` (next to `tilrd`) first,
-`tilrd` last; if `tilrd` cannot be put in place, the old `tilr` is put back. A running server
+`tilrd` last; if `tilrd` cannot be put in place, the old `tilr` is put back. Both programs are
+synced to disk before the renames and the directory after them, so `updated …` means the
+release is on disk (a power loss after it does not leave an empty executable). A running server
 then [reloads itself](#reloading-without-closing-shells) and keeps every shell. `--cdn URL`
 (or `TILR_CDN`) names another place to fetch releases from.
 
@@ -524,7 +526,10 @@ served, the home directory by default; a path that leads out of them, by `..` or
 symbolic link, is refused. With `readonly = true` nothing can be changed. With
 `enabled = false` or `--no-files` the feature is not offered at all. One read returns, and
 one write takes, at most `max_bytes` (`HelloAck.fs_max_bytes`). Names that are not UTF-8
-are carried as [bytes](#file-names-that-are-not-utf-8).
+are carried as [bytes](#file-names-that-are-not-utf-8). A write goes to a temporary file
+next to the target, synced to disk and renamed over it, and the directory is synced after
+the rename: a successful `FsAck` means the data and the name are on disk; a failed write
+leaves the file as it was.
 
 Host events (feature `"host-events"`) go the other way: a program in a pane asks the client
 to open something. Every pane has `tilr` on its `PATH` (a link to `tilrd`, which answers to

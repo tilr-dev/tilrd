@@ -169,6 +169,15 @@ A read of more than `fs_max_bytes` MUST be refused (`too large to read at once: 
 - **WHEN** a write announces `total_size` 100 and sends 50 bytes, or 150, with `last`
 - **THEN** the ack's error contains `the write ended after 50 of 100 bytes`, respectively `carries more data than it announced`, and the file is unchanged
 
+### Requirement: A finished write is on disk before it is acknowledged
+Before an `FsAck` with an empty error the server SHALL have synced the temporary file's data to disk before the rename and the target's directory after it; a failed sync SHALL be the write's error.
+
+**Verified by**: UC-046 (`uc_046.py::a_finished_write_is_synced_before_it_is_acknowledged`).
+
+#### Scenario: Synced before the answer
+- **WHEN** a client writes `~/notes.md` and the server's system calls are traced
+- **THEN** an `fsync` of the temporary file comes before the `rename` onto `~/notes.md`, an `fsync` of the home directory after it, and both before the `FsAck`
+
 ### Requirement: Write modes and refusals
 `create` without `truncate` MUST refuse an existing file (`already exists`); `truncate` without `create` MUST refuse a missing one (`no such file`); a missing parent (`no such file or directory`), a directory (`is a directory`), a file that is not regular (`not a regular file`) and more than `fs_max_bytes` (`too large: <size>, the server takes at most <limit>`, on the first chunk) MUST be refused with the file unchanged.
 

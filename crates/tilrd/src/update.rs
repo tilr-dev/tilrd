@@ -168,6 +168,8 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
         };
         return Err(err.context("nothing was installed"));
     }
+    // The new names on disk before success is reported.
+    crate::durable::sync_dir(dir).with_context(|| format!("sync {}", dir.display()))?;
 
     println!("updated {VERSION} -> {latest}: {}", dir.display());
     println!("a running server reloads itself and keeps its shells");
@@ -206,7 +208,11 @@ fn unpack(archive: &[u8], dir: &Path) -> Result<()> {
             .create_new(true)
             .mode(0o755)
             .open(&target)
-            .and_then(|mut file| file.write_all(&bytes))
+            .and_then(|mut file| {
+                file.write_all(&bytes)?;
+                // On disk before it is renamed into place.
+                file.sync_all()
+            })
             .with_context(|| format!("write {}", target.display()))?;
         found[index] = true;
     }

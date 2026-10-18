@@ -34,7 +34,6 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| durable-file-writes | fsync file and directory around the rename in FsWrite and `tilrd update` | S | - | no | ready |
 | service-install-ownership | install does not replace a foreign unit/plist; locale-independent crontab detection; state directory tightened to 0700 | S | - | no | ready |
 | startup-signal-window | a SIGTERM/SIGINT while the server starts (socket listening, handlers not yet in) stops it cleanly instead of killing it; SIGINT held across a reload too | S | - | no | ready |
 | pane-socket-peer-check | `tilr edit` / `tilr open` (and `tilrd edit`) check that `$TILR_SOCK` is served by the user before sending | S | - | no | ready |
@@ -120,5 +119,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | attach-robustness | d7d4e65 |
 | sighup-ignoring-shell-reaped | 47bce42 |
 | cloudflared-outlives-exec | 0aff8e0 |
+| durable-file-writes | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

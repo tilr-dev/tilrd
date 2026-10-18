@@ -379,6 +379,11 @@ pane process. The server's counters are at `GET /metrics`.
   the new server as it starts (by its note in `writes/` of the runtime
   directory; a unit test in `files.rs`, end to end itests UC-064); the client
   sets up watches again after a reload, as it does subscriptions.
+- Files and updates on disk: that a finished write and an installed release
+  are synced (`fsync` of the file before the rename, of the directory after
+  it, before the answer or `updated`) is not visible to these tests; itests
+  UC-046 and UC-060 trace the system calls under `strace`. A power loss is not
+  tested.
 - `tilr edit` is also delivered to an old client that does not know
   `HostEvent` and silently ignores it: the server counts it as a recipient.
 - `tilr` in a terminal: drawing is checked only by what shows in the pty

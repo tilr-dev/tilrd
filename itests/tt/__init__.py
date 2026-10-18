@@ -941,6 +941,24 @@ class User:
             f.write("PS1='$ '\nHISTFILE=/dev/null\nunset PROMPT_COMMAND\n")
 
 
+def strace(log: Path, calls: str = "fsync,fdatasync,rename,renameat,renameat2") -> list[str]:
+    """The prefix that runs a program under strace, following its threads and children (-f),
+    writing each traced call with the paths of its descriptors (-y) to `log`. A tracer of its
+    own child needs no extra capability."""
+    return ["strace", "-f", "-y", "-s", "200", "-e", f"trace={calls}", "-o", str(log)]
+
+
+def syscalls(log: Path) -> list[tuple[str, str]]:
+    """The calls in a strace log, in order: (name, arguments as written), the first part of
+    a call split by another thread's (`<unfinished ...>`) included, its `resumed` rest not."""
+    out = []
+    for line in log.read_text(errors="replace").splitlines():
+        m = re.match(r"^(?:\d+\s+)?(\w+)\((.*)", line)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
 def snapshot(root: Path, skip: tuple[str, ...] = ()) -> dict[str, str]:
     """Every file and directory under root: relative path -> kind, mode, owner and content
     hash. `skip`: relative paths left out with what is under them."""
@@ -1160,16 +1178,20 @@ class T:
         return dest
 
     def server(self, *args, name: str = "tilrd", exe: str | Path = SERVER_EXE, listen: str = "127.0.0.1:0",
-               state: Path | None = None, env: dict | None = None) -> Server:
-        """Start tilrd as a child of the case, with directories of its own; ready to use."""
+               state: Path | None = None, env: dict | None = None, wrap: list | None = None) -> Server:
+        """Start tilrd as a child of the case, with directories of its own; ready to use.
+        `wrap`: a command the server runs under (`["strace", "-f", ...]`); `.pid` is then the
+        server's, found by its listening port."""
         dir = self.scratch(name)
         senv = {**self.server_env(dir, state), **(env or {})}
         log = dir / "log"
-        argv = [str(exe), "--listen", listen, *map(str, args)]
+        argv = [*map(str, wrap or []), str(exe), "--listen", listen, *map(str, args)]
         print(f"{stamp()} start {name}: {shlex.join(argv)}")
         p = subprocess.Popen(argv, env=dict(os.environ, **senv), stdin=subprocess.DEVNULL,
                              stdout=open(log, "ab"), stderr=subprocess.STDOUT)
         s = Server(self, name, str(exe), dir, senv, log, p)
+        if wrap:
+            s.pid = 0
         self._servers.append(s)
         return s.wait_ready()
 

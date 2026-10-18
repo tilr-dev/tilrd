@@ -609,9 +609,14 @@ impl Shared {
                 ));
             }
             file.flush().await.map_err(|err| failed(path, &err))?;
+            // On disk before the answer: the data before the rename, the
+            // new name (the directory) after it.
+            file.sync_all().await.map_err(|err| failed(path, &err))?;
             drop(file);
-            tokio::fs::rename(&temp, &target)
+            let (from, to) = (temp.clone(), target.clone());
+            tokio::task::spawn_blocking(move || crate::durable::rename_synced(&from, &to))
                 .await
+                .map_err(|err| err.to_string())?
                 .map_err(|err| failed(path, &err))
         }
         .await;

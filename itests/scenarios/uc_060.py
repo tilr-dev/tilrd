@@ -12,10 +12,11 @@ outside the panes, as `scripts/update-test.sh` runs it on a real host. Each outc
 separate check (tt/live.py), so one broken program does not hide the others.
 """
 
+import os
 import re
 import time
 
-from tt import T, case
+from tt import T, case, strace, syscalls
 from tt.live import LivePanes, reload_times
 
 RELOADED = "resumed after reload with"
@@ -85,3 +86,43 @@ def update_from_the_cdn_keeps_every_program_in_the_panes_alive(t: T):
 
     t.check("nothing was refused or lost in the log",
             lambda: t.eq(re.findall(r"not reloading|ERROR|panicked", server.log_text()), [], "bad log lines"))
+
+
+@case(fixture="server_state", services=["cdn"], timeout=240, spec=[
+    "update/the-installed-release-is-on-disk-before-success#synced-before-success",
+])
+def an_update_is_synced_before_it_reports_success(t: T):
+    """UC-060: under strace, `tilrd update` fsyncs both unpacked programs before the first rename and the directory after the second, before `updated`."""
+    cdn = t.service("cdn")
+    manifest = t.manifest()
+    exe = t.install()
+    dir = os.path.realpath(exe.parent)
+    trace = t.scratch("strace") / "update.trace"
+    r = t.run(*strace(trace, calls="fsync,fdatasync,rename,renameat,renameat2,write"), exe, "update", "--cdn", cdn,
+              env=t.server_env(t.scratch("updating")), timeout=180)
+    t.eq(r.code, 0, "tilrd update exits 0")
+    t.has(r.out, manifest["next_version"])
+    calls = syscalls(trace)
+    staged = re.escape(f"{dir}/.tilr-update.")
+    print("\n".join(f"{name}({args[:160]}" for name, args in calls
+                    if name != "write" or args.startswith("1<")))
+
+    def first(what: str, match) -> int:
+        found = [i for i, (name, args) in enumerate(calls) if match(name, args)]
+        t.ok(found, f"{what} is in the trace")
+        return found[0]
+    renames = [i for i, (name, args) in enumerate(calls) if name.startswith("rename") and re.search(staged, args)
+               and not args.rstrip().endswith("= -1")]
+    t.ok(len(renames) >= 2, f"two renames out of the staging directory ({len(renames)})")
+    t.has(calls[renames[0]][1], f'"{dir}/tilr"')  # the first rename puts tilr in place
+    t.has(calls[renames[-1]][1], f'"{dir}/{exe.name}"')  # the server last
+    for program in ("tilr", "tilrd"):
+        synced = first(f"an fsync of the unpacked {program}", lambda name, args: name in ("fsync", "fdatasync")
+                       and re.match(rf"\d+<{staged}\d+/{program}>\)", args))
+        t.ok(synced < renames[0], f"{program} is synced ({synced}) before the first rename ({renames[0]})")
+    dir_synced = first("an fsync of the executable's directory after the renames", lambda name, args: name == "fsync"
+                       and re.match(rf"\d+<{re.escape(dir)}>\)", args))
+    printed = first("`updated` on stdout", lambda name, args: name == "write" and args.startswith("1<")
+                    and '"updated ' in args)
+    t.ok(renames[-1] < dir_synced < printed,
+         f"last rename ({renames[-1]}) < fsync of the directory ({dir_synced}) < `updated` ({printed})")

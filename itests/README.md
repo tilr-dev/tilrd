@@ -227,7 +227,7 @@ def a_reconnecting_client_finds_its_shell(t: T):
 
 | | |
 | --- | --- |
-| `server(*args, exe=, state=, env=, listen=)` | start tilrd with its own dirs; waits for `listening on`; `.url .port .pid .token() .cmd(...) .version() .log_text() .logged(s) .alive() .panes() .stop()` |
+| `server(*args, exe=, state=, env=, listen=, wrap=)` | start tilrd with its own dirs (`wrap`: a command prefix it runs under, e.g. `strace(log)`); waits for `listening on`; `.url .port .pid .token() .cmd(...) .version() .log_text() .logged(s) .alive() .panes() .stop()` |
 | `found_server(log, dir, env)` | a tilrd started some other way (from a session), found by its log |
 | `install(exe=)` | a copy of the server in a writable dir (for updates) |
 | `driver(name)` | a tilr-driver: `.cmd(name, **args)`, `.connect(server)`, `.shell_pane()`, `.line()`, `.key()`, `.wait_for()`, `.screen()`, `.text()`, `.value(pane, "$X")`, `.run(pane, cmd)` → exit status, `.list()`, `.wait_event(ev, since=d.mark())`; events carry `_at` (the case's clock) |
@@ -247,6 +247,7 @@ def a_reconnecting_client_finds_its_shell(t: T):
 | `cloud()` | tilr Cloud played by the case (tt/cloud.py): `.link(state_dir)`, `.accept()` → a control connection: `.greet()`, `.send(msg)`, `.next()`, `.tunnel_is(state)`; `fake_cloudflared(dir)` notes `args`, `config`, `pid`, `ended` there |
 | `tmpfs(path, size)` | a small disk to fill (needs `net_admin=True`: mount wants the root capabilities) |
 | `tt.live` | `LivePanes(t, d, server, echo=)`: a shell with a variable and a job, a counter, vim (unsaved, mouse on), htop, less, a python REPL, `sleep 1000`, a TCP connection to the echo service; `.check(what)` after an update or reload (pids, screens and modes, no orphans), `.finish()` (`:wq`, `q`, Ctrl+C); `wait_reloads`, `reload_times`, `state_files` |
+| `strace(log, calls=)`, `syscalls(log)` | the argv prefix tracing a program (`strace -f -y`, fsync and rename calls by default) into `log`; the calls in such a log in order, `(name, arguments)` |
 | `run(*argv)`, `sh(script)`, `spawn(*argv)` | processes (missing executable = exit 127) |
 | `procs(regex)`, `proc(pid)`, `listener_pid(port)` | /proc: pid, ppid, pgid, sid, tty, state, cmdline, rss_kb, fds |
 | `eq`, `ok`, `has`, `lacks`, `eventually(fn, what, timeout)`, `check(what, fn)` | assertions |

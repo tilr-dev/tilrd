@@ -30,7 +30,7 @@ ZIG_VERSION = "0.15.2"
 DISTROS = {"ubuntu": "ubuntu:24.04"}
 RUNTIME_APT = ["python3", "procps", "psmisc", "util-linux", "bash", "ca-certificates", "curl",
                "vim", "htop", "less", "iproute2", "lsof", "iptables", "openssh-client", "openssh-server",
-               "git"]
+               "git", "strace"]
 
 # Same paths in every container: test executables bake CARGO_MANIFEST_DIR and
 # CARGO_BIN_EXE_* at compile time.

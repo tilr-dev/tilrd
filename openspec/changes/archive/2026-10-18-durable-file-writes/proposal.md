@@ -13,8 +13,10 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) (finding #9): 
 ## Capabilities
 
 ### Modified Capabilities
-- `files`: "Writes are whole or not at all" also says the success answer comes after the data and the rename are on disk.
-- `update`: "The release is put in place by two renames, the server last" also says both programs and the renames are synced before success.
+- `files`: new requirement "A finished write is on disk before it is acknowledged" (the success answer comes after the data and the rename are on disk).
+- `update`: new requirement "The installed release is on disk before success" (both programs and the renames are synced before success).
+
+Changed while implementing: the sync was first written into the existing requirements ("Writes are whole or not at all", "The release is put in place by two renames, the server last"); that made their text longer than `openspec validate --strict` accepts, so it is a requirement of its own in each spec.
 
 ## Non-goals
 

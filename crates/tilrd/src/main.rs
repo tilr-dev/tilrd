@@ -3,6 +3,7 @@ mod auth;
 mod clipboard;
 mod cloud;
 mod config;
+mod durable;
 mod exec;
 mod fail;
 mod files;
