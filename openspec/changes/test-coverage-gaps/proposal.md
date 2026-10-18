@@ -6,6 +6,16 @@ The specs written on 2026-10-18 list requirements without a test in their Notes;
 
 Known flakes (Basic Memory `main/projects/tilr/tilrd-tests-integratsionnye-testy-tilrd-na-dagger-use-cases-resheniia`): `uc_043` p90 echo over 5 s in 2 of about 7 runs; under load `files::nothing_outside_the_shared_directories_is_served` and `reconnect::a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`; test servers from `target/debug` left running on the Mac after local cargo tests. Not re-run for this proposal.
 
+Flakes seen in phase 1 (2026-10-18, implementing attach-robustness, sighup-ignoring-shell-reaped and cloudflared-outlives-exec on dev; each under full-suite load, each green when run alone):
+
+- `reload::a_broken_executable_is_not_reloaded_into` (macOS, 2 of 5 full runs): `not reloading` not logged within the test's 10 s after the executable is replaced (`crates/tilrd/tests/reload.rs:131-138`); the watch, the check child and the log line all run under the load of the other tests.
+- `local::a_server_that_stops_removes_its_socket_and_lock`: a real bug, not the test's: a SIGTERM between the Unix socket listening and the signal handlers being installed kills the server without cleanup. Fixed by its own change, `startup-signal-window` (TILR-106).
+- `local::a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` (Linux container): `start tilrd: Text file busy` (ETXTBSY) — the harness's `spawn_env` (`crates/tilrd/tests/local.rs:33-40`) spawns a copied executable with `Command::spawn`, not with `common::spawn_copied`, which retries while another test thread's fork still holds the copy's write descriptor.
+- `reconnect::a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`: the harness asserts on a log line before its reader thread has collected it (the server's stderr is drained by a thread into `Server::log`; `Server::logged` reads a snapshot).
+- `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` (Linux container): timed out waiting for `printed later` on the screen after the reconnect (`tests/common/mod.rs:324`).
+- itests `uc_063` (a client typing through an update): one typed line lost during an update.
+- itests `uc_033`: port 7890 already in use (EADDRINUSE) in its container.
+
 ## Scope
 
 - The 13 `release-process` requirements move to their own change, `release-process-tests` (scripts and workflows, phase "release infrastructure"); this one keeps the server and client requirements.

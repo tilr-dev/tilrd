@@ -36,6 +36,8 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 |---|---|---|---|---|---|
 | durable-file-writes | fsync file and directory around the rename in FsWrite and `tilrd update` | S | - | no | ready |
 | service-install-ownership | install does not replace a foreign unit/plist; locale-independent crontab detection; state directory tightened to 0700 | S | - | no | ready |
+| startup-signal-window | a SIGTERM/SIGINT while the server starts (socket listening, handlers not yet in) stops it cleanly instead of killing it; SIGINT held across a reload too | S | - | no | ready |
+| pane-socket-peer-check | `tilr edit` / `tilr open` (and `tilrd edit`) check that `$TILR_SOCK` is served by the user before sending | S | - | no | ready |
 | shims-path-robustness | `$TILR_SHIMS` stays first on PATH in zsh, bash and fish when a profile resets PATH | M | - | no | ready |
 
 ## Phase 2: protocol v3 and input
@@ -74,6 +76,8 @@ Phases 3 (test-coverage-gaps) and 5 do not gate the release.
 | reverse-clipboard | a copy in a pane (OSC 52, xclip, wl-copy) reaches the watching clients | M | protocol-v3 | no | ready |
 | files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once | M | protocol-v3 | no | ready |
 | tilr-deploy | `tilr deploy user@host` installs and starts tilrd over the user's ssh | M | installer-atomic-install | no | ready (its `--cloud` part is not designed; after Cloud is in production) |
+| reload-exec-checked-file | the executable a reload checks is the one it execs (Linux `/proc/self/fd`, macOS a private copy) | M | - | no | ready |
+| metrics-no-hello-and-prefix | no-Hello closes counted in the drops metric (`no_hello`); one metric prefix, **BREAKING** for dashboards | S | - | yes (prefix) | needs owner |
 
 ## Phase 6: big directions (design first)
 

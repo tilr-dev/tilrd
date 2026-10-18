@@ -28,6 +28,13 @@
 
 - [ ] 5.1 Find and fix each flake or quarantine it with its cause in USE_CASES.md; verify 10 consecutive green runs of the affected tests (`cargo test --test files nothing_outside_the_shared_directories_is_served`, `cargo test --test reconnect a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`, `./itests/dt` UC-043)
 - [ ] 5.2 Find what leaves `target/debug` test servers running; verify `pgrep -f target/debug/tilrd` is empty after `cargo test --workspace --features tilrd/failpoints --locked`
+- [ ] 5.3 `reload::a_broken_executable_is_not_reloaded_into`: find what takes the watch-check-log path past 10 s under load (log timestamps of the replacement, the watch event, the check child) and fix or widen the wait with the cause recorded; verify 10 consecutive green full `cargo test --workspace --features tilrd/failpoints --locked` runs on macOS
+- [ ] 5.4 (TILR-110) `local.rs` `spawn_env` spawns through `common::spawn_copied`; verify `scripts/linux.sh cargo test --features tilrd/failpoints --test local` green 20 times in a row and no `Text file busy` in the full Linux run
+- [ ] 5.5 `reconnect::a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`: wait for the log line (poll `Server::logged` with a deadline) instead of asserting on a snapshot; verify 10 consecutive green full runs
+- [ ] 5.6 (TILR-111) `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect`: find why the output is missing after the reconnect under load (the test's `sleep 1` against the reconnect's timing, or a lost frame); fix with the cause recorded; verify 10 consecutive green Linux full runs
+- [ ] 5.7 itests `uc_063`: find the typed line lost during an update (the client's resend, or input written to the old pane process after its handover) and fix it or file the bug as its own change; verify `./itests/dt --filter uc_063` green 10 times in a row
+- [ ] 5.8 itests `uc_033`: give the case a port no other case or container takes (or wait for 7890 to be free) with the cause recorded; verify `./itests/dt --filter uc_033` green 10 times in a row inside a full scenarios run
+- `local::a_server_that_stops_removes_its_socket_and_lock` is not a test bug: its fix is `startup-signal-window` (TILR-106), whose tasks include the run under load.
 
 ## 6. Checks and archive
 
