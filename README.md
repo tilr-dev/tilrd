@@ -814,16 +814,23 @@ both. In a browser they are `event.key` and `event.code`; on macOS
 (`kVK_ANSI_C` is `"KeyC"`); on iPad `UIKey.charactersIgnoringModifiers` and `UIKey.keyCode`,
 a HID usage (`UIKeyboardHIDUsageKeyboardC` is `"KeyC"`).
 
-The physical key is what Ctrl and Alt go by on a layout that is not Latin, as in other
-terminals: Ctrl+C on a Russian layout is the key that types "с", and the program gets `^C`
-for it. When Ctrl or Alt is held and the key's character is not ASCII, the server encodes
-the key as its character on a US layout (Ctrl+С `^C`, Ctrl+Я `^Z`, Alt+Ф `ESC a`). A
-character that is ASCII goes by itself wherever its key is: Ctrl+C on Dvorak (the I key) is
-`^C`, Ctrl+A on AZERTY (the Q key) `^A`. Typing without Ctrl or Alt is the text. With the
-kitty keyboard protocol on, the physical key is the base layout key it reports. A key
-without `code` has no physical key (synthetic input from a script, or a character key of
-`tilr`, which reads keys from its own terminal as characters): it is taken as on a US
-layout, and Ctrl with a character that is not ASCII sends nothing.
+The physical key is what Ctrl goes by on a layout that is not Latin, as in other terminals
+(xterm, kitty, Ghostty): Ctrl+C on a Russian layout is the key that types "с", and the
+program gets `^C` for it. When Ctrl is held and the key's character is not ASCII, a
+character with no control code, the server encodes the key as its character on a US layout
+(Ctrl+С `^C`, Ctrl+Я `^Z`, Ctrl+Alt+С `ESC ^C`). A character that is ASCII goes by itself
+wherever its key is: Ctrl+C on Dvorak (the I key) is `^C`, Ctrl+A on AZERTY (the Q key)
+`^A`. Alt without Ctrl sends `ESC` and the character the key produced, Shift included,
+never remapped: Alt+ж is `ESC ж`, Alt+Shift+Ф `ESC Ф`, Alt+Shift+1 `ESC !` (with or without
+`code`; plain text when the program turned the ESC prefix off, mode 1036). AltGr and macOS
+Option composing produce a character, which the client sends without Alt and the program
+gets as it is (`€`, `ç`); whether Option acts as Alt is the client's setting (like
+Ghostty's `macos-option-as-alt`), and the server takes a key as Alt only when `mods` says
+so. Typing without Ctrl or Alt is the text. With the kitty keyboard protocol on, the
+physical key is the base layout key it reports. A key without `code` has no physical key
+(synthetic input from a script, or a character key of `tilr`, which reads keys from its own
+terminal as characters): it is taken as on a US layout, and Ctrl with a character that is
+not ASCII sends nothing.
 
 ### File names that are not UTF-8
 

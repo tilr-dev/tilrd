@@ -38,7 +38,6 @@ All of phase 1 is done (see "Done").
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| non-latin-ctrl-alt | only Ctrl goes by the physical key; Alt = ESC + the character produced; composed characters as themselves | S | - | no | ready |
 | reload-screen-fidelity | carry soft wrap, pending wrap, the ClosePane deadline and kitty placements across a pane reload | M | - | no | ready |
 
 ## Phase 3: docs and tests
@@ -119,5 +118,6 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | startup-signal-window | f8fb63b |
 | pane-socket-peer-check | 248dd56 |
 | protocol-v3 | 3dc42e2 |
+| non-latin-ctrl-alt | recorded in the next commit |
 
 Older work is in `openspec/changes/archive/`.

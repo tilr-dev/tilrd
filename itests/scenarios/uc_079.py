@@ -12,10 +12,12 @@ Ctrl+C on a Russian layout: the key under C is "с" (U+0441) there. A client sen
 the layout makes of the key and which physical key it is, as a browser's KeyboardEvent
 has them (key and code): KeyInput {codepoint 'с', text 'с', code "KeyC", mods ctrl}
 (tilr-driver's `layout`). A terminal sends ^C for it, as for the same physical key on a
-Latin layout: Ctrl or Alt with a key whose character is not ASCII goes by the physical
-key's US character (Ctrl+С ^C, Ctrl+Я ^Z, Alt+Ф ESC a). A character that is ASCII goes
-by itself, wherever its key is: Ctrl+C on Dvorak (the I key) is ^C, Ctrl+A on AZERTY
-(the Q key) is ^A; plain Cyrillic typing is the text.
+Latin layout: Ctrl with a key whose character is not ASCII goes by the physical key's US
+character (Ctrl+С ^C, Ctrl+Я ^Z). A character that is ASCII goes by itself, wherever its
+key is: Ctrl+C on Dvorak (the I key) is ^C, Ctrl+A on AZERTY (the Q key) is ^A; plain
+Cyrillic typing is the text. Alt is ESC and the character the key produced, as in xterm:
+Alt+Ф is ESC Ф, Alt+Shift+1 ESC !. A character composed by AltGr or Option (ç for
+Option+c) comes without Alt and reaches the program as it is.
 """
 
 import time
@@ -164,17 +166,24 @@ def the_mouse_reaches_an_application_that_asked_for_it_and_no_other(t: T):
 
 @case(fixture="server_state", spec=[
     "screen-frames/an-ascii-character-wins-over-the-physical-key",
-    "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout",
+    "screen-frames/ctrl-goes-by-the-physical-key-on-a-non-latin-layout",
+    "screen-frames/alt-sends-esc-and-the-character-produced",
+    "screen-frames/composed-characters-are-sent-as-themselves",
 ])
 def ctrl_c_on_a_russian_layout_is_ctrl_c(t: T):
-    """UC-079: Ctrl+С on a Russian layout (text 'с', code KeyC) reads as ^C and interrupts sleep; Dvorak, AZERTY too."""
+    """UC-079: Ctrl+С on a Russian layout (text 'с', code KeyC) reads as ^C and interrupts sleep; Dvorak, AZERTY too; Alt is ESC and the character, ç as itself."""
     server, d = start(t)
     log = Keylog(t, d)
     cases = {
         ("ru", "ctrl-с"): b"\x03",  # the C key
         ("ru", "ctrl-я"): b"\x1a",  # the Z key
         ("ru", "ctrl-ц"): b"\x17",  # the W key
-        ("ru", "alt-ф"): b"\x1ba",  # the A key
+        ("ru", "alt-ф"): "\x1bф".encode(),  # Alt: ESC and the character
+        ("ru", "alt-shift-ф"): "\x1bФ".encode(),
+        ("ru", "ctrl-alt-с"): b"\x1b\x03",
+        ("us", "alt-shift-!"): b"\x1b!",  # the 1 key
+        ("us", "ç@KeyC"): "ç".encode(),  # Option+c composing, no Alt
+        ("us", "alt-c"): b"\x1bc",  # Option as Alt
         ("ru", "с"): "с".encode(),  # typing is the text
         ("ru", "shift-я"): "Я".encode(),
         ("dvorak", "ctrl-c"): b"\x03",  # on the I key: the character wins

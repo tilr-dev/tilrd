@@ -64,6 +64,8 @@ const CODES: [&str; 47] = [
 const US: &str = "`1234567890-=qwertyuiop[]\\asdfghjkl;'zxcvbnm,./";
 const RU: &str = "ё1234567890-=йцукенгшщзхъ\\фывапролджэячсмитьбю.";
 const DVORAK: &str = "`1234567890[]',.pyfgcrl/=\\aoeuidhtns-;qjkxbmwvz";
+/// What each of [`CODES`] types with Shift on a US layout.
+const US_SHIFTED: &str = "~!@#$%^&*()_+QWERTYUIOP{}|ASDFGHJKL:\"ZXCVBNM<>?";
 const AZERTY: &str = "²&é\"'(-è_çà)=azertyuiop^$*qsdfghjklmùwxcvbn,;:!";
 
 /// The physical key `ch` is on in `layout`.
@@ -130,6 +132,20 @@ pub fn parse(pane_id: &str, spec: &str, layout: Option<&str>) -> Result<KeyInput
         }
     };
     if let Some(layout) = layout {
+        // Shifted punctuation on a US layout (`alt-shift-!`): the key of its
+        // unshifted character, the text as typed.
+        if layout == "us"
+            && code.is_none()
+            && !ch.is_alphabetic()
+            && let Some(at) = US_SHIFTED.chars().position(|c| c == ch)
+        {
+            key.code = CODES[at].to_owned();
+            key.codepoint = US.chars().nth(at).map_or(0, u32::from);
+            if mods_mask & mods::SUPER == 0 {
+                key.text = ch.to_string();
+            }
+            return Ok(key);
+        }
         if code.is_none() {
             key.code = code_of(layout, ch)?.to_owned();
         }
@@ -204,6 +220,11 @@ mod tests {
         assert_eq!(parse("p", "ctrl-c@KeyX", Some("us")).unwrap().code, "KeyX");
         assert_eq!(parse("p", "ctrl-с@KeyC", None).unwrap().code, "KeyC");
         assert!(parse("p", "ctrl-я", Some("us")).is_err());
+        let bang = parse("p", "alt-shift-!", Some("us")).unwrap();
+        assert_eq!(
+            (bang.codepoint, bang.text.as_str(), bang.code.as_str()),
+            ('1' as u32, "!", "Digit1")
+        );
     }
 
     #[test]

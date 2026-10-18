@@ -371,9 +371,10 @@ pane process. The server's counters are at `GET /metrics`.
   such a reload is currently refused (shells intact); there is no migration of
   state from the old format to the new one.
 - Keys and mouse: encoding is checked by the screen's unit tests (including
-  Ctrl/Alt on a Russian layout by the physical key `KeyInput.code`, Dvorak and
-  AZERTY, where the Latin character decides, and the base key in the kitty
-  protocol); end-to-end use cases are itests UC-079.
+  Ctrl on a Russian layout by the physical key `KeyInput.code`, Alt as `ESC`
+  and the character produced, composed characters (AltGr, Option) as
+  themselves, Dvorak and AZERTY, where the Latin character decides, and the
+  base key in the kitty protocol); end-to-end use cases are itests UC-079.
 - Scrolling while the pane is resized.
 - tilr Cloud: `tilr cloud login` / `logout` are checked by hand only,
   against a local Cloud (`wrangler dev`). A real `cloudflared` and a real

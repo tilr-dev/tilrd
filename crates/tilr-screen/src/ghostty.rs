@@ -462,33 +462,48 @@ impl Screen for GhosttyScreen {
         // printable only.
         let mut text = (!input.text.is_empty() && !input.text.chars().any(char::is_control))
             .then(|| input.text.clone());
-        if let Some((physical, us)) = physical_key(&input.code)
-            && input.named() == NamedKey::Unspecified
-        {
+        let (ctrl, alt) = (input.mods & mods::CTRL != 0, input.mods & mods::ALT != 0);
+        // ESC to put before the character: the encoder prefixes one byte only.
+        let mut esc_before_text = false;
+        if input.named() == NamedKey::Unspecified {
+            let physical = physical_key(&input.code);
             let kitty = self
                 .term
                 .kitty_keyboard_flags()
                 .is_ok_and(|flags| flags.bits() != 0);
             let character = unshifted.or_else(|| text.as_deref()?.chars().next());
             let ascii = character.is_none_or(|ch| ch.is_ascii());
-            if kitty {
+            if let Some((physical, _)) = physical
+                && kitty
+            {
                 // The key as the layout has it, and where it is: the kitty
                 // protocol reports the physical key as the base layout key.
                 key = physical;
                 unshifted =
                     unshifted.or(character.map(|ch| ch.to_lowercase().next().unwrap_or(ch)));
-            } else if !ascii && input.mods & (mods::CTRL | mods::ALT) != 0 {
-                // Ctrl or Alt on a layout that is not Latin: what terminals
-                // send is the key's on a US layout (Ctrl+С is ^C).
+            } else if let Some((physical, us)) = physical
+                && !ascii
+                && ctrl
+            {
+                // Ctrl on a layout that is not Latin: what terminals send is
+                // the key's on a US layout (Ctrl+С is ^C, Ctrl+Alt+С ESC ^C).
                 key = physical;
                 unshifted = Some(us);
-                text = (input.mods & mods::CTRL == 0).then(|| {
-                    if input.mods & mods::SHIFT != 0 {
-                        us.to_ascii_uppercase().to_string()
+                text = None;
+            } else if !ascii && alt && !ctrl && !kitty {
+                // Alt with a character that is not ASCII: ESC and the
+                // character produced, as xterm sends it (Alt+ж is ESC ж).
+                text = text.or_else(|| {
+                    let ch = char::from_u32(input.codepoint).filter(|ch| !ch.is_control())?;
+                    Some(if input.mods & mods::SHIFT != 0 {
+                        ch.to_uppercase().collect()
                     } else {
-                        us.to_string()
-                    }
+                        ch.to_string()
+                    })
                 });
+                // Not a byte the encoder would put after ESC itself.
+                unshifted = None;
+                esc_before_text = text.is_some() && self.term.mode(Mode::ALT_ESC_PREFIX)?;
             }
         }
         let text = text.as_deref();
@@ -511,7 +526,13 @@ impl Screen for GhosttyScreen {
             // Clients report Alt as a modifier, never as macOS Option text.
             .set_macos_option_as_alt(key::OptionAsAlt::True);
         let (encoder, event) = (&mut self.key_encoder, &self.key_event);
-        encode_into(out, |buf| encoder.encode(event, buf))
+        let start = out.len();
+        encode_into(out, |buf| encoder.encode(event, buf))?;
+        // The encoder sent the text alone (not a modifyOtherKeys sequence).
+        if esc_before_text && text.is_some_and(|text| out[start..] == *text.as_bytes()) {
+            out.insert(start, 0x1b);
+        }
+        Ok(())
     }
 
     fn encode_mouse(&mut self, input: &MouseInput, out: &mut Vec<u8>) -> Result<()> {
@@ -1876,10 +1897,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_and_alt_on_a_layout_that_is_not_latin_go_by_the_physical_key() {
+    fn ctrl_on_a_layout_that_is_not_latin_goes_by_the_physical_key() {
         let mut screen = screen();
         let (ctrl, alt, shift) = (mods::CTRL, mods::ALT, mods::SHIFT);
-        // Russian: the C key types "с", the Z key "я", the A key "ф".
+        // Russian: the C key types "с", the Z key "я".
         for text in ["\u{441}", ""] {
             assert_eq!(
                 encoded(&mut screen, at("KeyC", '\u{441}', ctrl, text)),
@@ -1890,14 +1911,6 @@ mod tests {
         assert_eq!(
             encoded(&mut screen, at("KeyZ", '\u{44f}', ctrl, "\u{44f}")),
             b"\x1a"
-        );
-        assert_eq!(
-            encoded(&mut screen, at("KeyA", '\u{444}', alt, "\u{444}")),
-            b"\x1ba"
-        );
-        assert_eq!(
-            encoded(&mut screen, at("KeyA", '\u{444}', alt | shift, "\u{424}")),
-            b"\x1bA"
         );
         // The ] key ("ъ"), as Ctrl+] on a US layout.
         assert_eq!(
@@ -1921,6 +1934,75 @@ mod tests {
         assert_eq!(
             encoded(&mut screen, at("KeyC", '\u{441}', shift, "\u{421}")),
             "\u{421}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn alt_sends_esc_and_the_character_produced() {
+        let mut screen = screen();
+        let (ctrl, alt, shift) = (mods::CTRL, mods::ALT, mods::SHIFT);
+        let esc = |text: &str| [b"\x1b", text.as_bytes()].concat();
+        // Russian: the ; key types "ж", the A key "ф".
+        assert_eq!(
+            encoded(&mut screen, at("Semicolon", '\u{436}', alt, "\u{436}")),
+            esc("\u{436}")
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyA", '\u{444}', alt | shift, "\u{424}")),
+            esc("\u{424}")
+        );
+        // No text: the character, Shift applied.
+        assert_eq!(
+            encoded(&mut screen, at("KeyA", '\u{444}', alt | shift, "")),
+            esc("\u{424}")
+        );
+        assert_eq!(
+            encoded(&mut screen, at("Digit1", '1', alt | shift, "!")),
+            b"\x1b!"
+        );
+        // Ctrl+Alt: ESC and the Ctrl code of the physical key.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', ctrl | alt, "")),
+            b"\x1b\x03"
+        );
+        // No physical key: the character all the same.
+        assert_eq!(
+            encoded(
+                &mut screen,
+                key(NamedKey::Unspecified, '\u{436}', alt, "\u{436}")
+            ),
+            esc("\u{436}")
+        );
+        // A program that turned the ESC prefix off (mode 1036) gets the text.
+        screen.feed(b"\x1b[?1036l");
+        assert_eq!(
+            encoded(&mut screen, at("Semicolon", '\u{436}', alt, "\u{436}")),
+            "\u{436}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn composed_characters_are_sent_as_themselves() {
+        let mut screen = screen();
+        // AltGr+e, AltGr+a, Option+c with Option not acting as Alt: the
+        // client sends the character without Alt.
+        for (code, text) in [
+            ("KeyE", "\u{20ac}"),
+            ("KeyA", "\u{105}"),
+            ("KeyC", "\u{e7}"),
+        ] {
+            let ch = text.chars().next().unwrap();
+            assert_eq!(encoded(&mut screen, at(code, ch, 0, text)), text.as_bytes());
+        }
+        // Option acting as Alt: the client sends Alt with the key's "c".
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", 'c', mods::ALT, "c")),
+            b"\x1bc"
+        );
+        // Alt with a composed character: ESC and it, in UTF-8.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{e7}', mods::ALT, "\u{e7}")),
+            "\x1b\u{e7}".as_bytes()
         );
     }
 

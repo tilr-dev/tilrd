@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T14:15:46.968160+00:00",
+   "started": "2026-10-18T14:27:39.319257+00:00",
    "commit": null,
    "counts": {
-    "PASS": 491,
+    "PASS": 493,
     "FAIL": 1,
     "BLOCKED": 0
    },
    "args": "",
-   "path": "itests/results/20261018T161531-34867"
+   "path": "itests/results/20261018T162726-35193"
   }
  },
  "capabilities": [
@@ -7495,9 +7495,9 @@
      "last_run": {}
     },
     {
-     "slug": "ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout",
-     "title": "Ctrl and Alt go by the physical key on a non-Latin layout",
-     "tag": "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout",
+     "slug": "ctrl-goes-by-the-physical-key-on-a-non-latin-layout",
+     "title": "Ctrl goes by the physical key on a non-Latin layout",
+     "tag": "screen-frames/ctrl-goes-by-the-physical-key-on-a-non-latin-layout",
      "cases": [
       "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c"
      ],
@@ -7505,27 +7505,27 @@
       "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c"
      ],
      "cargo_tests": [
-      "ghostty::tests::ctrl_and_alt_on_a_layout_that_is_not_latin_go_by_the_physical_key"
+      "ghostty::tests::ctrl_on_a_layout_that_is_not_latin_goes_by_the_physical_key"
      ],
      "scenarios": [
       {
        "slug": "ctrl-c-on-a-russian-layout",
        "title": "Ctrl+C on a Russian layout",
-       "tag": "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout#ctrl-c-on-a-russian-layout",
+       "tag": "screen-frames/ctrl-goes-by-the-physical-key-on-a-non-latin-layout#ctrl-c-on-a-russian-layout",
        "cases": [],
        "covered": false
       },
       {
        "slug": "more-russian-keys",
        "title": "More Russian keys",
-       "tag": "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout#more-russian-keys",
+       "tag": "screen-frames/ctrl-goes-by-the-physical-key-on-a-non-latin-layout#more-russian-keys",
        "cases": [],
        "covered": false
       },
       {
        "slug": "typing-on-a-russian-layout",
        "title": "Typing on a Russian layout",
-       "tag": "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout#typing-on-a-russian-layout",
+       "tag": "screen-frames/ctrl-goes-by-the-physical-key-on-a-non-latin-layout#typing-on-a-russian-layout",
        "cases": [],
        "covered": false
       }
@@ -7831,6 +7831,88 @@
      ],
      "covered": true,
      "last_run": {}
+    },
+    {
+     "slug": "alt-sends-esc-and-the-character-produced",
+     "title": "Alt sends ESC and the character produced",
+     "tag": "screen-frames/alt-sends-esc-and-the-character-produced",
+     "cases": [
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c"
+     ],
+     "all_cases": [
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c"
+     ],
+     "cargo_tests": [
+      "ghostty::tests::alt_sends_esc_and_the_character_produced"
+     ],
+     "scenarios": [
+      {
+       "slug": "alt-on-a-russian-layout",
+       "title": "Alt on a Russian layout",
+       "tag": "screen-frames/alt-sends-esc-and-the-character-produced#alt-on-a-russian-layout",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "alt-shift-punctuation",
+       "title": "Alt+Shift punctuation",
+       "tag": "screen-frames/alt-sends-esc-and-the-character-produced#alt-shift-punctuation",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "ctrl-alt-on-a-russian-layout",
+       "title": "Ctrl+Alt on a Russian layout",
+       "tag": "screen-frames/alt-sends-esc-and-the-character-produced#ctrl-alt-on-a-russian-layout",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "alt-without-a-physical-key",
+       "title": "Alt without a physical key",
+       "tag": "screen-frames/alt-sends-esc-and-the-character-produced#alt-without-a-physical-key",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c": "PASS"
+     }
+    },
+    {
+     "slug": "composed-characters-are-sent-as-themselves",
+     "title": "Composed characters are sent as themselves",
+     "tag": "screen-frames/composed-characters-are-sent-as-themselves",
+     "cases": [
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c"
+     ],
+     "all_cases": [
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c"
+     ],
+     "cargo_tests": [
+      "ghostty::tests::composed_characters_are_sent_as_themselves"
+     ],
+     "scenarios": [
+      {
+       "slug": "altgr-and-option",
+       "title": "AltGr and Option",
+       "tag": "screen-frames/composed-characters-are-sent-as-themselves#altgr-and-option",
+       "cases": [],
+       "covered": false
+      },
+      {
+       "slug": "option-as-alt",
+       "title": "Option as Alt",
+       "tag": "screen-frames/composed-characters-are-sent-as-themselves#option-as-alt",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {
+      "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c": "PASS"
+     }
     }
    ]
   },
@@ -11236,7 +11318,9 @@
    "id": "uc_079:ctrl_c_on_a_russian_layout_is_ctrl_c",
    "spec": [
     "screen-frames/an-ascii-character-wins-over-the-physical-key",
-    "screen-frames/ctrl-and-alt-go-by-the-physical-key-on-a-non-latin-layout"
+    "screen-frames/ctrl-goes-by-the-physical-key-on-a-non-latin-layout",
+    "screen-frames/alt-sends-esc-and-the-character-produced",
+    "screen-frames/composed-characters-are-sent-as-themselves"
    ],
    "last_run": "PASS"
   },

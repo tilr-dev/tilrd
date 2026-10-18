@@ -200,21 +200,25 @@ message KeyInput {
   // macOS it comes from NSEvent.keyCode (kVK_ANSI_C -> "KeyC"), on iPad from
   // UIKey.keyCode (the HID usage, UIKeyboardHIDUsageKeyboardC -> "KeyC").
   //
-  // It matters with Ctrl or Alt on a layout that is not Latin: Ctrl+C on a
-  // Russian layout is the key that types "с" (U+0441), and a terminal sends
-  // ^C for it, as for Ctrl+C on a US layout. So when Ctrl or Alt is held and
-  // the key's character (`codepoint`, or `text`) is not ASCII, the server
-  // encodes the key as its US-layout character: Ctrl+С is 0x03, Ctrl+Я is
-  // 0x1A (the Z key), Alt+Ф is ESC a. A character that is ASCII is taken as
-  // it is, whatever the physical key: Ctrl+C on Dvorak (the I key) is 0x03,
-  // Ctrl+A on AZERTY (the Q key) is 0x01. With the kitty keyboard protocol
-  // the physical key is also the "base layout key" it reports. Typing
-  // without Ctrl or Alt is the text, as ever.
+  // It matters with Ctrl on a layout that is not Latin: Ctrl+C on a Russian
+  // layout is the key that types "с" (U+0441), and a terminal sends ^C for
+  // it, as for Ctrl+C on a US layout. So when Ctrl is held and the key's
+  // character (`codepoint`, or `text`) is not ASCII, the server encodes the
+  // key as its US-layout character: Ctrl+С is 0x03, Ctrl+Я is 0x1A (the Z
+  // key), Ctrl+Alt+С is ESC 0x03. A character that is ASCII is taken as it
+  // is, whatever the physical key: Ctrl+C on Dvorak (the I key) is 0x03,
+  // Ctrl+A on AZERTY (the Q key) is 0x01. Alt without Ctrl is ESC and the
+  // character the key produced (`text`, else `codepoint` with Shift), never
+  // remapped: Alt+ж is ESC ж, Alt+Shift+Ф is ESC Ф. A character composed by
+  // AltGr or macOS Option is sent without Alt and passes as itself; Alt is
+  // only what `mods` says (Option acting as Alt is the client's setting).
+  // With the kitty keyboard protocol the physical key is also the "base
+  // layout key" it reports. Typing without Ctrl or Alt is the text, as ever.
   //
   // Empty: no physical key (synthetic input from a script, or a character
   // key of a client that reads keys as characters, such as `tilr`); the key
-  // is then taken from `codepoint` as if the layout were US, and Ctrl or Alt
-  // with a character that is not ASCII sends nothing (Alt: the text alone).
+  // is then taken from `codepoint` as if the layout were US, and Ctrl with a
+  // character that is not ASCII sends nothing (Alt: ESC and the character).
   string code = 7;
 }
 
