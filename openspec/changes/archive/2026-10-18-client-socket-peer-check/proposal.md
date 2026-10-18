@@ -24,4 +24,4 @@ The code review of branch `itests` (79397e2..13f9522, 2026-10-18) found (finding
 
 `crates/tilr/src/{conn,daemon,target,main,attach}.rs`, `crates/tilr-proto/src/local.rs`, `crates/tilrd/src/local.rs`. **BREAKING** for users who relied on the stored token reaching a remote `--connect` target: migration is `TILR_TOKEN` or `client.toml`'s token for that target. Nothing crosses a reload; no protocol change.
 
-Implemented in: working tree on `dev` after 27be1ea, not committed yet (record the commit here when it lands).
+Implemented by: [`8274039`](https://github.com/tilr-dev/tilrd/commit/8274039) fix(tilr)!: check who serves the local socket; stored token to loopback only (2026-10-18).
