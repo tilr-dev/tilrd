@@ -129,12 +129,13 @@ Cloud в этих тестах играет сам тест, `cloudflared` — �
 
 | Сценарий | Тест |
 |---|---|
-| `tilrd update` ставит последний релиз для своей платформы; работающий сервер сам перезагружается, шелл цел | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
+| `tilrd update` ставит последний релиз для своей платформы — `tilrd` и `tilr` из одного архива; работающий сервер сам перезагружается, шелл цел | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
 | Последний релиз уже стоит — ничего не скачивается, файл не тронут | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
-| Скачанное не сходится с контрольной суммой, не запускается или релиза для платформы нет — ничего не установлено, мусора рядом нет | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
+| Архив не сходится с контрольной суммой, не распаковывается (не архив, обрезан), в нём нет `tilrd` или `tilr`, один из них не запускается, или релиза для платформы нет — ничего не установлено, мусора рядом нет | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
 | CDN подводит: скачивание оборвалось посередине, релиз назван, а файлов ещё нет, вместо CDN отвечает чужая страница, никто не отвечает — ничего не установлено | `update_installs_nothing_when_the_cdn_misbehaves` |
 | В каталог с бинарём нельзя писать — ничего не установлено | `update_installs_nothing_when_it_cannot_write_next_to_the_executable` |
-| † Апдейтер убит за миг до подмены: бинарь прежний; следующее обновление проходит и убирает недокачанное | `an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up` |
+| † Апдейтер убит за миг до подмены: бинари прежние; следующее обновление проходит и убирает распакованное | `an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up` |
+| † `tilr` уже на месте, а `tilrd` подменить не вышло — прежний `tilr` возвращается (или убирается, если его не было) | `a_server_that_cannot_be_put_in_place_puts_the_old_client_back` |
 | † Два обновления разом: релиз ставится один раз, второе ждёт и видит, что всё уже стоит | `two_updates_at_once_install_the_release_once` |
 
 ### Живая проверка на машине — `scripts/update-test.sh`

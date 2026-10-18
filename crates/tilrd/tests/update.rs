@@ -1,4 +1,4 @@
-//! Use cases: `tilrd update` installs the latest release.
+//! Use cases: `tilrd update` installs the latest release, tilrd and tilr.
 
 mod common;
 
@@ -74,35 +74,50 @@ fn version_and_platform() -> (String, String) {
     (version, platform)
 }
 
-/// Lay out a release of `binary` as `version` for `platform` under `cdn`,
-/// and name it the latest one.
-fn publish(cdn: &Path, platform: &str, version: &str, binary: &[u8], checksum_of: &[u8]) {
-    publish_as("tilrd", cdn, platform, version, binary, checksum_of);
+/// A release archive holding `members` (file name, content), as
+/// scripts/release.sh packs one.
+fn archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::fast(),
+    ));
+    for (name, content) in members {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, name, *content).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// The same under the file name `executable`: `tilr-server` for a release
-/// from before the rename.
-fn publish_as(
-    executable: &str,
-    cdn: &Path,
-    platform: &str,
-    version: &str,
-    binary: &[u8],
-    checksum_of: &[u8],
-) {
-    let dir = cdn.join("releases").join(version);
-    std::fs::create_dir_all(&dir).unwrap();
-    let name = format!("{executable}-{platform}");
-    std::fs::write(dir.join(&name), binary).unwrap();
+/// What stands in for the client in a release: it runs.
+const CLIENT: &[u8] = b"#!/bin/sh\necho tilr\n";
+
+/// A release of the server `server` and the stand-in client.
+fn release(server: &[u8]) -> Vec<u8> {
+    archive(&[("tilrd", server), ("tilr", CLIENT)])
+}
+
+/// Where release `version` for `platform` lies under `cdn`.
+fn archive_path(cdn: &Path, platform: &str, version: &str) -> PathBuf {
+    cdn.join("releases")
+        .join(version)
+        .join(format!("tilr-{version}-{platform}.tar.gz"))
+}
+
+/// Lay out `archive` as release `version` for `platform` under `cdn`, with
+/// the checksum of `checksum_of`, and name it the latest one.
+fn publish(cdn: &Path, platform: &str, version: &str, archive: &[u8], checksum_of: &[u8]) {
+    let path = archive_path(cdn, platform, version);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, archive).unwrap();
     let checksum: String = Sha256::digest(checksum_of)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    std::fs::write(
-        dir.join(format!("{name}.sha256")),
-        format!("{checksum}  {name}\n"),
-    )
-    .unwrap();
+    let name = path.file_name().unwrap().to_string_lossy();
+    std::fs::write(twin(&path, "sha256"), format!("{checksum}  {name}\n")).unwrap();
     let latest = cdn.join("releases").join(platform);
     std::fs::create_dir_all(&latest).unwrap();
     std::fs::write(latest.join("latest"), format!("{version}\n")).unwrap();
@@ -162,47 +177,28 @@ fn files_in(dir: &Path) -> Vec<String> {
 async fn update_installs_the_latest_release_and_the_running_server_keeps_its_shells() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
-    let release = new_version(&exe);
+    let server = new_version(&exe);
+    let archive = release(&server);
     let cdn = dir.join("cdn");
-    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let cdn = serve_files(cdn);
 
-    let server = Server::start_in(dir.clone(), &exe, &[]);
-    let mut client = Client::connect(&server).await;
+    let running = Server::start_in(dir.clone(), &exe, &[]);
+    let mut client = Client::connect(&running).await;
     let pane_id = client.open_pane().await;
     assert_eq!(client.run(pane_id, "KEPT=yes").await, 0);
 
     let output = update(&exe, &cdn);
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("-> 9.9.9-test"));
-    assert_eq!(std::fs::read(&exe).unwrap(), release);
+    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
 
     // Nobody tells the server: it notices the new file and reloads.
-    let mut client = reconnect(&server, client).await;
-    assert!(server.logged("executable changed on disk"));
+    let mut client = reconnect(&running, client).await;
+    assert!(running.logged("executable changed on disk"));
     client.subscribe(pane_id).await;
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
-}
-
-#[test]
-fn a_release_from_before_the_rename_is_found_under_its_old_name() {
-    let (dir, exe) = installed();
-    let (_, platform) = version_and_platform();
-    let release = new_version(&exe);
-    let cdn = dir.join("cdn");
-    publish_as(
-        "tilr-server",
-        &cdn,
-        &platform,
-        "0.0.9-old",
-        &release,
-        &release,
-    );
-
-    let output = update(&exe, &serve_files(cdn));
-    assert!(output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("-> 0.0.9-old"));
-    assert_eq!(std::fs::read(&exe).unwrap(), release);
 }
 
 #[tokio::test]
@@ -230,26 +226,47 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
+    let server = new_version(&exe);
     let cdn = dir.join("cdn");
     let url = serve_files(cdn.clone());
+    let fails = |archive: &[u8], checksum_of: &[u8], said: &str| {
+        publish(&cdn, &platform, "9.9.9-test", archive, checksum_of);
+        let output = update(&exe, &url);
+        assert!(!output.status.success(), "{said}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(said), "{said}: {stderr}");
+    };
 
     // Not the file the checksum was made of.
-    publish(&cdn, &platform, "9.9.9-test", b"tampered", b"released");
-    let output = update(&exe, &url);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("does not match its checksum"));
-
-    // Intact, but not a program.
-    publish(
-        &cdn,
-        &platform,
-        "9.9.9-test",
-        b"not a program",
-        b"not a program",
+    fails(
+        &release(&server),
+        b"released",
+        "does not match its checksum",
     );
-    let output = update(&exe, &url);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("does not run on this system"));
+    // Intact, but not an archive.
+    fails(b"not an archive", b"not an archive", "unpack");
+    // An archive cut short, its checksum made of what is left.
+    let whole = release(&server);
+    let cut = &whole[..whole.len() / 2];
+    fails(cut, cut, "unpack");
+    // Either program missing.
+    let only_server = archive(&[("tilrd", &server)]);
+    fails(&only_server, &only_server, "the archive has no tilr");
+    let only_client = archive(&[("tilr", CLIENT)]);
+    fails(&only_client, &only_client, "the archive has no tilrd");
+    // Either program not a program.
+    let broken = release(b"not a program");
+    fails(
+        &broken,
+        &broken,
+        "tilrd 9.9.9-test does not run on this system",
+    );
+    let broken = archive(&[("tilrd", &server), ("tilr", b"not a program")]);
+    fails(
+        &broken,
+        &broken,
+        "tilr 9.9.9-test does not run on this system",
+    );
 
     // No release for this platform at all.
     std::fs::remove_dir_all(cdn.join("releases").join(&platform)).unwrap();
@@ -265,26 +282,26 @@ async fn update_installs_nothing_when_the_cdn_misbehaves() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let release = new_version(&exe);
+    let archive = release(&new_version(&exe));
     let cdn = dir.join("cdn");
     let url = serve_files(cdn.clone());
     let latest = cdn.join("releases").join(&platform).join("latest");
-    let binary = cdn
-        .join("releases/9.9.9-test")
-        .join(format!("tilrd-{platform}"));
+    let file = archive_path(&cdn, &platform, "9.9.9-test");
 
     // The download breaks off halfway.
-    publish(&cdn, &platform, "9.9.9-test", &release, &release);
-    std::fs::write(twin(&binary, "cut"), "").unwrap();
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
+    std::fs::write(twin(&file, "cut"), "").unwrap();
     let output = update(&exe, &url);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("download"));
 
     // The release is named before its files are there.
-    std::fs::remove_file(&binary).unwrap();
+    std::fs::remove_file(&file).unwrap();
     assert!(!update(&exe, &url).status.success());
-    std::fs::remove_file(twin(&binary, "sha256")).unwrap();
-    assert!(!update(&exe, &url).status.success());
+    std::fs::remove_file(twin(&file, "sha256")).unwrap();
+    let output = update(&exe, &url);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("has no release 9.9.9-test"));
 
     // What answers is not the CDN: a login page, say.
     std::fs::write(&latest, "<html><body>Sign in</body></html>").unwrap();
@@ -314,9 +331,9 @@ async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let release = new_version(&exe);
+    let archive = release(&new_version(&exe));
     let cdn = scratch.join("cdn");
-    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
 
     std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o555)).unwrap();
@@ -335,22 +352,59 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let release = new_version(&exe);
+    let server = new_version(&exe);
+    let archive = release(&server);
     let cdn = dir.join("cdn");
-    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
 
-    // Killed with the download on disk, a moment before it is renamed.
+    // Killed with the release unpacked, a moment before it is renamed.
     let killed = update_failing(&exe, &url, "update-before-rename=kill")
         .wait_with_output()
         .unwrap();
     assert!(!killed.status.success());
     assert_eq!(std::fs::read(&exe).unwrap(), original);
-    assert_eq!(files_in(&dir).len(), 3, "the download is left behind");
+    assert_eq!(
+        files_in(&dir).len(),
+        3,
+        "the unpacked release is left behind"
+    );
 
     let output = update(&exe, &url);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(std::fs::read(&exe).unwrap(), release);
+    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_server_that_cannot_be_put_in_place_puts_the_old_client_back() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let original = std::fs::read(&exe).unwrap();
+    let old_client = b"#!/bin/sh\necho old tilr\n";
+    std::fs::write(dir.join("tilr"), old_client).unwrap();
+    let archive = release(&new_version(&exe));
+    let cdn = dir.join("cdn");
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
+    let url = serve_files(cdn);
+
+    // The client is in place, the server's rename fails.
+    let output = update_failing(&exe, &url, "update-between-renames=error")
+        .wait_with_output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nothing was installed"));
+    assert_eq!(std::fs::read(&exe).unwrap(), original);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), old_client);
+    assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
+
+    // Without a client before, none is left.
+    std::fs::remove_file(dir.join("tilr")).unwrap();
+    let output = update_failing(&exe, &url, "update-between-renames=error")
+        .wait_with_output()
+        .unwrap();
+    assert!(!output.status.success());
     assert_eq!(files_in(&dir), ["cdn", "tilrd"]);
 }
 
@@ -359,9 +413,10 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
 async fn two_updates_at_once_install_the_release_once() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
-    let release = new_version(&exe);
+    let server = new_version(&exe);
+    let archive = release(&server);
     let cdn = dir.join("cdn");
-    publish(&cdn, &platform, "9.9.9-test", &release, &release);
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
 
     // The first is slow to swap, so the second arrives while it is at work.
@@ -382,6 +437,6 @@ async fn two_updates_at_once_install_the_release_once() {
     );
     assert_eq!(said("-> 9.9.9-test"), 1, "{outputs:?}");
     assert_eq!(said("is already installed"), 1, "{outputs:?}");
-    assert_eq!(std::fs::read(&exe).unwrap(), release);
-    assert_eq!(files_in(&dir), ["cdn", "tilrd"]);
+    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
 }

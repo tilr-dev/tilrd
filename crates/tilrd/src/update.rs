@@ -1,28 +1,28 @@
-//! `tilrd update`: replace this executable with the latest release.
+//! `tilrd update`: replace this executable and the client next to it with
+//! the latest release.
 //!
 //! Releases are files under one base URL:
 //!
 //! ```text
-//! releases/<platform>/latest                         the version ready for the platform
-//! releases/<version>/tilrd-<platform>
-//! releases/<version>/tilrd-<platform>.sha256
+//! releases/<platform>/latest                                 the version ready for the platform
+//! releases/<version>/tilr-<version>-<platform>.tar.gz        tilrd and tilr
+//! releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 //! ```
 //!
-//! Releases before the rename to `tilrd` are named `tilr-server-<platform>`,
-//! and those after it are published under that name too, for the servers
-//! still called `tilr-server`, which ask for it: they update to `tilrd` in
-//! place, under the name they were installed as.
-//!
-//! The download is renamed over this executable. A server running from it
+//! The archive is unpacked into a directory next to the executable, both
+//! programs are checked to run, and then renamed over the installed ones:
+//! `tilr` first, `tilrd` (this executable) last. A server running from it
 //! notices and reloads, keeping its shells; nothing is restarted here.
 //!
-//! Until that rename nothing has changed: an update that fails, or is killed,
-//! leaves the executable as it was. One update runs at a time.
+//! Until those renames nothing has changed: an update that fails, or is
+//! killed, leaves the installation as it was. If `tilrd` cannot be put in
+//! place after `tilr` was, the old `tilr` is put back. One update runs at a
+//! time.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -34,7 +34,21 @@ use crate::{PLATFORM, VERSION};
 pub const DEFAULT_CDN: &str = "https://cdn.tilr.dev";
 
 /// No release comes near this; a larger answer is not one.
-const MAX_BINARY: u64 = 256 << 20;
+const MAX_ARCHIVE: u64 = 256 << 20;
+/// Nor a program in it.
+const MAX_PROGRAM: u64 = 512 << 20;
+
+/// The programs of a release, in the order they are put in place: the
+/// server last, since renaming it is what makes a running one reload.
+const PROGRAMS: [&str; 2] = ["tilr", "tilrd"];
+
+/// What the directory an update unpacks into is called, before the pid.
+const STAGING: &str = ".tilr-update.";
+
+/// The file name of release `version` for this platform.
+fn archive_name(version: &str) -> String {
+    format!("tilr-{version}-{PLATFORM}.tar.gz")
+}
 
 pub fn run(cdn: &str, exe: &Path) -> Result<()> {
     ensure!(
@@ -58,7 +72,17 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let (url, checksum) = find_release(cdn, latest)?;
+    let url = format!("{cdn}/releases/{latest}/{}", archive_name(latest));
+    let checksum = match ureq::get(&format!("{url}.sha256")).call() {
+        Ok(mut response) => response
+            .body_mut()
+            .read_to_string()
+            .context("fetch the checksum")?,
+        Err(ureq::Error::StatusCode(404)) => {
+            bail!("{cdn} has no release {latest} for {PLATFORM}")
+        }
+        Err(err) => return Err(err).context("fetch the checksum"),
+    };
     let expected = checksum
         .split_whitespace()
         .next()
@@ -74,54 +98,121 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
         return Err(std::io::Error::last_os_error())
             .context("lock the directory of the executable");
     }
-    let mut staged_name = exe.file_name().context("executable path")?.to_owned();
-    staged_name.push(".new.");
-    remove_leftovers(dir, &staged_name.to_string_lossy());
-    if fs::read(exe).is_ok_and(|installed| sha256(&installed) == expected) {
-        println!("tilrd {latest} ({PLATFORM}) is already installed");
-        return Ok(());
-    }
+    remove_leftovers(dir);
 
-    println!("downloading tilrd {latest} ({PLATFORM})");
-    let binary = ureq::get(&url)
+    println!("downloading tilr {latest} ({PLATFORM})");
+    let archive = ureq::get(&url)
         .call()
         .and_then(|mut response| {
             response
                 .body_mut()
                 .with_config()
-                .limit(MAX_BINARY)
+                .limit(MAX_ARCHIVE)
                 .read_to_vec()
         })
         .with_context(|| format!("download {url}"))?;
     ensure!(
-        sha256(&binary) == expected,
+        sha256(&archive) == expected,
         "the download does not match its checksum, nothing was installed"
     );
 
-    // Next to the executable, so that the rename stays on one filesystem.
-    staged_name.push(std::process::id().to_string());
-    let staged = Staged(exe.with_file_name(staged_name));
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o755)
-        .open(&staged.0)
-        .and_then(|mut file| file.write_all(&binary))
+    // Next to the executable, so that the renames stay on one filesystem.
+    let staged = Staged(dir.join(format!("{STAGING}{}", std::process::id())));
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&staged.0)
         .with_context(|| format!("write {}", staged.0.display()))?;
-    let runs = Command::new(&staged.0)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !runs {
-        bail!("tilrd {latest} does not run on this system, nothing was installed");
+    unpack(&archive, &staged.0)
+        .with_context(|| format!("unpack release {latest}, nothing was installed"))?;
+
+    // Where each program goes: the server where this one is, under whatever
+    // name it was installed as; the client next to it.
+    let targets = [dir.join("tilr"), exe.to_owned()];
+    let same = PROGRAMS.iter().zip(&targets).all(|(name, target)| {
+        fs::read(target)
+            .is_ok_and(|installed| fs::read(staged.0.join(name)).ok() == Some(installed))
+    });
+    if same {
+        println!("tilr {latest} ({PLATFORM}) is already installed");
+        return Ok(());
+    }
+    for name in PROGRAMS {
+        let runs = Command::new(staged.0.join(name))
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !runs {
+            bail!("{name} {latest} does not run on this system, nothing was installed");
+        }
     }
     crate::fail::point("update-before-rename")?;
-    fs::rename(&staged.0, exe).with_context(|| format!("replace {}", exe.display()))?;
 
-    println!("updated {VERSION} -> {latest}: {}", exe.display());
+    // The client first, its old file kept until the server is in place too.
+    let [client, server] = &targets;
+    let old_client = staged.0.join("tilr.old");
+    let had_client = fs::hard_link(client, &old_client).is_ok();
+    fs::rename(staged.0.join("tilr"), client)
+        .with_context(|| format!("replace {}", client.display()))?;
+    let swapped = crate::fail::point("update-between-renames").and_then(|()| {
+        fs::rename(staged.0.join("tilrd"), server)
+            .with_context(|| format!("replace {}", server.display()))
+    });
+    if let Err(err) = swapped {
+        let _ = if had_client {
+            fs::rename(&old_client, client)
+        } else {
+            fs::remove_file(client)
+        };
+        return Err(err.context("nothing was installed"));
+    }
+
+    println!("updated {VERSION} -> {latest}: {}", dir.display());
     println!("a running server reloads itself and keeps its shells");
+    Ok(())
+}
+
+/// Write `tilr` and `tilrd` of a release archive into `dir`, executable.
+/// Nothing else in it is written; either missing is an error.
+fn unpack(archive: &[u8], dir: &Path) -> Result<()> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    let mut found = [false; PROGRAMS.len()];
+    for entry in tar.entries().context("read the archive")? {
+        let mut entry = entry.context("read the archive")?;
+        let path = entry.path().context("read the archive")?.into_owned();
+        let name = path.strip_prefix(".").unwrap_or(&path);
+        let Some(index) = PROGRAMS
+            .iter()
+            .position(|program| name == Path::new(program))
+        else {
+            continue;
+        };
+        let program = PROGRAMS[index];
+        ensure!(
+            entry.header().entry_type().is_file(),
+            "{program} in the archive is not a file"
+        );
+        ensure!(
+            entry.size() <= MAX_PROGRAM,
+            "{program} in the archive is too large"
+        );
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).context("read the archive")?;
+        let target = dir.join(program);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(&target)
+            .and_then(|mut file| file.write_all(&bytes))
+            .with_context(|| format!("write {}", target.display()))?;
+        found[index] = true;
+    }
+    for (program, found) in PROGRAMS.iter().zip(found) {
+        ensure!(found, "the archive has no {program}");
+    }
     Ok(())
 }
 
@@ -132,48 +223,26 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Remove downloads left by updates that were killed before their rename.
-/// Called with the lock held, so none of them is in use.
-fn remove_leftovers(dir: &Path, prefix: &str) {
+/// Remove what updates left that were killed before their renames. Called
+/// with the lock held, so none of it is in use.
+fn remove_leftovers(dir: &Path) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        if entry.file_name().to_string_lossy().starts_with(prefix) {
-            let _ = fs::remove_file(entry.path());
+        if entry.file_name().to_string_lossy().starts_with(STAGING) {
+            let _ = fs::remove_dir_all(entry.path());
         }
     }
-}
-
-/// What a release is called, newest name first.
-const NAMES: [&str; 2] = ["tilrd", "tilr-server"];
-
-/// The URL of release `version` and its checksum file, under whichever name
-/// it was published: one from before the rename has only the old one.
-fn find_release(cdn: &str, version: &str) -> Result<(String, String)> {
-    for name in NAMES {
-        let url = format!("{cdn}/releases/{version}/{name}-{PLATFORM}");
-        match ureq::get(&format!("{url}.sha256")).call() {
-            Ok(mut response) => {
-                let checksum = response
-                    .body_mut()
-                    .read_to_string()
-                    .context("fetch the checksum")?;
-                return Ok((url, checksum));
-            }
-            Err(ureq::Error::StatusCode(404)) => {}
-            Err(err) => return Err(err).context("fetch the checksum"),
-        }
-    }
-    bail!("{cdn} has no release {version} for {PLATFORM}")
 }
 
 fn fetch_text(url: &str) -> Result<String> {
     Ok(ureq::get(url).call()?.body_mut().read_to_string()?)
 }
 
-/// The downloaded file until it is renamed into place; removed if it never is.
+/// The unpacked release until it is renamed into place; removed with what is
+/// left in it either way.
 struct Staged(PathBuf);
 
 impl Drop for Staged {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
     }
 }

@@ -77,12 +77,12 @@ shell_state() {
 }
 
 # Put a release where the server runs from, the way it is done by hand:
-# download, check, rename into place. A release from before the rename is
-# only under the name tilr-server.
+# download the archive, check it, unpack it, rename both programs into place.
 install_by_hand() {
-    r "cd $dir && for n in tilrd tilr-server; do curl -fsSL -o staged \"$cdn/releases/$1/\$n-$platform\" 2>/dev/null && break; done &&
-        [ \"\$(sha256sum staged | cut -d' ' -f1)\" = \"\$(curl -fsSL \"$cdn/releases/$1/\$n-$platform.sha256\" | cut -d' ' -f1)\" ] &&
-        chmod 755 staged && mv staged tilrd"
+    r "cd $dir && rm -rf staged && mkdir staged && a=tilr-$1-$platform.tar.gz &&
+        curl -fsSL -o staged/\$a \"$cdn/releases/$1/\$a\" &&
+        [ \"\$(sha256sum staged/\$a | cut -d' ' -f1)\" = \"\$(curl -fsSL \"$cdn/releases/$1/\$a.sha256\" | cut -d' ' -f1)\" ] &&
+        tar -xzf staged/\$a -C staged tilr tilrd && mv staged/tilr tilr && mv staged/tilrd tilrd && rm -rf staged"
 }
 
 start_server() {
@@ -170,7 +170,7 @@ sum=$(r "sha256sum $dir/tilrd")
 r "$dir/tilrd update --cdn http://127.0.0.1:9" >/dev/null 2>&1 &&
     not_ok "the update fails" || ok "the update fails"
 check "the executable is untouched" "$(r "sha256sum $dir/tilrd")" "$sum"
-check "nothing is left next to it" "$(r "ls $dir | grep -c '\.new\.'")" "0"
+check "nothing is left next to it" "$(r "ls -A $dir | grep -c '^\.tilr-update\.'")" "0"
 check "the server carries on" "$(pane_ids)" "$panes"
 
 echo "# 5. rollback by hand, then update again"

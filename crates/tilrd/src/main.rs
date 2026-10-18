@@ -180,9 +180,9 @@ enum Command {
         #[command(subcommand)]
         command: CloudCommand,
     },
-    /// Replace this executable with the latest release. A running server
-    /// reloads itself and keeps its shells. For users: `tilr update`, which
-    /// runs this in the server.
+    /// Replace this executable and the tilr next to it with the latest
+    /// release. A running server reloads itself and keeps its shells. For
+    /// users: `tilr update`, which runs this in the server.
     #[command(hide = true)]
     Update {
         /// Where releases are fetched from.

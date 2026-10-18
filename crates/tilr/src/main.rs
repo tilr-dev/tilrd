@@ -90,8 +90,8 @@ enum Command {
         #[command(subcommand)]
         command: CloudCommand,
     },
-    /// Replace tilrd with its latest release; it reloads and keeps its
-    /// shells.
+    /// Replace tilrd and tilr with their latest release; tilrd reloads and
+    /// keeps its shells.
     Update {
         /// Where releases are fetched from.
         #[arg(long, env = "TILR_CDN")]

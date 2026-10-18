@@ -43,17 +43,20 @@ upgrades with older bundled copies. Use **Tilr > Check for Server Updates** for
 this managed copy; separate installations retain their own updater.
 See [Mac release and lifecycle details](../apps/mac/PRODUCTION.md).
 
-Releases are built for Linux on aarch64 (glibc 2.36 or newer): the server
-`tilrd-<platform>` and its client `tilr-<platform>`, each with its
-`.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`) puts both in
-`~/.local/bin`; by hand:
+Releases are built for Linux on aarch64 (glibc 2.36 or newer): one archive
+per platform, `tilr-<version>-<platform>.tar.gz`, holding the server `tilrd`
+and its client `tilr`, with its `.sha256`. The installer (`curl -fsSL
+https://tilr.sh | sh`) downloads it into a temporary directory, checks it,
+unpacks it there and runs both programs, and only then puts both in
+`~/.local/bin`; anything that fails installs nothing. It sets up no service
+and edits no profile: it prints what to type next (`tilr`, `tilr service
+install` to start tilrd at boot, `tilr token`, `tilr cloud login`) and, if
+`~/.local/bin` is not on `PATH`, the line to add to `~/.profile`. By hand:
 
 ```sh
 version=$(curl -fsSL https://cdn.tilr.dev/releases/linux-aarch64/latest)
-for name in tilrd tilr; do
-  curl -fsSLo ~/.local/bin/$name "https://cdn.tilr.dev/releases/$version/$name-linux-aarch64"
-  chmod +x ~/.local/bin/$name
-done
+curl -fsSL "https://cdn.tilr.dev/releases/$version/tilr-$version-linux-aarch64.tar.gz" |
+  tar -xz -C ~/.local/bin tilrd tilr
 tilr
 ```
 
@@ -65,20 +68,14 @@ tilr update
 
 `tilr update` has the running server do it (it runs `tilrd update` as a child
 of the server, in its environment), then reconnects and prints the version the
-server reloaded into. It asks the CDN which version is ready for its platform, downloads it, checks
-it against its checksum and that it runs, and puts it in place of the
-executable. A running server then [reloads itself](#reloading-without-closing-shells)
-and keeps every shell. `--cdn URL` (or `TILR_CDN`) names another place to
-fetch releases from.
-
-The server was called `tilr-server` before (`tilrd` is the server, `tilr` the
-client that talks to it). Releases are published under both names, the same
-file as `tilrd-<platform>` and `tilr-server-<platform>`: `tilr-server update`
-on a server from before the rename finds the new release under the name it
-asks for and puts it in place of its own executable, which keeps its file name
-(and whatever starts it, a systemd unit, say) and is `tilrd` from then on.
-`tilrd update` asks for `tilrd-<platform>`, and for `tilr-server-<platform>`
-when a release has only that name (rolling back past the rename).
+server reloaded into. It asks the CDN which version is ready for its platform,
+downloads its archive, checks it against its checksum, unpacks it into a
+directory next to the executable, checks that both programs run, and renames
+them over the installed ones: `tilr` (next to `tilrd`) first, `tilrd` last; if
+`tilrd` cannot be put in place, the old `tilr` is put back. A running server
+then [reloads itself](#reloading-without-closing-shells) and keeps every
+shell. `--cdn URL` (or `TILR_CDN`) names another place to fetch releases
+from.
 
 `tilr version` prints what builds the client and the running server are: the
 package version, the commit and the platform, e.g. `0.1.0-26449dd
@@ -113,7 +110,7 @@ with the toolchain installed and the source mounted:
 
 ```sh
 scripts/linux.sh                  # the test suite
-scripts/linux-build.sh            # release binary into dist/
+scripts/linux-build.sh            # release binaries into dist/<platform>/
 TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
 ```
 
@@ -280,9 +277,8 @@ tilr service uninstall    # remove what install added
 ```
 
 - **Linux with systemd and lingering**: a user unit,
-  `~/.config/systemd/user/tilr.service` (`$XDG_CONFIG_HOME`), the name the
-  installer uses: `Type=notify` (tilrd says `READY=1` on `$NOTIFY_SOCKET`
-  once it listens), `ExecStart=/bin/sh -lc 'exec "…/tilrd"'` (a login shell,
+  `~/.config/systemd/user/tilr.service` (`$XDG_CONFIG_HOME`): `Type=notify`
+  (tilrd says `READY=1` on `$NOTIFY_SOCKET` once it listens), `ExecStart=/bin/sh -lc 'exec "…/tilrd"'` (a login shell,
   so the panes get the environment of `~/.profile`, as over SSH),
   `Restart=on-failure`; `systemctl --user enable` (with `--now` unless a tilrd
   runs). Lingering (the user's manager runs from boot, not only while logged

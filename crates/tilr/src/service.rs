@@ -28,7 +28,7 @@ use tilr_proto::local;
 
 use crate::daemon;
 
-/// The systemd unit, the same name the installer gives its unit.
+/// The systemd user unit.
 pub const UNIT: &str = "tilr.service";
 /// The launchd agent's label.
 pub const LABEL: &str = "sh.tilr.tilrd";
