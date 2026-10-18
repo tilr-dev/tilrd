@@ -37,7 +37,8 @@ impl Daemon {
         // The TCP port a server has by default: not the one of the machine.
         command.env("TILR_LISTEN", "127.0.0.1:0");
         command.stdin(Stdio::null()).stderr(Stdio::piped());
-        let mut child = command.spawn().expect("start tilrd");
+        // The executable may be a copy the test just made.
+        let mut child = spawn_copied(&mut command);
         let log = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&log);
         let stderr = child.stderr.take().unwrap();
