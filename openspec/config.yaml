@@ -4,6 +4,10 @@ schema: spec-driven
 # Each line was checked against the code at 47a8557 (branch dev: itests work with main
 # merged in), README.md, AGENTS.md and .github/workflows (2026-10-18).
 context: |
+  Roadmap: openspec/ROADMAP.md lists every open change in implementation order (phases,
+  size, dependencies, Блокер, status) and the release gate (what lands before dev goes to
+  main and the first release). Read it before choosing what to apply next.
+
   Language: every OpenSpec artifact (proposal, design, specs, tasks) is written in English,
   as are log lines, CLI output, README.md, USE_CASES.md and TODO.md. Discussions with the
   owner may be in Russian; itests/USE_CASES.md is still in Russian.
@@ -110,9 +114,11 @@ rules:
 operations:
   apply:
     guidance:
+      - Take the next change from openspec/ROADMAP.md whose dependencies are archived and that has no Блокер; when its status, scope or dependencies change, update its row there in the same change.
       - Work on the dev branch; do not commit, push or open PRs without explicit permission.
       - Update README.md (the user-facing contract) and USE_CASES.md in the same change as the behavior.
       - A tilr.proto change also updates the README "Protocol" section and, when incompatible, PROTOCOL_VERSION.
   archive:
     guidance:
+      - Move the change's row in openspec/ROADMAP.md to "Done" with its commit, and drop it from the `Зависит от:` lines of the changes that waited for it.
       - Record the commit or PR that implemented the change in its proposal before archiving.
