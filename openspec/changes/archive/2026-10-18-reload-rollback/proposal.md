@@ -35,3 +35,5 @@ Basic Memory `main/projects/tilr/tilr-ustanovka-i-obnovlenie-install.sh-relizy-n
 ## Impact
 
 `crates/tilrd/src/{main,supervisor,reload,pane}.rs`, the pane reload path, failpoints (`fail.rs`), `itests/tt` (`tilrd_daemons` skips check children), itests UC-06A. No PROTOCOL_VERSION change, no state file format change: the check reads the same format. `state-formats` gains a line after the existing ones, so an older reader still finds its formats. The first reload from the previous release is done by the old image, without the check; from then on every reload is checked. A rollback to a release before this change is refused (D4, **BREAKING** above). Nothing new crosses a reload.
+
+Implemented by: [`4298b15`](https://github.com/tilr-dev/tilrd/commit/4298b15) fix(reload)!: exec only into a successor that showed it can resume (2026-10-18).
