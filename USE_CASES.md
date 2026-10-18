@@ -177,7 +177,7 @@ state format; platforms other than `linux-aarch64`.
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
 | With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
-| The new executable reads another state format (supervisor's or pane's): no reload, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| The new executable reads another state format (supervisor's or pane's), or cannot show it can resume (no `reload-check 1`): no reload, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
 | After a reload the server and pane processes look the same in `ps` as before; the files with the handed-over state are read and removed | `a_reload_shows_in_no_command_line_and_leaves_no_file_behind` |
 | A reload with no panes | `a_reload_with_no_panes_open_works` |
 | Several panes: each keeps its own shell and its own state | `every_pane_keeps_its_own_shell_across_a_reload` |
@@ -194,6 +194,12 @@ state format; platforms other than `linux-aarch64`.
 | † The new version crashed after taking over: the server and all shells are lost (the limit of reloading, there is no way back); no orphaned shells are left | `a_version_that_crashes_taking_over_ends_the_server_and_its_shells` |
 | † The server killed in the middle of a reload: the shells end, no orphans are left | `a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind` |
 | † The executable replaced again while a reload was under way: no shell is lost | `an_executable_replaced_again_during_a_reload_costs_no_shell` |
+| † The new version panics resuming in its check run: no exec, the same pid, connection and shell, no state or check file left | `a_successor_that_panics_resuming_is_not_reloaded_into` |
+| The new version rejects the server's command line (`--socket`): no exec, the log names the argument, the socket stays | `a_successor_that_rejects_the_command_line_is_not_reloaded_into` |
+| The configuration file has a key the new version refuses: no exec; with the key gone the next reload goes through | `a_successor_that_refuses_the_configuration_is_not_reloaded_into` |
+| † The check run of the new version never answers: killed after 10 s, no exec, the server served clients meanwhile | `a_successor_that_never_answers_the_check_is_not_reloaded_into` |
+| † A slow check run that passes: the server serves meanwhile, then reloads with the same pid | `a_successor_is_checked_while_the_server_serves_and_then_reloaded_into` |
+| † A pane process's check of its successor fails: the supervisor reloads, that pane carries on with the old code and its shell | `a_pane_whose_successor_fails_the_check_carries_on` |
 
 ## Clipboard — `tests/clipboard.rs`
 
@@ -326,9 +332,10 @@ pane process. The server's counters are at `GET /metrics`.
   file is written whole or not at all (a temporary next to it, a rename), and
   that a failed write leaves nothing, is checked by the unit tests in
   `reload.rs`.
-- The new version crashes after the handover: the server and shells are lost
-  (the test pins this down). There is no protection beyond the check before
-  the reload.
+- The new version crashes after the handover, having passed its check run:
+  the server and shells are lost (the test pins this down). There is no
+  protection beyond the checks before the exec (`state-formats` and the check
+  run of the resume).
 - An update between versions with different state formats without a restart:
   such a reload is currently refused (shells intact); there is no migration of
   state from the old format to the new one.

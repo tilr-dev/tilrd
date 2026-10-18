@@ -15,14 +15,23 @@
 //! exec'd there is no way back, and a successor that misreads the state
 //! would lose every shell.
 //!
+//! Then it has the executable show that it can resume: it runs it once more,
+//! as a child, with the command line and environment the successor will
+//! have and [`CHECK_ENV`] naming a copy of the state. That child parses the
+//! command line, loads the configuration, reads the state and goes through
+//! the resume up to where it would take over the descriptors, answers `ok`
+//! or `error: <reason>` on its stdout and exits. Only on `ok` does the
+//! process exec. A pane process checks its successor the same way.
+//!
 //! Client connections do not survive: clients reconnect and find their panes
 //! as they left them.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitCode, Output, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -34,7 +43,11 @@ use crate::clipboard;
 
 /// How often the executable on disk is checked for a change.
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// How long `state-formats` and the check of a successor may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Set for a process that only checks it could resume: the path of the copy
+/// of the state it reads.
+pub const CHECK_ENV: &str = "TILR_RELOAD_CHECK";
 /// How old a state file must be to count as left behind.
 const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
@@ -72,7 +85,7 @@ pub const STATE_FORMAT: u32 = 2;
 /// this executable reads, one `name version` per line.
 pub fn formats() -> String {
     format!(
-        "{SUPERVISOR_STATE} {STATE_FORMAT}\n{PANE_STATE} {}\n{UNIX_SOCKET} 1\n",
+        "{SUPERVISOR_STATE} {STATE_FORMAT}\n{PANE_STATE} {}\n{UNIX_SOCKET} 1\n{RELOAD_CHECK} 1\n",
         crate::pane::STATE_FORMAT
     )
 }
@@ -85,6 +98,10 @@ const PANE_STATE: &str = "pane-state";
 /// with the exec and the lock with them), and a server that has no TCP port
 /// does not reload into it.
 const UNIX_SOCKET: &str = "unix-socket";
+/// Said by an executable that answers the check of a successor
+/// ([`CHECK_ENV`]). One that does not say it is not reloaded into: started
+/// for the check, it would run as a server or a pane of its own.
+const RELOAD_CHECK: &str = "reload-check";
 
 /// Whether state written as version `written` can be read as version
 /// `read`. Version 0 is state from before versions were recorded, which has
@@ -111,10 +128,16 @@ fn check_formats(printed: &str) -> Result<bool> {
             bail!("it reads {name} format {read}, this server writes {written}");
         }
     }
-    Ok(printed
-        .lines()
-        .filter_map(|line| line.strip_prefix(UNIX_SOCKET))
-        .any(|version| version.trim() == "1"))
+    let says = |name: &str| {
+        printed
+            .lines()
+            .filter_map(|line| line.strip_prefix(name))
+            .any(|version| version.trim() == "1")
+    };
+    if !says(RELOAD_CHECK) {
+        bail!("it cannot show that it can resume (no `{RELOAD_CHECK} 1`)");
+    }
+    Ok(says(UNIX_SOCKET))
 }
 
 /// Make sure the executable on disk runs and reads the state this server
@@ -136,6 +159,125 @@ pub async fn check_executable(exe: &Path) -> Result<bool> {
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
         Err(_) => bail!("{} state-formats did not finish", exe.display()),
     }
+}
+
+/// Have the executable at `exe` show that it can resume from `state`: run it
+/// with `args` (those it will be exec'd with) and [`CHECK_ENV`] naming a copy
+/// of the state at `check_file`, and wait for its `ok`. The copy is removed
+/// whatever happens, and a child that does not answer in time is killed.
+pub async fn check_successor(
+    exe: &Path,
+    args: Vec<OsString>,
+    check_file: PathBuf,
+    state: &[u8],
+) -> Result<()> {
+    write_file(&check_file, state).context("write the state to check")?;
+    let check_file = Removed(check_file);
+    let child = tokio::process::Command::new(exe)
+        .args(args)
+        .env(CHECK_ENV, &check_file.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("run {}", exe.display()))?;
+    match tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) => verdict(&output),
+        Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
+        Err(_) => bail!("it did not answer within {} s", CHECK_TIMEOUT.as_secs()),
+    }
+}
+
+/// A file removed when this is dropped.
+struct Removed(PathBuf);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// What a check child's answer and exit say.
+fn verdict(output: &Output) -> Result<()> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let answer = stdout.lines().next().unwrap_or_default().trim();
+    if answer == "ok" {
+        if output.status.success() {
+            return Ok(());
+        }
+        bail!("it answered ok but ended with {}", output.status);
+    }
+    if let Some(reason) = answer.strip_prefix("error: ") {
+        bail!("{reason}");
+    }
+    // It died before answering: a crash, or something that is not tilrd.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut said: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    said.drain(..said.len().saturating_sub(3));
+    let said = said.join(" | ");
+    let said: String = said.chars().take(400).collect();
+    if said.is_empty() {
+        bail!("it ended with {} without answering", output.status);
+    }
+    bail!("it ended with {} without answering: {said}", output.status)
+}
+
+/// Run `check` as the check child of a reload: answer `ok` or `error:
+/// <reason>` on stdout, one line, and exit 0 or 1. A panic is answered too.
+pub fn answer_check(check: impl FnOnce() -> Result<()>) -> ExitCode {
+    std::panic::set_hook(Box::new(|info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let at = info
+            .location()
+            .map(|at| format!(" at {}:{}", at.file(), at.line()))
+            .unwrap_or_default();
+        answer(&format!("error: panicked{at}: {message}"));
+    }));
+    match check() {
+        Ok(()) => {
+            answer("ok");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            answer(&format!("error: {err:#}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn answer(line: &str) {
+    let line = line.replace('\n', "; ");
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(stdout, "{line}");
+    let _ = stdout.flush();
+}
+
+/// Where this supervisor puts the copy of its state its successor is
+/// checked with.
+pub fn check_path() -> PathBuf {
+    clipboard::runtime_dir().join(format!("server-{}.check.state", std::process::id()))
+}
+
+/// Where the pane process of pane `pane_id` puts the copy of its state its
+/// successor is checked with.
+pub fn pane_check_path(pane_id: &Uuid) -> PathBuf {
+    pane_state_dir().join(format!("{pane_id}.check.state"))
+}
+
+/// Read the copy of a state a check child is given. It is left where it is:
+/// the process that asked for the check removes it.
+pub fn read_check_file(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| format!("read {}", path.display()))
 }
 
 /// Where this supervisor leaves its state for the one it execs. An exec
@@ -214,7 +356,7 @@ pub fn take_state() -> Result<Option<SupervisorState>> {
         .transpose()
 }
 
-fn decode_state(bytes: &[u8]) -> Result<SupervisorState> {
+pub fn decode_state(bytes: &[u8]) -> Result<SupervisorState> {
     let state = SupervisorState::decode(bytes).context("decode state")?;
     if !format_matches(state.format, STATE_FORMAT) {
         bail!(
@@ -271,6 +413,48 @@ mod tests {
         let newer = format!("supervisor-state {STATE_FORMAT}\npane-state {}\n", pane + 1);
         let err = check_formats(&newer).unwrap_err().to_string();
         assert!(err.contains("reads pane-state format"), "{err}");
+    }
+
+    #[test]
+    fn an_executable_that_cannot_run_the_check_cannot_take_over() {
+        let without: String = formats()
+            .lines()
+            .filter(|line| !line.starts_with(RELOAD_CHECK))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let err = check_formats(&without).unwrap_err().to_string();
+        assert!(err.contains("no `reload-check 1`"), "{err}");
+    }
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_check_passes_only_on_ok_and_a_clean_exit() {
+        assert!(verdict(&output(0, "ok\n", "")).is_ok());
+        let err = verdict(&output(1, "ok\n", "")).unwrap_err().to_string();
+        assert!(err.contains("answered ok but ended with"), "{err}");
+        let err = verdict(&output(1, "error: the configuration: bad key\n", ""))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "the configuration: bad key");
+    }
+
+    #[test]
+    fn a_check_child_that_dies_is_reported_with_what_it_said_last() {
+        let stderr = "zero\none\n\ntwo\nerror: unexpected argument '--socket' found\n";
+        let err = verdict(&output(2, "", stderr)).unwrap_err().to_string();
+        assert!(err.contains("without answering"), "{err}");
+        assert!(err.contains("unexpected argument '--socket'"), "{err}");
+        assert!(!err.contains("zero"), "only the last lines: {err}");
+        let err = verdict(&output(2, "", "")).unwrap_err().to_string();
+        assert!(err.ends_with("without answering"), "{err}");
     }
 
     #[test]

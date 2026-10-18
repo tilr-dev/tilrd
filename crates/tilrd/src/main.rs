@@ -237,6 +237,13 @@ fn main() -> anyhow::Result<ExitCode> {
         return Ok(host::shim(exe, args.collect()));
     }
 
+    // Started by a reloading server or pane process to show that this
+    // executable can resume from the state it would be left. Nothing is
+    // logged: the answer goes to stdout.
+    if let Some(state) = std::env::var_os(reload::CHECK_ENV) {
+        return Ok(reload::answer_check(|| check_resume(Path::new(&state))));
+    }
+
     // Write errors are dropped: stderr may be a terminal that hung up (EIO),
     // and reporting that to stderr again would panic.
     // Colors for a terminal only: the log of a server `tilr` started is a file.
@@ -265,41 +272,65 @@ fn main() -> anyhow::Result<ExitCode> {
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
         Some(Command::Host(command)) => return Ok(host::run(command)),
         None => {
-            if cli.no_listen && cli.no_socket {
-                anyhow::bail!("nothing to listen on: --no-socket and --no-listen");
-            }
-            let listen = (!cli.no_listen).then_some(supervisor::ListenOptions {
-                addr: cli.listen,
-                required: cli.lock_fd.is_none(),
-            });
-            let local = (!cli.no_socket).then(|| supervisor::LocalOptions {
-                // A socket asked for by name, or the only way in, must work.
-                required: cli.socket.is_some() || cli.no_listen,
-                path: cli.socket.unwrap_or_else(tilr_proto::local::socket_path),
-                lock_fd: cli.lock_fd,
-            });
-            let config = config::load(cli.config.as_deref())?;
-            let allow_origins = config::allow_origins(cli.allow_origins, &config);
-            tracing::info!(origins = ?allow_origins, "browser origins allowed");
-            supervisor::run(supervisor::Options {
-                listen,
-                local,
-                allow_origins,
-                clipboard: (!cli.no_clipboard).then(|| clipboard::Limits {
-                    max_bytes: cli.clipboard_max,
-                    ttl: (cli.clipboard_ttl > 0).then(|| Duration::from_secs(cli.clipboard_ttl)),
-                }),
-                auth: !cli.no_auth,
-                cloudflared: cli.cloudflared,
-                auto_reload: !cli.no_auto_reload,
-                client_timeout: (cli.client_timeout > 0)
-                    .then(|| Duration::from_secs(cli.client_timeout)),
-                socks: config::socks(cli.socks, &config),
-                files: config::files(cli.no_files, &config)?,
-                agent: config::agent(cli.no_agent, &config),
-                exec: config::exec(cli.no_exec, &config),
-            })?
+            let options = server_options(cli)?;
+            tracing::info!(origins = ?options.allow_origins, "browser origins allowed");
+            supervisor::run(options)?
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What the command line and the configuration file make of a server.
+fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
+    if cli.no_listen && cli.no_socket {
+        anyhow::bail!("nothing to listen on: --no-socket and --no-listen");
+    }
+    let listen = (!cli.no_listen).then_some(supervisor::ListenOptions {
+        addr: cli.listen,
+        required: cli.lock_fd.is_none(),
+    });
+    let local = (!cli.no_socket).then(|| supervisor::LocalOptions {
+        // A socket asked for by name, or the only way in, must work.
+        required: cli.socket.is_some() || cli.no_listen,
+        path: cli.socket.unwrap_or_else(tilr_proto::local::socket_path),
+        lock_fd: cli.lock_fd,
+    });
+    let config = config::load(cli.config.as_deref())?;
+    let allow_origins = config::allow_origins(cli.allow_origins, &config);
+    Ok(supervisor::Options {
+        listen,
+        local,
+        allow_origins,
+        clipboard: (!cli.no_clipboard).then(|| clipboard::Limits {
+            max_bytes: cli.clipboard_max,
+            ttl: (cli.clipboard_ttl > 0).then(|| Duration::from_secs(cli.clipboard_ttl)),
+        }),
+        auth: !cli.no_auth,
+        cloudflared: cli.cloudflared,
+        auto_reload: !cli.no_auto_reload,
+        client_timeout: (cli.client_timeout > 0).then(|| Duration::from_secs(cli.client_timeout)),
+        socks: config::socks(cli.socks, &config),
+        files: config::files(cli.no_files, &config)?,
+        agent: config::agent(cli.no_agent, &config),
+        exec: config::exec(cli.no_exec, &config),
+    })
+}
+
+/// The check child of a reload (see [`reload`]): take the command line and
+/// the configuration as the successor will, and resume from the copy of the
+/// state at `state` up to where the successor would take over.
+fn check_resume(state: &Path) -> anyhow::Result<()> {
+    let cli = Cli::try_parse().map_err(|err| {
+        let message = err.to_string();
+        let first = message.lines().next().unwrap_or_default();
+        anyhow::anyhow!(
+            "the command line: {}",
+            first.strip_prefix("error: ").unwrap_or(first)
+        )
+    })?;
+    match cli.command {
+        None => supervisor::check(&server_options(cli)?, state),
+        Some(Command::Pane(args)) => pane::check(&args, state),
+        Some(_) => anyhow::bail!("not the command line of a server or a pane process"),
+    }
 }

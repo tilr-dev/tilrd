@@ -1143,9 +1143,15 @@ class T:
         return self.run(CLIENT_EXE, *args, env=env, **kw)
 
     def tilrd_daemons(self) -> list[Proc]:
-        """Running servers: tilrd processes that are not pane processes (`tilrd pane`)."""
+        """Running servers: tilrd processes that are not pane processes (`tilrd pane`), nor the
+        check run of a reload (the server's command line, with TILR_RELOAD_CHECK set)."""
+        def checking(pid: int) -> bool:
+            try:
+                return b"TILR_RELOAD_CHECK=" in Path(f"/proc/{pid}/environ").read_bytes()
+            except OSError:
+                return False
         return [p for p in self.procs(r"(^|/)tilrd( |$)") if not re.search(r"(^|/)tilrd pane ", p.cmdline)
-                and "state-formats" not in p.cmdline]
+                and "state-formats" not in p.cmdline and not checking(p.pid)]
 
     def install(self, exe: str = SERVER_EXE, name: str = "tilrd") -> Path:
         """A copy of the server in a directory of its own, where an update may replace it."""

@@ -13,13 +13,13 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use tilr_proto::{
@@ -278,6 +278,9 @@ struct Link {
     /// when asked to stop.
     reader: JoinHandle<Option<Detached>>,
     stop_reader: Arc<Notify>,
+    /// The pipes to and from the pane process, as a successor would be
+    /// handed them.
+    fds: (RawFd, RawFd),
 }
 
 /// What a stopped reader hands back: enough to start it again, here or in
@@ -364,7 +367,7 @@ pub fn run(options: Options) -> Result<()> {
             reload::sweep_stale();
             files::sweep();
             if state.is_some() {
-                crate::fail::point("supervisor-resume")?;
+                crate::fail::point("supervisor-resume-live")?;
             } else {
                 agent::sweep();
             }
@@ -575,6 +578,48 @@ pub fn run(options: Options) -> Result<()> {
             }
             Ok(())
         })
+}
+
+/// The check child of a reload: show that a supervisor started with
+/// `options` resumes from the state in the file `state`, up to where it
+/// would take over the descriptors the state names. Nothing is bound,
+/// locked, accepted or started.
+pub fn check(options: &Options, state: &Path) -> Result<()> {
+    let state = reload::decode_state(&reload::read_check_file(state)?)?;
+    crate::fail::point("supervisor-resume")?;
+    let mut fds = Vec::new();
+    if state.listener >= 0 {
+        fds.push(state.listener);
+    }
+    if let Some((listener, lock, _)) = handed_over_socket(&state) {
+        fds.extend([listener, lock]);
+    }
+    if fds.is_empty() {
+        bail!("nothing to listen on: the state hands over no socket");
+    }
+    for pane in &state.panes {
+        let info = pane
+            .info
+            .as_ref()
+            .context("a pane without its description")?;
+        info.pane_id
+            .parse::<PaneId>()
+            .with_context(|| format!("pane id {:?}", info.pane_id))?;
+        if pane.pid == 0 {
+            bail!("pane {} has no process", info.pane_id);
+        }
+        fds.extend([pane.to_pane, pane.from_pane]);
+    }
+    let named = fds.len();
+    fds.sort_unstable();
+    fds.dedup();
+    if fds.first().is_some_and(|&fd| fd < 0) || fds.len() != named {
+        bail!("the descriptors the state names do not add up");
+    }
+    if options.auth {
+        auth::token().context("the access token")?;
+    }
+    Ok(())
 }
 
 /// The Unix socket the previous supervisor handed over, if it did.
@@ -1661,7 +1706,13 @@ impl Supervisor {
             return false;
         }
         let exe = crate::exe();
-        let hand_over_socket = match reload::check_executable(exe).await {
+        let Some(formats) = self
+            .while_serving(events, reload::check_executable(exe))
+            .await
+        else {
+            return true;
+        };
+        let hand_over_socket = match formats {
             Ok(takes_socket) => takes_socket,
             Err(err) => {
                 tracing::error!("not reloading: {err:#}");
@@ -1680,6 +1731,37 @@ impl Supervisor {
                 "{} cannot take over the Unix socket: it serves the TCP port alone",
                 exe.display()
             );
+        }
+
+        // The successor shows it can resume from the state as it would be
+        // left now, before anything is stopped.
+        let panes = self
+            .panes
+            .iter()
+            .map(|(&pane_id, pane)| (pane_id, pane.link.fds, Vec::new()))
+            .collect::<Vec<_>>();
+        let state = prost::Message::encode_to_vec(&self.handover_state(panes, hand_over_socket).0);
+        let check = reload::check_successor(
+            exe,
+            std::env::args_os().skip(1).collect(),
+            reload::check_path(),
+            &state,
+        );
+        let Some(checked) = self.while_serving(events, check).await else {
+            return true;
+        };
+        if let Err(err) = checked {
+            tracing::error!("not reloading: the new executable could not resume: {err:#}");
+            return false;
+        }
+        // A pane that started meanwhile is waited for, and checked with.
+        if !self.starting.is_empty() {
+            let events = self.events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(RELOAD_RETRY).await;
+                let _ = events.send(Event::Reload);
+            });
+            return false;
         }
         tracing::info!(exe = %exe.display(), panes = self.panes.len(), "reloading");
 
@@ -1767,14 +1849,36 @@ impl Supervisor {
         false
     }
 
-    /// Exec the executable on disk, leaving it the listening socket, the
-    /// pipes to the pane processes and a description of the panes. Returns
-    /// only on failure, with every descriptor as it was.
-    fn exec_successor(
+    /// Wait for `work` while handling the events that come meanwhile, so
+    /// that clients and panes are served while a successor is checked.
+    /// `None` if the server is to shut down. A reload asked for meanwhile is
+    /// the one under way.
+    async fn while_serving<T>(
+        &mut self,
+        events: &mut mpsc::UnboundedReceiver<Event>,
+        work: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        tokio::pin!(work);
+        loop {
+            tokio::select! {
+                done = &mut work => return Some(done),
+                event = events.recv() => match event {
+                    None | Some(Event::Shutdown) => return None,
+                    Some(Event::Reload) => {}
+                    Some(event) => self.on_event(event),
+                },
+            }
+        }
+    }
+
+    /// What the successor is left: the listening sockets, the pipes to the
+    /// pane processes (`(pane, (to, from), unparsed)`) and a description of
+    /// the panes. Also the descriptors that must survive the exec.
+    fn handover_state(
         &self,
-        panes: &[(PaneId, pipe::Sender, Detached)],
+        panes: Vec<(PaneId, (RawFd, RawFd), Vec<u8>)>,
         hand_over_socket: bool,
-    ) -> anyhow::Error {
+    ) -> (SupervisorState, Vec<RawFd>) {
         let listener = self
             .listener
             .as_ref()
@@ -1798,20 +1902,42 @@ impl Supervisor {
             format: reload::STATE_FORMAT,
             next_client_id: self.next_client_id.load(Ordering::Relaxed),
             panes: panes
-                .iter()
-                .filter_map(|(pane_id, to_pane, reader)| {
-                    let pane = self.panes.get(pane_id)?;
-                    inherited.extend([to_pane.as_raw_fd(), reader.from_pane.as_raw_fd()]);
+                .into_iter()
+                .filter_map(|(pane_id, (to_pane, from_pane), unparsed)| {
+                    let pane = self.panes.get(&pane_id)?;
+                    inherited.extend([to_pane, from_pane]);
                     Some(PaneState {
-                        info: Some(pane.info(*pane_id)),
+                        info: Some(pane.info(pane_id)),
                         pid: pane.pid,
-                        to_pane: to_pane.as_raw_fd(),
-                        from_pane: reader.from_pane.as_raw_fd(),
-                        unparsed: reader.unparsed.to_vec(),
+                        to_pane,
+                        from_pane,
+                        unparsed,
                     })
                 })
                 .collect(),
         };
+        (state, inherited)
+    }
+
+    /// Exec the executable on disk, leaving it the listening socket, the
+    /// pipes to the pane processes and a description of the panes. Returns
+    /// only on failure, with every descriptor as it was.
+    fn exec_successor(
+        &self,
+        panes: &[(PaneId, pipe::Sender, Detached)],
+        hand_over_socket: bool,
+    ) -> anyhow::Error {
+        let panes = panes
+            .iter()
+            .map(|(pane_id, to_pane, reader)| {
+                (
+                    *pane_id,
+                    (to_pane.as_raw_fd(), reader.from_pane.as_raw_fd()),
+                    reader.unparsed.to_vec(),
+                )
+            })
+            .collect();
+        let (state, inherited) = self.handover_state(panes, hand_over_socket);
         let file = match reload::write_state(&state) {
             Ok(file) => file,
             Err(err) => return err.context("write state file"),
@@ -2777,7 +2903,9 @@ fn attach(
 ) -> (mpsc::UnboundedSender<ToPane>, Link) {
     let (sender, outgoing) = mpsc::unbounded_channel();
     let stop_reader = Arc::new(Notify::new());
+    let fds = (to_pane.as_raw_fd(), reader.from_pane.as_raw_fd());
     let link = Link {
+        fds,
         writer: tokio::spawn(write_pane(to_pane, outgoing, shared_metrics)),
         reader: tokio::spawn(read_pane(pane_id, reader, Arc::clone(&stop_reader), events)),
         stop_reader,

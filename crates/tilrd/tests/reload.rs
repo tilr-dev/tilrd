@@ -154,7 +154,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let formats = Command::new(&exe).arg("state-formats").output().unwrap();
     assert_eq!(
         String::from_utf8(formats.stdout).unwrap(),
-        "supervisor-state 2\npane-state 3\nunix-socket 1\n"
+        "supervisor-state 2\npane-state 3\nunix-socket 1\nreload-check 1\n"
     );
 
     // A version that runs fine but keeps its state differently, first for
@@ -168,6 +168,12 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
         (
             "supervisor-state 2\npane-state 2",
             "reads pane-state format 2, this server writes 3",
+        ),
+        // The same formats, from a release before the reload check: started
+        // for the check, it would run as a server of its own.
+        (
+            "supervisor-state 2\npane-state 3\nunix-socket 1",
+            "cannot show that it can resume (no `reload-check 1`)",
         ),
     ] {
         let staged = dir.join("tilrd.new");
@@ -472,7 +478,7 @@ async fn a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on() {
     let lost = client.open_pane().await;
     std::fs::write(
         server.dir.join("failpoints"),
-        format!("pane-resume:{lost}=panic"),
+        format!("pane-resume-live:{lost}=panic"),
     )
     .unwrap();
     let lost_shell = shell_pid(&server, &mut client, lost).await;
@@ -501,13 +507,14 @@ async fn a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on() {
 
 /// The limit of reloading in place: once the new version has taken over
 /// there is no old one to go back to. What the server checks beforehand
-/// (`a_broken_executable_is_not_reloaded_into` and the test after it) is all
-/// that stands between a version that crashes on taking over and the shells.
+/// (the formats it reads, then a check run of its resume: the tests below)
+/// is all that stands between a version that crashes on taking over and the
+/// shells; this one passes the check and crashes after it.
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_version_that_crashes_taking_over_ends_the_server_and_its_shells() {
     for failure in ["panic", "error"] {
-        let (mut server, _) = failing_server(&format!("supervisor-resume={failure}"));
+        let (mut server, _) = failing_server(&format!("supervisor-resume-live={failure}"));
         let mut client = Client::connect(&server).await;
         let pane_id = client.open_pane().await;
         let pid = shell_pid(&server, &mut client, pane_id).await;
@@ -558,5 +565,217 @@ async fn an_executable_replaced_again_during_a_reload_costs_no_shell() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let mut client = Client::connect(&server).await;
     assert_eq!(client.list_panes().await.len(), 2);
+    assert!(!server.logged("pane process died"));
+}
+
+// The successor shows it can resume before the exec: a check run of the
+// executable on disk with the server's command line, configuration and a
+// copy of its state.
+
+/// What must hold after a refused reload: the same server process, the same
+/// connection, the same shell with its variables, no state or check file
+/// left.
+async fn assert_nothing_changed(
+    server: &mut Server,
+    client: &mut Client,
+    pane_id: PaneId,
+    pid: u32,
+) {
+    assert!(server.is_running());
+    assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
+    assert_eq!(shell_pid(server, client, pane_id).await, pid);
+    assert!(!server.logged("resumed after reload"));
+    assert!(
+        !server.logged("reloading exe="),
+        "nothing was stopped for it"
+    );
+    let runtime = server.dir.join("runtime");
+    let left: Vec<String> = [runtime.clone(), runtime.join("panes")]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".state"))
+        .collect();
+    assert!(left.is_empty(), "left behind: {left:?}");
+}
+
+async fn wait_logged(server: &Server, needle: &str, within: Duration) {
+    let started = tokio::time::Instant::now();
+    while !server.logged(needle) {
+        assert!(started.elapsed() < within, "not logged: {needle}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+const REFUSED: &str = "not reloading: the new executable could not resume";
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_successor_that_panics_resuming_is_not_reloaded_into() {
+    let (mut server, _) = failing_server("supervisor-resume=panic");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+    let server_pid = server.child.id();
+
+    server.signal("-USR1");
+    wait_logged(&server, REFUSED, TIMEOUT).await;
+    assert!(
+        server.logged("failpoint supervisor-resume"),
+        "the reason is logged"
+    );
+    assert_eq!(server.child.id(), server_pid);
+    assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
+}
+
+/// The running server's command line has what an older or broken release
+/// does not accept (`tilr` starts its server with `--socket`): that release
+/// would exit on it after the exec, with every shell.
+#[tokio::test]
+async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    let real = dir.join("tilrd-real");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &real).unwrap();
+    // A short path: a socket's is limited to about a hundred bytes.
+    let socket = PathBuf::from(format!(
+        "/tmp/tilr-rc-{}-{}.sock",
+        std::process::id(),
+        dir.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .rsplit('-')
+            .next()
+            .unwrap()
+    ));
+    let socket_arg = socket.display().to_string();
+    let mut server = Server::start_in(dir.clone(), &exe, &["--socket", &socket_arg]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    // Reads the same state and says it can be checked, but knows no
+    // --socket, as clap says it.
+    let staged = dir.join("tilrd.new");
+    std::fs::write(
+        &staged,
+        format!(
+            "#!/bin/sh\n\
+             for arg; do\n\
+             [ \"$arg\" = --socket ] && {{ echo \"error: unexpected argument '--socket' found\" >&2; exit 2; }}\n\
+             done\n\
+             exec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )
+    .unwrap();
+    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&staged, mode).unwrap();
+    std::fs::rename(&staged, &exe).unwrap();
+
+    server.signal("-USR1");
+    wait_logged(&server, REFUSED, TIMEOUT).await;
+    assert!(
+        server.logged("unexpected argument '--socket'"),
+        "the log names the argument"
+    );
+    assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
+    assert!(socket.exists(), "the socket stays");
+    drop(server);
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A configuration file the running server read but the executable on disk
+/// refuses (a key it does not know: an older release, or an edit made
+/// since the start): the successor would stop on it after the exec.
+#[tokio::test]
+async fn a_successor_that_refuses_the_configuration_is_not_reloaded_into() {
+    let dir = Server::scratch_dir();
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    std::fs::write(dir.join("config/server.toml"), "socks = false\n").unwrap();
+    let mut server = Server::start_in(dir.clone(), Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    std::fs::write(
+        dir.join("config/server.toml"),
+        "socks = false\nsocsk = true\n",
+    )
+    .unwrap();
+    server.signal("-USR1");
+    wait_logged(&server, REFUSED, TIMEOUT).await;
+    assert!(server.logged("unknown field `socsk`"), "the log says why");
+    assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
+
+    // Fixed, the next reload goes through.
+    std::fs::write(dir.join("config/server.toml"), "socks = false\n").unwrap();
+    let client = reload(&server, client).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_successor_that_never_answers_the_check_is_not_reloaded_into() {
+    let (mut server, _) = failing_server("supervisor-resume=sleep:20000");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let pid = shell_pid(&server, &mut client, pane_id).await;
+
+    server.signal("-USR1");
+    // The server serves while it waits for the answer.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
+    assert!(!server.logged(REFUSED));
+    wait_logged(
+        &server,
+        "did not answer within 10 s",
+        Duration::from_secs(30),
+    )
+    .await;
+    assert!(server.logged(REFUSED));
+    assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
+}
+
+/// A check that takes its time and passes: the server serves meanwhile,
+/// then reloads in place, keeping its pid.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_successor_is_checked_while_the_server_serves_and_then_reloaded_into() {
+    let (mut server, _) = failing_server("supervisor-resume=sleep:1500");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let server_pid = server.child.id();
+
+    server.signal("-USR1");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
+    let client = reconnect(&server, client).await;
+    assert_eq!(server.child.id(), server_pid);
+    assert_pane_survived(&mut server, client, pane_id).await;
+    assert!(!server.logged(REFUSED));
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_pane_whose_successor_fails_the_check_carries_on() {
+    let (mut server, _) = failing_server("pane-resume=panic");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+
+    // The supervisor's check passes and it reloads; the pane process's
+    // fails, and it stays the one it was.
+    let client = reload(&server, client).await;
+    eventually("the pane refuses its successor", || {
+        server.logged("the new executable could not resume")
+    })
+    .await;
+    assert!(server.logged("reload failed"));
+    assert!(server.logged("failpoint pane-resume"));
+    // The same shell: assert_pane_survived compares its pid too.
+    assert_pane_survived(&mut server, client, pane_id).await;
     assert!(!server.logged("pane process died"));
 }

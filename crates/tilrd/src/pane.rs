@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -84,6 +84,32 @@ fn decode_handover(bytes: &[u8]) -> Result<PaneHandover> {
         );
     }
     Ok(handover)
+}
+
+/// The check child of a pane's reload: show that a pane process started
+/// with `args` resumes from the state in the file `state`, screen included,
+/// up to where it would take over the pty and the shell.
+pub fn check(args: &Args, state: &Path) -> Result<()> {
+    let handover = decode_handover(&reload::read_check_file(state)?)?;
+    crate::fail::point("pane-resume")?;
+    crate::fail::point(&format!("pane-resume:{}", args.id))?;
+    if handover.master < 0 || handover.shell_pid == 0 {
+        bail!("the state names no pty or no shell");
+    }
+    let size = |cells: u32| cells.clamp(1, u32::from(u16::MAX)) as u16;
+    let cell = if handover.cell_width_px > 0 && handover.cell_height_px > 0 {
+        (handover.cell_width_px, handover.cell_height_px)
+    } else {
+        tilr_screen::DEFAULT_CELL_PX
+    };
+    GhosttyScreen::restore(
+        size(handover.cols),
+        size(handover.rows),
+        cell,
+        &handover.snapshot,
+    )
+    .context("restore the screen")?;
+    Ok(())
 }
 
 enum FromSupervisor {
@@ -157,6 +183,9 @@ struct Pane {
     id: String,
     /// Where a reload leaves the state for the process that takes over.
     state_path: PathBuf,
+    /// Where a reload puts the copy of that state its successor is checked
+    /// with.
+    check_path: PathBuf,
     pty: AsyncFd<OwnedFd>,
     screen: GhosttyScreen,
     to_supervisor: Stdout,
@@ -220,8 +249,8 @@ async fn serve(args: Args) -> Result<()> {
     let mut last_input_seq = 0;
     let mut inputs = VecDeque::new();
     let (master, shell, screen, seq) = if let Some(handover) = take_handover(&args.id)? {
-        crate::fail::point("pane-resume")?;
-        crate::fail::point(&format!("pane-resume:{id}"))?;
+        crate::fail::point("pane-resume-live")?;
+        crate::fail::point(&format!("pane-resume-live:{id}"))?;
         // SAFETY: the process that exec'd this one left the descriptor open
         // for it and nothing else here owns it.
         let master = unsafe { OwnedFd::from_raw_fd(handover.master) };
@@ -290,6 +319,7 @@ async fn serve(args: Args) -> Result<()> {
     let mut pane = Pane {
         id,
         state_path: reload::pane_state_path(&args.id),
+        check_path: reload::pane_check_path(&args.id),
         // SAFETY: `master` is an `OwnedFd`, so its descriptor stays open and unchanged
         // until the `AsyncFd` drops it, and the pane never swaps it out.
         pty: unsafe { AsyncFd::register(master) }.context("register pty")?,
@@ -346,7 +376,7 @@ async fn serve(args: Args) -> Result<()> {
                 }
                 Some(FromSupervisor::Reload) => {
                     // Only returns if this process carries on.
-                    let err = pane.reload();
+                    let err = pane.reload().await;
                     tracing::error!(pane = pane.id, "reload failed: {err:#}");
                     read_supervisor(packet_tx.clone());
                 }
@@ -443,7 +473,7 @@ impl Pane {
     /// Replace this process with the executable now on disk, which resumes
     /// the pane where this one stops. Returns only on failure, with the pane
     /// still in working order.
-    fn reload(&mut self) -> anyhow::Error {
+    async fn reload(&mut self) -> anyhow::Error {
         let (cols, rows) = self.screen.size();
         let cell = self.screen.cell_px();
         let scrolled_back = self.screen.scrolled_back();
@@ -457,7 +487,9 @@ impl Pane {
             Ok(snapshot) => snapshot,
             Err(err) => return err.context("snapshot screen (its contents are lost)"),
         };
-        let err = self.exec_successor(cols, rows, cell, &snapshot, scrolled_back);
+        let err = self
+            .exec_successor(cols, rows, cell, &snapshot, scrolled_back)
+            .await;
         match GhosttyScreen::restore(cols, rows, cell, &snapshot) {
             Ok(mut screen) => {
                 screen.scroll(-(scrolled_back.min(i32::MAX as u32) as i32));
@@ -468,7 +500,7 @@ impl Pane {
         err
     }
 
-    fn exec_successor(
+    async fn exec_successor(
         &self,
         cols: u16,
         rows: u16,
@@ -509,8 +541,20 @@ impl Pane {
                 })
                 .collect(),
         };
+        let handover = handover.encode_to_vec();
+        // The successor shows it can resume before this process is gone.
+        let checked = reload::check_successor(
+            exe,
+            std::env::args_os().skip(1).collect(),
+            self.check_path.clone(),
+            &handover,
+        )
+        .await;
+        if let Err(err) = checked {
+            return err.context("the new executable could not resume");
+        }
         let state = &self.state_path;
-        if let Err(err) = reload::write_file(state, &handover.encode_to_vec()) {
+        if let Err(err) = reload::write_file(state, &handover) {
             return err.context("write resume state");
         }
         // The pty must survive the exec.

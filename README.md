@@ -620,11 +620,25 @@ What to know:
   (`install`, `mv`). The server reloads from the path it was started from; a version switch
   done by repointing a symlink is not noticed.
 - Before reloading, the server asks the new file which versions of the reload state it reads
-  (`tilrd state-formats`). If it does not run, or reads another version than the server
-  writes, the server logs `not reloading` and carries on with the code it has. Such an
-  upgrade needs a restart. An executable that does not say `unix-socket 1` there (one from
-  before the socket) is not handed the socket: a server with a TCP port reloads into it
-  without the socket, one on its socket alone does not reload.
+  (`tilrd state-formats`). If it does not run, reads another version than the server
+  writes, or does not say `reload-check 1` (a release from before the check below), the
+  server logs `not reloading` and carries on with the code it has. Such an upgrade needs a
+  restart. An executable that does not say `unix-socket 1` there (one from before the
+  socket) is not handed the socket: a server with a TCP port reloads into it without the
+  socket, one on its socket alone does not reload.
+- Then, before it stops anything, the server has the new file show that it can resume: it
+  runs it with the server's own command line and environment and `TILR_RELOAD_CHECK` naming
+  a copy of the state it would hand over (`server-<pid>.check.state`). That run parses the
+  command line, reads the configuration file and the state and goes through the resume up to
+  taking over the sockets and pipes, answers `ok` or `error: <reason>` on its stdout and
+  exits; it binds, locks and starts nothing. The server serves its clients meanwhile and
+  execs only on `ok` within 10 s; otherwise it logs `not reloading: the new executable could
+  not resume: <reason>` and carries on as it was. A new version that rejects the command
+  line (`tilr` starts its server with `--socket`), refuses the configuration file or crashes
+  resuming is not reloaded into. Each pane process checks its successor the same way
+  (`panes/<pane id>.check.state`) and carries on with its code if the check fails. A new
+  version that passes its check and then crashes taking over still ends the server and its
+  shells.
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 
