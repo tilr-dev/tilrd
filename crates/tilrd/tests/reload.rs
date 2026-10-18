@@ -1167,7 +1167,7 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
 #[tokio::test]
 async fn a_second_server_keeps_its_host_socket_across_a_reload() {
     let first = Server::start(&[]);
-    let second = start_second(&first.dir);
+    let second = start_second(&first);
     let mut client = Client::connect(&second).await;
     let pane_id = client.open_pane().await;
     let sock = pane_sock(&second, &mut client, pane_id).await;

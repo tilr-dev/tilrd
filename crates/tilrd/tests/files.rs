@@ -1153,7 +1153,7 @@ async fn a_second_server_starting_leaves_the_first_ones_panes_their_tools() {
     // Kept until the end: a server dropped removes the shared directory.
     let mut seconds = Vec::new();
     for _ in 0..3 {
-        let mut second = start_second(&first.dir);
+        let mut second = start_second(&first);
         let mut b = Client::connect(&second).await;
         b.open_pane().await;
         drop(b);
@@ -1187,7 +1187,7 @@ async fn tilr_edit_reaches(client: &mut Client, pane_id: PaneId, name: &str) {
 #[tokio::test]
 async fn two_servers_of_one_user_keep_their_host_sockets() {
     let first = Server::start(&[]);
-    let mut second = start_second(&first.dir);
+    let mut second = start_second(&first);
     let mut a = Client::connect_silent(&first).await;
     let server_id = a.hello().await.server_id;
     let mut b = Client::connect(&second).await;

@@ -72,3 +72,18 @@ status, stdout and stderr of `ps` and the server's log when it fails.
   (`a_service_manager_is_told_when_the_server_is_ready`).
 - Rejected: a longer `tilrd ps` timeout. It is the product's; waiting for the server to be
   ready is what a caller of `ps` does.
+
+## D4. The second server binds the host socket first (5.10; TILR-113)
+
+Cause: `start_second` started the second server once the first had logged `listening
+on`, but the first binds its host socket (`<server id>.sock`) only after that
+(`set_up_host_socket`); under load the second got the plain name and the first the
+`-<pid>` one (`files::two_servers_of_one_user_keep_their_host_sockets`,
+`reload::a_second_server_keeps_its_host_socket_across_a_reload`). Which of two servers
+gets the plain name is not specified by start order: a test race, not a product bug.
+Fix: `start_second(first: &Server)` waits for the first's `host events on`, starts the
+second and returns once the second has logged its own `host events on`. Its callers
+(files, reload, agent) pass the first server.
+- The macOS symptom `tilr edit` exiting 127 in the same test was TILR-122, the shared
+  `bin/tilr` removed and linked again by a starting server: fixed in the product by
+  72b0422 (links renamed over the old ones). Not seen again here (see "Stability").

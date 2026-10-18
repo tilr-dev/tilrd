@@ -426,7 +426,7 @@ async fn a_server_starting_leaves_the_agent_sockets_of_a_live_one_alone() {
 
     // A second server of the user starts while the first runs: one runtime
     // directory, so its sweep at start sees the first one's sockets.
-    let second = start_second(&first.dir);
+    let second = start_second(&first);
     let mut other = agent_client(&second).await;
     let other_pane = other.open_pane().await;
     let _other_socket = pane_socket(&second, &mut other, other_pane).await;

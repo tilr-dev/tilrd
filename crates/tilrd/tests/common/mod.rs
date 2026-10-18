@@ -199,6 +199,19 @@ impl Server {
         }
     }
 
+    /// [`Server::wait_logged`] outside of an async context.
+    pub fn wait_logged_blocking(&self, needle: &str) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while !self.logged(needle) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "not logged within {TIMEOUT:?}: {needle}\n{}",
+                self.log.lock().unwrap().join("\n")
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// The access token the server made for itself; empty if it runs
     /// without one.
     pub fn token(&self) -> String {
@@ -569,17 +582,25 @@ pub fn script(server: &Server, name: &str, script: &str) -> String {
     format!("sh '{}'", path.display())
 }
 
-/// Wait for the server to drop the connection, then connect again.
-/// Start a second server in `dir`, the scratch directory of a running one:
-/// one user's two servers, with one state directory (so one server id and
-/// token) and Unix sockets of their own.
-pub fn start_second(dir: &Path) -> Server {
+/// Start a second server in the scratch directory of `first`, a running
+/// one: one user's two servers, with one state directory (so one server id
+/// and token) and Unix sockets of their own.
+///
+/// The host socket goes to whichever server binds the name first: the
+/// first server's `listening on`, at which [`Server::start`] returns, comes
+/// before it binds its host socket, so the second waits for that. It
+/// returns once the second has bound its own.
+pub fn start_second(first: &Server) -> Server {
+    first.wait_logged_blocking("host events on");
+    let dir = &first.dir;
     let socket = dir.join("second.sock");
-    Server::start_in(
+    let second = Server::start_in(
         dir.to_owned(),
         Path::new(env!("CARGO_BIN_EXE_tilrd")),
         &["--socket", socket.to_str().unwrap()],
-    )
+    );
+    second.wait_logged_blocking("host events on");
+    second
 }
 
 /// What `$TILR_SOCK` is in the pane.
@@ -620,6 +641,7 @@ pub fn service_manager_env(
     (socket, env)
 }
 
+/// Wait for the server to drop the connection, then connect again.
 pub async fn reconnect(server: &Server, mut client: Client) -> Client {
     while client.next().await.is_some() {}
     for _ in 0..100 {
