@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use bytes::{Bytes, BytesMut};
@@ -46,6 +46,7 @@ use crate::link::FrameHead;
 use crate::metrics::{self, ClientDrop};
 use crate::outbox::{self, Outgoing, ToClient};
 use crate::pane::{DEFAULT_COLS, DEFAULT_ROWS};
+use crate::time::now_ms;
 use crate::{
     agent, auth, clipboard, cloud, exec, files, host, identity, link, local, pty, reload, shell,
     socks,
@@ -2490,12 +2491,13 @@ impl Supervisor {
             }
         };
 
+        let created_at_ms = now_ms();
         let pane = Pane {
             command: create.command.clone(),
             title: String::new(),
             cwd,
-            created_at_ms: now_ms(),
-            used_at_ms: now_ms(),
+            created_at_ms,
+            used_at_ms: created_at_ms,
             cols,
             rows,
             subscribers: HashSet::new(),
@@ -2968,12 +2970,6 @@ impl Pane {
             viewed_by: Vec::new(),
         }
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
 }
 
 /// Ask the pane for a full frame, for the clients that skipped its frames,

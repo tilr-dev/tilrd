@@ -201,6 +201,36 @@ async fn raw(server: &Server) -> TcpStream {
         .unwrap()
 }
 
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_session_that_does_not_say_where_it_goes_is_closed() {
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    const START_US: u64 = 1_700_000_000_000_000;
+    std::fs::write(&clock, START_US.to_string()).unwrap();
+    let server = Server::start_with_env(
+        dir,
+        &["--socks"],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
+    let mut stream = raw(&server).await;
+    // The method selection proves that the server consumed the greeting and
+    // entered negotiation. Advance the shared clock only after that event.
+    assert_eq!(greet(&mut stream, &[PASSWORD]).await, PASSWORD);
+    let control = clock.with_extension(format!("socks-{}", stream.local_addr().unwrap().port()));
+    let port: u16 = std::fs::read_to_string(control).unwrap().parse().unwrap();
+    let next = clock.with_extension("next");
+    std::fs::write(&next, (START_US + 10_000_000).to_string()).unwrap();
+    std::fs::rename(next, clock).unwrap();
+    let mut signal = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    // Only the test-clock deadline acknowledges this signal. The real
+    // ten-second limit may also close the session, but must not satisfy it.
+    assert_eq!(signal.recv(1).await, Some(vec![1]));
+    assert!(stream.recv(1).await.is_none());
+    let mut client = Client::connect(&server).await;
+    assert!(client.list_panes().await.is_empty());
+}
+
 #[tokio::test]
 async fn a_page_reaches_a_loopback_service_through_the_socks_websocket() {
     let server = socks_server(&[]);

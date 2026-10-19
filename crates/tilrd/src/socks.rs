@@ -21,6 +21,8 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(feature = "failpoints")]
+use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -40,6 +42,7 @@ pub const VERSION: u8 = 5;
 /// How long a client has to say where it wants to go, and the server to get
 /// there.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes in flight between a WebSocket and its SOCKS session, each way.
 const PIPE_BYTES: usize = 64 * 1024;
@@ -84,14 +87,67 @@ pub async fn serve<S>(mut stream: S, auth: Auth, peer: SocketAddr) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    serve_session(&mut stream, auth, peer, true).await
+}
+
+async fn serve_session<S>(
+    mut stream: S,
+    auth: Auth,
+    peer: SocketAddr,
+    test_clock: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let started = Instant::now();
-    let (mut target, name) =
-        match tokio::time::timeout(HANDSHAKE_TIMEOUT, negotiate(&mut stream, &auth, peer)).await {
-            Ok(Ok(Some(connected))) => connected,
-            Ok(Ok(None)) => return Ok(()),
-            Ok(Err(err)) => return Err(err),
-            Err(_) => bail!("SOCKS client {peer} said nothing in time"),
+    #[cfg(not(feature = "failpoints"))]
+    let _ = test_clock;
+    #[cfg(feature = "failpoints")]
+    let negotiated = if test_clock && let Some(path) = crate::time::test_time_file() {
+        let start_us = crate::time::test_time_us().expect("test clock path is set");
+        let deadline_us = start_us.saturating_add(HANDSHAKE_TIMEOUT.as_micros() as u64);
+        // The method selection sent by `negotiate` is the barrier proving
+        // this listener is ready. The test updates the clock, then wakes it.
+        let control = TcpListener::bind("127.0.0.1:0").await?;
+        std::fs::write(
+            path.with_extension(format!("socks-{}", peer.port())),
+            control.local_addr()?.port().to_string(),
+        )?;
+        let expires = async {
+            loop {
+                let (mut signal, _) = control.accept().await?;
+                if crate::time::test_time_us().expect("test clock path is set") >= deadline_us {
+                    // Acknowledge only this deadline, so tests can distinguish
+                    // it from the unchanged ten-second real-time limit.
+                    signal.write_all(&[1]).await?;
+                    break Ok::<(), anyhow::Error>(());
+                }
+            }
         };
+        // Keep the production limit too: a stationary test clock must never
+        // leave a raw session open beyond ten real seconds.
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            tokio::select! {
+                result = negotiate(&mut stream, &auth, peer) => result,
+                result = expires => {
+                    result?;
+                    bail!("SOCKS client {peer} said nothing in time");
+                }
+            }
+        })
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => bail!("SOCKS client {peer} said nothing in time"),
+        }
+    } else {
+        timed_negotiate(&mut stream, &auth, peer).await?
+    };
+    #[cfg(not(feature = "failpoints"))]
+    let negotiated = timed_negotiate(&mut stream, &auth, peer).await?;
+    let Some((mut target, name)) = negotiated else {
+        return Ok(());
+    };
     let _ = target.set_nodelay(true);
     let copied = tokio::io::copy_bidirectional(&mut stream, &mut target).await;
     let elapsed = started.elapsed();
@@ -102,6 +158,20 @@ where
         Err(err) => tracing::debug!(%peer, target = %name, ?elapsed, "SOCKS session broke: {err}"),
     }
     Ok(())
+}
+
+async fn timed_negotiate<S>(
+    stream: &mut S,
+    auth: &Auth,
+    peer: SocketAddr,
+) -> Result<Option<(TcpStream, String)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, negotiate(stream, auth, peer)).await {
+        Ok(result) => result,
+        Err(_) => bail!("SOCKS client {peer} said nothing in time"),
+    }
 }
 
 /// The handshake up to the reply: the connection to the target and its name
@@ -393,7 +463,7 @@ where
     };
 
     let session = async move {
-        if let Err(err) = serve(session_end, Auth::None, peer).await {
+        if let Err(err) = serve_session(session_end, Auth::None, peer, false).await {
             tracing::debug!(%peer, "SOCKS session over WebSocket: {err:#}");
         }
     };

@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::time::measurement_instant;
 use crate::{link, pty, reload};
 
 /// Minimum spacing between frames. Output arriving faster is coalesced.
@@ -263,15 +264,16 @@ async fn serve(args: Args) -> Result<()> {
         pending_input = handover.pending_input;
         last_input_seq = handover.last_input_seq;
         let now = Instant::now();
+        let measurement_now = measurement_instant();
         inputs = handover
             .pending_inputs
             .iter()
             .map(|mark| InputMark {
                 seq: mark.seq,
                 end: mark.end,
-                received: now
+                received: measurement_now
                     .checked_sub(Duration::from_micros(mark.age_us))
-                    .unwrap_or(now),
+                    .unwrap_or(measurement_now),
             })
             .collect();
         // A close under way goes on: what was hung up is killed when the
@@ -446,11 +448,11 @@ async fn serve(args: Args) -> Result<()> {
 
 impl Pane {
     fn on_output(&mut self, bytes: &[u8]) {
-        let start = Instant::now();
+        let start = measurement_instant();
         self.screen.feed(bytes);
         self.pending_input.extend(self.screen.take_replies());
         let stats = &mut self.stats;
-        stats.parse += start.elapsed();
+        stats.parse += measurement_instant().saturating_duration_since(start);
         stats.first_output_at.get_or_insert(start);
         stats.output_bytes += bytes.len() as u64;
         stats.reads = stats.reads.saturating_add(1);
@@ -490,7 +492,7 @@ impl Pane {
     /// whether or not the screen changes.
     fn credit_input(&mut self, seq: u64, received: Instant) {
         self.last_input_seq = seq;
-        self.stats.input_us = micros(received.elapsed());
+        self.stats.input_us = micros(measurement_instant().saturating_duration_since(received));
         self.input_credited = true;
         self.dirty = true;
     }
@@ -606,7 +608,12 @@ impl Pane {
                 .map(|mark| PendingInput {
                     seq: mark.seq,
                     end: mark.end.saturating_sub(self.written),
-                    age_us: u64::try_from(mark.received.elapsed().as_micros()).unwrap_or(u64::MAX),
+                    age_us: u64::try_from(
+                        measurement_instant()
+                            .saturating_duration_since(mark.received)
+                            .as_micros(),
+                    )
+                    .unwrap_or(u64::MAX),
                 })
                 .collect(),
             // At least 1 ms while a deadline is armed: 0 means none.
@@ -659,7 +666,7 @@ impl Pane {
             Applied,
         }
         let seq = msg.seq;
-        let received = (seq != 0).then(Instant::now);
+        let received = (seq != 0).then(measurement_instant);
         let credit = match msg.msg {
             Some(Msg::Key(_) | Msg::Mouse(_) | Msg::Paste(_) | Msg::Raw(_)) => {
                 Some(Credit::Written)
@@ -751,7 +758,7 @@ impl Pane {
                 .context("send status to supervisor")?;
         }
         let full = std::mem::take(&mut self.want_full);
-        let build_start = Instant::now();
+        let build_start = measurement_instant();
         let built = match self.screen.frame(full)? {
             Some(frame) => Some(frame),
             // Input that changed nothing on the screen is answered all the
@@ -764,7 +771,7 @@ impl Pane {
             // `wait_us` counts from the first of it.
             return Ok(());
         };
-        let build = build_start.elapsed();
+        let build = measurement_instant().saturating_duration_since(build_start);
         self.input_credited = false;
         let stats = std::mem::take(&mut self.stats);
         let first_output_at = stats.first_output_at;
@@ -786,9 +793,9 @@ impl Pane {
             full: frame.full,
             last_input_seq: frame.last_input_seq,
         };
-        let encode_start = Instant::now();
+        let encode_start = measurement_instant();
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::Frame(frame)));
-        self.last_encode = encode_start.elapsed();
+        self.last_encode = measurement_instant().saturating_duration_since(encode_start);
         link::write_tagged(
             &mut self.to_supervisor,
             link::kind::FRAME,

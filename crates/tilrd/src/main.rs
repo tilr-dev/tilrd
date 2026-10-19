@@ -21,6 +21,7 @@ mod reload;
 mod shell;
 mod socks;
 mod supervisor;
+mod time;
 mod update;
 
 use std::net::SocketAddr;

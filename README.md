@@ -994,6 +994,11 @@ that hit. `TILR_FAILPOINTS_FILE` supports names learned at runtime. The harness 
 `PauseController::wait` and `PausedPoint::release`; `fail.rs` documents the protocol,
 error handling and how to call a blocking point from a Tokio task.
 Without it those tests are left out and the rest runs. A release is built without it.
+Tests can also set `TILR_TEST_TIME_FILE` to a file containing Unix microseconds and replace
+that file atomically between protocol events. The supervisor reads it for pane timestamps,
+and pane processes use it for frame timing. Raw SOCKS sessions use the same clock for their
+ten-second negotiation deadline; each publishes a local wake-up port beside the clock file,
+named for its client's TCP port. These controls exist only in `failpoints` builds.
 
 The black-box tests in `itests/` ([itests/README.md](itests/README.md),
 [itests/USE_CASES.md](itests/USE_CASES.md)) install and run the real binaries in containers:

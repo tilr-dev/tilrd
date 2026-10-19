@@ -25,6 +25,7 @@ The test's name is the statement of the use case.
 | The configuration file (`server.toml`) names the allowed origins and `--allow-origin` replaces its list; a file that does not parse, or names an unknown key, stops the server from starting and says where it is | `the_configuration_file_names_the_allowed_origins` |
 | A pane without a command runs the user's login shell (`$0` is `-zsh`, `-bash`, `-sh`), with `SHELL`, `HOME`, `USER`, `LOGNAME` set and the server's tools (`$TILR_SHIMS`) still reachable after the login profile | `a_pane_without_a_command_runs_the_users_login_shell` |
 | A command in a pane runs and its output is visible; the shell's exit code reaches the client | `a_pane_runs_commands_and_reports_how_its_shell_exited` |
+| A shared test clock gives exact creation time, then subscription and input each update `used_at_ms` to the test's next value; a frame built at a fixed clock value still has positive `build_us` | `used_at_ms_follows_subscribe_and_input` (`failpoints`) |
 | A pane opens in the home directory if the client named no directory or one that does not exist on the server; in the named one if it exists | `a_pane_starts_in_the_home_directory_unless_given_one_that_exists` |
 | Closing a pane ends its shell | `closing_a_pane_ends_its_shell` |
 | Closing a pane whose shell runs a foreground job that ignores SIGHUP: `PaneExited` within 3 s, the job killed | `closing_a_pane_ends_a_foreground_program_ignoring_sighup` |
@@ -292,6 +293,7 @@ through the server's socket.
 | BIND: 0x07; a closed port: 0x05, then the WebSocket is closed with 1000 | `only_connect_is_served_and_a_refusal_is_reported` |
 | A text message closes the WebSocket with 1003 | `a_text_message_closes_the_socks_websocket` |
 | Several sessions run in parallel, one that never finishes its handshake holds no one up, the terminal works | `socks_sessions_run_side_by_side_with_the_terminal` |
+| A raw client that sends its greeting but no request is closed when the shared test clock advances by ten seconds | `a_session_that_does_not_say_where_it_goes_is_closed` (`failpoints`) |
 
 ## SSH agent — `tests/agent.rs`
 

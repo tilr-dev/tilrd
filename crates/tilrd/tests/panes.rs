@@ -4,6 +4,77 @@ mod common;
 
 use common::*;
 
+#[cfg(feature = "failpoints")]
+fn set_test_time(path: &std::path::Path, us: u64) {
+    // The server and pane may read concurrently. Rename publishes one complete
+    // value and the following protocol response is the test's ordering barrier.
+    let next = path.with_extension("next");
+    std::fs::write(&next, us.to_string()).unwrap();
+    std::fs::rename(next, path).unwrap();
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn used_at_ms_follows_subscribe_and_input() {
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    const CREATED_US: u64 = 1_700_000_000_000_000;
+    set_test_time(&clock, CREATED_US);
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
+    let mut client = Client::connect(&server).await;
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 100,
+            rows: 30,
+            command: vec!["/bin/sh".into()],
+            cwd: String::new(),
+            request_id: 158,
+        }))
+        .await;
+    let pane_id: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) if created.request_id == 158 => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            server_message::Msg::Error(error) => panic!("create pane: {}", error.message),
+            _ => None,
+        })
+        .await;
+    let pane = client.list_panes().await.remove(0);
+    assert_eq!(pane.created_at_ms, CREATED_US / 1_000);
+    assert_eq!(pane.used_at_ms, CREATED_US / 1_000);
+
+    const SUBSCRIBED_US: u64 = CREATED_US + 2_000_000;
+    set_test_time(&clock, SUBSCRIBED_US);
+    client.subscribe(pane_id).await;
+    let pane = client.list_panes().await.remove(0);
+    assert_eq!(pane.created_at_ms, CREATED_US / 1_000);
+    assert_eq!(pane.used_at_ms, SUBSCRIBED_US / 1_000);
+
+    const INPUT_US: u64 = SUBSCRIBED_US + 3_000_000;
+    set_test_time(&clock, INPUT_US);
+    client.type_line(pane_id, "echo clock-marker").await;
+    let pane = client.list_panes().await.remove(0);
+    assert_eq!(pane.created_at_ms, CREATED_US / 1_000);
+    assert_eq!(pane.used_at_ms, INPUT_US / 1_000);
+    client.wait_screen("clock-marker").await;
+    assert!(
+        client
+            .frame
+            .as_ref()
+            .unwrap()
+            .timing
+            .as_ref()
+            .unwrap()
+            .build_us
+            > 0
+    );
+}
+
 #[tokio::test]
 async fn hello_announces_the_clipboard_and_its_limit() {
     let server = Server::start(&["--clipboard-max", "3MB"]);

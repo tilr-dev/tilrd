@@ -3,15 +3,15 @@
   "specs": "openspec/specs",
   "cases": 156,
   "last_run": {
-   "started": "2026-10-18T19:31:43.994761+00:00",
+   "started": "2026-10-18T21:56:31.143681+00:00",
    "commit": null,
    "counts": {
-    "PASS": 509,
-    "FAIL": 1,
+    "PASS": 510,
+    "FAIL": 0,
     "BLOCKED": 0
    },
-   "args": "",
-   "path": "itests/results/20261018T213125-73861"
+   "args": null,
+   "path": "itests/results/latest"
   }
  },
  "capabilities": [
@@ -9019,6 +9019,95 @@
       "uc_078:git_clone_over_ssh_uses_the_forwarded_agent_and_ssh_a_forwards_it_further": "PASS",
       "uc_078:ssh_add_in_a_pane_lists_the_keys_of_the_clients_agent": "PASS"
      }
+    }
+   ]
+  },
+  {
+   "capability": "test-controlled-time",
+   "requirements": [
+    {
+     "slug": "test-controlled-pane-use-timestamps",
+     "title": "Test-controlled pane-use timestamps",
+     "tag": "test-controlled-time/test-controlled-pane-use-timestamps",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "panes::used_at_ms_follows_subscribe_and_input"
+     ],
+     "scenarios": [
+      {
+       "slug": "pane-use-follows-a-known-clock",
+       "title": "Pane use follows a known clock",
+       "tag": "test-controlled-time/test-controlled-pane-use-timestamps#pane-use-follows-a-known-clock",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "test-controlled-pane-timing",
+     "title": "Test-controlled pane timing",
+     "tag": "test-controlled-time/test-controlled-pane-timing",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "panes::used_at_ms_follows_subscribe_and_input"
+     ],
+     "scenarios": [
+      {
+       "slug": "a-frame-build-while-the-test-clock-is-fixed",
+       "title": "A frame build while the test clock is fixed",
+       "tag": "test-controlled-time/test-controlled-pane-timing#a-frame-build-while-the-test-clock-is-fixed",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "test-controlled-socks-negotiation-deadline",
+     "title": "Test-controlled SOCKS negotiation deadline",
+     "tag": "test-controlled-time/test-controlled-socks-negotiation-deadline",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "socks::a_session_that_does_not_say_where_it_goes_is_closed"
+     ],
+     "scenarios": [
+      {
+       "slug": "a-raw-socks-client-stalls",
+       "title": "A raw SOCKS client stalls",
+       "tag": "test-controlled-time/test-controlled-socks-negotiation-deadline#a-raw-socks-client-stalls",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
+    },
+    {
+     "slug": "test-controlled-socks-wake-up-port",
+     "title": "Test-controlled SOCKS wake-up port",
+     "tag": "test-controlled-time/test-controlled-socks-wake-up-port",
+     "cases": [],
+     "all_cases": [],
+     "cargo_tests": [
+      "socks::a_session_that_does_not_say_where_it_goes_is_closed"
+     ],
+     "scenarios": [
+      {
+       "slug": "the-method-selection-proves-the-port-is-ready",
+       "title": "The method selection proves the port is ready",
+       "tag": "test-controlled-time/test-controlled-socks-wake-up-port#the-method-selection-proves-the-port-is-ready",
+       "cases": [],
+       "covered": false
+      }
+     ],
+     "covered": true,
+     "last_run": {}
     }
    ]
   },
