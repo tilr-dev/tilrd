@@ -597,3 +597,72 @@ fn the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built() {
         assert!(cdn.contains(clause), "{clause}");
     }
 }
+
+#[test]
+fn the_pinned_zig_selects_a_compatible_macos_sdk() {
+    let config = active(&text_file(".cargo/config.toml"));
+    assert!(config.contains("[env]"));
+    assert!(config.contains(
+        "DEVELOPER_DIR = { value = \"/Library/Developer/CommandLineTools\", force = false }"
+    ));
+    assert!(config.contains("SDKROOT = { value = \"/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk\", force = false }"));
+    // Docker mounts the source but not the host worktree's Git metadata.
+    let git_available = Command::new("git")
+        .current_dir(root())
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    if git_available {
+        let tracked = Command::new("git")
+            .current_dir(root())
+            .args(["ls-files", "--error-unmatch", ".cargo/config.toml"])
+            .output()
+            .unwrap();
+        assert!(
+            tracked.status.success(),
+            "Cargo SDK defaults must be tracked"
+        );
+    } else {
+        assert!(
+            text_file(".gitignore")
+                .lines()
+                .any(|line| line == "!/.cargo/config.toml")
+        );
+    }
+
+    for (workflow, job_name, next) in [
+        (
+            ".github/workflows/ci.yml",
+            "test",
+            "name: Install Zig and protoc",
+        ),
+        (
+            ".github/workflows/release.yml",
+            "build",
+            "name: Build (macOS)",
+        ),
+    ] {
+        let yaml = active(&text_file(workflow));
+        let section = job(&yaml, job_name);
+        let select = section.find("name: Select macOS 15.4 SDK").unwrap();
+        assert!(
+            select < section.find(next).unwrap(),
+            "{workflow}: SDK selected too late"
+        );
+        assert!(section.contains("DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer"));
+        assert!(section.contains("SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk"));
+    }
+    assert!(!active(&text_file("scripts/linux.Dockerfile")).contains("MacOSX15.4.sdk"));
+}
+
+#[test]
+fn the_macos_zig_installer_checks_its_sdk_before_download() {
+    let output = Command::new("sh")
+        .current_dir(root())
+        .arg("scripts/test-macos-sdk.sh")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}

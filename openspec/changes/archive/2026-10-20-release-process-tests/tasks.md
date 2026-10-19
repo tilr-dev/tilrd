@@ -17,6 +17,6 @@
 ## 3. Checks and archive
 
 - [x] 3.1 Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
-- [ ] 3.2 Refresh the MODIFIED requirements from the current `openspec/specs/release-process/spec.md` if another change touched them; drop "(planned …)"; shrink the spec's Notes; verify `openspec validate release-process-tests --strict`
-- [ ] 3.3 No itests case is touched; `./itests/dt coverage` exits 0 with no `release-process` requirement uncovered
-- [ ] 3.4 Record the implementing commit in proposal.md and archive the change; verify `openspec list` no longer shows it
+- [x] 3.2 Refresh the MODIFIED requirements from the current `openspec/specs/release-process/spec.md` if another change touched them; drop "(planned …)"; shrink the spec's Notes; verify `openspec validate release-process-tests --strict`
+- [x] 3.3 No itests case is touched; `./itests/dt coverage` exits 0 with no `release-process` requirement uncovered
+- [x] 3.4 Record the implementing commit in proposal.md and archive the change; verify `openspec list` no longer shows it

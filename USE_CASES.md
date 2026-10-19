@@ -170,6 +170,7 @@ Cloud repository.
 | CI runs every AGENTS.md gate and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
 | Release Please bumps the workspace and lockfile; the release builds and packages each target | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
+| The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
 
 ## Updating from the CDN — `tests/update.rs`
 
