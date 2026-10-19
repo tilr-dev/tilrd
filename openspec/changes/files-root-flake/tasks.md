@@ -2,7 +2,7 @@
 
 ## 1. Flake
 
-- [ ] 1.1 `files::nothing_outside_the_shared_directories_is_served`: find and fix the flake or quarantine it with its cause in USE_CASES.md; verify 10 consecutive green runs of `cargo test --test files nothing_outside_the_shared_directories_is_served`
+- [x] 1.1 `files::nothing_outside_the_shared_directories_is_served`: establish the startup root lookup race (design D1), reproduce it deterministically by waiting for `files on` with the old fixture order, and keep fixture creation before server startup. The regression test waits for `files on` after setup; it fails with the old order and passes with the fixed order.
 - The other test of the former shared item (5.1 of `test-coverage-gaps`), `reconnect::a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped`, was closed by TILR-115 (archived change `harness-flake-fixes`, 5.5).
 
 ## 2. Checks
