@@ -31,4 +31,4 @@ reconnect. No new outbox traffic or memory pressure is introduced.
 
 ## Implementation
 
-Commit: pending.
+Commit: `50feac4`.
