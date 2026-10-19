@@ -362,6 +362,7 @@ case's status in `results/latest` when there is one; requirements with neither a
 under "Uncovered". It exits 1 on an invalid registry. Run it after changing a requirement
 or a case's tags. These reports are generated locally on demand, ignored by git, and
 are not committed. A fresh checkout has no report until you run the command.
+Without a local report, it preserves the last run from the current `coverage.json`; use `./dt coverage --report PATH` to read another `report.json` explicitly.
 
 ## Gotchas
 
