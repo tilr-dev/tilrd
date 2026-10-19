@@ -1067,6 +1067,8 @@ Prometheus queries and alerts; the server emits only the new names.
 ```sh
 cargo test --workspace --features tilrd/failpoints --locked
 scripts/linux.sh                  # the same suite in the Linux build container
+python3 scripts/test_server_cleanup_stand_selftest.py  # check the stand itself
+python3 scripts/test_server_cleanup_stand.py           # signal/timeout cleanup diagnostic
 ```
 
 The tests in `crates/tilrd/tests/` start the real server and drive it as a client would;
@@ -1075,6 +1077,11 @@ the workspace, not of `tilr` alone). [USE_CASES.md](USE_CASES.md) lists the use 
 cover — connecting, the Unix socket, the client, reconnecting, scrolling, reloading,
 updating, the clipboard, files, the SOCKS proxy, the SSH agent, exec, metrics — and what is
 not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
+
+The cleanup stand runs an ignored test fixture outside the normal suite. It waits for
+the server's ready notification before interrupting the test process, checks the
+server PID (and `pgrep` on macOS), and removes its own processes even when a check
+fails. It exits nonzero when an interrupted test leaves its server running.
 
 The `failpoints` feature compiles in the places where a test can make an update or a reload
 go wrong halfway: fail a step, crash or kill the process there (`crates/tilrd/src/fail.rs`).

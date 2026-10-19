@@ -444,6 +444,12 @@ pane process. The server's counters are at `GET /metrics`.
 | A wrong-token Hello is refused without a drop; a connection that never says Hello is closed with 4002 and increments only `tilrd_client_drops_total{reason="no_hello"}` | `metrics_count_the_clients_let_go_and_why`, `a_connection_that_never_says_hello_is_counted_as_no_hello` |
 | A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilrd_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
 
+## Test infrastructure — `tests/cleanup_stand.rs`
+
+| Case | Check |
+|---|---|
+| After a test-owned server sends `READY=1`, interrupt its test by SIGTERM and by a controlled timeout; check its exact PID and macOS `pgrep`, report survivors, and clean the owned process group even on failure | `cleanup_stand::server_ready_then_wait_for_interruption` (ignored; run by `scripts/test_server_cleanup_stand.py`), `scripts/test_server_cleanup_stand_selftest.py` |
+
 ## Not covered
 
 - `tilr` and a socket served by another uid (refused before a byte is sent): it
