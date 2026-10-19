@@ -182,7 +182,7 @@ Before a reload replaces the executable, the server SHALL stop its `cloudflared`
 
 ## Notes
 
-- Requirements without a test: "Login links the machine through a device code", "Login keeps the link once confirmed", "Logout unlinks the machine", "Cloud may revoke the link", "The control connection is kept alive and retried", "A cloudflared that fails is reported and restarted", "No TCP port, no Cloud". USE_CASES.md says login/logout were checked only by hand against a local Cloud and a real `cloudflared` / Cloudflare tunnel never.
+- The integration tests play Cloud and `cloudflared`. A real Cloudflare tunnel has not been tested.
 - The unit tests in `crates/tilrd/src/cloud.rs` (`a_tunnel_that_would_rewrite_the_config_is_refused`, `the_control_address_follows_the_cloud_address`) also cover the field checks and the control URL.
 - "cloudflared does not outlive the server": the terminal-hangup scenario is covered by checking that `cloudflared` leads a process group of its own (`cloud::cloudflared_is_not_in_the_servers_process_group`); no test sends SIGHUP to a server's group, which in the test harness is the test runner's. The SIGKILL scenario on macOS (no parent-death signal) is covered by the sweep at the next start only.
 - No itests case cited here is currently red.
