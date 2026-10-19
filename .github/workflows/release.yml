@@ -115,6 +115,13 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --target "$TARGET"
           rustup default stable
+      # As of 2026-10-19, macos-15 includes macOS 15.4 SDK in Xcode 16.3.
+      # Recheck the runner-images macos-15-arm64 README; remove with the Zig SDK pin.
+      - name: Select macOS 15.4 SDK
+        if: matrix.platform == ''
+        run: |
+          echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
+          echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
       - name: Install Zig and protoc
         if: matrix.platform == ''
         run: |

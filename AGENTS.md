@@ -39,8 +39,11 @@ the line.
   builds Ghostty with it) and `protoc` (tilr-proto's build.rs). `scripts/install-tools.sh DIR`
   installs the pinned Zig and protoc, as CI does.
 - The first build needs network access: libghostty-vt-sys clones Ghostty at a pinned commit.
-- macOS: Zig 0.15.2 cannot build against the macOS 27 SDK; the untracked `.cargo/config.toml`
-  workaround is in the README ("Build").
+- macOS (checked 2026-10-19): Zig 0.15.2 fails with the macOS 27.0 SDK on this
+  Mac; the tracked `.cargo/config.toml` selects CLT MacOSX15.4.sdk. Check it with
+  `DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --sdk macosx15.4 --show-sdk-path`.
+  After a Zig upgrade passes a clean build with the current SDK, remove the SDK
+  pin and installer preflight; see README ("Build").
 
 ## Commits
 

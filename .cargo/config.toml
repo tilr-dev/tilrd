@@ -1,0 +1,9 @@
+# As of 2026-10-19, Zig 0.15.2 fails to build libc++ with macOS 27 SDK
+# (INFINITY undeclared), while a clean build passes with CLT MacOSX15.4.sdk.
+# Recheck after a Zig upgrade with an empty CARGO_TARGET_DIR and the workspace
+# build command in README. Once the current SDK works, remove these env pins and
+# the macOS SDK preflight in scripts/install-tools.sh. CI selects Xcode 16.3's
+# SDK via environment variables when CLT has no MacOSX15.4.sdk.
+[env]
+DEVELOPER_DIR = { value = "/Library/Developer/CommandLineTools", force = false }
+SDKROOT = { value = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk", force = false }

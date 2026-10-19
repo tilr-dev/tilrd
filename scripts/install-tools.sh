@@ -69,6 +69,18 @@ fetch() {
 for tool in "$@"; do
     case "$tool" in
         zig)
+            case "$zig_platform" in
+                *-macos)
+                    developer_dir=${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}
+                    required_sdk=${SDKROOT:-/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk}
+                    found_sdk=$(DEVELOPER_DIR="$developer_dir" \
+                        xcrun --sdk macosx15.4 --show-sdk-path 2>/dev/null) || found_sdk=
+                    if [ "$found_sdk" != "$required_sdk" ]; then
+                        echo "Zig $ZIG_VERSION needs macOS 15.4 SDK at $required_sdk. Install Command Line Tools containing it, or set DEVELOPER_DIR and SDKROOT to an Xcode installation with macOS 15.4 SDK, then rerun this installer." >&2
+                        exit 1
+                    fi
+                    ;;
+            esac
             name="zig-$zig_platform-$ZIG_VERSION"
             fetch "https://ziglang.org/download/$ZIG_VERSION/$name.tar.xz" "$zig_sha256" "$tmp/zig.tar.xz"
             rm -rf "${dir:?}/$name"

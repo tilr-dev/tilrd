@@ -38,6 +38,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - run: sh scripts/test-macos-sdk.sh
       - name: Install Rust (stable, rustfmt + clippy)
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
@@ -69,6 +70,13 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      # As of 2026-10-19, macos-15 includes macOS 15.4 SDK in Xcode 16.3.
+      # Recheck the runner-images macos-15-arm64 README; remove with the Zig SDK pin.
+      - name: Select macOS 15.4 SDK
+        if: runner.os == 'macOS'
+        run: |
+          echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
+          echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
       - name: Install Zig and protoc
         run: |
           scripts/install-tools.sh "$RUNNER_TEMP/tools"

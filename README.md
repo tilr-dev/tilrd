@@ -1009,14 +1009,23 @@ downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
 cargo build --release --locked -p tilrd -p tilr
 ```
 
-**macOS.** Zig 0.15.2 cannot build against the macOS 27 SDK. Point the build at the Command
-Line Tools and an older SDK in `.cargo/config.toml` (the file is not tracked):
-
-```toml
-[env]
-DEVELOPER_DIR = "/Library/Developer/CommandLineTools"
-SDKROOT = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
-```
+**macOS (checked 2026-10-19).** On this Mac, Zig 0.15.2 and the default macOS
+27.0 SDK make `libghostty-vt-sys` 0.2.2 fail while building libc++ (`INFINITY`
+undeclared). A clean build succeeds with the Command Line Tools MacOSX15.4.sdk.
+The tracked `.cargo/config.toml` selects that SDK in every worktree, including
+for direct `cargo build` commands. Install Command Line Tools containing
+MacOSX15.4.sdk from Apple Developer Downloads if it is absent; `scripts/install-tools.sh
+DIR zig` checks for it before downloading Zig. Set `DEVELOPER_DIR` and `SDKROOT`
+to an Xcode installation with macOS 15.4 SDK if Command Line Tools does not
+contain it. The macOS CI and release runners use Xcode 16.3 for this reason
+([runner image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md)). Recheck the installed SDK with
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --sdk macosx15.4
+--show-sdk-path` and the default SDK with `xcrun --show-sdk-version`. After
+upgrading to a Zig release that supports the current SDK, rerun a clean
+`CARGO_TARGET_DIR=$(mktemp -d) cargo build --workspace --features
+tilrd/failpoints` without the SDK pin in a separate worktree. Then remove the
+pin from `.cargo/config.toml`, the installer preflight, and this compatibility
+note (TILR-165).
 
 **Linux, from another OS.** `scripts/linux.sh` runs a command in a container
 (`scripts/linux.Dockerfile`: Debian 12, the pinned Zig) with the source mounted, as a
