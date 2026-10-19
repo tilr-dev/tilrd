@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import os
 import pkgutil
 import shutil
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import tt
 from tt import specs as specmod
+from tt.port_stand import occupied_port
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,7 +130,10 @@ def main(argv: list[str]) -> int:
         t = tt.T()
         t.root.mkdir(exist_ok=True)
         materialize(t.root)
-        return run(f"{c.id} {c.title}".strip(), c.fn, t)
+        def scenario(t):
+            with occupied_port(c.id, os.environ.get("TT_OCCUPY_PORT_FOR", "")):
+                c.fn(t)
+        return run(f"{c.id} {c.title}".strip(), scenario, t)
     print(__doc__, file=sys.stderr)
     return 2
 

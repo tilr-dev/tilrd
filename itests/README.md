@@ -46,6 +46,33 @@ The module lives in `itests/` of the tilrd repository; its context is the reposi
 root. Dagger 0.21 parses any `.env` above the module as dotenv: keep shell scripts out of
 `.env` files there.
 
+## Occupied-port stand
+
+To reproduce the initial EADDRINUSE of UC-033 deterministically:
+
+```sh
+./dt --only scenarios --filter uc_033 \
+  --occupy-port-for uc_033:a_tilrd_tilr_starts_goes_on_without_the_taken_port
+```
+
+The selected case **fails intentionally** at its initial `taken(7890)`; the report
+retains FAIL and dt exits nonzero. Remove `--occupy-port-for` for the normal run.
+The option takes one exact case id, which must be included by `--only` and `--filter`;
+invalid selections are rejected before tests run. Other cases receive no holder.
+The case runner synchronously binds/listens before calling the scenario, logs
+`[tt] port stand: ... holds 127.0.0.1:7890`, and closes the socket even on failure.
+A pre-existing listener makes setup fail visibly. No sleeps, repeats or extra timeouts
+establish readiness. This reproduces the occupied-port condition; it does not prove
+that Dagger shared namespaces in the historical failures (TILR-132).
+
+Check the stand and the real UC-033 runner path in an isolated network namespace
+(from the repository root; the host may already run Tilr on 7890):
+
+```sh
+docker run --rm --network none -v "$PWD":/src:ro -w /src python:3.12-slim \
+  python3 -m unittest discover -s itests/tests -v
+```
+
 ## What a run does
 
 `src/tilr_itests/main.py`:

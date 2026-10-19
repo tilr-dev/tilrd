@@ -491,7 +491,8 @@ class TilrItests:
 
     # --------------------------------------------------------------- scenarios
 
-    async def _scenarios(self, sem, run_id: str, filter: str, registry: dict, repeat: int = 1) -> list[Result]:
+    async def _scenarios(self, sem, run_id: str, filter: str, registry: dict, repeat: int = 1,
+                         occupy_port_for: str = "") -> list[Result]:
         get = self._fixture_builder(registry)
         cases = [c for c in registry["cases"] if not filter or filter in f"scenario:{c['id']}"]
         needed: set[str] = set()
@@ -518,6 +519,8 @@ class TilrItests:
                    .with_directory("/fx", fx)
                    .with_env_variable("TT_RUN", f"{run_id}-{k}")
                    .with_env_variable("TT_TIMEOUT", str(c["timeout"])))
+            if c["id"] == occupy_port_for:
+                ctr = ctr.with_env_variable("TT_OCCUPY_PORT_FOR", occupy_port_for)
             owner = f"{run_id}-{k}-{c['id']}"
             services = {}
             for name in c["services"]:
@@ -563,6 +566,7 @@ class TilrItests:
         filter: Annotated[str, Doc("substring of a test id, e.g. uc_040 or reload")] = "",
         jobs: Annotated[int, Doc("tests running at once")] = 16,
         cached: Annotated[bool, Doc("reuse results of tests whose inputs did not change")] = False,
+        occupy_port_for: Annotated[str, Doc("hold 127.0.0.1:7890 before this exact scenario id")] = "",
         repeat: Annotated[int, Doc("run every scenario and Rust test this many times (flakiness hunt)")] = 1,
     ) -> dagger.Directory:
         """Run the tests concurrently; returns report.json, junit.xml, summary.txt, status and logs/."""
@@ -570,6 +574,12 @@ class TilrItests:
         unknown = kinds - {"rust", "lint", "scenarios"}
         if unknown:
             raise ValueError(f"unknown --only value: {', '.join(sorted(unknown))}")
+        registry = await self._registry() if occupy_port_for and "scenarios" in kinds else None
+        if occupy_port_for and (registry is None or not any(
+            c["id"] == occupy_port_for and (not filter or filter in f"scenario:{c['id']}")
+            for c in registry["cases"]
+        )):
+            raise ValueError("--occupy-port-for must name an exact scenario selected by --only and --filter")
         run_id = "cached" if cached else uuid.uuid4().hex
         sem = asyncio.Semaphore(max(1, jobs))
         started = datetime.datetime.now(datetime.timezone.utc)
@@ -580,7 +590,8 @@ class TilrItests:
             groups.append(self._lint(sem, run_id, filter))
         if "scenarios" in kinds:
             async def scenarios():
-                return await self._scenarios(sem, run_id, filter, await self._registry(), max(1, repeat))
+                return await self._scenarios(sem, run_id, filter, registry or await self._registry(),
+                                             max(1, repeat), occupy_port_for)
             groups.append(scenarios())
         results: list[Result] = []
         for chunk in await asyncio.gather(*groups, return_exceptions=True):
