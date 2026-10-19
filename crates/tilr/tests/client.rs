@@ -6,12 +6,16 @@
 //! directory), as `tilr` finds it.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
+
+use sha2::{Digest, Sha256};
 
 const TILR: &str = env!("CARGO_BIN_EXE_tilr");
 
@@ -19,6 +23,7 @@ const TILR: &str = env!("CARGO_BIN_EXE_tilr");
 /// of a user who runs nothing yet.
 struct Machine {
     dir: PathBuf,
+    tilr: PathBuf,
 }
 
 impl Machine {
@@ -36,7 +41,22 @@ impl Machine {
             Path::new(TILR).with_file_name("tilrd").exists(),
             "tilrd is not built next to tilr: run the tests of the workspace"
         );
-        Self { dir }
+        Self {
+            dir,
+            tilr: PathBuf::from(TILR),
+        }
+    }
+
+    /// Run an installation private to this test, since update replaces both
+    /// programs next to one another.
+    fn install_copy(&mut self) -> PathBuf {
+        let bin = self.dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        self.tilr = bin.join("tilr");
+        std::fs::copy(TILR, &self.tilr).unwrap();
+        let server = bin.join("tilrd");
+        std::fs::copy(Path::new(TILR).with_file_name("tilrd"), &server).unwrap();
+        server
     }
 
     fn socket(&self) -> PathBuf {
@@ -52,7 +72,7 @@ impl Machine {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(TILR);
+        let mut command = Command::new(&self.tilr);
         command
             .args(args)
             .env("TILR_RUNTIME_DIR", self.dir.join("runtime"))
@@ -118,6 +138,98 @@ impl Drop for Machine {
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Make the socket unavailable for new connections while preserving the
+/// server's open listener across a reload. The path is restored on panic too.
+struct HiddenSocket {
+    path: PathBuf,
+    hidden: PathBuf,
+    restored: bool,
+}
+
+impl HiddenSocket {
+    fn hide(path: PathBuf) -> Self {
+        let hidden = path.with_extension("held");
+        std::fs::rename(&path, &hidden).unwrap();
+        Self {
+            path,
+            hidden,
+            restored: false,
+        }
+    }
+
+    fn restore(&mut self) {
+        std::fs::rename(&self.hidden, &self.path).unwrap();
+        self.restored = true;
+    }
+}
+
+impl Drop for HiddenSocket {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = std::fs::rename(&self.hidden, &self.path);
+        }
+    }
+}
+
+fn release_archive(server: &[u8], client: &[u8]) -> Vec<u8> {
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::fast(),
+    ));
+    for (name, bytes) in [("tilrd", server), ("tilr", client)] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, name, bytes).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+/// A loopback CDN with a gate on the archive response. Receiving `requested`
+/// proves the server's update command reached the archive before the test
+/// blocks new connections to the local socket.
+fn serve_release(root: PathBuf) -> (String, Receiver<()>, Sender<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (requested_tx, requested) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") && stream.read_exact(&mut byte).is_ok() {
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            let path = request.split(' ').nth(1).unwrap_or("/");
+            if path.ends_with(".tar.gz") {
+                requested_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }
+            let response = match std::fs::read(root.join(path.trim_start_matches('/'))) {
+                Ok(body) => (
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    ),
+                    body,
+                ),
+                Err(_) => (
+                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        .into(),
+                    Vec::new(),
+                ),
+            };
+            let _ = stream
+                .write_all(response.0.as_bytes())
+                .and_then(|()| stream.write_all(&response.1));
+        }
+    });
+    (url, requested, release)
 }
 
 fn alive(pid: i32) -> bool {
@@ -271,6 +383,34 @@ fn kill_server_ends_the_shells_and_removes_the_socket() {
 }
 
 #[test]
+fn kill_closes_the_named_pane_and_the_current_one() {
+    let machine = Machine::new();
+    let named = machine.ok(&["new", "-d", "--", "sleep", "1000"]);
+    let current = machine.ok(&["new", "-d", "--", "sleep", "1000"]);
+    let last = machine.ok(&["new", "-d", "--", "sleep", "1000"]);
+
+    machine.ok(&["kill", named.trim()]);
+    let remaining = machine.ok(&["ls", "-q"]);
+    assert_eq!(remaining.lines().count(), 2);
+    assert!(remaining.lines().any(|id| id == current.trim()));
+    assert!(remaining.lines().any(|id| id == last.trim()));
+
+    let output = machine
+        .command(&["kill"])
+        .env("TILR_PANE", current.trim())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(machine.ok(&["ls", "-q"]), last);
+    machine.ok(&["kill", last.trim()]);
+    assert_eq!(machine.ok(&["ls", "-q"]), "");
+
+    let empty = machine.tilr(&["kill"]);
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no panes"));
+}
+
+#[test]
 fn a_socket_left_by_a_killed_server_is_replaced_by_the_next_tilr() {
     let machine = Machine::new();
     machine.ok(&["new", "-d"]);
@@ -386,6 +526,84 @@ fn server_commands_run_in_the_server() {
     assert!(status.contains("tilr cloud login"), "{status}");
     let remote = machine.tilr(&["--connect", "ws://127.0.0.1:9", "token"]);
     assert!(!remote.status.success());
+}
+
+#[test]
+fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
+    let mut machine = Machine::new();
+    let server_exe = machine.install_copy();
+    machine.ok(&["new", "-d"]);
+    let server_pid = machine.server_pid();
+
+    let version_output = Command::new(&server_exe).arg("--version").output().unwrap();
+    assert!(version_output.status.success());
+    let version_line = String::from_utf8(version_output.stdout).unwrap();
+    let mut words = version_line.split_whitespace();
+    assert_eq!(words.next(), Some("tilrd"));
+    let version = words.next().unwrap();
+    let platform = words.next().unwrap().trim_matches(['(', ')']);
+
+    let mut updated_server = std::fs::read(&server_exe).unwrap();
+    updated_server.push(0); // A different executable that reports the same test build version.
+    let installed_client = std::fs::read(&machine.tilr).unwrap();
+    let archive = release_archive(&updated_server, &installed_client);
+    let cdn_dir = machine.dir.join("cdn");
+    let release_name = format!("tilr-9.9.9-test-{platform}.tar.gz");
+    let archive_path = cdn_dir.join("releases/9.9.9-test").join(&release_name);
+    std::fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
+    std::fs::write(&archive_path, &archive).unwrap();
+    let checksum: String = Sha256::digest(&archive)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    std::fs::write(
+        archive_path.with_file_name(format!("{release_name}.sha256")),
+        format!("{checksum}  {release_name}\n"),
+    )
+    .unwrap();
+    let latest = cdn_dir.join("releases").join(platform);
+    std::fs::create_dir_all(&latest).unwrap();
+    std::fs::write(latest.join("latest"), "9.9.9-test\n").unwrap();
+    let (cdn, requested, send_archive) = serve_release(cdn_dir);
+
+    let remote = machine.tilr(&["--connect", "ws://127.0.0.1:9", "update", "--cdn", &cdn]);
+    assert!(!remote.status.success());
+    assert!(
+        String::from_utf8_lossy(&remote.stderr)
+            .contains("server commands run in the local tilrd; on another machine, run tilr there")
+    );
+
+    let mut update = machine
+        .command(&["update", "--cdn", &cdn])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    requested
+        .recv_timeout(Duration::from_secs(15))
+        .expect("the local server requests the release archive");
+    let mut hidden = HiddenSocket::hide(machine.socket());
+    send_archive.send(()).unwrap();
+    eventually("the updated server resumes after reload", || {
+        machine.log().contains("resumed after reload with")
+    });
+    assert!(
+        update.try_wait().unwrap().is_none(),
+        "tilr update waits for a connection to the reloaded server"
+    );
+    hidden.restore();
+    let output = update.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "tilr update: {output:?}\n--- server log ---\n{}",
+        machine.log()
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(&format!("tilrd {version} is running")),
+        "{output:?}"
+    );
+    assert_eq!(machine.server_pid(), server_pid);
+    assert_eq!(std::fs::read(&server_exe).unwrap(), updated_server);
 }
 
 #[test]
@@ -640,6 +858,29 @@ fn viewer_id(machine: &Machine) -> String {
         std::thread::sleep(Duration::from_millis(50));
     }
     unreachable!()
+}
+
+#[test]
+fn reconnects_say_the_same_client_id() {
+    let machine = Machine::new();
+    let mut terminal = Terminal::spawn(machine.command(&[]));
+    terminal.write("echo \"client-id-$((40+2))\"\r");
+    terminal.expect("client-id-42");
+    let before = viewer_id(&machine);
+
+    // The test causes the reload, then asks the replacement server who
+    // views the pane. Its answer proves that tilr has reconnected.
+    let server = machine.server_pid();
+    // SAFETY: kill has no memory-safety preconditions.
+    assert_eq!(unsafe { libc::kill(server, libc::SIGUSR1) }, 0);
+    eventually("the server resumes after reload", || {
+        machine.log().contains("resumed after reload")
+    });
+    assert_eq!(viewer_id(&machine), before);
+
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 #[test]
