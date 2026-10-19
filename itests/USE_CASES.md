@@ -46,6 +46,7 @@
 - UC-004. Битая контрольная сумма / оборванная загрузка / битый архив / в архиве нет бинаря или бинарь не запускается / нет релиза под платформу — ничего не установлено, мусора нет (ни в доме, ни в `/tmp`), код выхода не 0. → `uc_004.py::a_bad_checksum_installs_nothing`, `::a_download_cut_short_installs_nothing`, `::an_archive_cut_short_installs_nothing`, `::an_archive_without_tilr_installs_nothing`, `::a_program_that_does_not_run_installs_nothing`, `::no_release_for_the_platform_installs_nothing`, `::a_latest_version_without_its_archive_installs_nothing`, `::a_broken_update_leaves_the_installation_and_its_server_alone`
 - UC-005. Чистая система без `$XDG_RUNTIME_DIR`, без `$HOME/.config` — пути создаются, права 0700/0600. → `uc_005.py::on_a_clean_system_tilr_makes_its_directories_private` (`/tmp/tilr-<uid>` и всё в нём, `~/.local/state/tilr` 0700, токен и server-id 0600)
 - UC-006. Запуск не от root, без sudo, в контейнере без systemd — всё работает. → `uc_006.py::without_root_sudo_or_systemd_everything_works` (sudo — ловушка, не вызван)
+- UC-007. Ручная установка из CDN: прочитать `latest`, скачать архив, распаковать `tilrd` и `tilr` в `~/.local/bin` и запустить установленный `tilr`. → `uc_007.py::a_manual_install_from_the_cdn_layout_runs` (отдельный пользователь, запросы к `LocalCdn`, бинарники совпадают с архивом, клиент подключается к установленному серверу)
 
 ## B. Модель как у tmux — жизнь демона
 
