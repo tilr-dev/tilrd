@@ -687,6 +687,7 @@ async fn server_commands_run_for_local_clients_only() {
         addr: addr.trim().to_owned(),
         dir: scratch.0.clone(),
         log: Arc::default(),
+        log_changed: Arc::default(),
     })
     .await
     .unwrap();

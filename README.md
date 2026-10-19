@@ -988,6 +988,11 @@ not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
 
 The `failpoints` feature compiles in the places where a test can make an update or a reload
 go wrong halfway: fail a step, crash or kill the process there (`crates/tilrd/src/fail.rs`).
+Tests can also hold a point with `name=pause`: bind `TILR_FAILPOINTS_SOCKET` before
+triggering the operation, receive the point name plus newline, and send `r` to release
+that hit. `TILR_FAILPOINTS_FILE` supports names learned at runtime. The harness provides
+`PauseController::wait` and `PausedPoint::release`; `fail.rs` documents the protocol,
+error handling and how to call a blocking point from a Tokio task.
 Without it those tests are left out and the rest runs. A release is built without it.
 
 The black-box tests in `itests/` ([itests/README.md](itests/README.md),

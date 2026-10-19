@@ -231,6 +231,8 @@ state format; platforms other than `linux-aarch64`.
 | The configuration file has a key the new version refuses: no exec; with the key gone the next reload goes through | `a_successor_that_refuses_the_configuration_is_not_reloaded_into` |
 | † The check run of the new version never answers: killed after 10 s, no exec, the server served clients meanwhile | `a_successor_that_never_answers_the_check_is_not_reloaded_into` |
 | † A slow check run that passes: the server serves meanwhile, then reloads with the same pid | `a_successor_is_checked_while_the_server_serves_and_then_reloaded_into` |
+| † A runtime-named pane check pauses until the test releases it, and the next reload needs a fresh release | `a_runtime_named_pause_holds_a_pane_check_until_released` |
+| † A paused successor whose controller disconnects fails its check; the original server carries on | `a_disconnected_pause_controller_refuses_the_reload` |
 | † A pane process's check of its successor fails: the supervisor reloads, that pane carries on with the old code and its shell | `a_pane_whose_successor_fails_the_check_carries_on` |
 | † SIGHUP and SIGUSR1 while the successor starts, before its handlers: held for it; SIGHUP ignored, one more reload; a shell started afterwards has no signal blocked | `signals_arriving_while_the_successor_starts_are_held_for_it` |
 | † SIGTERM while the successor starts: a clean shutdown (exit 0), the shells end | `a_sigterm_while_the_successor_starts_stops_the_server_cleanly` |

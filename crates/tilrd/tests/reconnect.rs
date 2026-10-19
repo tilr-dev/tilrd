@@ -265,6 +265,7 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
         addr,
         dir,
         log: Arc::default(),
+        log_changed: Arc::default(),
     };
     let _stop = StopOnDrop(pid);
 

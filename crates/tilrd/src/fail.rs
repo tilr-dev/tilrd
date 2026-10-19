@@ -10,6 +10,25 @@
 //! - `kill` — the process is killed there, as by `kill -9` or a power cut;
 //! - `sleep:MS` — the process stops there for a while, logging
 //!   `failpoint NAME: sleeping MS ms` first.
+//! - `pause` — connect to the Unix stream socket `TILR_FAILPOINTS_SOCKET`,
+//!   write `NAME\n`, then wait for exactly the byte `r` before returning.
+//!   Each hit opens its own connection: a release never carries to another
+//!   hit. Missing configuration, I/O errors, EOF and other bytes fail the
+//!   point; disconnecting the controller does not silently release it.
+//!
+//! Bind the control socket before triggering a point. Tests use
+//! `common::PauseController::bind(&server.dir)`, `wait("NAME").await`, then
+//! `PausedPoint::release().await`. The harness sets the socket environment.
+//! Keep the returned point alive while checking the state in the pause.
+//! Release `supervisor-resume` and `pane-resume*` before the successor check's
+//! `CHECK_TIMEOUT` (10 seconds), which terminates that check even while paused.
+//!
+//! `point` blocks its calling thread, with no timeout. In a Tokio task that
+//! must leave the runtime responsive, use an owned name on a blocking thread:
+//! `tokio::task::spawn_blocking(move || fail::point(&name)).await??`.
+//! Do not hold a lock needed by the test or other tasks across the pause.
+//! Aborting that task does not cancel its blocking thread: the controller
+//! must release or close the connection (or terminate the test process).
 //!
 //! A test that only learns the name of a point once the server runs (the id of
 //! a pane, say) puts more of the same into the file `TILR_FAILPOINTS_FILE`
@@ -40,6 +59,7 @@ pub fn point(name: &str) -> Result<()> {
     match action {
         None => Ok(()),
         Some("error") => anyhow::bail!("failpoint {name}"),
+        Some("pause") => pause(name),
         Some("panic") => panic!("failpoint {name}"),
         Some("exit") => std::process::exit(1),
         Some("kill") => {
@@ -57,4 +77,25 @@ pub fn point(name: &str) -> Result<()> {
             _ => panic!("failpoint {name}: unknown action {action}"),
         },
     }
+}
+
+#[cfg(feature = "failpoints")]
+fn pause(name: &str) -> Result<()> {
+    use anyhow::Context;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let wait = || -> Result<()> {
+        let path = std::env::var_os("TILR_FAILPOINTS_SOCKET")
+            .context("TILR_FAILPOINTS_SOCKET is not set")?;
+        let mut socket = UnixStream::connect(path).context("connect to pause controller")?;
+        writeln!(socket, "{name}").context("announce paused point")?;
+        let mut release = [0];
+        socket
+            .read_exact(&mut release)
+            .context("wait for release")?;
+        anyhow::ensure!(release == *b"r", "expected pause release byte r");
+        Ok(())
+    };
+    wait().with_context(|| format!("failpoint {name}: pause"))
 }

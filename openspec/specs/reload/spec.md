@@ -432,13 +432,30 @@ A reload SHALL NOT wait for a child whose start ended in a panic: the next reloa
 - **WHEN** starting `cloudflared` panics (`spawn-unblocked=panic`) and the server is then sent SIGUSR1
 - **THEN** the log has `resumed after reload` and no `reload failed`, and the successor starts `cloudflared` again
 
+### Requirement: Tests explicitly release paused failpoints
+With the `failpoints` feature, `name=pause` in `TILR_FAILPOINTS` or the file named by `TILR_FAILPOINTS_FILE` SHALL connect to the Unix stream socket named by `TILR_FAILPOINTS_SOCKET`, send the point name followed by a newline, and wait for the byte `r` on that connection before continuing. Each hit SHALL use a new connection. No elapsed time SHALL release a point. Missing socket configuration, connection/read/write failure, EOF or a byte other than `r` SHALL fail the point. Without `failpoints`, these variables SHALL have no effect. Async callers that need the runtime to keep serving SHALL run the blocking point on a blocking thread and await it.
+
+**Verified by**: `reload::a_successor_is_checked_while_the_server_serves_and_then_reloaded_into`, `reload::a_runtime_named_pause_holds_a_pane_check_until_released`, `reload::a_disconnected_pause_controller_refuses_the_reload`.
+
+#### Scenario: Pause a successor check
+- **WHEN** the test receives `supervisor-resume` on its control socket
+- **THEN** the original server still serves its client while the check waits; sending `r` allows the reload and the same shell survives
+
+#### Scenario: Runtime pane name and repeated hits
+- **WHEN** the test writes `pane-resume:<pane id>=pause` to the failpoints file after creating the pane and triggers a reload
+- **THEN** the named check waits for its own release and the pane resumes successfully; a later reload waits on a fresh connection with no stale release and resumes the pane again after release
+
+#### Scenario: Controller disappears
+- **WHEN** the test closes a paused successor's connection without sending `r`
+- **THEN** the check fails and the original server keeps serving
+
 ## Notes
 
 - Requirements without a test: Stale state files are swept at start.
 - Write-whole state files and the write sweep have no cargo integration test; they are covered by itests UC-064 / UC-065 and by unit tests in `crates/tilrd/src/reload.rs` (`a_state_file_is_replaced_whole_and_nothing_else_is_left`, `a_state_file_that_cannot_be_written_leaves_nothing_behind`).
 - Also covered: `reload::stopping_the_server_ends_the_shells` (SIGTERM without a reload); `uc_061.py::htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse`, `uc_062.py::ctrl_c_after_a_reload_interrupts_a_foreground_sleep`, `uc_062.py::a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c`.
 - UC-064 and UC-065 were red until 2026-10-17 per itests/USE_CASES.md:136-137 and are green at HEAD; no known red reload case.
-- Failpoints (`TILR_FAILPOINTS`, `TILR_FAILPOINTS_FILE`; actions `error`, `panic`, `exit`, `kill`, `sleep:MS`) used here: `reload-before-exec`, `supervisor-resume` and `pane-resume`, `pane-resume:<pane id>` (in the check run of a successor), `supervisor-resume-live` and `pane-resume-live`, `pane-resume-live:<pane id>` (in the live resume after the exec), `pane-reload-before-exec`, `reload-after-drain`, `reload-exec`, `reload-exec-missing`, `spawn-unblocked`. A `sleep:MS` action logs `failpoint NAME: sleeping MS ms` first, for a test to act while the process sleeps. Only with the `failpoints` feature; a release has none.
+- Failpoints (`TILR_FAILPOINTS`, `TILR_FAILPOINTS_FILE`; actions `error`, `panic`, `exit`, `kill`, `sleep:MS`, `pause`) used here: `reload-before-exec`, `supervisor-resume` and `pane-resume`, `pane-resume:<pane id>` (in the check run of a successor), `supervisor-resume-live` and `pane-resume-live`, `pane-resume-live:<pane id>` (in the live resume after the exec), `pane-reload-before-exec`, `reload-after-drain`, `reload-exec`, `reload-exec-missing`, `spawn-unblocked`. A `sleep:MS` action logs `failpoint NAME: sleeping MS ms` first, for a test to act while the process sleeps. Only with the `failpoints` feature; a release has none.
 - The check run is not checked from outside for binding or locking nothing ("The check process resumes without taking over"): the tests see that the server keeps its socket, connections and panes through it.
 - "A failed exec leaves SIGPIPE ignored" is tested for the supervisor only; the pane process's restore after its own failed exec is by review. The 5 s hold timeout of "A child that failed to start does not hold up a reload" has no test of its own (by review): the test shows the next reload going through.
 - The pidfd wait is Linux-only; elsewhere an inherited child is waited on a blocking thread.

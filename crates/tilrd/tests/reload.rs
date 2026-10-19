@@ -844,18 +844,77 @@ async fn a_successor_that_never_answers_the_check_is_not_reloaded_into() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_successor_is_checked_while_the_server_serves_and_then_reloaded_into() {
-    let (mut server, _) = failing_server("supervisor-resume=sleep:1500");
+    let (mut server, _) = failing_server("supervisor-resume=pause");
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let server_pid = server.child.id();
 
     server.signal("-USR1");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let paused = pauses.wait("supervisor-resume").await;
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
+    assert!(!server.logged("resumed after reload"));
+    paused.release().await;
     let client = reconnect(&server, client).await;
     assert_eq!(server.child.id(), server_pid);
     assert_pane_survived(&mut server, client, pane_id).await;
     assert!(!server.logged(REFUSED));
+}
+
+/// The pane id is only known after startup; each hit needs a fresh release.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_runtime_named_pause_holds_a_pane_check_until_released() {
+    let (mut server, _) = failing_server("");
+    let pauses = PauseController::bind(&server.dir);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    let pid = shell_pid(&server, &mut client, pane).await;
+    let name = format!("pane-resume:{pane}");
+    let resumed = format!("resumed after reload pane=\"{pane}\"");
+    std::fs::write(server.dir.join("failpoints"), format!("{name}=pause")).unwrap();
+
+    for hit in 1..=2 {
+        server.signal("-USR1");
+        client = reconnect(&server, client).await;
+        let paused = pauses.wait(&name).await;
+        // The supervisor has resumed, but the pane's check is held. Its
+        // shell stays alive and the supervisor still answers requests.
+        assert!(server.is_running());
+        assert!(process_alive(pid));
+        assert_eq!(client.list_panes().await[0].pane_id, pane.to_string());
+        paused.release().await;
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let next = server.log_changed.notified();
+                tokio::pin!(next);
+                next.as_mut().enable();
+                if count_logged(&server, &resumed) >= hit {
+                    break;
+                }
+                next.await;
+            }
+        })
+        .await
+        .expect("pane did not resume after release");
+        client.subscribe(pane).await;
+        assert_eq!(shell_pid(&server, &mut client, pane).await, pid);
+    }
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_disconnected_pause_controller_refuses_the_reload() {
+    let (mut server, _) = failing_server("supervisor-resume=pause");
+    let pauses = PauseController::bind(&server.dir);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    server.signal("-USR1");
+    drop(pauses.wait("supervisor-resume").await);
+    server.wait_logged(REFUSED).await;
+    server.wait_logged("wait for release").await;
+    assert!(server.is_running());
+    assert_eq!(client.run(pane, "true").await, 0);
 }
 
 #[cfg(feature = "failpoints")]
@@ -1116,6 +1175,7 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
         addr,
         dir,
         log,
+        log_changed: Arc::default(),
     };
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;

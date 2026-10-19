@@ -31,6 +31,47 @@ pub type PaneId = uuid::Uuid;
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 pub const CHUNK: usize = 256 * 1024;
 
+/// Event-driven control of `pause` failpoints. Bind before triggering the
+/// operation; keep each returned hit until it is time for that hit to proceed.
+#[cfg(feature = "failpoints")]
+pub struct PauseController(tokio::net::UnixListener);
+
+#[cfg(feature = "failpoints")]
+impl PauseController {
+    pub fn bind(dir: &Path) -> Self {
+        Self(tokio::net::UnixListener::bind(dir.join("pause.sock")).unwrap())
+    }
+
+    pub async fn wait(&self, name: &str) -> PausedPoint {
+        use tokio::io::AsyncBufReadExt;
+        tokio::time::timeout(TIMEOUT, async {
+            let (socket, _) = self.0.accept().await.unwrap();
+            let mut socket = tokio::io::BufReader::new(socket);
+            let mut reached = String::new();
+            socket.read_line(&mut reached).await.unwrap();
+            assert_eq!(reached, format!("{name}\n"), "unexpected paused point");
+            PausedPoint(socket.into_inner())
+        })
+        .await
+        .unwrap_or_else(|_| panic!("did not reach pause {name}"))
+    }
+}
+
+/// One paused invocation. Dropping it without release fails the point.
+#[cfg(feature = "failpoints")]
+pub struct PausedPoint(tokio::net::UnixStream);
+
+#[cfg(feature = "failpoints")]
+impl PausedPoint {
+    pub async fn release(mut self) {
+        use tokio::io::AsyncWriteExt;
+        tokio::time::timeout(TIMEOUT, self.0.write_all(b"r"))
+            .await
+            .expect("pause release timed out")
+            .expect("pause release failed");
+    }
+}
+
 /// A running server with a scratch directory of its own.
 pub struct Server {
     pub child: Child,
@@ -39,6 +80,7 @@ pub struct Server {
     /// tests put their own files there.
     pub dir: PathBuf,
     pub log: Arc<Mutex<Vec<String>>>,
+    pub log_changed: Arc<tokio::sync::Notify>,
 }
 
 /// Spawn `command`, whose executable may be a copy made a moment ago. On
@@ -112,6 +154,7 @@ impl Server {
 
         let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
         let log = Arc::new(Mutex::new(Vec::new()));
+        let log_changed = Arc::new(tokio::sync::Notify::new());
         let mut addr = None;
         for line in lines.by_ref() {
             let line = line.unwrap();
@@ -129,9 +172,11 @@ impl Server {
             addr.unwrap_or_else(|| panic!("server did not start: {:?}", log.lock().unwrap()));
         // Keep draining the log so the server never blocks on it.
         let sink = Arc::clone(&log);
+        let changed = Arc::clone(&log_changed);
         std::thread::spawn(move || {
             for line in lines.map_while(Result::ok) {
                 sink.lock().unwrap().push(line);
+                changed.notify_waiters();
             }
         });
         Self {
@@ -139,6 +184,7 @@ impl Server {
             addr,
             dir,
             log,
+            log_changed,
         }
     }
 
@@ -151,6 +197,7 @@ impl Server {
             .env("TILR_STATE_DIR", dir.join("state"))
             .env("TILR_CONFIG_DIR", dir.join("config"))
             .env("TILR_FAILPOINTS_FILE", dir.join("failpoints"))
+            .env("TILR_FAILPOINTS_SOCKET", dir.join("pause.sock"))
             .env("HOME", dir)
             .env("PATH", "/usr/bin:/bin")
             .env("SHELL", "/bin/sh")
