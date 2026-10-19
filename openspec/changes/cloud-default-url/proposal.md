@@ -24,4 +24,4 @@
 
 ## Impact
 
-`crates/tilrd/src/cloud.rs` (constant, unit test), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `test-coverage-gaps` also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
+`crates/tilrd/src/cloud.rs` (constant, unit test), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `cloud-tunnels-tests` (TILR-147) also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.

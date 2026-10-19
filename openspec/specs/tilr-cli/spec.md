@@ -99,7 +99,7 @@ Every connection SHALL be a WebSocket (to `ws://localhost/` over the Unix socket
 ### Requirement: One client id per run
 The client SHALL make one `client_id` (a UUID v4) when it starts and SHALL send the same `client_id` in the `Hello` of every connection it makes while it runs, reconnects included. What the server does with it is in the `client-liveness` spec.
 
-**Verified by**: no test compares the ids (see Notes).
+**Verified by**: `client::reconnects_say_the_same_client_id`.
 
 #### Scenario: Reconnect keeps the id
 - **WHEN** an attached `tilr` loses its connection and connects again
@@ -156,7 +156,7 @@ A pane SHALL be named by its full id or by a prefix that exactly one pane id sta
 ### Requirement: kill
 `tilr kill [PANE]` SHALL close the named pane, else the pane it runs in (`$TILR_PANE`), else the pane used last, by sending `ClosePane` and polling `ListPanes` every 50 ms until the pane is gone. It SHALL fail with `pane <id> is still there` after 10 s and with `no panes` when there is none to choose.
 
-**Verified by**: no test (see Notes).
+**Verified by**: `client::kill_closes_the_named_pane_and_the_current_one`.
 
 #### Scenario: Kill with no panes
 - **WHEN** the server has no panes and the user runs `tilr kill`
@@ -442,5 +442,5 @@ When the server closes an attached `tilr`'s connection with close code 4000 (`su
 
 ## Notes
 
-- Requirements without a test: kill; One client id per run (the reconnect test does not compare ids). Partly untested: the connect/request timeouts and the protocol-mismatch message (Connecting and saying hello), non-zero codes and reasons (Server command exit status), `tilr update` from the client. Several requirements rest on unit tests in `crates/tilr/src/*.rs` (`tests::…`, `target::tests::…`, `service::tests::…`) rather than on `crates/tilr/tests/client.rs`.
+- Partly untested: the connect/request timeouts and the protocol-mismatch message (Connecting and saying hello), non-zero codes and reasons (Server command exit status). Several requirements rest on unit tests in `crates/tilr/src/*.rs` (`tests::…`, `target::tests::…`, `service::tests::…`) rather than on `crates/tilr/tests/client.rs`.
 - The "Verified by" line is written as an OpenSpec metadata line (`**Verified by**: …`) so that it does not count toward the 500-character requirement-text limit of `openspec validate --strict`.

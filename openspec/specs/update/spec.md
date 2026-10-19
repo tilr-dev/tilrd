@@ -171,6 +171,8 @@ When `app-managed.json` is next to the executable, `tilrd update` SHALL fail bef
 ### Requirement: tilr update runs the update in the local server
 `tilr update [--cdn URL]` (or `TILR_CDN`) SHALL run `tilrd update [--cdn URL]` in the local server as a server command (a child of the server, in its environment; see the `exec` spec) and SHALL refuse a remote target with `server commands run in the local tilrd; on another machine, run tilr there`.
 
+**Verified by**: `client::tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload`.
+
 #### Scenario: Remote target
 - **WHEN** `tilr --connect ws://host:7890 update` runs
 - **THEN** it fails with `server commands run in the local tilrd; on another machine, run tilr there`
@@ -178,13 +180,15 @@ When `app-managed.json` is next to the executable, `tilrd update` SHALL fail bef
 ### Requirement: tilr update waits for the reloaded server
 When the update command exits 0, or ends with reason `reload` because the server reloaded into it, `tilr update` SHALL reconnect for up to 15 s and print `tilrd <version> is running`, else fail with `the server did not come back after the update: ...`. Another exit code SHALL be `tilr`'s exit status.
 
+**Verified by**: `client::tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload`.
+
 #### Scenario: Update from a shell
 - **WHEN** the user runs `tilr update` and a newer release is installed
 - **THEN** the server reloads and `tilr` prints `tilrd <new version> is running` and exits 0
 
 ## Notes
 
-- Requirements without a test: tilr update runs the update in the local server; tilr update waits for the reloaded server. No test runs `tilr update`: `client::server_commands_run_in_the_server` covers server commands with `token` and `cloud status` (and a remote `token` refused) only, and the itests run `tilrd update` directly.
+- `tilr update` from the client is run by `client::tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` against a local CDN directory; the itests run `tilrd update` directly.
 - The one-archive release replaced the loose files `tilrd-<platform>`, `tilr-server-<platform>` and `tilr-<platform>` in 2a8b425; the dual-name transition (the rename from `tilr-server`, and its itests case, removed in 3ba0e93) went with it, without compatibility for old updaters (owner's decision, 2026-10-18).
 - `scripts/update-test.sh HOST OLD-VERSION` is a manual live check against the real CDN (install by hand from the archive, update from a pane, again, no CDN, rollback, stopped server); it is not run in CI.
 - Also covered by `uc_004.py::a_broken_update_leaves_the_installation_and_its_server_alone` (the installer's update path, see the `installation` spec).

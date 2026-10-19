@@ -28,7 +28,7 @@ owner's word):
 - `tilr-mac-rename-compatibility`: the desktop-mac rename branch and its app feed land in the
   same step (the app's own repository; needs `protocol-v3`).
 
-Phases 3 (test-coverage-gaps) and 5 do not gate the release.
+Phases 3 (the TILR-76 test changes) and 5 do not gate the release.
 
 ## Phase 1: correctness and security
 
@@ -51,7 +51,14 @@ All of phase 2 is done (see "Done").
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| test-coverage-gaps | tests for the 19 untested server/client requirements; fix or quarantine the known flakes | L | - | no | ready |
+| cloud-tunnels-tests | tests for the 7 untested `cloud-tunnels` requirements (TILR-147) | M | - | no | ready |
+| server-requirement-tests | tests for 8 untested server requirements: exec, metrics, panes, reload, socks-proxy, ssh-agent-forwarding (TILR-148) | M | - | no | ready |
+| manual-install-itest | itests UC-007, the manual install from the CDN (TILR-150) | S | - | no | ready |
+| files-root-flake | the `files::nothing_outside_the_shared_directories_is_served` flake (TILR-151) | S | - | no | ready |
+| uc-043-flake | the itests `uc_043` flake (TILR-152) | S | - | no | ready |
+| test-server-leftovers | no `target/debug` test servers left running after `cargo test` (TILR-153) | S | - | no | ready |
+| reconnect-output-flake | the `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` flake (TILR-111) | S | - | no | ready |
+| hangup-shell-flake | the `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` flake, reopened (TILR-117) | S | - | no | ready |
 
 ## Phase 4: release infrastructure
 
@@ -89,7 +96,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | directory-sync | `tilr-sync` crate embedded in tilrd: push sync over QUIC | L | - | - | design first |
 | multi-server | the client joins several machines (no tilrd change) | L | - | - | design first |
 | port-forwarding | `ssh -R` / `-L` style forwards; waits for the transport decision (iroh vs quinn); when built, off by default like SOCKS | L | the transport decision | no | design first |
-| itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | test-coverage-gaps | - | design first |
+| itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | the phase 3 changes | - | design first |
 
 ## Deferred
 
@@ -132,5 +139,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | reload-signal-storm | 060c7e4 |
 | shared-runtime-races | 72b0422 |
 | reload-exec-signal-followups | c6deafc |
+| harness-flake-fixes | eedd344, 6e9be7f, 6a925bd, 5b4a5a7, e69f3a1, 926bc28, 9e1c26c |
+| tilr-client-tests | 2945a95 |
 
 Older work is in `openspec/changes/archive/`.

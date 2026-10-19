@@ -1,6 +1,6 @@
 # Proposal: itests stage 5: load and security group H, distributions, a macOS backend
 
-Зависит от: test-coverage-gaps
+Зависит от: тестовые change эпика TILR-76 (`cloud-tunnels-tests`, `server-requirement-tests`, `manual-install-itest`, `files-root-flake`, `uc-043-flake`, `test-server-leftovers`, `reconnect-output-flake`, `hangup-shell-flake`)
 
 ## Why
 

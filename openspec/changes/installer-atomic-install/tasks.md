@@ -13,7 +13,7 @@ Written for option (c), decided 2026-10-18 (see the proposal's Decision).
 
 ## 2. Published with the release
 
-- [ ] 2.1 `scripts/release.sh` uploads `install.sh` after every `latest`, never after a failed upload; verify with the new test `release::the_installer_is_uploaded_after_latest` in `crates/tilrd/tests/release.rs` (a `dist/cdn` laid out in a temp dir, `CLOUDFLARE_ACCOUNT_ID` set, a stub `wrangler` on `PATH`; both scenarios of the spec; the harness is shared with `test-coverage-gaps` 2.1) run in CI
+- [ ] 2.1 `scripts/release.sh` uploads `install.sh` after every `latest`, never after a failed upload; verify with the new test `release::the_installer_is_uploaded_after_latest` in `crates/tilrd/tests/release.rs` (a `dist/cdn` laid out in a temp dir, `CLOUDFLARE_ACCOUNT_ID` set, a stub `wrangler` on `PATH`; both scenarios of the spec; the harness is shared with `release-process-tests` 1.1) run in CI
 - [ ] 2.2 The `release-process` spec's Notes drop "The release scripts and workflows have no automated tests" for this requirement; verify `openspec validate --specs --strict`
 
 ## 3. First release
