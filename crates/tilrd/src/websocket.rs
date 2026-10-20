@@ -50,6 +50,22 @@ mod tests {
     use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        Callback, ErrorResponse, Request, Response as ServerResponse,
+    };
+
+    struct CheckAuthorization;
+
+    impl Callback for CheckAuthorization {
+        fn on_request(
+            self,
+            request: &Request,
+            response: ServerResponse,
+        ) -> Result<ServerResponse, ErrorResponse> {
+            assert_eq!(request.headers()["authorization"], "Bearer test");
+            Ok(response)
+        }
+    }
 
     #[test]
     fn the_trust_store_is_exactly_the_bundled_mozilla_roots() {
@@ -100,15 +116,9 @@ mod tests {
             .insert("authorization", "Bearer test".parse().unwrap());
         let server = async {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_hdr_async(
-                socket,
-                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-                    assert_eq!(request.headers()["authorization"], "Bearer test");
-                    Ok(response)
-                },
-            )
-            .await
-            .unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async(socket, CheckAuthorization)
+                .await
+                .unwrap();
             ws.send(Message::text("connected")).await.unwrap();
         };
         let client = async {
