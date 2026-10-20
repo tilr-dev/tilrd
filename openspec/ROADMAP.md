@@ -113,7 +113,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | change | commit |
 |---|---|
 | test-controlled-time | 7e63724 |
-| manual-install-itest | 427ebfe |
+| manual-install-itest | - |
 | openspec-setup | 27be1ea, 40d6057, 552dcd9 |
 | reload-rollback | 4298b15 |
 | reload-signals-and-socket | a0f1ae9 |
