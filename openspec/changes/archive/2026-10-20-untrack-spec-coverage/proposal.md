@@ -33,4 +33,4 @@ Verify manually with the coverage command, `git ls-files openspec/coverage` and 
 
 ## Implemented by
 
-Local commits `591a8c9` and `d531f14` on `task/TILR-172`.
+TILR-172 ([tilr-dev/tilrd#12](https://github.com/tilr-dev/tilrd/pull/12)).
