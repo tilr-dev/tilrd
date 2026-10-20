@@ -950,6 +950,27 @@ pub fn process_args(pid: u32) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// Read ps after a concrete title refresh, keeping the pane paused for inspection.
+#[cfg(feature = "failpoints")]
+pub async fn wait_process_title(
+    controller: &PauseController,
+    hook: &str,
+    pid: u32,
+    suffix: &str,
+) -> PausedPoint {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let point = controller.wait(hook).await;
+            if process_args(pid).ends_with(suffix) {
+                return point;
+            }
+            point.release().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("process {pid} did not show {suffix:?}"))
+}
+
 /// The pid of the shell in the pane, which the shell itself writes to a file.
 pub async fn shell_pid(server: &Server, client: &mut Client, pane_id: PaneId) -> u32 {
     let file = server.dir.join(format!("shell-pid-{pane_id}"));

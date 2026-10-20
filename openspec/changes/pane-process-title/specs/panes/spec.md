@@ -41,3 +41,12 @@ A title longer than the space the pane process has for it SHALL be cut at the en
 #### Scenario: A very long directory
 - **WHEN** the shell enters a directory whose path is longer than the title space
 - **THEN** the command line starts with the start arguments and ends where the space ends, and the pane works as before
+
+### Requirement: Making room for a title preserves the environment
+Moving the environment to make room for the title SHALL preserve every environment entry and the pane's original arguments.
+
+**Verified by**: unit test `title::tests::the_environment_is_unchanged_after_the_move`.
+
+#### Scenario: A title overwrites the original environment strings
+- **WHEN** the title is written over the original argv and environment string area
+- **THEN** the copied environment entries and runtime arguments retain their original values

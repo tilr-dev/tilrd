@@ -25,5 +25,5 @@ Not applicable: no data goes to clients.
 
 ## Risks
 
-- Repointing `environ` must happen before any thread or `getenv` caller exists; `pane::run` is entered from `main` before the runtime is built, and the change asserts the order with a comment and a debug check that the process has one thread (`/proc/self/task` on Linux).
+- Repointing `environ` must happen before any thread or code retaining borrowed C environment pointers exists; earlier Rust environment reads own their values. `pane::run` is entered from `main` before the runtime is built, and the change asserts the order with a comment and a debug check that the process has one thread (`/proc/self/task` on Linux). Runtime argv pointers are also moved to heap copies, so readers retain the original arguments while the kernel reads the original string area for `ps`.
 - The shell is spawned with an environment built from `std::env::vars()` (reads `environ`), which then sees the copies: unchanged values.

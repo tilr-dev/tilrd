@@ -22,6 +22,7 @@ mod shell;
 mod socks;
 mod supervisor;
 mod time;
+mod title;
 mod update;
 
 use std::net::SocketAddr;

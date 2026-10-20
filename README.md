@@ -609,8 +609,13 @@ The id is the same everywhere a pane shows up:
 
 - in the protocol, as `pane_id`;
 - in the process list: the pane process runs as `tilrd pane --id <id>`, followed by how the
-  pane was started (`--cols` and `--rows` unless 80×24, `--cwd`, the command), and the shell
-  is its child;
+  pane was started (`--cols` and `--rows` unless 80×24, `--cwd`, the command), then
+  ` [shell <pid> in <cwd>]`. While another process group is in the foreground, the suffix
+  is ` [shell <pid> in <cwd>: <command>]` (up to 80 bytes of the command line).
+  The directory follows OSC 7; foreground changes appear within a second, including after
+  reload. A title longer than the available argument/environment area is cut. If that
+  area cannot hold the start arguments and the start of the suffix, the original arguments
+  remain and the pane logs `pane title: no room` once. The shell is the pane's child;
 - inside the pane, as `$TILR_PANE`;
 - in `tilr ps`, which asks the running server for its panes (`tilr ls` shows the first 8
   characters, which `tilr attach` and `tilr kill` take):

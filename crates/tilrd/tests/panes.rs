@@ -392,6 +392,9 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
     let panes = client.list_panes().await;
     let args = |pane: &PaneInfo| {
         process_args(pane.pid)
+            .split(" [shell ")
+            .next()
+            .unwrap()
             .split_once(" pane ")
             .unwrap()
             .1
@@ -406,6 +409,49 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
         args(&panes[1]),
         format!("--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh")
     );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn the_pane_process_title_follows_the_directory_and_the_command() {
+    let dir = Server::scratch_dir();
+    let controller = PauseController::bind(&dir);
+    let server = Server::start_in(dir, std::path::Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane_with(100, 30, "").await;
+    let shell = shell_pid(&server, &mut client, pane).await;
+    let pid = client.list_panes().await[0].pid;
+    let hook = format!("pane-title-polled:{pane}");
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    let initial = format!("[shell {shell} in {}]", server.dir.display());
+    let point = wait_process_title(&controller, &hook, pid, &initial).await;
+    point.release().await;
+
+    client
+        .type_line(pane, "cd /tmp; printf '\\033]7;file://localhost/tmp\\007'")
+        .await;
+    let idle = format!("[shell {shell} in /tmp]");
+    let point = wait_process_title(&controller, &hook, pid, &idle).await;
+    point.release().await;
+    client.type_line(pane, "sleep 30").await;
+    let point = wait_process_title(
+        &controller,
+        &hook,
+        pid,
+        &format!("[shell {shell} in /tmp: sleep 30]"),
+    )
+    .await;
+    point.release().await;
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"\x03"),
+        }))
+        .await;
+    let point = wait_process_title(&controller, &hook, pid, &idle).await;
+    std::fs::remove_file(points).unwrap();
+    point.release().await;
 }
 
 #[tokio::test]
