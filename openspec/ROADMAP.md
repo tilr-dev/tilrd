@@ -53,7 +53,6 @@ All of phase 2 is done (see "Done").
 |---|---|---|---|---|---|
 | cloud-tunnels-tests | tests for the 7 untested `cloud-tunnels` requirements (TILR-147) | M | - | no | ready |
 | server-requirement-tests | tests for 8 untested server requirements: exec, metrics, panes, reload, socks-proxy, ssh-agent-forwarding (TILR-148) | M | - | no | ready |
-| manual-install-itest | itests UC-007, the manual install from the CDN (TILR-150) | S | - | no | ready |
 | files-root-flake | the `files::nothing_outside_the_shared_directories_is_served` flake (TILR-151) | S | - | no | ready |
 | uc-043-flake | the itests `uc_043` flake (TILR-152) | S | - | no | ready |
 | test-server-leftovers | no `target/debug` test servers left running after `cargo test` (TILR-153) | S | - | no | ready |
@@ -114,6 +113,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | change | commit |
 |---|---|
 | test-controlled-time | 7e63724 |
+| manual-install-itest | - |
 | openspec-setup | 27be1ea, 40d6057, 552dcd9 |
 | reload-rollback | 4298b15 |
 | reload-signals-and-socket | a0f1ae9 |

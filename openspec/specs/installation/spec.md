@@ -134,13 +134,15 @@ After an install on a clean system (no `$XDG_RUNTIME_DIR`, no `~/.config`), the 
 ### Requirement: Manual install from the CDN
 A manual install SHALL need only the CDN layout: read `releases/<platform>/latest`, download `releases/<version>/tilr-<version>-<platform>.tar.gz`, unpack `tilrd` and `tilr` from it into `~/.local/bin`, and run `tilr`.
 
+**Verified by**: itests `UC-007` (`uc_007.py::a_manual_install_from_the_cdn_layout_runs`).
+
 #### Scenario: By hand
 - **WHEN** a user fetches `latest` for `linux-aarch64` and unpacks `tilrd` and `tilr` of that version's archive into `~/.local/bin`
 - **THEN** `tilr` starts the unpacked `tilrd` and attaches
 
 ## Notes
 
-- Requirements without a test: Manual install from the CDN; the old-`tilr` restore of "A failed update leaves the installation and its server alone" (no case makes the `tilrd` rename fail).
+- Requirements without a test: the old-`tilr` restore of "A failed update leaves the installation and its server alone" (no case makes the `tilrd` rename fail).
 - Since 3ba0e93 the installer checks the whole release in a temporary directory before it makes `~/.local/bin`; UC-004 (all its cases) is green. The earlier installer's service setup (`tilr.service`, linger, `TILR_NO_SERVICE`), its move of a `tilr-server` install to `tilrd` and its client-less releases are gone with it, along with the loose per-program files of the CDN (2a8b425).
 - The real installer is served from R2 (`https://cdn.tilr.dev/install.sh`, behind `tilr.sh`) and lives in the `sh` repository; this repo holds only the copy the itests use.
 - No known red itests case for installation.
