@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: The Unix socket checks the peer's uid
-For every connection accepted on the Unix socket the server SHALL read the peer's credentials (`SO_PEERCRED` on Linux, `getpeereid` on macOS). A per-user server MUST close at once, before any handshake, a connection whose uid is not the server's own, logging "refused a connection on the Unix socket", even where the directory and socket permissions were opened by hand. A server started with `--system` SHALL instead make the peer's uid the connection's user and MUST refuse, with the same log line, only a peer whose credentials cannot be read or whose uid has no password entry.
+For every connection accepted on the Unix socket the server SHALL read the peer's credentials (`SO_PEERCRED` on Linux, `getpeereid` on macOS). A per-user server MUST close at once, before any handshake, a connection whose uid is not the server's own, logging "refused a connection on the Unix socket", even where the directory and socket permissions were opened by hand. A server started with `--system` SHALL instead make the peer's uid the connection's user and MUST refuse, with the same log line, only a peer whose uid has no password entry; a peer gone before its credentials could be read is closed as "A connection gone before its uid check is not refused" says.
 
 **Verified by**: `local::another_user_is_turned_away_even_where_the_permissions_let_it_in` and itests UC-034 (`uc_034.py::another_user_cannot_use_the_socket`); the system-server scenarios are not tested yet (planned itests UC-03C).
 
@@ -58,7 +58,7 @@ A server started with `--system` SHALL have no server-wide token; it SHALL keep 
 - **THEN** it fails with `root has no token: a pane as root is for the Unix socket only`
 
 ### Requirement: A TCP Hello names its user by the token
-On a server started with `--system`, a TCP `Hello` SHALL be accepted when its token is one user's token, and the connection's user is then that user. The errors for no or a wrong token are those of "TCP clients present the token in Hello".
+On a server started with `--system`, a TCP `Hello` SHALL be accepted when its token is one user's token, and the connection's user is then that user. The lookup MUST take time that depends neither on the token nor on whose it is (a hash of the token as the key, then a constant-time compare). The errors for no or a wrong token are those of "TCP clients present the token in Hello".
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 

@@ -1,21 +1,22 @@
 # Tasks
 
-Research change (TILR-138): this change is designed, not implemented. Groups 1+ are cut into implementation tasks once the owner has answered Q1-Q9 (and Q4b, Q5a, Q7b, Q7c) in design.md; the spec deltas are rewritten to the answers first.
+Research change (TILR-138): this change is designed, not implemented. Groups 1+ are cut into implementation tasks once the owner has answered Q1-Q9 (and Q4b, Q4c, Q5a, Q7b, Q7c) in design.md; the spec deltas are rewritten to the answers first.
 
 ## 0. Decision
 
-- [x] 0.1 Write proposal, design (options Q1-Q9 (and Q4b, Q5a, Q7b, Q7c) with recommendations), spec deltas for the recommended options and this plan; verify `openspec validate multi-user-sessions --strict`
-- [ ] 0.2 Owner answers Q1-Q9 (and Q4b, Q5a, Q7b, Q7c); spec deltas (including the requirements in design "Requirements to modify after the answers"), design and the groups below updated to the answers; the `Блокер:` line removed; verify `openspec validate multi-user-sessions --strict`
+- [x] 0.1 Write proposal, design (options Q1-Q9 (and Q4b, Q4c, Q5a, Q7b, Q7c) with recommendations), spec deltas for the recommended options and this plan; verify `openspec validate multi-user-sessions --strict`
+- [ ] 0.2 Owner answers Q1-Q9 (and Q4b, Q4c, Q5a, Q7b, Q7c); spec deltas (including the requirements in design "Requirements to modify after the answers"), design and the groups below updated to the answers; the `Блокер:` line removed; verify `openspec validate multi-user-sessions --strict`
 
 ## 1. System mode and its paths
 
-- [ ] 1.1 `tilrd --system`: root and capability check before anything is bound, `--no-auth` refused, `/run/tilr`, `/var/lib/tilr`, `/etc/tilr/server.toml` defaults (daemon-lifecycle "System mode needs root", "Paths and modes of a system server"); verify `local::system_mode_needs_root` (non-root run) and itests UC-03C (`uc_03c.py::tilrd_system_refuses_to_start_without_root`); README "Running as a system service"; UC-03C added to itests/USE_CASES.md
-- [ ] 1.2 Per-user directories `/run/tilr/users/<uid>/` owned by root (0711), sockets bound by root and handed to the user (0600), only `panes/` owned by the user and never opened by root (daemon-lifecycle "Per-user directories of a system server", "Root makes nothing inside a user's directory"); verify itests UC-03C (`uc_03c.py::a_user_cannot_plant_a_link_in_her_directory`, `uc_03c.py::a_link_in_panes_is_not_written_through_as_root`, `uc_03c.py::a_crashed_pane_leaves_no_state_behind`); UC-03C entry in itests/USE_CASES.md; README "Running as a system service" (the directories)
+- [ ] 1.1 `tilrd --system`: root and capability check before anything is bound, `--no-auth` refused, `/run/tilr`, `/var/lib/tilr`, `/etc/tilr/server.toml` defaults (daemon-lifecycle "System mode needs root", "System mode needs CAP_SETUID and CAP_SETGID", "Paths and modes of a system server"); verify `local::system_mode_needs_root` (non-root run) and itests UC-03C (`uc_03c.py::tilrd_system_refuses_to_start_without_root`); README "Running as a system service"; UC-03C added to itests/USE_CASES.md
+- [ ] 1.2 Per-user directories `/run/tilr/users/<uid>/` owned by root (0711), sockets bound by root and handed to the user (0600), only `panes/` owned by the user and never opened by root (daemon-lifecycle "System directories are writable by root only", "Per-user directories of a system server", "Root makes nothing inside a user's directory"); verify itests UC-03C (`uc_03c.py::a_user_cannot_plant_a_link_in_her_directory`, `uc_03c.py::a_link_in_panes_is_not_written_through_as_root`, `uc_03c.py::a_crashed_pane_leaves_no_state_behind`, `uc_03c.py::a_world_writable_runtime_directory_is_refused`, `uc_03c.py::a_link_in_place_of_a_users_directory_is_not_followed`); UC-03C entry in itests/USE_CASES.md; README "Running as a system service" (the directories)
 
 ## 2. Who the connection is
 
 - [ ] 2.1 Unix socket in system mode: peer uid → connection's user, `HelloAck.user`, feature `multi-user` in `tilr.proto` (README "Protocol"); client accepts a uid-0 server on the system socket; verify itests UC-03C (`uc_03c.py::two_users_on_the_system_socket_are_told_who_they_are`, `uc_03c.py::a_user_outside_the_group_cannot_reach_the_socket`); UC-03C entries in itests/USE_CASES.md; README "Who may connect" (the group `tilr`)
 - [ ] 2.2 Per-user tokens, `tilr token [--new]` for the caller, no root token, TCP `Hello` maps a token to its user (access-control "A system server keeps a token per user"); verify `auth::a_system_server_keeps_a_token_per_user` (as root) and itests UC-03C (`uc_03c.py::a_users_token_opens_only_that_users_panes`); README "Who may connect" (per-user tokens, no root token); USE_CASES.md entry
+- [ ] 2.3 Server commands on a system server run in the supervisor scoped to the connection's user; `update`, `reload`, `cloud` for root only (design Q4c; `access-control`/`tilr-cli` deltas written after the answer); verify itests UC-03C (`uc_03c.py::a_member_cannot_update_the_system_server`); USE_CASES.md entry
 
 ## 3. Panes as their user
 

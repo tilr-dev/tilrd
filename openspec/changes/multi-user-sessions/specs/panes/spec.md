@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A system server runs a pane as its connection's user
-On a server started with `--system`, the pane process SHALL take the connection's user (see `access-control`) before it opens the pty: supplementary groups from the group database, then the user's gid, then the uid, and, when that user is not root, it MUST fail the pane when it could still regain uid 0.
+On a server started with `--system`, the pane process SHALL take the pane's user (the connection's user, see `access-control`, or the `run_as` user when root asked for one) before it opens the pty: supplementary groups from the group database, then the user's gid, then the uid, and, when that user is not root, it MUST fail the pane when it could still regain uid 0.
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 

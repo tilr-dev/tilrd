@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: System mode needs root
-`tilrd --system` SHALL check, before it binds or creates anything, that it runs with euid 0 and (on Linux) holds `CAP_SETUID` and `CAP_SETGID`; otherwise it MUST exit 1 with `--system needs root: tilrd runs as uid N; run it as root (a system service), or without --system for a server of your own` (naming the missing capability when euid is 0). Without `--system` a server run as root SHALL behave as today: a per-user server of root.
+`tilrd --system` SHALL check, before it binds or creates anything, that it runs with euid 0; otherwise it MUST exit 1 with `--system needs root: tilrd runs as uid N; run it as root (a system service), or without --system for a server of your own`. Without `--system` a server run as root SHALL behave as today: a per-user server of root.
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 
@@ -9,13 +9,18 @@
 - **WHEN** a user with uid 1000 runs `tilrd --system`
 - **THEN** it exits 1 with `--system needs root: tilrd runs as uid 1000`, and nothing is made under `/run/tilr` or `/var/lib/tilr`
 
-#### Scenario: Root without capabilities
-- **WHEN** `tilrd --system` runs as uid 0 in a container without `CAP_SETUID`
-- **THEN** it exits 1 and the error names `CAP_SETUID`
-
 #### Scenario: Root without --system
 - **WHEN** no system tilrd runs and root runs `tilr new -d`
 - **THEN** a per-user server of root starts on root's runtime directory, as without this change
+
+### Requirement: System mode needs CAP_SETUID and CAP_SETGID
+On Linux, `tilrd --system` run with euid 0 SHALL also check, before it binds or creates anything, that it holds `CAP_SETUID` and `CAP_SETGID`; otherwise it MUST exit 1 with `--system needs CAP_SETUID and CAP_SETGID: tilrd runs as root without <missing>`.
+
+**Verified by**: not tested yet (a test is named in tasks.md).
+
+#### Scenario: Root without capabilities
+- **WHEN** `tilrd --system` runs as uid 0 in a container without `CAP_SETUID`
+- **THEN** it exits 1 with `--system needs CAP_SETUID and CAP_SETGID: tilrd runs as root without CAP_SETUID`
 
 ### Requirement: Paths and modes of a system server
 A server started with `--system` SHALL ignore `TILR_RUNTIME_DIR`, `XDG_RUNTIME_DIR`, `TILR_STATE_DIR`, `XDG_STATE_HOME` and `TILR_CONFIG_DIR` for its defaults and use: socket `/run/tilr/tilrd.sock` (`root:tilr`, 0660; `--socket` still overrides), its lock `/run/tilr/tilrd.sock.lock` (0600), `/run/tilr` 0755 owned by root, state `/var/lib/tilr` (0700 root), configuration `/etc/tilr/server.toml`. It MUST refuse `/run/tilr` or `/var/lib/tilr` owned by another uid than 0.
@@ -29,6 +34,19 @@ A server started with `--system` SHALL ignore `TILR_RUNTIME_DIR`, `XDG_RUNTIME_D
 #### Scenario: State directory of another owner
 - **WHEN** `/var/lib/tilr` belongs to uid 1000 and root runs `tilrd --system`
 - **THEN** it exits 1 with `/var/lib/tilr belongs to another user`
+
+### Requirement: System directories are writable by root only
+A server started with `--system` MUST refuse to start when `/run/tilr`, `/run/tilr/users` (0755) or `/var/lib/tilr` is not a directory owned by root and writable by root only, and SHALL check, before using them, that an existing `/run/tilr/users/<uid>` and its `agent/`, `agent/<pid>/` and `shims/` are directories (not links) owned by root, else fail the pane and log the path.
+
+**Verified by**: not tested yet (a test is named in tasks.md).
+
+#### Scenario: A world-writable runtime directory
+- **WHEN** `/run/tilr` is 0777 owned by root and root runs `tilrd --system`
+- **THEN** it exits 1 naming `/run/tilr`, and nothing is bound
+
+#### Scenario: A link in place of a user's directory
+- **WHEN** `/run/tilr/users/<alice's uid>` is a symbolic link to `/etc` before her first pane
+- **THEN** the pane fails, nothing in `/etc` changes, and the log names the path
 
 ### Requirement: Per-user directories of a system server
 A server started with `--system` SHALL make, for each user with a pane, `/run/tilr/users/<uid>/` and its subdirectories `agent/`, `agent/<pid>/` and `shims/` owned by root (directories 0711, shims 0755), and SHALL bind that user's host-events and agent sockets there itself, each 0600 root until it is made, then owned by the user. Its only user-owned entry SHALL be `panes/` (0700, made empty by root).
@@ -79,10 +97,14 @@ When no server answers on the user's own socket and nothing names a socket, `til
 - **THEN** `tilr ls` lists the panes of her own server
 
 ### Requirement: tilr outside the group tilr is told so
-When `tilr` would use `/run/tilr/tilrd.sock` and connecting there fails with permission denied, `tilr` MUST exit 1 with `/run/tilr/tilrd.sock: permission denied: a system tilrd runs here and you are not in the group tilr` and MUST NOT start a server.
+When `tilr` would use `/run/tilr/tilrd.sock` and connecting there fails with permission denied, `tilr` MUST exit 1 with `/run/tilr/tilrd.sock: permission denied: this is the socket of a system tilrd and you are not in the group tilr` and MUST NOT start a server.
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 
 #### Scenario: Not in the group
 - **WHEN** a system tilrd runs and carol, not in the group `tilr` and with no server of her own, runs `tilr ls` or `tilr new -d`
-- **THEN** it exits 1 with `/run/tilr/tilrd.sock: permission denied: a system tilrd runs here and you are not in the group tilr`, and no tilrd runs as carol
+- **THEN** it exits 1 with `/run/tilr/tilrd.sock: permission denied: this is the socket of a system tilrd and you are not in the group tilr`, and no tilrd runs as carol
+
+#### Scenario: A stopped system server
+- **WHEN** the system tilrd has stopped and left `/run/tilr/tilrd.sock` behind, and carol runs `tilr new -d`
+- **THEN** it exits 1 with the same message and no tilrd runs as carol

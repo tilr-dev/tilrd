@@ -1,6 +1,6 @@
 # Design: A system tilrd that runs each session as its user
 
-Status: options for the owner. Every question below (Q1-Q9, Q4b, Q5a, Q7b, Q7c) lists the options with their pros and cons and a recommendation (**Rec.**). Nothing is decided; the spec deltas follow the recommendations and change with the answers.
+Status: options for the owner. Every question below (Q1-Q9, Q4b, Q4c, Q5a, Q7b, Q7c) lists the options with their pros and cons and a recommendation (**Rec.**). Nothing is decided; the spec deltas follow the recommendations and change with the answers.
 
 ## Where the code assumes one user (dev at 7b320bc)
 
@@ -39,6 +39,15 @@ Status: options for the owner. Every question below (Q1-Q9, Q4b, Q5a, Q7b, Q7c) 
 - Panes **as root**: only for a connection whose user is root (root logged in locally); never from a TCP token. A root token does not exist (root has no per-user token in system mode).
 - **Rec. (a)**; (b) later if a use is named.
 
+### Q4c. Who may run commands that act on the whole system server
+
+`tilr update` / `tilrd update`, a reload, `tilr cloud` (link the machine to Cloud) run inside the server and change it for every user.
+
+- (a) **Root only** (a connection whose user is root on the Unix socket); any other user gets `Error { "only root may <command> a system server" }`. + A member of `tilr` cannot replace or relink root's daemon. − An admin must `sudo tilr update`.
+- (b) Any member of the group `tilr`. + As on a per-user server. − Any member can install a binary that runs as root: a privilege escalation; rejected.
+- (c) Members of a second group (`tilr-admin`). + Delegation. − One more group to specify and test.
+- **Rec. (a)**.
+
 ### Q4b. What root sees on a system server
 
 - (a) **Root sees and drives every pane** (`tilr ls` lists all with their user, root can attach to alice's pane), but host events, clipboard writes (OSC 52) and agent streams of a pane go only to connections of the pane's user, not to root. + An admin can find and close a stuck pane; + alice's clipboard and SSH agent never reach root's client. − Root watching alice's pane without her knowing (root can do this anyway with `ptrace`; `PaneInfo.viewed_by` shows root's connection).
@@ -51,6 +60,7 @@ Status: options for the owner. Every question below (Q1-Q9, Q4b, Q5a, Q7b, Q7c) 
 | thing | today | system mode (Rec.) | alternative |
 |---|---|---|---|
 | main Unix socket | `tilr-<euid>/tilrd.sock` 0600 in 0700 | one `/run/tilr/tilrd.sock`, `root:tilr` 0660, dir `/run/tilr` 0755 root; the peer uid identifies the user | (i) 0666, any local user (no group to manage, every account on the box can get a shell — it already has one); (ii) a socket per user in `/run/tilr/users/<uid>/` — keeps the check as it is, but the daemon must know users in advance |
+| `/run/tilr/users` | — | 0755 root; `/run/tilr`, `/run/tilr/users` and `/var/lib/tilr` writable by root only, checked at start (Q5a) | — |
 | lock, log | next to the socket | `/run/tilr/tilrd.sock.lock` 0600 root; log to stderr (journald / launchd) | — |
 | host-events socket `$TILR_SOCK` | `<runtime>/<server_id>.sock` | `/run/tilr/users/<uid>/<server_id>.sock`, socket 0600 owned by the user in a root-owned directory (Q5a) | per pane (`…/<pane>.sock`): finer, more sockets |
 | agent sockets `SSH_AUTH_SOCK` | `<runtime>/agent/<pid>/<pane>.sock` | `/run/tilr/users/<uid>/agent/<pid>/<pane>.sock`, socket 0600 owned by the user, directories root-owned (Q5a) | — |
@@ -83,10 +93,10 @@ Root (the supervisor) makes the host-events and agent sockets, their directories
 
 ## Q7. What changes in access-control and daemon-lifecycle
 
-- "The Unix socket checks the peer's uid": per-user mode unchanged; system mode reads the peer uid and makes it the connection's user, refusing only a peer that cannot be read or has no passwd entry. Access is limited by the socket's group (Q5).
+- "The Unix socket checks the peer's uid": per-user mode unchanged; system mode reads the peer uid and makes it the connection's user, refusing only a peer whose uid has no passwd entry (a peer gone before its credentials were read is closed without the warning, as today). Access is limited by the socket's group (Q5).
 - "The host-events and agent sockets check the peer's uid": in system mode they accept the socket's user and root and refuse the rest.
 - "The access token …", "TCP clients present the token": per-user tokens (Q3). `--no-auth` with `--system` is refused (`--no-auth` would make every TCP client root's choice of user).
-- "A server command … Unix socket only": stays; it runs as the connection's user (`tilr token` prints that user's token).
+- "A server command … Unix socket only": stays; on a system server a server command runs inside the supervisor (root), scoped to the connection's user: `tilr token` reads or makes that user's token in `/var/lib/tilr/users/<uid>/`, which a process dropped to the user could not. Commands that act on the whole server (`update`, `reload`, `cloud`) are Q4c.
 - daemon-lifecycle: `--system` paths; `tilr` never starts a system tilrd (a service manager does: `tilr service install --system` is a later task); the runtime/state directory owner checks expect root for `/run/tilr`, `/var/lib/tilr` and `/run/tilr/users/<uid>` (Q5a), and the user only for its `panes/`.
 - Client: `tilr` today refuses a server of another uid (`check_peer`); for the system socket it must accept a server whose uid is 0.
 
@@ -94,9 +104,9 @@ Root (the supervisor) makes the host-events and agent sockets, their directories
 
 With the Q5 socket (`root:tilr` 0660), carol (not in `tilr`) gets `EACCES` when she connects to `/run/tilr/tilrd.sock`. `tilr` must tell that apart from "no server there".
 
-- (a) **`EACCES` means "a server is there, you may not use it"**: `tilr` exits 1 with `/run/tilr/tilrd.sock: permission denied: a system tilrd runs here and you are not in the group tilr`, and starts nothing. A user who wants a server of her own names its socket (`--socket`) or runs `tilrd` herself. + The admin's setup is not silently bypassed; + no "my panes are not where I expected" puzzles. − A user who used per-user tilr before the admin installed the system server loses the automatic start until she is added to the group or names her socket.
+- (a) **`EACCES` means "a server is there, you may not use it"**: `tilr` exits 1 with `/run/tilr/tilrd.sock: permission denied: this is the socket of a system tilrd and you are not in the group tilr`, and starts nothing. A user who wants a server of her own names its socket (`--socket`) or runs `tilrd` herself. + The admin's setup is not silently bypassed; + no "my panes are not where I expected" puzzles. − A socket left by a stopped system tilrd gives the same `EACCES`: carol is told it is a system server's socket (true) and still gets no server of her own until it is restarted or removed. − A user who used per-user tilr before the admin installed the system server loses the automatic start until she is added to the group or names her socket.
 - (b) `EACCES` counts as "no server": carol gets a per-user server of her own, as today. + Nothing changes for users outside the group. − Two servers per user possible without anyone noticing; the group no longer decides who uses the system server, only who may.
-- (c) As (b) with a warning on stderr (`a system tilrd runs here but you are not in the group tilr; starting your own`). + Visible and still working. − A warning on every `tilr` run that starts a server.
+- (c) As (b) with a warning on stderr (`/run/tilr/tilrd.sock is the socket of a system tilrd and you are not in the group tilr; starting your own`). + Visible and still working. − A warning on every `tilr` run that starts a server.
 - **Rec. (a)**: the deltas (access-control "Not in the group" as a direct connect, daemon-lifecycle "tilr outside the group tilr is told so") follow it.
 
 ### Q7c. Where `tilr` goes for a user with no server of her own
@@ -112,7 +122,7 @@ Once a system tilrd runs, `tilr new` of a user in the group who has no server of
 
 - `tilrd --system` with euid ≠ 0: exit 1 before binding anything, `--system needs root: tilrd runs as uid N; run it as root (a system service), or without --system for a server of your own`.
 - `CreatePane.run_as` on a per-user server: `PaneCreated.error` "this server runs panes as its own user only", no pane made.
-- At start, `--system` checks not just euid 0 but (on Linux) `CAP_SETUID` and `CAP_SETGID`, and refuses with the message above naming the missing capability (a container that runs as root without them).
+- At start, `--system` checks not just euid 0 but (on Linux) `CAP_SETUID` and `CAP_SETGID`, and refuses with `--system needs CAP_SETUID and CAP_SETGID: tilrd runs as root without <missing>` (a container that runs as root without them).
 - If the drop still fails while running (a pane's `initgroups`/`setgid`/`setuid` returns an error), that pane fails with the error in `PaneCreated.error`; other panes are not touched.
 
 ## Q9. SOCKS proxy and metrics on a system server
@@ -130,7 +140,7 @@ The deltas here change only the two peer-uid requirements. With the recommended 
 
 - `access-control` "The access token is made once and kept for the user only" (one `<state>/token`) and "Showing the token" (`tilrd token`): per-user tokens instead (Q3).
 - `access-control` "The Unix socket is the user's alone and asks no token" (0600 socket, 0700 directory): `root:tilr` 0660 in a 0755 `/run/tilr` (Q5).
-- `access-control` "A connection gone before its uid check is not refused" ("a connection from another uid MUST still be refused"): on the system socket another uid is a user, not refused (Q7).
+- `access-control` "A connection gone before its uid check is not refused" ("a connection from another uid MUST still be refused"): on the system socket another uid is a user, not refused; a peer gone before its credentials were read is still closed without the warning, as there (Q7).
 - `panes` "The directory a pane starts in": a `cwd` the user cannot enter falls back to the home (Q6).
 - `panes` "Listing panes" ("every running pane") and "Pane changes are pushed" (to every client): only the connection's user's panes (Q2, Q4, Q4b).
 - `access-control` "TCP clients present the token in Hello" ("equals its token", one token), "HTTP requests on the port carry the token in a header or the query" (whose token admits `/socks`, `/metrics`): per-user tokens (Q3, Q9).

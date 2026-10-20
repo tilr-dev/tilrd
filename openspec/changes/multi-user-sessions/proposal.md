@@ -1,4 +1,4 @@
-Блокер: the security model of a root tilrd (how a client names the user, how it proves it may, who may ask for another user, which sockets and directories become per-user) is the owner's decision; design.md lays out the options (Q1-Q9, Q4b, Q5a, Q7b, Q7c) with a recommendation for each. The spec deltas here are written for the recommended options and are rewritten to match the owner's answers before any task is cut from tasks.md.
+Блокер: the security model of a root tilrd (how a client names the user, how it proves it may, who may ask for another user, which sockets and directories become per-user) is the owner's decision; design.md lays out the options (Q1-Q9, Q4b, Q4c, Q5a, Q7b, Q7c) with a recommendation for each. The spec deltas here are written for the recommended options and are rewritten to match the owner's answers before any task is cut from tasks.md.
 
 # Proposal: A system tilrd that runs each session as its user
 
