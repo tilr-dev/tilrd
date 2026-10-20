@@ -3058,26 +3058,15 @@ impl Supervisor {
     /// current without polling. A client that has not said hello yet is left
     /// out: the first thing it hears is the answer to its hello.
     fn broadcast_pane_list(&mut self) {
-        let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneList(
-            self.pane_list(0),
-        )));
-        let stuck: Vec<ClientId> = self
-            .clients
-            .iter()
-            .filter(|(_, client)| {
-                client.greeted && client.tx.try_send(packet.clone().into()).is_err()
-            })
-            .map(|(&id, _)| id)
-            .collect();
-        for client_id in stuck {
-            self.drop_stuck(client_id);
-        }
+        self.broadcast_to_greeted(server_message::Msg::PaneList(self.pane_list(0)));
     }
 
     fn broadcast_activity(&mut self, activity: tilr_proto::PaneActivity) {
-        let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneActivity(
-            activity,
-        )));
+        self.broadcast_to_greeted(server_message::Msg::PaneActivity(activity));
+    }
+
+    fn broadcast_to_greeted(&mut self, msg: server_message::Msg) {
+        let packet = tilr_proto::encode(&ServerMessage::from(msg));
         let stuck: Vec<ClientId> = self
             .clients
             .iter()

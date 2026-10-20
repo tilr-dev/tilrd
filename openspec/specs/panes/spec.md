@@ -377,7 +377,7 @@ Moving the environment to make room for the title SHALL preserve every environme
 ### Requirement: A bell in a pane is reported
 When a pane's program rings the bell (BEL in its output, outside an escape sequence), the server SHALL send `PaneActivity { pane_id, kind: BELL, at_ms }` to every greeted client, whether or not it watches the pane, and at most one per pane per second.
 
-**Verified by**: `panes::a_bell_in_an_unwatched_pane_is_reported`, `panes::bells_are_reported_once_a_second` and `panes::a_bel_ending_an_osc_is_not_reported` (planned in this change).
+**Verified by**: `panes::a_bell_in_an_unwatched_pane_is_reported`, `panes::bells_are_reported_once_a_second` and `panes::a_bel_ending_an_osc_is_not_reported`.
 
 #### Scenario: Bell in a pane nobody watches
 - **WHEN** a client is greeted but not subscribed to a pane, and `printf '\a'` runs in that pane
@@ -394,7 +394,7 @@ When a pane's program rings the bell (BEL in its output, outside an escape seque
 ### Requirement: A finished foreground command is reported
 When the pty's foreground process group of a pane goes from another group back to the shell's, the server SHALL send `PaneActivity { pane_id, kind: COMMAND_FINISHED, at_ms }` to every greeted client, once per such return; this SHALL also hold for a command that was running across a reload. A pane whose program does not use job control (a command run directly, a shell without job control) MAY report none.
 
-**Verified by**: `panes::a_finished_foreground_command_is_reported`, `panes::typing_at_the_prompt_reports_nothing` and `reload::a_command_running_across_a_reload_is_reported_when_it_ends` (planned in this change).
+**Verified by**: `panes::a_finished_foreground_command_is_reported`, `panes::typing_at_the_prompt_reports_nothing` and `reload::a_command_running_across_a_reload_is_reported_when_it_ends`.
 
 #### Scenario: A command ends
 - **WHEN** `sleep 1` runs in the foreground of a pane's shell and ends
