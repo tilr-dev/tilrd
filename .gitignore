@@ -8,3 +8,6 @@
 *.pem
 *.key
 *.p12
+
+# Generated spec coverage reports (./itests/dt coverage)
+/openspec/coverage/

@@ -27,7 +27,7 @@ cd itests
 ./dt fixtures                          # fixture graph and how many cases use each
 ./dt fixture server_state              # export a snapshot to results/fixture-server_state
 ./dt call server export --path ./tilrd   # the Linux binary (also: driver, build)
-./dt coverage                          # write ../openspec/coverage/ (no Dagger)
+./dt coverage                          # write local ignored ../openspec/coverage/ (no Dagger)
 ```
 
 Results go to `results/<timestamp>-<pid>/` (`results/latest` links the last run):
@@ -357,7 +357,8 @@ installer read them. `echo` is a TCP echo service on port
 the cases tagged for it, the cargo tests the spec text names ("Verified by …"), and each
 case's status in `results/latest` when there is one; requirements with neither are listed
 under "Uncovered". It exits 1 on an invalid registry. Run it after changing a requirement
-or a case's tags.
+or a case's tags. These reports are generated locally on demand, ignored by git, and
+are not committed. A fresh checkout has no report until you run the command.
 
 ## Gotchas
 
