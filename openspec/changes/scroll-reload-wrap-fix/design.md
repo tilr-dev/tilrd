@@ -27,3 +27,17 @@ No new timing hook is necessary: receiving the resize frame is the barrier.
 
 Recheck with:
 `cargo test -p tilrd --test scroll a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload --features tilrd/failpoints --locked`.
+
+## Validation and remaining blocker
+
+On 2026-10-20 the fixed narrow regression passes; fresh-context self-review: ok.
+The full `bin/check` ran; fmt, both clippy variants and gitleaks passed.
+After adding the tests-only `skip_specs` metadata, `bin/check tilrd:openspec
+tilrd:test tilrd:linux` passed. This rerun needed execution outside the sandbox:
+the client test starts `ps` and Docker buildx writes its activity under ~/.docker.
+
+The only remaining failure is cargo deny: RUSTSEC-2026-0382 for rustls-webpki
+0.103.15 and RUSTSEC-2026-0381 for webpki-roots 0.26.11/1.0.9. `git diff origin/dev
+-- Cargo.lock` is empty at dev 4a0231f; this task changes no dependencies.
+Existing TILR-244 blocks completion. Recheck with `../bin/check tilrd:deny`;
+remove this blocker once that task has repaired dev and the check passes.

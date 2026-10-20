@@ -8,5 +8,5 @@
 ## 2. Validate
 
 - [x] 2.1 Run the narrow regression test.
-- [ ] 2.2 Fresh-context self-review and full bin/check.
+- [x] 2.2 Fresh-context self-review and full bin/check (deny blocked by TILR-244; all other checks green, see design.md).
 - [ ] 2.3 Finish and submit to Review.
