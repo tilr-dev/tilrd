@@ -92,6 +92,8 @@ impl Machine {
             .env_remove("TILR_PANE")
             .env_remove("TILR_SOCK")
             .env_remove("SSH_AUTH_SOCK")
+            // The tilrd it starts logs at its default level.
+            .env_remove("RUST_LOG")
             .stdin(Stdio::null());
         command
     }
