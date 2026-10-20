@@ -28,4 +28,4 @@
 
 ## Implementation
 
-Implemented in `fd31744` (TILR-79). The default and CLI help name the API host; unit and integration tests verify the default, control URL, and preservation of the saved link. UC-07A passed (3 scenarios, 2 fixtures); coverage exited 0 on 2026-10-20. Strict validation also required shortening the existing reload failpoint requirement without changing its conditions.
+Implemented in the TILR-79 branch (`fix(cloud): использовать wss.tilr.dev по умолчанию`), rebased onto dev after TILR-147; the requirements are re-copied from dev's spec with TILR-147's "Verified by" lines kept. The default and CLI help name the API host; unit and integration tests verify the default, control URL, and preservation of the saved link. UC-07A passed (3 scenarios, 2 fixtures); coverage exited 0 on 2026-10-20.
