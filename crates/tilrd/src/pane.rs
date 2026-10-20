@@ -503,7 +503,7 @@ impl Pane {
             }
             self.foreground_command = foreground
                 .filter(|pid| *pid != shell)
-                .and_then(crate::title::command_line);
+                .map(crate::title::foreground_command);
         }
         self.title
             .set(shell, &self.cwd, self.foreground_command.as_deref());

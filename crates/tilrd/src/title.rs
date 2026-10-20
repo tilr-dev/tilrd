@@ -154,15 +154,59 @@ unsafe fn move_strings(
     }
 }
 
-pub fn command_line(pid: libc::pid_t) -> Option<Vec<u8>> {
+/// The foreground leader as the title shows it: its command line, else its
+/// process name (another user's process, a zombie), else `?` (already reaped).
+pub fn foreground_command(pid: libc::pid_t) -> Vec<u8> {
+    let mut command = command_line(pid)
+        .or_else(|| process_name(pid))
+        .unwrap_or_else(|| b"?".to_vec());
+    command.truncate(80);
+    command
+}
+
+fn command_line(pid: libc::pid_t) -> Option<Vec<u8>> {
     let raw = process_arguments(pid)?;
-    let mut command = raw
+    let command = raw
         .split(|b| *b == 0)
         .filter(|a| !a.is_empty())
         .collect::<Vec<_>>()
         .join(&b' ');
-    command.truncate(80);
-    Some(command)
+    (!command.is_empty()).then_some(command)
+}
+
+#[cfg(target_os = "linux")]
+fn process_name(pid: libc::pid_t) -> Option<Vec<u8>> {
+    let mut name = std::fs::read(format!("/proc/{pid}/comm")).ok()?;
+    name.pop_if(|b| *b == b'\n');
+    (!name.is_empty()).then_some(name)
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: libc::pid_t) -> Option<Vec<u8>> {
+    // KERN_PROCARGS2 refuses another user's process; the short BSD info does not.
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: the buffer is exactly one proc_bsdshortinfo.
+    if unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    } != size
+    {
+        return None;
+    }
+    // SAFETY: proc_pidinfo filled the whole struct.
+    let comm = unsafe { info.assume_init() }.pbsi_comm;
+    let name = comm
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .collect::<Vec<_>>();
+    (!name.is_empty()).then_some(name)
 }
 
 #[cfg(target_os = "linux")]
@@ -236,6 +280,40 @@ mod tests {
         assert_eq!(&area, b"a longe\0");
         write_area(&mut area, b"short");
         assert_eq!(&area, b"short\0\0\0");
+    }
+    #[test]
+    fn a_leader_that_is_gone_is_shown_as_a_placeholder() {
+        assert_eq!(foreground_command(libc::pid_t::MAX), b"?");
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_leader_is_named_by_its_process() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: waitid with WNOWAIT only waits for the exit; the child stays a
+        // zombie with an empty cmdline until wait() below reaps it.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            },
+            0
+        );
+        assert_eq!(command_line(pid), None);
+        assert_eq!(foreground_command(pid), b"true");
+        child.wait().unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn another_users_leader_is_named_by_its_process() {
+        // launchd runs as root: its arguments are refused, its name is not.
+        assert_eq!(command_line(1), None);
+        assert_eq!(foreground_command(1), b"launchd");
     }
     #[test]
     fn the_environment_is_unchanged_after_the_move() {

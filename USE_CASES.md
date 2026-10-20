@@ -54,6 +54,7 @@ real Linux containers with the same FIFO barrier.
 | A silent exec in the foreground group updates the process title without changing the leader pid | `the_pane_process_title_follows_exec_in_the_same_foreground_group` (`failpoints`) |
 | Reload preserves start arguments and restores the pane process title with the same shell and directory | `the_pane_process_title_is_set_again_after_a_reload` (`failpoints`) |
 | Titles are cut to the available area and moving the environment preserves its values | `title::tests::a_title_is_cut_to_the_area`, `title::tests::the_environment_is_unchanged_after_the_move`, `title::tests::a_moved_environment_entry_keeps_the_contiguous_prefix` |
+| A foreground leader whose command line cannot be read is shown by its process name, or `?` once it is gone | `title::tests::a_leader_that_is_gone_is_shown_as_a_placeholder`, `title::tests::a_zombie_leader_is_named_by_its_process` (Linux), `title::tests::another_users_leader_is_named_by_its_process` (macOS) |
 | `tilrd ps` (for users, `tilr ps`) shows the panes of a running server: id, pid, size, command | `ps_lists_the_panes_of_a_running_server` |
 | A server has its own id, the same after a restart; another server has another one | `a_server_keeps_its_id_when_it_restarts` |
 | A server started by a service manager (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` set) still says `READY=1`, but its panes do not get those variables | `a_pane_does_not_get_the_service_managers_variables` |

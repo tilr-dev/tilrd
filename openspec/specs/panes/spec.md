@@ -317,7 +317,7 @@ The wrappers in `<runtime dir>/shell/` are shared by all servers of the user. A 
 - **THEN** every install succeeds and the directory holds the current wrapper and nothing beside it
 
 ### Requirement: The pane process title follows the pane
-After its start arguments, a pane process SHALL show ` [shell <shell pid> in <cwd>]`, or ` [shell <shell pid> in <cwd>: <command>]` while another process group is in the foreground of its pty (`<cwd>` is `PaneInfo.cwd`, `<command>` the group leader's command line, at most 80 bytes). It SHALL update the title within a second of either changing and SHALL set it again after a reload.
+After its start arguments, a pane process SHALL show ` [shell <shell pid> in <cwd>]`, or ` [shell <shell pid> in <cwd>: <command>]` while another process group is in the foreground of its pty (`<cwd>` is `PaneInfo.cwd`, `<command>` the group leader's command line, its process name when the command line cannot be read, or `?` when the leader is gone; at most 80 bytes). It SHALL update the title within a second of either changing and SHALL set it again after a reload.
 
 **Verified by**: `panes::the_pane_process_title_follows_the_directory_and_the_command`, `panes::the_pane_process_title_follows_exec_in_the_same_foreground_group` and `reload::the_pane_process_title_is_set_again_after_a_reload`.
 
