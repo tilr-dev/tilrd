@@ -13,11 +13,12 @@
 //! that pane that announced "host-events" in its `Hello`, then answers `{"ok": true, "clients": 2}`, or `{"ok": false,
 //! "error": "no tilr client attached"}` when nobody would hear it.
 //!
-//! `{"name": "clipboard-write", "pane_id": "6f1c…"}` is the server's `xclip`
-//! or `wl-copy` saying it has put a copy in the clipboard's store (see
-//! [`crate::clipboard`]): the server sends it to the clients watching the
-//! pane as `ClipboardWrite` and answers `{"ok": true, "clients": N}`, N being
-//! 0 when nobody took it.
+//! `{"name": "clipboard-write", "pane_id": "6f1c…", "copy_id": 1234}` is the
+//! server's `xclip` or `wl-copy` saying it has put a copy in the clipboard's
+//! store (see [`crate::clipboard`]): the server sends it to the clients
+//! watching the pane as `ClipboardWrite` and answers `{"ok": true, "clients":
+//! N}`, N being 0 when nobody took it (or the store holds another copy by
+//! now).
 //!
 //! The program is this executable under the name `tilr` (put on the PATH of
 //! the panes, see [`shim`]) or `tilrd edit` / `tilrd open`. The socket is
@@ -69,6 +70,10 @@ pub struct Request {
     pub path: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// For [`CLIPBOARD_WRITE`]: the store's id of the copy (see
+    /// [`clipboard::Store::publish`]), so that nothing else is sent for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_id: Option<u64>,
 }
 
 fn open() -> String {
@@ -397,6 +402,7 @@ pub fn run(command: Command) -> ExitCode {
         kind,
         path,
         args,
+        copy_id: None,
     };
     match ask(Path::new(&sock), &request) {
         Ok(Reply { ok: true, .. }) => ExitCode::SUCCESS,

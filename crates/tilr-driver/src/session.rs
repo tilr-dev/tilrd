@@ -158,6 +158,8 @@ pub struct Session {
     leaked: Vec<Ws>,
     /// The copy made in a pane that is coming in (`ClipboardWrite`).
     copy: Option<IncomingCopy>,
+    /// The newest `ClipboardWrite.transfer_id` seen on this connection.
+    newest_copy: u64,
 }
 
 /// A copy made in a pane, as its chunks come.
@@ -204,13 +206,18 @@ impl Session {
             next_socks: 0,
             leaked: Vec::new(),
             copy: None,
+            newest_copy: 0,
         }
     }
 
     /// Take a `ClipboardWrite` chunk: a whole copy is told as `clipboard_write`
     /// (its text when it is UTF-8), one a newer copy cut short as
-    /// `clipboard_write_cut`.
+    /// `clipboard_write_cut`; a late chunk of an older one is dropped.
     fn on_copy_chunk(&mut self, chunk: &ClipboardWrite) {
+        if chunk.transfer_id < self.newest_copy {
+            return;
+        }
+        self.newest_copy = chunk.transfer_id;
         match &mut self.copy {
             Some(copy) if copy.first.transfer_id == chunk.transfer_id => {
                 copy.data.extend_from_slice(&chunk.data);
@@ -288,6 +295,9 @@ impl Session {
         self.seq_base = ack.seq_base;
         self.seq_n = 0;
         self.generation += 1;
+        // Transfer ids count on each connection.
+        self.copy = None;
+        self.newest_copy = 0;
         self.trace.new_connection(ack.seq_base);
         self.last_rx = Instant::now();
         self.last_pong = Instant::now();

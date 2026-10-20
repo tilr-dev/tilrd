@@ -32,7 +32,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::time::measurement_instant;
-use crate::{clipboard, link, pty, reload};
+use crate::{link, pty, reload};
 
 /// Minimum spacing between frames. Output arriving faster is coalesced.
 const FRAME_INTERVAL: Duration = Duration::from_millis(8);
@@ -217,9 +217,6 @@ struct Pane {
     stats: FrameStats,
     /// How long encoding the last frame took; reported with the next one.
     last_encode: Duration,
-    /// Largest copy to the clipboard passed on; `None`: the clipboard is
-    /// off and copies are dropped.
-    clipboard_max: Option<u64>,
 }
 
 /// An input message the client named by `ClientMessage.seq`.
@@ -361,7 +358,6 @@ async fn serve(args: Args) -> Result<()> {
         input_credited: false,
         stats: FrameStats::default(),
         last_encode: Duration::ZERO,
-        clipboard_max: clipboard::max_from_env(),
     };
     let mut buf = vec![0u8; READ_BUF];
 
@@ -756,20 +752,17 @@ impl Pane {
     }
 
     /// Pass what the program copied to the clipboard on to the supervisor,
-    /// which gives it to the clients. A copy over the limit is dropped.
+    /// which decides (the clipboard on, its limit) and gives it to the
+    /// clients.
     async fn send_copies(&mut self) -> Result<()> {
         for copy in self.screen.take_copies() {
-            let Some(max) = self.clipboard_max else {
-                continue;
-            };
             let size = copy.data.len() as u64;
             // The link takes no packet larger than its limit, whatever the
             // clipboard's.
-            if size > max || copy.data.len() > link::MAX_PACKET / 2 {
+            if copy.data.len() > link::MAX_PACKET / 2 {
                 tracing::warn!(
                     pane = self.id,
                     size,
-                    max,
                     "clipboard: a copy over the limit was dropped"
                 );
                 continue;

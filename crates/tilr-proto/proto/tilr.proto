@@ -799,7 +799,9 @@ message HostEvent {
 // transfer whose chunks stop coming before `last` once another `transfer_id`
 // starts, and takes only a transfer that ends with `last`.
 message ClipboardWrite {
-  // Chosen by the server, distinct from its previous transfers.
+  // Chosen by the server, larger than those of its previous transfers. A
+  // chunk of a transfer older than the one under way is dropped: a newer
+  // copy may overtake the last chunk of the one it ends.
   uint64 transfer_id = 1;
   // The pane the program runs in.
   string pane_id = 2;
@@ -1082,6 +1084,9 @@ message SupervisorState {
   optional int32 local_listener = 6;
   optional int32 local_lock = 7;
   string local_path = 8;
+  // The last ClipboardWrite.transfer_id given out, so ids only grow across
+  // a reload. 0 = not recorded.
+  uint64 last_copy_id = 9;
 }
 
 message PaneState {

@@ -32,6 +32,9 @@ pub const DIR_ENV: &str = "TILR_CLIPBOARD_DIR";
 /// The largest copy the clipboard takes, in bytes (`--clipboard-max`). Set
 /// for every pane while the clipboard is on.
 pub const MAX_ENV: &str = "TILR_CLIPBOARD_MAX";
+/// How long a copy stays, in seconds (`--clipboard-ttl`); unset: until
+/// replaced. Set for every pane while the clipboard is on and has a TTL.
+pub const TTL_ENV: &str = "TILR_CLIPBOARD_TTL";
 /// MIME type of copied text.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// The directory of the tools the server puts first on the PATH of every pane
@@ -153,8 +156,10 @@ impl Store {
     }
 
     /// Replace the content. Readers see the old content or the new, never a
-    /// mix. `ttl` of `None` keeps it until replaced.
-    pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<()> {
+    /// mix. `ttl` of `None` keeps it until replaced. Returns the id of this
+    /// content (its file's inode), which [`Store::read_with_id`] gives with it
+    /// for as long as nothing replaced it.
+    pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<u64> {
         let expires = ttl.map_or(0, |ttl| unix_now_ms() + ttl.as_millis() as u64);
         let tmp = self
             .dir
@@ -163,7 +168,9 @@ impl Store {
             let mut file = fs::File::create(&tmp)?;
             writeln!(file, "{mime}\n{expires}")?;
             file.write_all(data)?;
-            fs::rename(&tmp, self.file())
+            let id = file.metadata()?.ino();
+            fs::rename(&tmp, self.file())?;
+            Ok(id)
         })();
         if written.is_err() {
             let _ = fs::remove_file(&tmp);
@@ -173,7 +180,15 @@ impl Store {
 
     /// The content, unless there is none or it has expired.
     pub fn read(&self) -> Option<Content> {
-        let raw = fs::read(self.file()).ok()?;
+        self.read_with_id().map(|(content, _)| content)
+    }
+
+    /// The content and its id (see [`Store::publish`]).
+    pub fn read_with_id(&self) -> Option<(Content, u64)> {
+        let mut file = fs::File::open(self.file()).ok()?;
+        let id = file.metadata().ok()?.ino();
+        let mut raw = Vec::new();
+        file.read_to_end(&mut raw).ok()?;
         let mut parts = raw.splitn(3, |&byte| byte == b'\n');
         let mime = std::str::from_utf8(parts.next()?).ok()?.to_owned();
         let expires: u64 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
@@ -181,7 +196,7 @@ impl Store {
         if expires != 0 && unix_now_ms() >= expires {
             return None;
         }
-        Some(Content { mime, data })
+        Some((Content { mime, data }, id))
     }
 }
 
@@ -189,6 +204,13 @@ impl Store {
 /// `None` when the clipboard is off.
 pub fn max_from_env() -> Option<u64> {
     std::env::var(MAX_ENV).ok()?.parse().ok()
+}
+
+/// `--clipboard-ttl` as the server put it in this process's environment;
+/// `None`: until replaced.
+fn ttl_from_env() -> Option<Duration> {
+    let seconds: u64 = std::env::var(TTL_ENV).ok()?.parse().ok()?;
+    (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
 /// Milliseconds since the Unix epoch.
@@ -240,24 +262,26 @@ impl Receiver {
     }
 
     /// Make `data`, copied in a pane, the clipboard's content.
-    pub fn publish(&self, mime: &str, data: &[u8]) -> io::Result<()> {
+    pub fn publish(&self, mime: &str, data: &[u8]) -> io::Result<u64> {
         self.store.publish(mime, data, self.limits.ttl)
     }
 
-    /// What a shim in a pane has just copied to the store, given the
-    /// clipboard's expiry; `None` if there is nothing. Content over the
-    /// limit (the shim checks it first) is removed.
-    pub fn take_copied(&self) -> Result<Option<Content>, String> {
-        let Some(content) = self.store.read() else {
+    /// The copy a shim in a pane put in the store as `id`; `None` if the
+    /// store holds something else by now (a newer copy or upload, which
+    /// goes its own way) or nothing. Content over the limit (the shim
+    /// checks it first) is removed.
+    pub fn take_copied(&self, id: Option<u64>) -> Result<Option<Content>, String> {
+        let Some((content, stored)) = self.store.read_with_id() else {
             return Ok(None);
         };
+        if id.is_some_and(|id| id != stored) {
+            return Ok(None);
+        }
         let size = content.data.len() as u64;
         if size > self.limits.max_bytes {
             self.store.clear();
             return Err(too_large(size, self.limits.max_bytes));
         }
-        self.publish(&content.mime, &content.data)
-            .map_err(|err| format!("store the copy: {err}"))?;
         Ok(Some(content))
     }
 
@@ -692,9 +716,10 @@ fn copy(tool: &str, copy: CopyRequest, dir: PathBuf) -> ExitCode {
     if copy.trim_newline && data.last() == Some(&b'\n') {
         data.pop();
     }
-    if let Err(err) = Store::at(dir).publish(mime, &data, None) {
-        return fail(format!("store the copy: {err}"));
-    }
+    let id = match Store::at(dir).publish(mime, &data, ttl_from_env()) {
+        Ok(id) => id,
+        Err(err) => return fail(format!("store the copy: {err}")),
+    };
     let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
     // Outside a pane of a server with a host socket there is nobody to
     // tell: the copy is in the store, for the panes to paste.
@@ -708,6 +733,7 @@ fn copy(tool: &str, copy: CopyRequest, dir: PathBuf) -> ExitCode {
         kind: String::new(),
         path: String::new(),
         args: Vec::new(),
+        copy_id: Some(id),
     };
     match crate::host::ask(Path::new(&sock), &request) {
         Ok(crate::host::Reply { ok: true, .. }) => ExitCode::SUCCESS,
@@ -1077,6 +1103,30 @@ mod tests {
         // Rewrite the expiry into the past.
         fs::write(store.file(), b"text/plain\n1\nold").unwrap();
         assert_eq!(store.read(), None);
+    }
+
+    #[test]
+    fn a_shims_copy_is_taken_only_while_the_store_holds_it() {
+        let receiver = receiver("copied", 100);
+        let id = receiver.store.publish("text/plain", b"mine", None).unwrap();
+        let taken = receiver.take_copied(Some(id)).unwrap().unwrap();
+        assert_eq!(taken.data, b"mine");
+        assert_eq!(receiver.store.read_with_id().unwrap().1, id);
+        // Something else replaced it before the server heard of the copy.
+        let other = receiver
+            .store
+            .publish("text/plain", b"other", None)
+            .unwrap();
+        assert_ne!(other, id);
+        assert_eq!(receiver.take_copied(Some(id)).unwrap(), None);
+        // Over the limit: refused and removed.
+        let id = receiver
+            .store
+            .publish("text/plain", &[b'x'; 101], None)
+            .unwrap();
+        let error = receiver.take_copied(Some(id)).unwrap_err();
+        assert!(error.starts_with("too large: 101 B"), "{error}");
+        assert_eq!(receiver.store.read(), None);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: The clipboard can be turned off
-With `--no-clipboard` the `"clipboard"` feature MUST be absent and `clipboard_max_bytes` 0; a `ClipboardPut` transfer MUST be answered once, on its first chunk, with `ClipboardAck` `ok` false and `the clipboard is turned off on this server`; the panes MUST get neither the server's `xclip`/`wl-paste`/`wl-copy` nor `TILR_CLIPBOARD_DIR` (its `tilr` stays); and no `ClipboardWrite` MUST be sent.
+With `--no-clipboard` the `"clipboard"` feature MUST be absent and `clipboard_max_bytes` 0; a `ClipboardPut` transfer MUST be answered once, on its first chunk, with `ClipboardAck` `ok` false and `the clipboard is turned off on this server`; the panes MUST get neither the server's `xclip`/`wl-paste`/`wl-copy` nor `TILR_CLIPBOARD_DIR`, `TILR_CLIPBOARD_MAX` or `TILR_CLIPBOARD_TTL` (its `tilr` stays); and no `ClipboardWrite` MUST be sent.
 
 **Verified by**: `clipboard::the_clipboard_can_be_turned_off` and `clipboard::nothing_is_copied_to_clients_with_the_clipboard_turned_off`.
 
@@ -15,7 +15,7 @@ With `--no-clipboard` the `"clipboard"` feature MUST be absent and `clipboard_ma
 - **THEN** a subscribed client with `"clipboard-write"` receives no `ClipboardWrite`
 
 ### Requirement: The panes get the server's xclip and wl-paste first on PATH
-With the clipboard on, the server SHALL link its executable as `xclip`, `wl-paste` and `wl-copy` (and `tilr`) in `bin/` of the runtime directory, put that directory first on every pane's `PATH`, and set `TILR_SHIMS` to it, `TILR_CLIPBOARD_DIR` to the clipboard directory and `TILR_CLIPBOARD_MAX` to `--clipboard-max` in bytes, so a profile that resets `PATH` can restore it with `PATH="$TILR_SHIMS:$PATH"`.
+With the clipboard on, the server SHALL link its executable as `xclip`, `wl-paste` and `wl-copy` (and `tilr`) in `bin/` of the runtime directory, put that directory first on every pane's `PATH`, and set `TILR_SHIMS` to it, `TILR_CLIPBOARD_DIR` to the clipboard directory, `TILR_CLIPBOARD_MAX` to `--clipboard-max` in bytes and, with a `--clipboard-ttl`, `TILR_CLIPBOARD_TTL` to it in seconds, so a profile that resets `PATH` can restore it with `PATH="$TILR_SHIMS:$PATH"`.
 
 **Verified by**: `clipboard::a_pasted_image_reaches_a_program_that_reads_the_clipboard` and `clipboard::the_clipboard_can_be_turned_off`.
 

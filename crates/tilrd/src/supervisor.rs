@@ -621,7 +621,7 @@ pub fn run(options: Options) -> Result<()> {
                 metrics: shared_metrics,
                 next_client_id,
                 copies: HashMap::new(),
-                last_copy: 0,
+                last_copy: state.as_ref().map_or(0, |state| state.last_copy_id),
             };
             if let Some(state) = state {
                 supervisor.resume(state);
@@ -786,6 +786,12 @@ fn set_up_shims(
                     OsString::from(clipboard::MAX_ENV),
                     limits.max_bytes.to_string().into(),
                 ));
+                if let Some(ttl) = limits.ttl {
+                    env.push((
+                        OsString::from(clipboard::TTL_ENV),
+                        ttl.as_secs().to_string().into(),
+                    ));
+                }
                 Some(clipboard::Receiver::new(store, limits))
             }
             Err(err) => {
@@ -1595,7 +1601,8 @@ struct Supervisor {
     /// The task sending each client a copy made in a pane, while it runs:
     /// a newer copy ends it.
     copies: HashMap<ClientId, tokio::task::AbortHandle>,
-    /// `ClipboardWrite.transfer_id` of the last copy sent.
+    /// `ClipboardWrite.transfer_id` of the last copy sent; handed on in a
+    /// reload, so that transfer ids only grow.
     last_copy: u64,
 }
 
@@ -1721,7 +1728,7 @@ impl Supervisor {
             Event::Exec(exec::Output::Stuck { client }) => self.drop_stuck(client),
             Event::PaneCopy { pane_id, copy } => self.on_pane_copy(pane_id, copy),
             Event::Host { request, reply } if request.name == host::CLIPBOARD_WRITE => {
-                let _ = reply.send(self.on_shim_copy(&request.pane_id));
+                let _ = reply.send(self.on_shim_copy(&request.pane_id, request.copy_id));
             }
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
@@ -2036,6 +2043,7 @@ impl Supervisor {
                 .unwrap_or_default(),
             format: reload::STATE_FORMAT,
             next_client_id: self.next_client_id.load(Ordering::Relaxed),
+            last_copy_id: self.last_copy,
             panes: panes
                 .into_iter()
                 .filter_map(|(pane_id, (to_pane, from_pane), unparsed)| {
@@ -2465,7 +2473,7 @@ impl Supervisor {
 
     /// The server's `xclip` or `wl-copy` in a pane put a copy in the store:
     /// it goes to the clients watching the pane. Returns how many those are.
-    fn on_shim_copy(&mut self, named: &str) -> Result<usize, String> {
+    fn on_shim_copy(&mut self, named: &str, copy_id: Option<u64>) -> Result<usize, String> {
         let pane_id = self.pane_mut(named).map(|(pane_id, _)| pane_id);
         let Some(clipboard) = &self.clipboard else {
             return Err("the clipboard is turned off on this server".into());
@@ -2473,9 +2481,11 @@ impl Supervisor {
         let Some(pane_id) = pane_id else {
             return Err(format!("no such pane: {named}"));
         };
-        let content = clipboard
-            .take_copied()?
-            .ok_or_else(|| String::from("the clipboard is empty"))?;
+        let Some(content) = clipboard.take_copied(copy_id)? else {
+            // Replaced (or expired) before the server heard of it: what
+            // replaced it goes its own way.
+            return Ok(0);
+        };
         Ok(self.send_copy(pane_id, content.mime, content.data.into()))
     }
 
@@ -2495,6 +2505,13 @@ impl Supervisor {
             };
             if !client.clipboard_write {
                 continue;
+            }
+            // The older copy ends before the newer starts. A chunk of it
+            // under way on another thread may still be queued after the
+            // newer one's first: the client drops chunks of a transfer
+            // older than the one it has.
+            if let Some(older) = self.copies.remove(&client_id) {
+                older.abort();
             }
             let to_client = client.tx.clone();
             let (pane_id, mime, data) = (pane_id.to_string(), mime.clone(), data.clone());
@@ -2521,9 +2538,7 @@ impl Supervisor {
                     offset = end;
                 }
             });
-            if let Some(older) = self.copies.insert(client_id, task.abort_handle()) {
-                older.abort();
-            }
+            self.copies.insert(client_id, task.abort_handle());
             sent += 1;
         }
         tracing::info!(pane = %pane_id, clients = sent, size = data.len(), "clipboard: copied in a pane");

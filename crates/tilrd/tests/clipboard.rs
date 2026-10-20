@@ -449,6 +449,29 @@ async fn a_copy_nobody_takes_stays_in_the_shared_buffer() {
     .await;
     let expires: u64 = String::from_utf8(stored).unwrap().trim().parse().unwrap();
     assert!(expires >= before + 3_600_000, "{expires}");
+    // Also for a copy the shim cannot tell the server of (no host socket):
+    // it has the TTL from the pane's environment.
+    assert_eq!(
+        output(
+            &server,
+            &mut client,
+            pane_id,
+            "printf %s \"$TILR_CLIPBOARD_TTL\""
+        )
+        .await,
+        b"3600"
+    );
+    let lone = "echo lone | env -u TILR_SOCK xclip -selection clipboard -i";
+    assert_eq!(client.run(pane_id, lone).await, 0);
+    let stored = output(
+        &server,
+        &mut client,
+        pane_id,
+        "sed -n 2p \"$TILR_CLIPBOARD_DIR/content\"",
+    )
+    .await;
+    let expires: u64 = String::from_utf8(stored).unwrap().trim().parse().unwrap();
+    assert!(expires >= before + 3_600_000, "{expires}");
 
     // A client that comes later is not sent it: the first copy it gets is
     // the next one.
