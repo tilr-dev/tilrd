@@ -11,7 +11,7 @@
 - **AND** SIGTERM makes tilrd exit 0 and the attached `tilr` print `[tilrd stopped]`
 
 #### Scenario: Debug logging
-- **WHEN** `tilrd` runs with `RUST_LOG=debug` and a TCP connection sends bytes that are not a WebSocket handshake
+- **WHEN** `tilrd` runs with `RUST_LOG=debug` and a connection to its Unix socket sends bytes that are not a WebSocket handshake
 - **THEN** its stderr has a DEBUG line `websocket handshake failed`
 - **AND** without `RUST_LOG` that line does not appear
 

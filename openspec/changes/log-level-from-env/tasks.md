@@ -2,10 +2,10 @@
 
 ## 1. Filter
 
-- [ ] 1.1 Enable tracing-subscriber's `env-filter` feature; build the filter from `RUST_LOG` with the `info` default and the warning on an invalid value (`main.rs:257-261`); verify `cargo deny check` and `cargo build --locked` (Cargo.lock updated by cargo, not by hand)
-- [ ] 1.2 Test servers start with `RUST_LOG` removed (`tests/common/mod.rs`); verify `cargo test -p tilrd` output unchanged with `RUST_LOG=trace` set in the shell
-- [ ] 1.3 Test `local::rust_log_sets_the_log_level` (debug line with `RUST_LOG=debug`, none without, the warning for an invalid value); USE_CASES.md entry; verify it passes
-- [ ] 1.4 README "Running tilrd" documents `RUST_LOG` (syntax, default, that a reload keeps it and pane shells inherit it); verify by review against this proposal
+- [x] 1.1 Enable tracing-subscriber's `env-filter` feature; build the filter from `RUST_LOG` with the `info` default and the warning on an invalid value (`main.rs:257-261`); verify `cargo deny check` and `cargo build --locked` (Cargo.lock updated by cargo, not by hand)
+- [x] 1.2 Test servers start with `RUST_LOG` removed (`tests/common/mod.rs`); verify `cargo test -p tilrd` output unchanged with `RUST_LOG=trace` set in the shell
+- [x] 1.3 Test `local::rust_log_sets_the_log_level` (debug line with `RUST_LOG=debug`, none without, the warning for an invalid value); USE_CASES.md entry; verify it passes
+- [x] 1.4 README "Running tilrd" documents `RUST_LOG` (syntax, default, that a reload keeps it and pane shells inherit it); verify by review against this proposal
 
 ## 2. Checks and archive
 

@@ -84,6 +84,7 @@ real Linux containers with the same FIFO barrier.
 | With TCP, a socket in use is only a warning, the server works over TCP (as the Tilr app's does); a socket named with `--socket` must work | `with_a_tcp_port_a_socket_in_use_is_only_a_warning` |
 | A reload keeps the socket and the lock (the same pid, the panes in place, a second server does not get the socket) | `a_reload_keeps_the_socket_and_its_lock` |
 | Stopping removes the socket and the lock | `a_server_that_stops_removes_its_socket_and_lock` |
+| `RUST_LOG` is the log filter: with `debug` a connection to the socket that is not a WebSocket logs a DEBUG `websocket handshake failed`; unset or empty, `info` and no such line; an invalid value, `info` and one `RUST_LOG ignored:` | `rust_log_sets_the_log_level` |
 | † SIGTERM between the socket being served and the signal handlers being installed (failpoint `supervisor-before-signals`): a clean stop (exit 0, `shutting down`), socket and lock removed | `a_sigterm_while_the_server_starts_stops_it_cleanly` |
 | † The same with SIGINT (Ctrl+C on a foreground `tilrd`) | `a_sigint_while_the_server_starts_stops_it_cleanly` |
 | † SIGHUP in that window: ignored, the server serves a client afterwards | `a_sighup_while_the_server_starts_is_ignored` |
