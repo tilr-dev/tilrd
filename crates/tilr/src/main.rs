@@ -137,8 +137,9 @@ enum CloudCommand {
     /// browser.
     Login {
         /// Where tilr Cloud is.
-        #[arg(long, env = "TILR_CLOUD")]
-        url: Option<String>,
+        // tilrd's `cloud::DEFAULT_URL`; a test keeps the two helps alike.
+        #[arg(long, env = "TILR_CLOUD", default_value = "https://wss.tilr.dev")]
+        url: String,
         /// What to call this machine there. The host name, if not given.
         #[arg(long)]
         name: Option<String>,
@@ -340,9 +341,7 @@ fn server_command(command: &Command) -> Option<Vec<String>> {
             match command {
                 CloudCommand::Login { url, name } => {
                     args.push("login".into());
-                    if let Some(url) = url {
-                        args.extend(["--url".into(), url.clone()]);
-                    }
+                    args.extend(["--url".into(), url.clone()]);
                     if let Some(name) = name {
                         args.extend(["--name".into(), name.clone()]);
                     }

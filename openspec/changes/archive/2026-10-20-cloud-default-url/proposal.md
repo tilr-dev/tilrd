@@ -9,7 +9,7 @@
 
 ## What Changes
 
-- `DEFAULT_URL` becomes `https://wss.tilr.dev`; `tilrd cloud login --help`, `tilr cloud login --help` (inherits it), README "tilr Cloud" and the spec name it.
+- `DEFAULT_URL` becomes `https://wss.tilr.dev`; `tilrd cloud login --help`, `tilr cloud login --help` (the same default, passed on to tilrd), README "tilr Cloud" and the spec name it.
 - A machine already linked keeps the URL stored in its link (`cloud.json`, field `url`, `crates/tilrd/src/cloud.rs:64,172`); nothing rewrites it.
 
 ## Capabilities
@@ -24,7 +24,7 @@
 
 ## Impact
 
-`crates/tilrd/src/cloud.rs` (constant, unit test), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `cloud-tunnels-tests` (TILR-147) also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
+`crates/tilrd/src/cloud.rs` (constant, unit test; an empty `--url` / `TILR_CLOUD` is the default), `crates/tilr/src/main.rs` (help default), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `cloud-tunnels-tests` (TILR-147) also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
 
 ## Implementation
 

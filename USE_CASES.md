@@ -104,6 +104,7 @@ real Linux containers with the same FIFO barrier.
 | A reconnect that connects but loses the connection before the pane list comes (a stand-in server on a TCP port): a failed attempt on the status line, the next one attaches and typing gets through | `an_error_right_after_a_reconnect_is_retried` |
 | Ctrl+] d while a reconnect attempt waits on a server that accepts and never answers: detached at once, not after the 5 s connect timeout | `detach_works_while_a_reconnect_attempt_hangs` |
 | Unit: a text copy made in the attached pane goes to the terminal as `ESC ] 52 ; c ; <base64> ESC \`, once its last chunk came; a copy cut short by a newer one, an image, and one with more data than announced are not (`src/attach.rs`) | `attach::tests::copied_text_goes_to_the_terminal_as_osc_52` |
+| `tilr cloud login --help` names the same default Cloud as tilrd, `https://wss.tilr.dev` | `cloud_login_help_names_the_default_of_tilrd` |
 
 ## Access — `tests/auth.rs`
 

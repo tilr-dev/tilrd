@@ -1166,3 +1166,25 @@ fn detach_works_while_a_reconnect_attempt_hangs() {
     assert!(took < Duration::from_secs(1), "detached after {took:?}");
     assert!(terminal.child.wait().unwrap().success());
 }
+
+#[test]
+fn cloud_login_help_names_the_default_of_tilrd() {
+    let default = |program: &Path| {
+        let output = Command::new(program)
+            .args(["cloud", "login", "--help"])
+            .env_remove("TILR_CLOUD")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let help = String::from_utf8(output.stdout).unwrap();
+        help.lines()
+            .find_map(|line| {
+                line.split_once("[default: ")
+                    .map(|(_, rest)| rest.to_owned())
+            })
+            .unwrap_or_else(|| panic!("no default in {help}"))
+    };
+    let tilr = default(Path::new(TILR));
+    assert_eq!(tilr, "https://wss.tilr.dev]");
+    assert_eq!(tilr, default(&Path::new(TILR).with_file_name("tilrd")));
+}
