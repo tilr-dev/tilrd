@@ -84,6 +84,12 @@ pub struct Server {
     pub log_changed: Arc<tokio::sync::Notify>,
 }
 
+/// Copy diagnostics before panicking: no log guard may survive into unwinding.
+/// Cleanup must also work if another user of the shared log poisoned its lock.
+fn log_text(log: &Mutex<Vec<String>>) -> String {
+    log.lock().unwrap_or_else(|err| err.into_inner()).join("\n")
+}
+
 /// Spawn `command`, whose executable may be a copy made a moment ago. On
 /// Linux such a copy is "busy" (ETXTBSY) while a child forked by another
 /// test thread still holds the copy's write descriptor (it is closed on
@@ -169,14 +175,15 @@ impl Server {
                 break;
             }
         }
-        let addr =
-            addr.unwrap_or_else(|| panic!("server did not start: {:?}", log.lock().unwrap()));
+        let addr = addr.unwrap_or_else(|| panic!("server did not start: {}", log_text(&log)));
         // Keep draining the log so the server never blocks on it.
         let sink = Arc::clone(&log);
         let changed = Arc::clone(&log_changed);
         std::thread::spawn(move || {
             for line in lines.map_while(Result::ok) {
-                sink.lock().unwrap().push(line);
+                sink.lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(line);
                 changed.notify_waiters();
             }
         });
@@ -226,7 +233,7 @@ impl Server {
     pub fn logged(&self, needle: &str) -> bool {
         self.log
             .lock()
-            .unwrap()
+            .unwrap_or_else(|err| err.into_inner())
             .iter()
             .any(|line| line.contains(needle))
     }
@@ -243,7 +250,7 @@ impl Server {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "not logged within {within:?}: {needle}\n{}",
-                self.log.lock().unwrap().join("\n")
+                log_text(&self.log)
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -251,12 +258,17 @@ impl Server {
 
     /// [`Server::wait_logged`] outside of an async context.
     pub fn wait_logged_blocking(&self, needle: &str) {
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        self.wait_logged_blocking_within(needle, TIMEOUT);
+    }
+
+    /// The blocking log wait with a caller-provided deadline.
+    pub fn wait_logged_blocking_within(&self, needle: &str, within: Duration) {
+        let deadline = std::time::Instant::now() + within;
         while !self.logged(needle) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "not logged within {TIMEOUT:?}: {needle}\n{}",
-                self.log.lock().unwrap().join("\n")
+                "not logged within {within:?}: {needle}\n{}",
+                log_text(&self.log)
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -315,10 +327,7 @@ impl Drop for Server {
             let _ = std::fs::remove_file(sock);
         }
         if std::thread::panicking() {
-            eprintln!(
-                "--- server log ---\n{}",
-                self.log.lock().unwrap().join("\n")
-            );
+            eprintln!("--- server log ---\n{}", log_text(&self.log));
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
