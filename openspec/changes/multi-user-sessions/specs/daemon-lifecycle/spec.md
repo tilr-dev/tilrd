@@ -14,7 +14,7 @@
 - **THEN** it exits 1 and the error names `CAP_SETUID`
 
 #### Scenario: Root without --system
-- **WHEN** root runs `tilr new -d`
+- **WHEN** no system tilrd runs and root runs `tilr new -d`
 - **THEN** a per-user server of root starts on root's runtime directory, as without this change
 
 ### Requirement: Paths and modes of a system server

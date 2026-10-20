@@ -1,6 +1,6 @@
 # Design: A system tilrd that runs each session as its user
 
-Status: options for the owner. Every question below lists the options with their pros and cons and a recommendation (**Rec.**). Nothing is decided; the spec deltas follow the recommendations and change with the answers.
+Status: options for the owner. Every question below (Q1-Q9, Q4b) lists the options with their pros and cons and a recommendation (**Rec.**). Nothing is decided; the spec deltas follow the recommendations and change with the answers.
 
 ## Where the code assumes one user (dev at 7b320bc)
 
@@ -18,7 +18,7 @@ Status: options for the owner. Every question below lists the options with their
 
 ## Q2. How a client names the user of its session
 
-- (a) **The connection is the user**: Unix socket → the peer's uid; TCP → the user the token belongs to (Q3). No name on the wire; `HelloAck.user` tells the client who it is. + Nothing to forge; + an old client works unchanged. − To act as another user one needs another connection (or Q4's `run_as`).
+- (a) **The connection is the user**: Unix socket → the peer's uid; TCP → the user the token belongs to (Q3). No name on the wire; `HelloAck.user` tells the client who it is. + Nothing to forge; + an old TCP client (the Tilr app) works unchanged (today's `tilr` must be updated anyway, Q7). − To act as another user one needs another connection (or Q4's `run_as`).
 - (b) `Hello.user` (a name) for the whole connection, checked against the credentials. + Explicit. − A field that must always equal what the credentials already say, or be an "act as" request — two meanings in one field.
 - (c) Per pane: `CreatePane.run_as` names a user or uid. + Mixed panes on one connection (an admin console). − Every other message (input, files, exec) then needs "as whom" too, or follows the pane.
 - **Rec. (a) for the connection, plus (c) only as the explicit "another user" request of Q4.** Exec and files follow the connection's user; input follows the pane's owner check.
@@ -38,6 +38,13 @@ Status: options for the owner. Every question below lists the options with their
 - (c) Members of a group (`tilr-admin`) may run as any non-root user. + Simple delegation. − Coarse: any member is every user.
 - Panes **as root**: only for a connection whose user is root (root logged in locally); never from a TCP token. A root token does not exist (root has no per-user token in system mode).
 - **Rec. (a)**; (b) later if a use is named.
+
+### Q4b. What root sees on a system server
+
+- (a) **Root sees and drives every pane** (`tilr ls` lists all with their user, root can attach to alice's pane), but host events, clipboard writes (OSC 52) and agent streams of a pane go only to connections of the pane's user, not to root. + An admin can find and close a stuck pane; + alice's clipboard and SSH agent never reach root's client. − Root watching alice's pane without her knowing (root can do this anyway with `ptrace`; `PaneInfo.viewed_by` shows root's connection).
+- (b) Root sees only its own panes, like any user; other users' panes only through `run_as`. + Same rule for all. − No admin view; a stuck pane needs `kill`.
+- (c) Root sees every pane in `tilr ls` but may not attach or type (read the list, close only). + Admin view without reading other users' screens. − A third access level to specify and test.
+- **Rec. (a)**: the deltas (panes "A connection sees and drives only its user's panes", access-control host-events/clipboard scenario) follow it.
 
 ## Q5. Which sockets and directories become per-user
 
@@ -77,7 +84,17 @@ The directories under `/run/tilr/users/<uid>/` are made by root, `chown`ed to th
 
 - `tilrd --system` with euid ≠ 0: exit 1 before binding anything, `--system needs root: tilrd runs as uid N; run it as root (a system service), or without --system for a server of your own`.
 - `CreatePane.run_as` on a per-user server: `Error { "this server runs panes as its own user only" }`, no pane made.
-- A system tilrd that loses root (setuid by someone else, a container without `CAP_SETUID`): the first pane fails with the `setuid` error in `PaneCreated.error`; the start check also tries `setgroups` capability — `--system` checks `CAP_SETUID`/`CAP_SETGID` on Linux, not just euid 0, and refuses with the same message naming the missing capability.
+- At start, `--system` checks not just euid 0 but (on Linux) `CAP_SETUID` and `CAP_SETGID`, and refuses with the message above naming the missing capability (a container that runs as root without them).
+- If the drop still fails while running (a pane's `initgroups`/`setgid`/`setuid` returns an error), that pane fails with the error in `PaneCreated.error`; other panes are not touched.
+
+## Q9. SOCKS proxy and metrics on a system server
+
+The SOCKS proxy (`socks-proxy`) opens outgoing connections from the server process, which on a system server is root; `/metrics` shows every user's panes.
+
+- (a) **SOCKS off with `--system`** (refused like `--socks` without a token today) and `/metrics` only on the Unix socket for root. + No outgoing connections as root on a user's behalf; + no data of one user to another. − No SOCKS for remote clients of a system server.
+- (b) Any user's token opens `/socks`, connections leave from the root process. + Works as today. − Bypasses per-user firewall rules (`--uid-owner`), binds privileged source ports.
+- (c) `/socks` relayed through a per-user helper process running as the token's user. + Connections as the user. − One more helper and its lifecycle.
+- **Rec. (a)**; (c) if SOCKS on a system server is needed.
 
 ## Requirements to modify after the answers
 
@@ -87,7 +104,12 @@ The deltas here change only the two peer-uid requirements. With the recommended 
 - `access-control` "The Unix socket is the user's alone and asks no token" (0600 socket, 0700 directory): `root:tilr` 0660 in a 0755 `/run/tilr` (Q5).
 - `access-control` "A connection gone before its uid check is not refused" ("a connection from another uid MUST still be refused"): on the system socket another uid is a user, not refused (Q7).
 - `panes` "The directory a pane starts in": a `cwd` the user cannot enter falls back to the home (Q6).
-- `panes` "Listing panes" ("every running pane") and "Pane changes are pushed" (to every client): only the connection's user's panes (Q2, Q4).
+- `panes` "Listing panes" ("every running pane") and "Pane changes are pushed" (to every client): only the connection's user's panes (Q2, Q4, Q4b).
+- `access-control` "TCP clients present the token in Hello" ("equals its token", one token), "HTTP requests on the port carry the token in a header or the query" (whose token admits `/socks`, `/metrics`): per-user tokens (Q3, Q9).
+- `access-control` "Running without authentication": refused with `--system` (the ADDED daemon-lifecycle "A system server always asks for a token" says so; this requirement gets the clause).
+- `daemon-lifecycle` "Unix socket location", "Runtime directory and socket modes", "State directory": the `--system` paths (Q5) instead of `tilr-<euid>`, `$XDG_RUNTIME_DIR/tilr`, `~/.local/state/tilr`.
+- `daemon-lifecycle` "tilr starts tilrd detached" ("finds nothing accepting on the local socket" → starts one): only when the system socket does not answer either (the ADDED "tilr finds a system server and does not start one").
+- `socks-proxy`, `metrics`: per Q9.
 
 ## Reload and reconnect
 

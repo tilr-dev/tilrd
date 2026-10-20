@@ -1,4 +1,4 @@
-Блокер: the security model of a root tilrd (how a client names the user, how it proves it may, who may ask for another user, which sockets and directories become per-user) is the owner's decision; design.md lays out the options (Q1-Q8) with a recommendation for each. The spec deltas here are written for the recommended options and are rewritten to match the owner's answers before any task is cut from tasks.md.
+Блокер: the security model of a root tilrd (how a client names the user, how it proves it may, who may ask for another user, which sockets and directories become per-user) is the owner's decision; design.md lays out the options (Q1-Q9) with a recommendation for each. The spec deltas here are written for the recommended options and are rewritten to match the owner's answers before any task is cut from tasks.md.
 
 # Proposal: A system tilrd that runs each session as its user
 
@@ -15,8 +15,8 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 - A connection sees and drives only its user's panes; `PaneInfo.user` names the user. Asking for a pane as another user (`CreatePane.run_as`) is refused unless the connection's user is root on the Unix socket (Q4).
 - The per-user peer-uid checks become, in system mode, "the peer is the socket's user or root" for the per-user sockets and "identify, do not refuse" for the shared Unix socket, which is 0660 `root:tilr` (only members of the group `tilr` reach it) (Q5, Q7).
 - `tilr` finds the system socket when no per-user server answers and never starts a system tilrd itself.
-- Protocol: not breaking. `CreatePane.run_as`, `PaneInfo.user` and `HelloAck.user` are additions an old peer can ignore, announced by the feature flag `multi-user` in `HelloAck.features`; no PROTOCOL_VERSION bump. An old client on a system server works as its own user and does not see user names.
-- **BREAKING** for the reload state files: the supervisor's and panes' state files move to `/run/tilr/` (root) and must carry each pane's uid; a reload re-execs a pane process as its user, so `tilrd state-formats` gains a version. Migration: a successor that does not read the new version is not reloaded into (the server restarts its panes instead, as for any unknown state version); a per-user server keeps today's format until it is updated. Update from the previous release: a per-user server is untouched; system mode is new, so there is nothing to migrate.
+- Protocol: not breaking. `CreatePane.run_as`, `PaneInfo.user` and `HelloAck.user` are additions an old peer can ignore, announced by the feature flag `multi-user` in `HelloAck.features`; no PROTOCOL_VERSION bump. An old TCP client (the Tilr app) works on a system server as the user of its token and does not see user names; today's `tilr` refuses a server of another uid and does not know `/run/tilr`, so it gets nothing from a system server until it is updated.
+- **BREAKING** for the reload state files, on a system server only: the supervisor's state (in `/run/tilr/`, root) records each pane's uid, and each pane process, re-exec'd as its user, writes its state into `/run/tilr/users/<uid>/panes/`; `tilrd state-formats` gains a version for this. Migration: a successor that does not read that version is not reloaded into, as for any unknown state version. A per-user server keeps today's state format, so an update from the previous release changes nothing there; system mode is new, so there is no old system state to migrate.
 
 ## Capabilities
 
@@ -26,7 +26,7 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 - `panes`: a pane runs as its connection's user with that user's environment; a connection lists only its user's panes.
 
 ### Touched later (deltas written once the options are decided)
-- Requirements of today's specs that the recommended options contradict and that become MODIFIED (a "on a server started with `--system` …" clause) once the owner has answered (design "Requirements to modify after the answers"): `access-control` "The access token is made once and kept for the user only", "Showing the token", "The Unix socket is the user's alone and asks no token", "A connection gone before its uid check is not refused"; `panes` "The directory a pane starts in", "Listing panes", "Pane changes are pushed".
+- Requirements of today's specs that the recommended options contradict and that become MODIFIED (a "on a server started with `--system` …" clause) once the owner has answered (design "Requirements to modify after the answers"): `access-control` "The access token is made once and kept for the user only", "Showing the token", "The Unix socket is the user's alone and asks no token", "A connection gone before its uid check is not refused"; `access-control` "TCP clients present the token in Hello", "HTTP requests on the port carry the token in a header or the query", "Running without authentication"; `daemon-lifecycle` "Unix socket location", "Runtime directory and socket modes", "State directory", "tilr starts tilrd detached"; `panes` "The directory a pane starts in", "Listing panes", "Pane changes are pushed"; `socks-proxy` and `metrics` (Q9).
 - `files`, `exec`: requests run as the connection's user (Q6).
 - `clipboard-host-events`, `ssh-agent-forwarding`: sockets in the user's directory; events go only to clients of the pane's user (Q5).
 - `cloud-tunnels`, `tilr-cli`, `reload`, `protocol`.
@@ -38,4 +38,5 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 - A sudoers-like allow list ("alice may run as deploy") — later (Q4 option b).
 - Panes as root over TCP; sandboxing (change `sandboxed-pane`); several system daemons per machine.
 - Windows; macOS audit sessions / launchd bootstrap namespaces beyond what `setuid` gives (keychain access in a pane may differ from a login; noted in design).
+- SOCKS proxy on a system server (recommended off, design Q9).
 - Implementation: this is a Research task; implementation tasks are cut from tasks.md after the owner's decision.
