@@ -9,6 +9,7 @@ publish = false
 description = "Scripted tilr client for black-box tests: JSON-lines commands in, events out"
 
 [dependencies]
+tilr-websocket.workspace = true
 tilr-proto.workspace = true
 anyhow.workspace = true
 bytes.workspace = true

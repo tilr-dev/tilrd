@@ -391,7 +391,7 @@ fn check_peer(stream: &UnixStream, path: &Path) -> Result<(), ConnectError> {
 async fn open_remote(
     url: &str,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, ConnectError> {
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.map_err(|err| {
+    let (ws, _) = tilr_websocket::connect(url).await.map_err(|err| {
         use tokio_tungstenite::tungstenite::Error;
         match err {
             Error::Io(err) => ConnectError::NoServer(err),

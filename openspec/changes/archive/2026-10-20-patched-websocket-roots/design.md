@@ -14,3 +14,15 @@ not alternatives permitted by Dan's #4202 decision.
 The lock-file regression fails on the original affected graph. Loopback tests
 use an ephemeral CA and key generated in memory, so TLS success, an untrusted
 issuer and a hostname mismatch require no public service or clock sleeps.
+
+## Client regression (2026-10-21)
+
+Reproduced with `cargo build -p tilrd -p tilr --locked`, then
+`target/debug/tilr --connect wss://echo.websocket.org ls`: UnknownIssuer.
+The clients called connect_async without a connector. With only __rustls-tls,
+tokio-tungstenite 0.30 creates an empty root store. The released joint build
+previously obtained roots through feature unification with tilrd.
+
+Move the helper and its deterministic TLS tests into the internal tilr-websocket
+crate. Cloud, ps, tilr open_remote and tilr-driver dial all call that helper,
+so each package has an explicit dependency on the configured transport.

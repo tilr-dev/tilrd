@@ -12,6 +12,7 @@ keywords = ["terminal", "client", "tmux", "pty", "tilr"]
 categories = ["command-line-utilities"]
 
 [dependencies]
+tilr-websocket.workspace = true
 tilr-proto.workspace = true
 anyhow.workspace = true
 base64 = "0.23"

@@ -1485,6 +1485,7 @@ dependencies = [
  "sha2",
  "tar",
  "tilr-proto",
+ "tilr-websocket",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -1503,6 +1504,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tilr-proto",
+ "tilr-websocket",
  "tokio",
  "tokio-tungstenite",
  "uuid",
@@ -1530,6 +1532,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilr-websocket"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "rcgen",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "toml",
+ "webpki-roots",
+]
+
+[[package]]
 name = "tilrd"
 version = "0.1.0"
 dependencies = [
@@ -1542,23 +1558,20 @@ dependencies = [
  "libc",
  "notify",
  "prost",
- "rcgen",
- "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tar",
  "tilr-proto",
  "tilr-screen",
+ "tilr-websocket",
  "tokio",
- "tokio-rustls",
  "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",
  "ureq",
  "uuid",
- "webpki-roots",
 ]
 
 [[package]]

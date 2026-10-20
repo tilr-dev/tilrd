@@ -861,7 +861,7 @@ pub async fn dial(url: &str, origin: Option<&str>) -> Result<Ws> {
     if let Some(origin) = origin {
         request.headers_mut().insert("origin", origin.parse()?);
     }
-    let (ws, _) = tokio_tungstenite::connect_async(request)
+    let (ws, _) = tilr_websocket::connect(request)
         .await
         .with_context(|| format!("connect to {url}"))?;
     if let MaybeTlsStream::Plain(stream) = ws.get_ref() {

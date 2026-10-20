@@ -25,7 +25,7 @@ pub fn run(url: Option<&str>, server_version: bool) -> Result<()> {
             let listed = async {
                 match url {
                     Some(url) => {
-                        let (ws, _) = crate::websocket::connect(url)
+                        let (ws, _) = tilr_websocket::connect(url)
                             .await
                             .with_context(|| format!("connect to {url}"))?;
                         list_panes(ws, &what).await

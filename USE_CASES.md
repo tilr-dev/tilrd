@@ -122,7 +122,9 @@ real Linux containers with the same FIFO barrier.
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
 | A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
 
-## Outgoing WebSocket TLS — unit tests in `src/websocket.rs`
+## Outgoing WebSocket TLS — shared by Cloud control, tilrd ps, tilr --connect and tilr-driver
+
+Unit tests in `crates/tilr-websocket/src/lib.rs`; all clients use the same explicit connector, including when built separately.
 
 | Use case | Test |
 |---|---|

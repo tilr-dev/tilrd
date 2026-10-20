@@ -1,0 +1,26 @@
+[package]
+name = "tilr-websocket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Shared outgoing WebSocket transport with bundled TLS roots"
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", features = ["net"] }
+# Checked 2026-10-21: 0.30's bundled-roots feature requires webpki-roots ^0.26.0
+# (RUSTSEC-2026-0381). Supply roots explicitly until upstream uses patched roots.
+# Re-check: cargo info tokio-tungstenite --verbose (webpki-roots requirement),
+# then cargo deny check advisories after updating the transport dependency.
+tokio-tungstenite = { version = "0.30", features = ["__rustls-tls"] }
+webpki-roots = "1.0.10"
+
+[dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+toml = "1.1"

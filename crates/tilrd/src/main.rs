@@ -24,7 +24,6 @@ mod supervisor;
 mod time;
 mod title;
 mod update;
-mod websocket;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
