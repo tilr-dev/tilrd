@@ -34,3 +34,5 @@ Checked at 1163abd: still one way. The server's `xclip` hands copying (`-i`, a f
 `crates/tilr-proto/proto/tilr.proto` (`ClipboardWrite`, additive; `"clipboard-write"` client feature in comments), `crates/tilr-screen/src/ghostty.rs` (`on_clipboard_write`), `crates/tilrd/src/{pane,supervisor,clipboard,host,main}.rs` (link message, fan-out on the bulk lane, `wl-copy` shim, `xclip -i`, host socket request `clipboard-write`), `crates/tilr/src/{conn,attach}.rs`, README "Pasting images: the shared clipboard" and "Protocol", USE_CASES.md, itests UC-07D. Reload: nothing new crosses it; a transfer in flight to a client ends with its connection (the content stays in the server clipboard file, which already survives a reload). Update from the previous release: works; the shims are re-linked at start as today.
 
 Not breaking: additive messages and fields only, no PROTOCOL_VERSION bump, no close code, state file or CDN change.
+
+Implemented by: `feat: copy from a pane to the client's clipboard`, with the fixes `fix: send each shim copy once and keep copy ids growing` and `fix: keep xclip's -filter, -help and -version, and copy with no limit set` (TILR-86, 2026-10-20).
