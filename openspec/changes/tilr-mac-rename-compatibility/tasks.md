@@ -9,6 +9,6 @@ Groups 2 (desktop-mac) and 3 (release) moved to TILR-187 (owner's decision, 2026
 
 ## 4. Checks and archive
 
-- [ ] 4.1 Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`
-- [ ] 4.2 No itests case is touched; `./itests/dt coverage` exits 0
-- [ ] 4.3 Record this repository's commit in proposal.md and archive the change
+- [x] 4.1 Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`
+- [x] 4.2 No itests case is touched; `./itests/dt coverage` exits 0
+- [x] 4.3 Record this repository's commit in proposal.md and archive the change
