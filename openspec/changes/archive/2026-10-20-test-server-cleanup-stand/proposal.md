@@ -28,4 +28,3 @@ No breaking change, migration, protocol bump, feature flag, or user-facing
 CLI change. The stand is an explicit developer command. It adds no product
 state or connection, so nothing needs to survive a reload, update, or client
 reconnect. No new outbox traffic or memory pressure is introduced.
-
