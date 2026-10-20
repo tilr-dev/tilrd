@@ -96,6 +96,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | multi-server | the client joins several machines (no tilrd change) | L | - | - | design first |
 | port-forwarding | `ssh -R` / `-L` style forwards; waits for the transport decision (iroh vs quinn); when built, off by default like SOCKS | L | the transport decision | no | design first |
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | the phase 3 changes | - | design first |
+| multi-user-sessions | `tilrd --system` as root runs each session as its user (per-user tokens, per-user sockets); options for the owner in design.md (TILR-138) | L | - | yes | needs owner |
 
 ## Deferred
 
