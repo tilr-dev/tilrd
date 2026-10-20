@@ -16,7 +16,7 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 - The per-user peer-uid checks become, in system mode, "the peer is the socket's user or root" for the per-user sockets and "identify, do not refuse" for the shared Unix socket, which is 0660 `root:tilr` (only members of the group `tilr` reach it) (Q5, Q7).
 - `tilr` finds the system socket when no per-user server answers and never starts a system tilrd itself.
 - Protocol: not breaking. `CreatePane.run_as`, `PaneInfo.user` and `HelloAck.user` are additions an old peer can ignore, announced by the feature flag `multi-user` in `HelloAck.features`; no PROTOCOL_VERSION bump. An old client on a system server works as its own user and does not see user names.
-- Reload: the supervisor's and panes' state files move to `/run/tilr/` (root) and must carry each pane's uid; a reload re-execs a pane process as its user, so `tilrd state-formats` gains a version. Update from the previous release: a per-user server is untouched; system mode is new, so there is nothing to migrate.
+- **BREAKING** for the reload state files: the supervisor's and panes' state files move to `/run/tilr/` (root) and must carry each pane's uid; a reload re-execs a pane process as its user, so `tilrd state-formats` gains a version. Migration: a successor that does not read the new version is not reloaded into (the server restarts its panes instead, as for any unknown state version); a per-user server keeps today's format until it is updated. Update from the previous release: a per-user server is untouched; system mode is new, so there is nothing to migrate.
 
 ## Capabilities
 
@@ -26,6 +26,7 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 - `panes`: a pane runs as its connection's user with that user's environment; a connection lists only its user's panes.
 
 ### Touched later (deltas written once the options are decided)
+- Requirements of today's specs that the recommended options contradict and that become MODIFIED (a "on a server started with `--system` …" clause) once the owner has answered (design "Requirements to modify after the answers"): `access-control` "The access token is made once and kept for the user only", "Showing the token", "The Unix socket is the user's alone and asks no token", "A connection gone before its uid check is not refused"; `panes` "The directory a pane starts in", "Listing panes", "Pane changes are pushed".
 - `files`, `exec`: requests run as the connection's user (Q6).
 - `clipboard-host-events`, `ssh-agent-forwarding`: sockets in the user's directory; events go only to clients of the pane's user (Q5).
 - `cloud-tunnels`, `tilr-cli`, `reload`, `protocol`.

@@ -79,6 +79,16 @@ The directories under `/run/tilr/users/<uid>/` are made by root, `chown`ed to th
 - `CreatePane.run_as` on a per-user server: `Error { "this server runs panes as its own user only" }`, no pane made.
 - A system tilrd that loses root (setuid by someone else, a container without `CAP_SETUID`): the first pane fails with the `setuid` error in `PaneCreated.error`; the start check also tries `setgroups` capability — `--system` checks `CAP_SETUID`/`CAP_SETGID` on Linux, not just euid 0, and refuses with the same message naming the missing capability.
 
+## Requirements to modify after the answers
+
+The deltas here change only the two peer-uid requirements. With the recommended options these requirements of today's specs also stop holding on a system server and get a `--system` clause once the answers are in:
+
+- `access-control` "The access token is made once and kept for the user only" (one `<state>/token`) and "Showing the token" (`tilrd token`): per-user tokens instead (Q3).
+- `access-control` "The Unix socket is the user's alone and asks no token" (0600 socket, 0700 directory): `root:tilr` 0660 in a 0755 `/run/tilr` (Q5).
+- `access-control` "A connection gone before its uid check is not refused" ("a connection from another uid MUST still be refused"): on the system socket another uid is a user, not refused (Q7).
+- `panes` "The directory a pane starts in": a `cwd` the user cannot enter falls back to the home (Q6).
+- `panes` "Listing panes" ("every running pane") and "Pane changes are pushed" (to every client): only the connection's user's panes (Q2, Q4).
+
 ## Reload and reconnect
 
 - Reload: the supervisor re-execs as root and keeps the listeners and the lock; each pane process re-execs itself (as its user) and hands its state over through `/run/tilr/users/<uid>/panes/<id>.state`; the supervisor's state records each pane's uid, so a successor that does not know the field (older state version) is not reloaded into (`tilrd state-formats`).
