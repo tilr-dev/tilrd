@@ -954,23 +954,41 @@ curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 | `tilrd_info{version,server_id}` | gauge | Always 1 |
 | `tilrd_clients` | gauge | Connected clients |
 | `tilrd_panes` | gauge | Running panes |
-| `tilr_pane_frames_total{pane}` | counter | Frames the pane produced |
-| `tilr_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
-| `tilr_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
-| `tilr_pane_frames_skipped_total{pane}` | counter | Frames not sent to a client that lagged (it got the whole screen later), one per frame and client |
-| `tilr_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings) |
-| `tilr_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
-| `tilr_pane_input_bytes_total{pane}` | counter | Their bytes |
-| `tilr_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
-| `tilr_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
-| `tilr_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |
-| `tilr_process_cpu_seconds_total{role,pid,pane}` | counter | User and system CPU time of the supervisor (`role="supervisor"`, no `pane`) and of each pane process (`role="pane"`) |
-| `tilr_process_memory_bytes{role,pid,pane}` | gauge | Their memory: resident set on Linux, physical footprint on macOS |
+| `tilrd_pane_frames_total{pane}` | counter | Frames the pane produced |
+| `tilrd_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
+| `tilrd_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
+| `tilrd_pane_frames_skipped_total{pane}` | counter | Frames not sent to a client that lagged (it got the whole screen later), one per frame and client |
+| `tilrd_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings), `no_hello` (no Hello before the handshake deadline) |
+| `tilrd_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
+| `tilrd_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilrd_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
+| `tilrd_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
+| `tilrd_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |
+| `tilrd_process_cpu_seconds_total{role,pid,pane}` | counter | User and system CPU time of the supervisor (`role="supervisor"`, no `pane`) and of each pane process (`role="pane"`) |
+| `tilrd_process_memory_bytes{role,pid,pane}` | gauge | Their memory: resident set on Linux, physical footprint on macOS |
 
 The histograms have buckets from 50 µs to 100 ms (0.00005, 0.0001, 0.00025, 0.0005, 0.001,
 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, +Inf). The pane counters start from zero when the
 supervisor does, a reload included. CPU and memory are read when scraped. The pane process
 (the shell is its child) is what is measured, not the programs in the pane.
+
+**Breaking change:** the following metric families were renamed. Replace the old names in
+Prometheus queries and alerts; the server emits only the new names.
+
+| Old | New |
+|---|---|
+| `tilr_pane_frames_total` | `tilrd_pane_frames_total` |
+| `tilr_pane_frame_bytes_total` | `tilrd_pane_frame_bytes_total` |
+| `tilr_pane_frames_sent_total` | `tilrd_pane_frames_sent_total` |
+| `tilr_pane_frames_skipped_total` | `tilrd_pane_frames_skipped_total` |
+| `tilr_pane_input_total` | `tilrd_pane_input_total` |
+| `tilr_pane_input_bytes_total` | `tilrd_pane_input_bytes_total` |
+| `tilr_client_drops_total` | `tilrd_client_drops_total` |
+| `tilr_route_seconds` | `tilrd_route_seconds` |
+| `tilr_route_input_seconds` | `tilrd_route_input_seconds` |
+| `tilr_supervisor_loop_lag_seconds` | `tilrd_supervisor_loop_lag_seconds` |
+| `tilr_process_cpu_seconds_total` | `tilrd_process_cpu_seconds_total` |
+| `tilr_process_memory_bytes` | `tilrd_process_memory_bytes` |
 
 ## Tests
 

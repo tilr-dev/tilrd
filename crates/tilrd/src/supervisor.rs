@@ -98,7 +98,7 @@ const FEATURE_EXEC: &str = "exec";
 /// How long a reload waits for what its clients were last sent (the ends of
 /// their execs) to be written out before the connections go.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// How often the event loop's lag is measured (`tilr_supervisor_loop_lag_seconds`).
+/// How often the event loop's lag is measured (`tilrd_supervisor_loop_lag_seconds`).
 const LAG_TICK: Duration = Duration::from_secs(1);
 /// How long a scrape of `/metrics` waits for the event loop.
 const METRICS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -107,7 +107,7 @@ type ClientId = u64;
 /// Made up when the pane is created; on the wire in its text form.
 type PaneId = Uuid;
 /// A packet for a pane process; with a client's input, when the supervisor
-/// read it from the client (`tilr_route_input_seconds`).
+/// read it from the client (`tilrd_route_input_seconds`).
 type ToPane = (Bytes, Option<Instant>);
 
 enum Event {
@@ -256,8 +256,6 @@ enum Gone {
     Disconnected,
     /// Turned away (see [`Supervisor::refuse`]).
     Refused,
-    /// Said no `Hello` within [`HELLO_TIMEOUT`] of its WebSocket opening.
-    NoHello,
     Dropped(ClientDrop),
 }
 
@@ -2648,7 +2646,7 @@ impl Supervisor {
             .map(|(id, _)| *id)
             .collect();
         for id in late {
-            self.drop_client(id, Gone::NoHello);
+            self.drop_client(id, Gone::Dropped(ClientDrop::NoHello));
         }
     }
 
@@ -2720,15 +2718,6 @@ impl Supervisor {
                 None
             }
             Gone::Refused => Some(Closing::Flush),
-            Gone::NoHello => {
-                tracing::warn!(
-                    client = client_id,
-                    %addr,
-                    "client sent no Hello in {}s, dropping",
-                    HELLO_TIMEOUT.as_secs()
-                );
-                Some(Closing::Now(close::TIMEOUT, close::TIMEOUT_REASON))
-            }
             Gone::Dropped(drop) => {
                 self.metrics.count_drop(drop);
                 let (code, reason) = match drop {
@@ -2755,6 +2744,15 @@ impl Supervisor {
                             client_id = id,
                             %addr,
                             "client stopped answering pings, dropping"
+                        );
+                        (close::TIMEOUT, close::TIMEOUT_REASON)
+                    }
+                    ClientDrop::NoHello => {
+                        tracing::warn!(
+                            client = client_id,
+                            %addr,
+                            "client sent no Hello in {}s, dropping",
+                            HELLO_TIMEOUT.as_secs()
                         );
                         (close::TIMEOUT, close::TIMEOUT_REASON)
                     }

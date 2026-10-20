@@ -103,7 +103,7 @@ A reload SHALL keep the pane's `last_input_seq` and its input still waiting for 
 - **THEN** after the reload the full frame carries `seq_base + 1`, a later frame carries `seq_base + 2` with `input_us` over 1 s, and a new connection's `seq_base` is greater than the old one's
 
 ### Requirement: A lagging client skips to the latest screen
-For a client the server judges to lag (see `client-liveness`) the frames of a pane SHALL be skipped, each counted in `tilr_pane_frames_skipped_total`, until its queue is written out; it SHALL then get a full frame of the screen as it is (asked of the pane, so its other viewers get it too). It SHALL NOT be dropped for lagging, and other clients SHALL NOT be slowed.
+For a client the server judges to lag (see `client-liveness`) the frames of a pane SHALL be skipped, each counted in `tilrd_pane_frames_skipped_total`, until its queue is written out; it SHALL then get a full frame of the screen as it is (asked of the pane, so its other viewers get it too). It SHALL NOT be dropped for lagging, and other clients SHALL NOT be slowed.
 
 **Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` and itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`).
 
@@ -173,16 +173,20 @@ On a server without a token (`--no-auth`) the endpoint SHALL ask for none but SH
 - **THEN** it answers `200`
 
 ### Requirement: The metric families
-There SHALL be `# HELP` and `# TYPE` for each family, even without samples: gauges `tilrd_info{version,server_id}` (always 1), `tilrd_clients`, `tilrd_panes`; the per-pane counters; `tilr_client_drops_total{reason}`; histograms `tilr_route_seconds`, `tilr_route_input_seconds`, `tilr_supervisor_loop_lag_seconds`; `tilr_process_cpu_seconds_total`, `tilr_process_memory_bytes`.
+Every family name SHALL start with `tilrd_`. There SHALL be `# HELP` and `# TYPE` for each family, even without samples: gauges `tilrd_info{version,server_id}` (always 1), `tilrd_clients`, `tilrd_panes`; the per-pane counters; `tilrd_client_drops_total{reason}`; histograms `tilrd_route_seconds`, `tilrd_route_input_seconds`, `tilrd_supervisor_loop_lag_seconds`; `tilrd_process_cpu_seconds_total`, `tilrd_process_memory_bytes`.
 
-**Verified by**: unit test `metrics::tests::exposition_lists_every_family_with_help_and_type` (crates/tilrd/src/metrics.rs).
+**Verified by**: unit test `metrics::tests::exposition_lists_every_family_with_help_and_type` (crates/tilrd/src/metrics.rs), `metrics::metrics_count_frames_input_and_routing`.
 
 #### Scenario: A fresh server
 - **WHEN** `/metrics` is scraped on a server with no panes
 - **THEN** `tilrd_panes` is 0 and a `tilrd_info{version="...",server_id="..."} 1` line is present
 
+#### Scenario: One prefix
+- **WHEN** `/metrics` is scraped on a server with one pane after some traffic
+- **THEN** every `# TYPE` line and every sample names a family starting with `tilrd_`, and none starts with `tilr_`
+
 ### Requirement: Per-pane frame counters
-For each running pane (label `pane` = its id) the server SHALL count `tilr_pane_frames_total` (frames the pane produced), `tilr_pane_frame_bytes_total` (their bytes as routed, once per frame whatever the number of clients), `tilr_pane_frames_sent_total` (one per frame and client it was handed to) and `tilr_pane_frames_skipped_total` (one per frame and lagging client it was not sent to).
+For each running pane (label `pane` = its id) the server SHALL count `tilrd_pane_frames_total` (frames the pane produced), `tilrd_pane_frame_bytes_total` (their bytes as routed, once per frame whatever the number of clients), `tilrd_pane_frames_sent_total` (one per frame and client it was handed to) and `tilrd_pane_frames_skipped_total` (one per frame and lagging client it was not sent to).
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing` and itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`).
 
@@ -191,7 +195,7 @@ For each running pane (label `pane` = its id) the server SHALL count `tilr_pane_
 - **THEN** that pane's frames, frame bytes and frames sent are each at least 1
 
 ### Requirement: Per-pane input counters
-`tilr_pane_input_total{pane}` and `tilr_pane_input_bytes_total{pane}` SHALL count the key, mouse, paste, raw and scroll packets passed to the pane and their bytes (`Resize` is not counted). All per-pane counters SHALL start from zero when the supervisor starts, a reload included, and a pane's series SHALL go when the pane does.
+`tilrd_pane_input_total{pane}` and `tilrd_pane_input_bytes_total{pane}` SHALL count the key, mouse, paste, raw and scroll packets passed to the pane and their bytes (`Resize` is not counted). All per-pane counters SHALL start from zero when the supervisor starts, a reload included, and a pane's series SHALL go when the pane does.
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing`.
 
@@ -200,26 +204,34 @@ For each running pane (label `pane` = its id) the server SHALL count `tilr_pane_
 - **THEN** that pane's input and input bytes are each at least 1
 
 ### Requirement: Clients let go, by reason
-`tilr_client_drops_total{reason}` SHALL count the clients the server let go, with a sample from 0 for each of `superseded` (by a newer connection of the same client), `too_slow` (its queue filled up), `silent` (nothing heard for the client timeout) and `no_pong` (it sent, but answered no ping for the client timeout). A client that disconnects on its own SHALL NOT be counted.
+`tilrd_client_drops_total{reason}` SHALL count the clients the server let go, with a sample from 0 for each of `superseded` (by a newer connection of the same client), `too_slow` (its queue filled up), `silent` (nothing heard for the client timeout), `no_pong` (it sent, but answered no ping for the client timeout) and `no_hello` (no `Hello` within 10 s of its WebSocket handshake). A client that disconnects on its own, or that a handshake check turns away with an `Error`, SHALL NOT be counted.
 
-**Verified by**: `metrics::metrics_count_the_clients_let_go_and_why` and itests `UC-052` (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`).
+**Verified by**: `metrics::metrics_count_the_clients_let_go_and_why`, `metrics::a_connection_that_never_says_hello_is_counted_as_no_hello` and itests `UC-052` (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`).
 
 #### Scenario: Superseded
 - **WHEN** a second connection says hello with the `client_id` and token of an open one
-- **THEN** `tilr_client_drops_total{reason="superseded"}` goes from 0 to 1 and `too_slow` stays 0
+- **THEN** `tilrd_client_drops_total{reason="superseded"}` goes from 0 to 1 and `too_slow` stays 0
 
 #### Scenario: Superseded over the network
 - **WHEN** a client's connection is superseded (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`)
-- **THEN** `tilr_client_drops_total{reason="superseded"}` is 1
+- **THEN** `tilrd_client_drops_total{reason="superseded"}` is 1
+
+#### Scenario: No Hello
+- **WHEN** a client completes the WebSocket handshake, sends no `Hello`, and is closed with 4002 `timeout` about 10 s later
+- **THEN** `tilrd_client_drops_total{reason="no_hello"}` goes from 0 to 1 and the other reasons stay 0
+
+#### Scenario: A wrong token is not a drop
+- **WHEN** a TCP client says `Hello` with a wrong token and is answered with an `Error`
+- **THEN** no `tilrd_client_drops_total` sample changes
 
 ### Requirement: Routing and event-loop histograms
-`tilr_route_seconds` SHALL observe a pane's packet from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning; `tilr_route_input_seconds` a client's input from the supervisor reading it off the WebSocket to the write to the pane process returning; `tilr_supervisor_loop_lag_seconds` how late the event loop gets to a once-a-second tick.
+`tilrd_route_seconds` SHALL observe a pane's packet from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning; `tilrd_route_input_seconds` a client's input from the supervisor reading it off the WebSocket to the write to the pane process returning; `tilrd_supervisor_loop_lag_seconds` how late the event loop gets to a once-a-second tick.
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing`.
 
 #### Scenario: After some traffic
 - **WHEN** a client typed into a pane and saw output, and a second has passed
-- **THEN** `tilr_route_seconds_count`, `tilr_route_input_seconds_count` and `tilr_supervisor_loop_lag_seconds_count` are each at least 1
+- **THEN** `tilrd_route_seconds_count`, `tilrd_route_input_seconds_count` and `tilrd_supervisor_loop_lag_seconds_count` are each at least 1
 
 ### Requirement: Histogram buckets
 The histograms SHALL have the buckets 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1 and +Inf seconds, cumulative, with `_sum` and `_count`.
@@ -228,16 +240,16 @@ The histograms SHALL have the buckets 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0
 
 #### Scenario: The +Inf bucket
 - **WHEN** packets were routed
-- **THEN** `tilr_route_seconds_bucket{le="+Inf"}` equals `tilr_route_seconds_count` and is at least 1
+- **THEN** `tilrd_route_seconds_bucket{le="+Inf"}` equals `tilrd_route_seconds_count` and is at least 1
 
 ### Requirement: CPU and memory of the server's processes
-`tilr_process_cpu_seconds_total` (user plus system CPU) and `tilr_process_memory_bytes` (resident set on Linux, physical footprint on macOS) SHALL be read when scraped, for the supervisor (`role="supervisor"`, `pid`) and each pane process (`role="pane"`, `pid`, `pane`), not the programs in the panes; a process whose usage cannot be read SHALL have no sample.
+`tilrd_process_cpu_seconds_total` (user plus system CPU) and `tilrd_process_memory_bytes` (resident set on Linux, physical footprint on macOS) SHALL be read when scraped, for the supervisor (`role="supervisor"`, `pid`) and each pane process (`role="pane"`, `pid`, `pane`), not the programs in the panes; a process whose usage cannot be read SHALL have no sample.
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing` and unit test `metrics::tests::this_process_has_usage`.
 
 #### Scenario: Supervisor and pane
 - **WHEN** one pane runs and `/metrics` is scraped
-- **THEN** `tilr_process_memory_bytes{role="supervisor",pid="<server pid>"}` and `tilr_process_memory_bytes{role="pane",pid="<pane pid>",pane="<id>"}` are at least 1
+- **THEN** `tilrd_process_memory_bytes{role="supervisor",pid="<server pid>"}` and `tilrd_process_memory_bytes{role="pane",pid="<pane pid>",pane="<id>"}` are at least 1
 
 ### Requirement: Latency is measurable over a bad network
 A client SHALL be able to measure input latency on its own clock, from sending a numbered input to the first frame carrying its seq (or a later one of its own), over a lossy, slow network without the session breaking.

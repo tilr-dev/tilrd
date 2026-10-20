@@ -15,10 +15,10 @@ from tt import T, Counter, case
 
 
 def drops(t: T, server, reason: str) -> float:
-    """tilr_client_drops_total{reason} from the server's /metrics."""
+    """tilrd_client_drops_total{reason} from the server's /metrics."""
     url = f"http://127.0.0.1:{server.port}/metrics?token={server.token()}"
     text = urllib.request.urlopen(url, timeout=5).read().decode()
-    series = f'tilr_client_drops_total{{reason="{reason}"}} '
+    series = f'tilrd_client_drops_total{{reason="{reason}"}} '
     return next((float(line[len(series):]) for line in text.splitlines() if line.startswith(series)), -1.0)
 
 
@@ -126,7 +126,7 @@ def a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected
          "the superseded connection is not reconnected")
     t.eq(observer.viewers(pane), 1, "still one viewer")
     t.ok(server.logged("client superseded by a newer connection") == 1, "the server logged the supersede")
-    t.eq(drops(t, server, "superseded"), 1.0, "tilr_client_drops_total counts it")
+    t.eq(drops(t, server, "superseded"), 1.0, "tilrd_client_drops_total counts it")
     counter.check_log()
     new.interrupt(pane)
     t.eq(new.run(pane, "echo typed-after"), 0, "input works on the new connection")

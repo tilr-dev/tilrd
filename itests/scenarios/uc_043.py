@@ -30,11 +30,11 @@ WINDOW_S = 60
 
 
 def frames_skipped(server) -> float:
-    """Frames the server skipped for a client that lagged, all panes (tilr_pane_frames_skipped_total)."""
+    """Frames the server skipped for a client that lagged, all panes (tilrd_pane_frames_skipped_total)."""
     url = f"http://127.0.0.1:{server.port}/metrics?token={server.token()}"
     text = urllib.request.urlopen(url, timeout=5).read().decode()
     return sum(float(line.rsplit(" ", 1)[1]) for line in text.splitlines()
-               if line.startswith("tilr_pane_frames_skipped_total{"))
+               if line.startswith("tilrd_pane_frames_skipped_total{"))
 
 
 def server_drops(server) -> int:

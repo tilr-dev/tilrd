@@ -360,8 +360,9 @@ pane process. The server's counters are at `GET /metrics`.
 | Without a token: `Sec-Fetch-Site: cross-site`, a foreign `Host` (DNS rebinding) or no `Host`: 403; with a token, the token decides | `without_a_token_metrics_are_for_this_machine_only` |
 | A request that arrives in pieces (the request line and the empty line split) | `a_metrics_request_may_come_in_pieces` |
 | After input and frames: the pane's frame, byte and input counters, the routing and loop-lag histograms, CPU and memory of the supervisor and the pane process | `metrics_count_frames_input_and_routing` |
-| An old connection superseded by the same client is counted in `tilr_client_drops_total{reason="superseded"}` | `metrics_count_the_clients_let_go_and_why` |
-| A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilr_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
+| An old connection superseded by the same client is counted in `tilrd_client_drops_total{reason="superseded"}` | `metrics_count_the_clients_let_go_and_why` |
+| A wrong-token Hello is refused without a drop; a connection that never says Hello is closed with 4002 and increments only `tilrd_client_drops_total{reason="no_hello"}` | `metrics_count_the_clients_let_go_and_why`, `a_connection_that_never_says_hello_is_counted_as_no_hello` |
+| A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilrd_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
 
 ## Not covered
 

@@ -9,7 +9,7 @@ supervisor) and the fast client's input latency for 30 s.
 The server skips frames for a client that lags (its queue holds a packet for longer than
 a moment) and sends it a full frame of the latest screen once it caught up: the slow
 client sees fewer screens, each the latest the network lets through, and the server
-keeps no backlog of stale ones (tilr_pane_frames_skipped_total). A client too slow even
+keeps no backlog of stale ones (tilrd_pane_frames_skipped_total). A client too slow even
 for that, one whose answers to the server's pings stop for the client timeout, is
 dropped, and its connection really ends: the second case.
 """
@@ -84,8 +84,8 @@ def a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the
     lat = fast.latency()
     frames = fast.cmd("frames", since=10**12, quiet=True)
     slow_frames = slow.cmd("frames", since=10**12, quiet=True)
-    skipped = metric(server, f'tilr_pane_frames_skipped_total{{pane="{storm}"}}')
-    produced = metric(server, f'tilr_pane_frames_total{{pane="{storm}"}}')
+    skipped = metric(server, f'tilrd_pane_frames_skipped_total{{pane="{storm}"}}')
+    produced = metric(server, f'tilrd_pane_frames_total{{pane="{storm}"}}')
     fast.key(storm, "ctrl-c")
     stop.set()
 

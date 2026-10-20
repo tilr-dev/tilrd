@@ -496,27 +496,27 @@ async fn metrics_count_frames_input_and_routing() {
     };
     at_least("tilrd_panes", 1.0);
     at_least("tilrd_clients", 1.0);
-    at_least(&format!("tilr_pane_frames_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_frame_bytes_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_frames_sent_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_input_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_input_bytes_total{pane}"), 1.0);
-    at_least("tilr_route_seconds_count", 1.0);
-    at_least("tilr_route_input_seconds_count", 1.0);
-    at_least("tilr_supervisor_loop_lag_seconds_count", 1.0);
-    at_least("tilr_route_seconds_bucket{le=\"+Inf\"}", 1.0);
+    at_least(&format!("tilrd_pane_frames_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_frame_bytes_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_frames_sent_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_input_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_input_bytes_total{pane}"), 1.0);
+    at_least("tilrd_route_seconds_count", 1.0);
+    at_least("tilrd_route_input_seconds_count", 1.0);
+    at_least("tilrd_supervisor_loop_lag_seconds_count", 1.0);
+    at_least("tilrd_route_seconds_bucket{le=\"+Inf\"}", 1.0);
     let supervisor = server.child.id();
     at_least(
-        &format!("tilr_process_memory_bytes{{role=\"supervisor\",pid=\"{supervisor}\"}}"),
+        &format!("tilrd_process_memory_bytes{{role=\"supervisor\",pid=\"{supervisor}\"}}"),
         1.0,
     );
     at_least(
-        &format!("tilr_process_memory_bytes{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"),
+        &format!("tilrd_process_memory_bytes{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"),
         1.0,
     );
     at_least(
         &format!(
-            "tilr_process_cpu_seconds_total{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"
+            "tilrd_process_cpu_seconds_total{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"
         ),
         0.0,
     );
@@ -524,6 +524,14 @@ async fn metrics_count_frames_input_and_routing() {
         text.lines()
             .any(|line| line.starts_with("tilrd_info{version=\"")),
         "{text}"
+    );
+    assert!(
+        text.lines().all(|line| {
+            !line.starts_with("tilr_")
+                && !line.starts_with("# HELP tilr_")
+                && !line.starts_with("# TYPE tilr_")
+        }),
+        "old metric prefix in:\n{text}"
     );
 }
 
@@ -534,11 +542,32 @@ async fn metrics_count_the_clients_let_go_and_why() {
     let drops = |text: &str, reason: &str| {
         sample(
             text,
-            &format!("tilr_client_drops_total{{reason=\"{reason}\"}}"),
+            &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}"),
         )
     };
     let (_, text) = http_get(&server, &url, &[]).await;
     assert_eq!(drops(&text, "superseded"), Some(0.0), "{text}");
+
+    let mut refused = Client::connect_silent(&server).await;
+    refused.token = "wrong token".into();
+    refused.hello_as(PROTOCOL_VERSION).await;
+    assert!(matches!(
+        refused.next().await,
+        Some(server_message::Msg::Error(_))
+    ));
+    assert!(refused.next().await.is_none());
+    let (_, text) = http_get(&server, &url, &[]).await;
+    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
+        assert_eq!(drops(&text, reason), Some(0.0), "{text}");
+    }
+
+    let mut voluntary = Client::connect(&server).await;
+    voluntary.ws.close(None).await.expect("close voluntarily");
+    server.wait_logged("client disconnected").await;
+    let (_, text) = http_get(&server, &url, &[]).await;
+    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
+        assert_eq!(drops(&text, reason), Some(0.0), "{text}");
+    }
 
     let mut old = Client::connect_silent(&server).await;
     old.client_id = "6c1d0c8e-0000-4000-8000-00000000000d".into();
@@ -550,6 +579,53 @@ async fn metrics_count_the_clients_let_go_and_why() {
     let (_, text) = http_get(&server, &url, &[]).await;
     assert_eq!(drops(&text, "superseded"), Some(1.0), "{text}");
     assert_eq!(drops(&text, "too_slow"), Some(0.0), "{text}");
+}
+
+#[tokio::test]
+async fn a_connection_that_never_says_hello_is_counted_as_no_hello() {
+    let server = Server::start(&["--client-timeout", "0"]);
+    let url = format!("/metrics?token={}", server.token());
+    let (_, text) = http_get(&server, &url, &[]).await;
+    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
+        assert_eq!(
+            sample(
+                &text,
+                &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}")
+            ),
+            Some(0.0),
+            "{text}"
+        );
+    }
+    let mut silent = Client::connect_silent(&server).await;
+
+    let close = loop {
+        match tokio::time::timeout(TIMEOUT, silent.ws.next()).await {
+            Ok(Some(Ok(Message::Close(frame)))) => break frame,
+            Ok(Some(Ok(_))) => {}
+            other => panic!("connection ended without a close frame: {other:?}"),
+        }
+    };
+    let frame = close.expect("a close frame with a code");
+    assert_eq!(u16::from(frame.code), 4002);
+    server.wait_logged("client sent no Hello in 10s").await;
+
+    let (status, text) = http_get(&server, &url, &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        sample(&text, "tilrd_client_drops_total{reason=\"no_hello\"}"),
+        Some(1.0),
+        "{text}"
+    );
+    for reason in ["superseded", "too_slow", "silent", "no_pong"] {
+        assert_eq!(
+            sample(
+                &text,
+                &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}")
+            ),
+            Some(0.0),
+            "{text}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -626,12 +702,12 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
     let (_, text) = http_get(&server, &url, &[]).await;
     let skipped = sample(
         &text,
-        &format!("tilr_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
+        &format!("tilrd_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
     )
     .unwrap_or_default();
     let produced = sample(
         &text,
-        &format!("tilr_pane_frames_total{{pane=\"{pane_id}\"}}"),
+        &format!("tilrd_pane_frames_total{{pane=\"{pane_id}\"}}"),
     )
     .unwrap_or_default();
     assert!(skipped > 0.0, "nothing skipped:\n{text}");
@@ -640,7 +716,7 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
         "{frames} frames of {produced} went to the lagging client"
     );
     assert_eq!(
-        sample(&text, "tilr_client_drops_total{reason=\"too_slow\"}"),
+        sample(&text, "tilrd_client_drops_total{reason=\"too_slow\"}"),
         Some(0.0)
     );
 }

@@ -1,5 +1,7 @@
 # Proposal: count connections closed for no Hello, and one prefix for every metric
 
+Implemented by: ea2e986 (`feat!: count no-Hello drops and rename tilrd metrics`).
+
 ## Decision (2026-10-18)
 
 Owner: option (a), `tilrd_`: every metric family uses the prefix `tilrd_`. The twelve `tilr_*` families are renamed to `tilrd_*` (list under What Changes); the three gauges `tilrd_info`, `tilrd_clients`, `tilrd_panes` stay. Rejected: (b) `tilr_` (three renames back). Prometheus naming asks for one prefix per exporter, named after the program (node_exporter: `node_`, prometheus: `prometheus_`); the program is `tilrd`. Recorded in Itsaplan TILR-109.
