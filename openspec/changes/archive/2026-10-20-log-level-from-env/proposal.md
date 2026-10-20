@@ -27,4 +27,4 @@
 
 ## Implemented by
 
-7e3e387 (`feat(tilrd): take the log filter from RUST_LOG`), with the test isolation in bbbe98b and 904c14f — TILR-82.
+TILR-82: `log_filter()` in `crates/tilrd/src/main.rs`, with integration coverage in `local::rust_log_sets_the_log_level` and `RUST_LOG` isolation for the test servers and direct test commands.
