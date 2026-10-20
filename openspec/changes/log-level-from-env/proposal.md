@@ -24,3 +24,7 @@
 ## Impact
 
 `crates/tilrd/src/main.rs`, `crates/tilrd/Cargo.toml` (tracing-subscriber `env-filter` feature; `Cargo.lock`; `cargo deny check` for the added `regex`-family crates), `crates/tilrd/tests/common/mod.rs` (test servers start without the developer's `RUST_LOG`), a new test, README. No protocol change, no PROTOCOL_VERSION or feature change, no state format change. A reload keeps the environment, so the level carries over; an update from the previous release starts filtering at the reload into this one. Not breaking: without `RUST_LOG` the output is as before.
+
+## Implemented by
+
+7e3e387 (`feat(tilrd): take the log filter from RUST_LOG`), with the test isolation in bbbe98b and 904c14f — TILR-82.
