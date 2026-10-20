@@ -2481,6 +2481,9 @@ impl Supervisor {
         let Some(pane_id) = pane_id else {
             return Err(format!("no such pane: {named}"));
         };
+        let Some(copy_id) = copy_id else {
+            return Err("clipboard-write needs the copy_id of the copy".into());
+        };
         let Some(content) = clipboard.take_copied(copy_id)? else {
             // Replaced (or expired) before the server heard of it: what
             // replaced it goes its own way.

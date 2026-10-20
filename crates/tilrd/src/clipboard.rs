@@ -270,11 +270,11 @@ impl Receiver {
     /// store holds something else by now (a newer copy or upload, which
     /// goes its own way) or nothing. Content over the limit (the shim
     /// checks it first) is removed.
-    pub fn take_copied(&self, id: Option<u64>) -> Result<Option<Content>, String> {
+    pub fn take_copied(&self, id: u64) -> Result<Option<Content>, String> {
         let Some((content, stored)) = self.store.read_with_id() else {
             return Ok(None);
         };
-        if id.is_some_and(|id| id != stored) {
+        if id != stored {
             return Ok(None);
         }
         let size = content.data.len() as u64;
@@ -457,6 +457,8 @@ struct CopyRequest {
     from: Source,
     /// Drop a newline at the end (`xclip -rmlastnl`, `wl-copy -n`).
     trim_newline: bool,
+    /// Print the content too (`xclip -filter`).
+    filter: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -492,12 +494,15 @@ fn copy_mime(target: Option<&str>) -> Option<String> {
 }
 
 /// xclip takes any unambiguous prefix of an option: `-sel`, `-o`, `-t`.
-/// Without `-o` it copies, from stdin or the files named.
+/// Without `-o` it copies, from stdin or the files named. A copy with an
+/// option this does not know (`-help`, `-version`) is left to the real tool.
 fn parse_xclip(args: &[String]) -> Request {
     let mut out = false;
     let mut clipboard = false;
     let mut target = None;
     let mut trim_newline = false;
+    let mut filter = false;
+    let mut unknown = false;
     let mut files = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -516,8 +521,16 @@ fn parse_xclip(args: &[String]) -> Request {
             out = false;
         } else if "rmlastnl".starts_with(option) {
             trim_newline = true;
+        } else if "filter".starts_with(option) {
+            filter = true;
         } else if "display".starts_with(option) || "loops".starts_with(option) {
             args.next();
+        } else if !["silent", "quiet", "noutf8", "sensitive"]
+            .iter()
+            .any(|known| known.starts_with(option))
+            && !("verbose".starts_with(option) && option.len() >= 4)
+        {
+            unknown = true;
         }
     }
     if !clipboard {
@@ -531,6 +544,9 @@ fn parse_xclip(args: &[String]) -> Request {
             Request::Other
         };
     }
+    if unknown {
+        return Request::Other;
+    }
     Request::Copy(CopyRequest {
         mime: copy_mime(target),
         from: if files.is_empty() {
@@ -539,6 +555,7 @@ fn parse_xclip(args: &[String]) -> Request {
             Source::Files(files)
         },
         trim_newline,
+        filter,
     })
 }
 
@@ -579,6 +596,7 @@ fn parse_wl_copy(args: &[String]) -> Request {
             Source::Text(text)
         },
         trim_newline,
+        filter: false,
     })
 }
 
@@ -680,7 +698,7 @@ fn read_copy(from: &Source, max: u64) -> Result<Vec<u8>, String> {
     let mut data = Vec::new();
     let mut size = 0u64;
     for (name, reader) in &mut readers {
-        let room = (max + 1).saturating_sub(data.len() as u64);
+        let room = max.saturating_add(1).saturating_sub(data.len() as u64);
         let read = reader
             .take(room)
             .read_to_end(&mut data)
@@ -735,7 +753,18 @@ fn copy(tool: &str, copy: CopyRequest, dir: PathBuf) -> ExitCode {
         args: Vec::new(),
         copy_id: Some(id),
     };
-    match crate::host::ask(Path::new(&sock), &request) {
+    let told = crate::host::ask(Path::new(&sock), &request);
+    if copy.filter {
+        let mut stdout = io::stdout().lock();
+        if stdout
+            .write_all(&data)
+            .and_then(|()| stdout.flush())
+            .is_err()
+        {
+            return ExitCode::FAILURE;
+        }
+    }
+    match told {
         Ok(crate::host::Reply { ok: true, .. }) => ExitCode::SUCCESS,
         Ok(crate::host::Reply { error, .. }) => fail(error.unwrap_or_else(|| "refused".into())),
         Err(err) => fail(format!("cannot reach the tilr server: {err:#}")),
@@ -931,6 +960,7 @@ mod tests {
             mime: mime.map(str::to_owned),
             from,
             trim_newline,
+            filter: false,
         })
     }
 
@@ -966,6 +996,26 @@ mod tests {
                 true
             )
         );
+        // Options that make no difference here; -filter prints it too.
+        assert_eq!(
+            parse_xclip(&args(
+                "-selection clipboard -silent -quiet -verbose -noutf8"
+            )),
+            copy_request(None, Source::Stdin, false)
+        );
+        assert_eq!(
+            parse_xclip(&args("-sel c -f")),
+            Request::Copy(CopyRequest {
+                mime: None,
+                from: Source::Stdin,
+                trim_newline: false,
+                filter: true,
+            })
+        );
+        // Help, the version, an option unknown here: the real tool's.
+        for line in ["-sel c -h", "-sel c -version", "-sel c -nonsense"] {
+            assert_eq!(parse_xclip(&args(line)), Request::Other, "{line}");
+        }
         // The primary selection, xclip's default, is not ours.
         assert_eq!(parse_xclip(&args("-i")), Request::Other);
         assert_eq!(parse_xclip(&args("")), Request::Other);
@@ -1018,6 +1068,8 @@ mod tests {
         fs::write(&b, vec![b'b'; 2000]).unwrap();
         let files = Source::Files(vec![a.to_str().unwrap().into(), b.to_str().unwrap().into()]);
         assert_eq!(read_copy(&files, 5000).unwrap().len(), 5000);
+        // No limit given (a shell outside the panes).
+        assert_eq!(read_copy(&files, u64::MAX).unwrap().len(), 5000);
         // The whole size is told, though only up to the limit was kept.
         let error = read_copy(&files, 4096).unwrap_err();
         assert!(error.starts_with("too large: 4.9 KB,"), "{error}");
@@ -1109,7 +1161,7 @@ mod tests {
     fn a_shims_copy_is_taken_only_while_the_store_holds_it() {
         let receiver = receiver("copied", 100);
         let id = receiver.store.publish("text/plain", b"mine", None).unwrap();
-        let taken = receiver.take_copied(Some(id)).unwrap().unwrap();
+        let taken = receiver.take_copied(id).unwrap().unwrap();
         assert_eq!(taken.data, b"mine");
         assert_eq!(receiver.store.read_with_id().unwrap().1, id);
         // Something else replaced it before the server heard of the copy.
@@ -1118,13 +1170,13 @@ mod tests {
             .publish("text/plain", b"other", None)
             .unwrap();
         assert_ne!(other, id);
-        assert_eq!(receiver.take_copied(Some(id)).unwrap(), None);
+        assert_eq!(receiver.take_copied(id).unwrap(), None);
         // Over the limit: refused and removed.
         let id = receiver
             .store
             .publish("text/plain", &[b'x'; 101], None)
             .unwrap();
-        let error = receiver.take_copied(Some(id)).unwrap_err();
+        let error = receiver.take_copied(id).unwrap_err();
         assert!(error.starts_with("too large: 101 B"), "{error}");
         assert_eq!(receiver.store.read(), None);
     }
