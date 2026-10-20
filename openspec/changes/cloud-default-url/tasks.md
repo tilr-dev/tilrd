@@ -2,8 +2,8 @@
 
 ## 1. Default
 
-- [ ] 1.1 `DEFAULT_URL = "https://wss.tilr.dev"` in `crates/tilrd/src/cloud.rs`; `the_control_address_follows_the_cloud_address` uses the new host; add `cloud::tests::the_default_cloud_is_the_api_host` (asserts the constant and its control URL `wss://wss.tilr.dev/v1/machine/connect`); verify `cargo test -p tilrd --bin tilrd cloud::tests` and `tilrd cloud login --help` showing `[default: https://wss.tilr.dev]`
-- [ ] 1.2 README "tilr Cloud" (README.md:379-380) names `https://wss.tilr.dev`; verify `grep -rn cloud.tilr.dev README.md crates/` prints only lines about Cloud's page, if any
+- [x] 1.1 `DEFAULT_URL = "https://wss.tilr.dev"` in `crates/tilrd/src/cloud.rs`; `the_control_address_follows_the_cloud_address` uses the new host; add `cloud::tests::the_default_cloud_is_the_api_host` (asserts the constant and its control URL `wss://wss.tilr.dev/v1/machine/connect`); verify `cargo test -p tilrd --bin tilrd cloud::tests` and `tilrd cloud login --help` showing `[default: https://wss.tilr.dev]`
+- [x] 1.2 README "tilr Cloud" (README.md:379-380) names `https://wss.tilr.dev`; verify `grep -rn cloud.tilr.dev README.md crates/` prints only lines about Cloud's page, if any
 
 ## 2. Checks and archive
 

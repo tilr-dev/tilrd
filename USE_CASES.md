@@ -130,7 +130,8 @@ Cloud repository.
 | When the control connection drops, the server reconnects while the same `cloudflared` keeps running | `the_control_connection_is_retried_and_the_tunnel_kept_meanwhile` |
 | A failed `cloudflared` reports failure and is started again | `a_cloudflared_that_exits_is_reported_and_started_again` |
 | A linked server without a TCP port logs that Cloud is disabled and makes no Cloud connection | `a_server_without_a_tcp_port_does_not_connect_to_cloud` |
-| A linked server connects to Cloud with its own token; given a tunnel, it starts `cloudflared` pointed at its own port only; tunnel revoked: `cloudflared` stopped, secret removed | `a_linked_server_gets_its_tunnel_from_cloud` |
+| Cloud login help names `https://wss.tilr.dev` as the default API host | `cloud_login_help_names_the_default_api_host` |
+| A linked server keeps its saved Cloud URL and connects to Cloud with its own token; given a tunnel, it starts `cloudflared` pointed at its own port only; tunnel revoked: `cloudflared` stopped, secret removed | `a_linked_server_gets_its_tunnel_from_cloud` |
 | A server with `--no-auth` refuses the tunnel | `a_server_without_authentication_takes_no_tunnel` |
 | A tunnel description that would extend the `cloudflared` config (another service) is rejected | `a_tunnel_that_would_lead_elsewhere_is_refused` |
 | On a server reload the old `cloudflared` is stopped and the successor starts its own | `a_reload_replaces_cloudflared_with_one_of_the_new_server` |

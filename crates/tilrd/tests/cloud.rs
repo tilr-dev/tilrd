@@ -319,6 +319,18 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
+#[test]
+fn cloud_login_help_names_the_default_api_host() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args(["cloud", "login", "--help"])
+        .env_remove("TILR_CLOUD")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("[default: https://wss.tilr.dev]"), "{help}");
+}
+
 #[tokio::test]
 async fn login_prints_the_code_and_polls_until_confirmed() {
     let (url, _, mut requests) = cloud_with_http().await;
@@ -618,6 +630,8 @@ async fn a_server_without_a_tcp_port_does_not_connect_to_cloud() {
 async fn a_linked_server_gets_its_tunnel_from_cloud() {
     let (url, mut connections) = cloud().await;
     let server = linked_server(&url, &[]);
+    let link_path = server.dir.join("state/cloud.json");
+    let saved_link = std::fs::read(&link_path).unwrap();
     let mut control = connections.recv().await.unwrap();
     assert_eq!(control.authorization, format!("Bearer {MACHINE_TOKEN}"));
 
@@ -626,6 +640,7 @@ async fn a_linked_server_gets_its_tunnel_from_cloud() {
     assert_eq!(hello["auth"], true);
     assert_eq!(hello["platform"], env!("TILR_PLATFORM"));
     assert_eq!(control.next().await["state"], "down");
+    assert_eq!(std::fs::read(link_path).unwrap(), saved_link);
 
     control.send(tunnel("abc234.tilr.test")).await;
     control.tunnel_is("up").await;
