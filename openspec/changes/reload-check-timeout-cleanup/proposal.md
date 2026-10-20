@@ -1,4 +1,4 @@
-# Proposal: Diagnose the state-formats timeout and preserve test failure cleanup
+# Proposal: Preserve cleanup after a failed test log wait
 
 ## Why
 
@@ -8,8 +8,9 @@ Its missing-log assertion then poisoned the log mutex; the log reader and
 
 ## What Changes
 
-- Establish the cause of the state-formats timeout with a controlled reproduction
-  before changing the probe.
+- Keep the unproven state-formats timeout in known-flakes, as approved by Dan
+  on 2026-10-20 (TILR-170 comment #3750); this change fixes the confirmed
+  secondary cleanup failure.
 - Release the log mutex before reporting a failed wait, and preserve cleanup and
   diagnostics even when another log user has poisoned the mutex.
 - Exercise failure unwinding in subprocesses so an abort is observable without

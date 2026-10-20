@@ -37,3 +37,10 @@ One baseline run reached the command-line refusal successfully:
 `cargo test -p tilrd --test reload a_successor_that_rejects_the_command_line_is_not_reloaded_into --features tilrd/failpoints --locked`.
 Log: `../logs/rejects-baseline.log`. This is not a reproduction or proof of a fix.
 No retries, increased deadlines or speculative probe fixes are justified.
+
+## Agreed result
+
+On 2026-10-20 Dan approved reviewing the cleanup fix with the original timeout
+remaining in Basic Memory `projects/tilr/known-flakes` (TILR-170 comment #3750,
+reply to #2762). The timeout cause is not claimed to be established or fixed.
+No daemon behavior or reload deadline changes are part of this change.
