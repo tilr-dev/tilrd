@@ -253,6 +253,7 @@ class TilrItests:
                       Ignore(SOURCE_IGNORE)]
     itests: Annotated[dagger.Directory, Doc("tt helper, fixtures and scenarios"), DefaultPath("/itests"),
                       Ignore(ITESTS_IGNORE)]
+    installer: Annotated[dagger.File, Doc("the installer tilr.sh serves"), DefaultPath("/scripts/install.sh")]
     commit: Annotated[str, Doc("commit baked into the version string (TILR_BUILD_COMMIT)")] = "itest"
     distro: Annotated[str, Doc(f"runtime image of the scenarios: {', '.join(DISTROS)}")] = "ubuntu"
 
@@ -515,7 +516,7 @@ class TilrItests:
                 except Exception:
                     return Result(rid, "scenario", "BLOCKED", 0, f"fixture {c['fixture']} failed to build")
             ctr = (self._with_binaries(self._tt(self.runtime(), c["module"]))
-                   .with_file("/opt/tt/install.sh", self.itests.file("installer/install.sh"))
+                   .with_file("/opt/tt/install.sh", self.installer)
                    .with_directory("/fx", fx)
                    .with_env_variable("TT_RUN", f"{run_id}-{k}")
                    .with_env_variable("TT_TIMEOUT", str(c["timeout"])))

@@ -35,3 +35,7 @@
 ## Decision (2026-10-18)
 
 Option (c): this repository owns `install.sh` (`scripts/install.sh`, the one itests run), and the release workflow's `cdn` job uploads it after the release's `latest`. The separate sh source directory keeps only the `tilr.sh` Worker. One copy, tested by itests in CI, published by the same job that publishes what it installs. The tasks below are written for (c).
+
+## Implementation
+
+Implemented by: `feat: publish scripts/install.sh with each release` on `task/TILR-80` (`Task: TILR-80`). The commit is identified by its subject because rebasing the task branch changes its SHA.

@@ -43,11 +43,13 @@ impl Fixture {
         fs::create_dir(&dir).unwrap();
         fs::create_dir(dir.join("scripts")).unwrap();
         fs::create_dir(dir.join("bin")).unwrap();
-        fs::copy(
-            root().join("scripts/release.sh"),
-            dir.join("scripts/release.sh"),
-        )
-        .unwrap();
+        for script in ["release.sh", "install.sh"] {
+            fs::copy(
+                root().join("scripts").join(script),
+                dir.join("scripts").join(script),
+            )
+            .unwrap();
+        }
         fs::write(
             dir.join("Cargo.toml"),
             "[workspace.package]\nversion = \"9.8.7\"\n",
@@ -75,7 +77,12 @@ done
         );
         executable(
             &dir.join("bin/wrangler"),
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WRANGLER_LOG\"\n",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$WRANGLER_LOG"
+if [ -f "$WRANGLER_FAIL" ] && [ "$4" = "tilr-cdn/$(cat "$WRANGLER_FAIL")" ]; then
+  exit 1
+fi
+"#,
         );
         git(&dir, &["init", "-q"]);
         git(&dir, &["config", "user.email", "release@test.invalid"]);
@@ -100,6 +107,7 @@ done
             ),
         );
         command.env("WRANGLER_LOG", self.dir.join("wrangler.log"));
+        command.env("WRANGLER_FAIL", self.dir.join("wrangler.fail"));
         command.env_remove("CLOUDFLARE_ACCOUNT_ID");
         if account {
             command.env("CLOUDFLARE_ACCOUNT_ID", "fixture-account");
@@ -122,6 +130,22 @@ done
 
     fn log(&self) -> String {
         fs::read_to_string(self.dir.join("wrangler.log")).unwrap_or_default()
+    }
+
+    /// The stub wrangler fails to upload `name` (an object of tilr-cdn).
+    fn fail_upload(&self, name: &str) {
+        fs::write(self.dir.join("wrangler.fail"), name).unwrap();
+    }
+
+    /// The objects uploaded, in order.
+    fn uploads(&self) -> Vec<String> {
+        self.log()
+            .lines()
+            .map(|line| {
+                let name = line.strip_prefix("r2 object put tilr-cdn/").unwrap();
+                name[..name.find(' ').unwrap()].to_owned()
+            })
+            .collect()
     }
 }
 
@@ -223,7 +247,7 @@ fn publishing_uploads_the_archive_and_its_checksum_before_latest() {
     assert_exit(&f.run(&["--publish", "linux-aarch64"], true), 0);
     let version = f.version();
     let lines: Vec<_> = f.log().lines().map(str::to_owned).collect();
-    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines.len(), 4, "{lines:?}");
     let base = format!("releases/{version}/tilr-{version}-linux-aarch64.tar.gz");
     for (line, name, content_type, cache) in [
         (
@@ -297,9 +321,62 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("linux-aarch64.tar.gz: FAILED"));
     assert_eq!(
         f.log().lines().count(),
-        3,
+        4,
         "failed validation uploaded files"
     );
+}
+
+#[test]
+fn the_installer_is_uploaded_after_latest() {
+    let f = Fixture::new();
+    assert_exit(&f.run(&["linux-aarch64", "linux-x86_64"], false), 0);
+    let version = f.version();
+    let archive = |platform: &str| format!("releases/{version}/tilr-{version}-{platform}.tar.gz");
+
+    assert_exit(&f.run(&["--upload-only", "linux-x86_64"], true), 0);
+    assert_eq!(
+        f.uploads(),
+        [
+            archive("linux-x86_64"),
+            format!("{}.sha256", archive("linux-x86_64")),
+            "releases/linux-x86_64/latest".to_owned(),
+            "install.sh".to_owned(),
+        ]
+    );
+    let line = f.log().lines().last().unwrap().to_owned();
+    assert!(
+        line.starts_with("r2 object put tilr-cdn/install.sh --file scripts/install.sh "),
+        "{line}"
+    );
+    assert!(
+        line.contains("--content-type text/x-shellscript; charset=utf-8"),
+        "{line}"
+    );
+    assert!(
+        line.contains("--cache-control public, max-age=300"),
+        "{line}"
+    );
+    assert!(line.ends_with("--remote"), "{line}");
+
+    // With two platforms, after both latests.
+    fs::remove_file(f.dir.join("wrangler.log")).unwrap();
+    assert_exit(
+        &f.run(&["--upload-only", "linux-aarch64", "linux-x86_64"], true),
+        0,
+    );
+    let uploads = f.uploads();
+    assert_eq!(uploads.len(), 7, "{uploads:?}");
+    assert_eq!(uploads[2], "releases/linux-aarch64/latest");
+    assert_eq!(uploads[5], "releases/linux-x86_64/latest");
+    assert_eq!(uploads[6], "install.sh");
+
+    // A failed upload stops it before the installer.
+    fs::remove_file(f.dir.join("wrangler.log")).unwrap();
+    f.fail_upload("releases/linux-x86_64/latest");
+    let output = f.run(&["--upload-only", "linux-x86_64"], true);
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(f.uploads().last().unwrap(), "releases/linux-x86_64/latest");
+    assert!(!f.uploads().contains(&"install.sh".to_owned()));
 }
 
 #[test]

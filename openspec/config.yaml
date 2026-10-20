@@ -42,7 +42,7 @@ context: |
 
   Compatibility across updates: a release is one archive per platform holding tilrd and
   tilr. `tilrd update` (crates/tilrd/src/update.rs, DEFAULT_CDN https://cdn.tilr.dev) and
-  the installer (itests/installer/install.sh, a copy of the sh repository's) read the CDN
+  the installer (scripts/install.sh, which tilr.sh serves) read the CDN
   layout releases/<platform>/latest and
   releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]; scripts/release.sh writes
   it: change all sides together or not at all. Since 2a8b425 nothing is published under the

@@ -146,7 +146,6 @@ itests/
     live.py              live software in panes for the update and reload cases (group F)
     cloud.py             tilr Cloud played by a case, the stand-in cloudflared
   fixtures/*.py          prepared states shared by cases
-  installer/install.sh   a copy of the installer of the sh repository (not edited here)
   scenarios/uc_NNN.py    the cases of one use case
   tools/                 report.html, the history page and the spec coverage (coverage.py)
 ```
@@ -159,7 +158,7 @@ itests/
 tilrd, tilr, tilr-driver  on PATH (tilr next to tilrd); root's login shell is bash with PS1='$ '
 /opt/tt/tilrd-next        the next release; /opt/tt/manifest.json its version and platform
 /opt/tt/tilr-next         its client
-/opt/tt/install.sh        the installer (installer/install.sh), group A
+/opt/tt/install.sh        the installer (scripts/install.sh), group A
 $TT_SERVICE_CDN           http://cdn:8080, the fake CDN, for cases with services=["cdn"]
 ```
 

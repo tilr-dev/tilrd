@@ -69,7 +69,7 @@ the line.
 - The CDN layout (`releases/<platform>/latest`,
   `releases/<version>/tilr-<version>-<platform>.tar.gz` holding `tilrd` and `tilr`, with its
   `.sha256`) is what `tilrd update` (`crates/tilrd/src/update.rs`, run by `tilr update`) and
-  the installer (`itests/installer/install.sh` is the copy the black-box tests use) read: do
+  the installer (`scripts/install.sh`, which `tilr.sh` serves and the black-box tests run) read: do
   not change one without the others.
 
 ## Secrets

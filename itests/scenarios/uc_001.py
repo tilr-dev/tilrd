@@ -3,7 +3,7 @@ temporary directory, its checksum checked, tilrd and tilr from it land in ~/.loc
 nothing else is left anywhere, the hints are printed, and `tilr` then starts the
 installed tilrd.
 
-The installer is the sh repository's (itests/installer/install.sh), served with a release
+The installer is scripts/install.sh, the one tilr.sh serves, with a release
 built from this tree (tilr-<version>-<platform>.tar.gz and its .sha256) by a CDN of the
 case's own; it runs as a user made for the case, with a login's environment and
 ~/.local/bin on PATH.
