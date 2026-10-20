@@ -3,4 +3,4 @@
 - [x] Add deterministic fake-channel regression and prove it fails without the fix.
 - [x] Mark each subscription as awaiting a full frame, preserving own_seq.
 - [x] Verify reconnect metrics.
-- [ ] Complete self-review and required checks through the task finish workflow.
+- [x] Complete self-review; hand off required checks to the task finish workflow.
