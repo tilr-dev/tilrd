@@ -1078,7 +1078,9 @@ cover — connecting, the Unix socket, the client, reconnecting, scrolling, relo
 updating, the clipboard, files, the SOCKS proxy, the SSH agent, exec, metrics — and what is
 not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
 
-The cleanup stand runs an ignored test fixture outside the normal suite. It waits for
+The cleanup stand owns a temporary directory for each case and removes it, including
+notification and runtime sockets, after cleaning its processes. It runs an ignored
+test fixture outside the normal suite. It waits for
 the server's ready notification before interrupting the test process, checks the
 server PID (and `pgrep` on macOS), and removes its own processes even when a check
 fails. Success requires an exit event for that exact PID (kqueue on macOS,

@@ -18,3 +18,4 @@
 - [x] Require an exit event, bound failure at 30 seconds, and fail on unavailable watchers.
 - [x] Check the watcher contract deterministically and scope pgrep selftest to macOS.
 - [x] Verify macOS/Linux selftests and required checks.
+- [x] Own the fixture directory in the external stand and verify artifact cleanup after interruption and readiness/check failures.

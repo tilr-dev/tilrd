@@ -66,10 +66,16 @@ class CleanupStandTest(unittest.TestCase):
             )
             server.chmod(0o755)
             pids = root / "pids"
+            directories = root / "directories"
             fixture = root / "fixture.py"
             fixture.write_text(
                 "#!/usr/bin/env python3\n"
-                "import subprocess, sys\n"
+                "import os, pathlib, socket, subprocess, sys\n"
+                f"scratch = pathlib.Path(os.environ.get('TILR_STAND_DIR', {str(root)!r} + '/unowned-' + str(os.getpid())))\n"
+                "scratch.mkdir(exist_ok=True)\n"
+                "notify = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+                "notify.bind(str(scratch / 'notify.sock'))\n"
+                f"with open({str(directories)!r}, 'a') as out: print(scratch, file=out, flush=True)\n"
                 f"child = subprocess.Popen([{str(server)!r}], "
                 f"stdin=subprocess.{'PIPE' if clean_server else 'DEVNULL'}, "
                 "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
@@ -96,6 +102,8 @@ class CleanupStandTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0 if clean_server else 1,
                              result.stdout + result.stderr)
             self.assertEqual(len(pids.read_text().splitlines()), 2)
+            for directory in directories.read_text().splitlines():
+                self.assertFalse(Path(directory).exists(), f"fixture artifacts remain: {directory}")
             if clean_server:
                 self.assertIn("signal: server PID", result.stdout)
                 self.assertIn("timeout: server PID", result.stdout)
@@ -122,7 +130,7 @@ class CleanupStandTest(unittest.TestCase):
                 "child = subprocess.Popen([sys.executable, '-c', "
                 "'import signal; signal.pause()'])\n"
                 f"with open({str(pids)!r}, 'w') as out: "
-                "print(os.getpid(), child.pid, file=out, flush=True)\n"
+                "print(os.getpid(), child.pid, os.environ.get('TILR_STAND_DIR', ''), file=out, flush=True)\n"
                 "print(f'TILR_STAND_READY pid={child.pid}', flush=True)\n"
                 "sys.stdin.buffer.read(1)\n"
             )
@@ -153,7 +161,8 @@ class CleanupStandTest(unittest.TestCase):
                 self.assertEqual(os.read(event_read, 1), b"R")
                 process.send_signal(signal.SIGTERM)
                 stdout, stderr = process.communicate(timeout=40)
-                _, server_pid = map(int, pids.read_text().split())
+                _, pid, directory = pids.read_text().split()
+                server_pid = int(pid)
                 survived = stand.server_running(server_pid)
             finally:
                 os.close(event_read)
@@ -169,6 +178,7 @@ class CleanupStandTest(unittest.TestCase):
                         pass
             self.assertEqual(process.returncode, 143, stdout + stderr)
             self.assertFalse(survived, f"server {server_pid} survived stand SIGTERM")
+            self.assertFalse(Path(directory).exists(), f"fixture artifacts remain: {directory}")
 
     def test_detects_survivors_and_cleans_them(self):
         self.check_case(ready=True)

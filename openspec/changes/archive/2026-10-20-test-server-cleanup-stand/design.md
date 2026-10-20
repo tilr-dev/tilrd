@@ -55,3 +55,12 @@ The ready parser accepts only a complete newline-terminated message. Pipe reads
 may split the decimal PID anywhere, so an incomplete suffix cannot identify a
 server. A deterministic regression feeds `pid=12` and `345\n` as separate reads
 and requires PID 12345.
+
+### Fixture filesystem ownership
+
+The stand owns a short `/tmp/tilr-stand-*` directory per case and passes it
+to the fixture through `TILR_STAND_DIR`. The short runtime path keeps the
+host socket inside that directory on macOS. After process cleanup, a Python
+context manager removes the directory even when readiness fails or SIGTERM
+interrupts the stand. This replaces fixture-only scratch ownership, whose
+Rust destructor cannot run after the test process is killed.

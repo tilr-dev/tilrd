@@ -11,7 +11,9 @@ fn server_ready_then_wait_for_interruption() {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixDatagram;
 
-    let dir = common::Server::scratch_dir();
+    let dir = std::path::PathBuf::from(
+        std::env::var_os("TILR_STAND_DIR").expect("run through the external cleanup stand"),
+    );
     let notify_path = dir.join("notify.sock");
     let notify = UnixDatagram::bind(&notify_path).unwrap();
     notify.set_read_timeout(Some(common::TIMEOUT)).unwrap();

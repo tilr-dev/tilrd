@@ -14,6 +14,7 @@ import select
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -126,10 +127,17 @@ def close_watcher(watcher):
 
 
 def run_case(executable, case):
+    # Keep runtime socket paths below the macOS limit so all artifacts stay here.
+    with tempfile.TemporaryDirectory(prefix="tilr-stand-", dir="/tmp") as directory:
+        run_case_in(executable, case, directory)
+
+
+def run_case_in(executable, case, directory):
     process = subprocess.Popen(
         [executable, "--ignored", "--exact", "server_ready_then_wait_for_interruption", "--nocapture"],
         cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, start_new_session=True,
+        env={**os.environ, "TILR_STAND_DIR": directory},
     )
     server_pid = None
     watcher = None

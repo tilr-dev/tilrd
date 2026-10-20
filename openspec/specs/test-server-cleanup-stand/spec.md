@@ -27,12 +27,11 @@ separate signal and timeout cases without sleeps or repeated runs for ordering.
 - **THEN** it triggers a process wait timeout, terminates the test process, and checks whether that server remains
 
 ### Requirement: Owned process accounting and cleanup
-The stand SHALL check the exact PID of every server it starts and, on macOS,
-check those PIDs against `pgrep -f target/debug/tilrd`. It SHALL terminate its
-own process group, including servers whose ready message was never received,
-and reap the test process even if a check or the stand itself fails. It SHALL
-require an OS exit event for success and fail explicitly if no exit watcher
-is available.
+The stand SHALL check each owned server PID and, on macOS, compare it with
+`pgrep -f target/debug/tilrd`. It SHALL terminate its process group and reap
+the fixture on failure, including before readiness. Success SHALL require an
+OS exit event; unavailable watchers SHALL fail explicitly. After process
+cleanup it SHALL remove its fixture directory and sockets.
 
 **Verified by**: `scripts/test_server_cleanup_stand_selftest.py` and a real
 `scripts/test_server_cleanup_stand.py` run.
@@ -65,3 +64,7 @@ is available.
 #### Scenario: The stand receives SIGTERM
 - **WHEN** SIGTERM interrupts the stand while it is checking a ready server
 - **THEN** it removes its owned process group, reaps the fixture, and exits with status 143
+
+#### Scenario: Interrupted fixture leaves filesystem artifacts
+- **WHEN** interruption prevents the fixture from running its destructors
+- **THEN** the stand removes its owned scratch directory, notification socket and runtime sockets after terminating its processes
