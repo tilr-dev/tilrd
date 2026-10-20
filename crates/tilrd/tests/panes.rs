@@ -4,6 +4,189 @@ mod common;
 
 use common::*;
 
+async fn unwatched_activity(output: &str) -> Vec<tilr_proto::PaneActivity> {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let mut observer = Client::connect(&server).await;
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 80,
+            rows: 24,
+            command: vec!["/bin/sh".into(), "-c".into(), output.into()],
+            cwd: String::new(),
+            request_id: 83,
+        }))
+        .await;
+    let pane = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(p) => Some(p.pane.as_ref().unwrap().pane_id.clone()),
+            _ => None,
+        })
+        .await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneExited(p) if p.pane_id == pane => Some(()),
+            _ => None,
+        })
+        .await;
+    let activities: Vec<_> = client.activities.into_iter().collect();
+    observer
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneExited(p) if p.pane_id == pane => Some(()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(
+        observer.activities.into_iter().collect::<Vec<_>>(),
+        activities
+    );
+    let mut reconnected = Client::connect(&server).await;
+    reconnected.list_panes().await;
+    assert!(
+        reconnected.activities.is_empty(),
+        "activity must not be replayed"
+    );
+    assert!(activities.iter().all(|a| a.pane_id == pane));
+    activities
+}
+
+#[tokio::test]
+async fn a_bell_in_an_unwatched_pane_is_reported() {
+    let activities = unwatched_activity("printf '\\a'").await;
+    assert_eq!(activities.len(), 1);
+    assert_eq!(
+        activities[0].kind,
+        tilr_proto::PaneActivityKind::Bell as i32
+    );
+    assert!(activities[0].at_ms > 0);
+}
+
+#[tokio::test]
+async fn a_bel_ending_an_osc_is_not_reported() {
+    assert!(
+        unwatched_activity("printf '\\033]2;title\\007'")
+            .await
+            .is_empty()
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn bells_are_reported_once_a_second() {
+    use tilr_proto::PaneActivityKind;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    const START: u64 = 1_700_000_000_000_000;
+    set_test_time(&clock, START);
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
+    let (fifo, mut release) = activity_fifo(&server);
+    let command = script(
+        &server,
+        "bells.sh",
+        &format!(
+            "read -r _ < '{0}'\nprintf '\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a'\nprintf 'bell-phase-1\\n'\nread -r _ < '{0}'\nprintf '\\a'\nprintf 'bell-phase-2\\n'\nread -r _ < '{0}'\nprintf '\\a'\nprintf 'bell-phase-3\\n'\nread -r _ < '{0}'\n",
+            fifo.display()
+        ),
+    );
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &command).await;
+    release_activity_fifo(&mut release);
+    client.wait_screen("bell-phase-1").await;
+    let bells = |client: &Client| {
+        client
+            .activities
+            .iter()
+            .filter(|a| a.kind == PaneActivityKind::Bell as i32)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let first = bells(&client);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].pane_id, pane.to_string());
+    assert_eq!(first[0].at_ms, START / 1000);
+    set_test_time(&clock, START + 999_000);
+    release_activity_fifo(&mut release);
+    client.wait_screen("bell-phase-2").await;
+    assert_eq!(bells(&client).len(), 1);
+    set_test_time(&clock, START + 1_000_000);
+    release_activity_fifo(&mut release);
+    client.wait_screen("bell-phase-3").await;
+    let reported = bells(&client);
+    assert_eq!(reported.len(), 2);
+    assert_eq!(reported[1].at_ms, (START + 1_000_000) / 1000);
+}
+
+#[tokio::test]
+async fn a_finished_foreground_command_is_reported() {
+    let server = Server::start(&[]);
+    let (fifo, mut release) = activity_fifo(&server);
+    let command = script(
+        &server,
+        "foreground.sh",
+        &format!(
+            "printf 'foreground-ready\\n'\nread -r _ < '{}'\n",
+            fifo.display()
+        ),
+    );
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &command).await;
+    client.wait_screen("foreground-ready").await;
+    client.activities.clear();
+    let mut observer = Client::connect(&server).await;
+    release_activity_fifo(&mut release);
+    let activity = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneActivity(a)
+                if a.kind == tilr_proto::PaneActivityKind::CommandFinished as i32 =>
+            {
+                Some(a.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(activity.pane_id, pane.to_string());
+    assert!(activity.at_ms > 0);
+    let observed = observer
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneActivity(a) => Some(a.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(observed, activity);
+    // Echoed input after completion is a barrier for another foreground check.
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"typed-after-command"),
+        }))
+        .await;
+    client.wait_screen("typed-after-command").await;
+    assert_eq!(client.activities.len(), 1);
+}
+
+#[tokio::test]
+async fn typing_at_the_prompt_reports_nothing() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.wait_row("$").await;
+    client.activities.clear();
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"typed-at-prompt"),
+        }))
+        .await;
+    client.wait_screen("typed-at-prompt").await;
+    assert!(client.activities.is_empty());
+}
+
 #[cfg(feature = "failpoints")]
 fn set_test_time(path: &std::path::Path, us: u64) {
     // The server and pane may read concurrently. Rename publishes one complete

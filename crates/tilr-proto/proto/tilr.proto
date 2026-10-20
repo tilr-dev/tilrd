@@ -565,6 +565,7 @@ message ServerMessage {
     ExecExit exec_exit = 20;
     ExecInputAck exec_input_ack = 21;
     ClipboardWrite clipboard_write = 22;
+    PaneActivity pane_activity = 23;
   }
 }
 
@@ -653,6 +654,18 @@ message PaneList {
 message PaneExited {
   string pane_id = 1;
   int32 exit_code = 2;
+}
+
+enum PaneActivityKind {
+  PANE_ACTIVITY_KIND_UNSPECIFIED = 0;
+  PANE_ACTIVITY_KIND_BELL = 1;
+  PANE_ACTIVITY_KIND_COMMAND_FINISHED = 2;
+}
+
+message PaneActivity {
+  string pane_id = 1;
+  PaneActivityKind kind = 2;
+  uint64 at_ms = 3;
 }
 
 message Error {

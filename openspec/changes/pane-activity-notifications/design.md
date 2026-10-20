@@ -16,7 +16,7 @@ The pane process remembers the shell's process group (the shell is a session lea
 The supervisor pushes `PaneActivity` to every greeted client on the interactive lane (small, rare); a client that does not know the message ignores it.
 
 ### D4. Pane to supervisor
-A new link packet kind `ACTIVITY` (6) carries the encoded `PaneActivity` (`pane_id` filled in by the pane, `at_ms` the pane's wall clock in ms since the epoch). Rejected: fields in `PaneStatus` (a status is a state that is coalesced and compared, an activity is an event that must not be merged). Rejected: `RELAY` (that goes to the pane's subscribers only).
+A new link packet kind `ACTIVITY` (7) carries the encoded `PaneActivity` (`pane_id` filled in by the pane, `at_ms` the pane's wall clock in ms since the epoch). Rejected: fields in `PaneStatus` (a status is a state that is coalesced and compared, an activity is an event that must not be merged). Rejected: `RELAY` (that goes to the pane's subscribers only).
 
 ### D5. Wire shape
 `message PaneActivity { string pane_id = 1; PaneActivityKind kind = 2; uint64 at_ms = 3; }`, `enum PaneActivityKind { PANE_ACTIVITY_KIND_UNSPECIFIED = 0; PANE_ACTIVITY_KIND_BELL = 1; PANE_ACTIVITY_KIND_COMMAND_FINISHED = 2; }`, a new `ServerMessage` variant. A client ignores a kind it does not know, so later kinds (output after silence) need no version bump.

@@ -37,7 +37,20 @@ pub fn measurement_instant() -> Instant {
     Instant::now()
 }
 
-/// Unix milliseconds used for `PaneInfo` creation and last use.
+/// Monotonic time for activity rate limits, with an exact test clock.
+pub fn activity_instant() -> Instant {
+    #[cfg(feature = "failpoints")]
+    if let Some(us) = test_time_us() {
+        static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        return BASE
+            .get_or_init(Instant::now)
+            .checked_add(std::time::Duration::from_micros(us))
+            .expect("TILR_TEST_TIME_FILE timestamp exceeds Instant range");
+    }
+    Instant::now()
+}
+
+/// Unix milliseconds used for pane metadata and activity timestamps.
 pub fn now_ms() -> u64 {
     #[cfg(feature = "failpoints")]
     if let Some(us) = test_time_us() {

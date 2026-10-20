@@ -162,6 +162,10 @@ enum Event {
         pane_id: PaneId,
         copy: ClipboardWrite,
     },
+    PaneActivity {
+        pane_id: PaneId,
+        activity: tilr_proto::PaneActivity,
+    },
     /// The pane process is gone, and the shell with it. `exit_code` is the
     /// shell's, if the process got to report it; `error` is why the shell
     /// could not be started.
@@ -1715,6 +1719,15 @@ impl Supervisor {
                     self.broadcast_pane_list();
                 }
             }
+            Event::PaneActivity {
+                pane_id,
+                mut activity,
+            } => {
+                if self.panes.contains_key(&pane_id) {
+                    activity.pane_id = pane_id.to_string();
+                    self.broadcast_activity(activity);
+                }
+            }
             Event::PaneLinkClosed {
                 pane_id,
                 exit_code,
@@ -3061,6 +3074,23 @@ impl Supervisor {
         }
     }
 
+    fn broadcast_activity(&mut self, activity: tilr_proto::PaneActivity) {
+        let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneActivity(
+            activity,
+        )));
+        let stuck: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, client)| {
+                client.greeted && client.tx.try_send(packet.clone().into()).is_err()
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        for client_id in stuck {
+            self.drop_stuck(client_id);
+        }
+    }
+
     /// Wait, up to [`FLUSH_TIMEOUT`], until everything queued for the
     /// clients is written out.
     async fn flush_clients(&self) {
@@ -3319,6 +3349,12 @@ async fn read_pane(
                     Ok(copy) => Event::PaneCopy { pane_id, copy },
                     Err(_) => continue,
                 },
+                link::kind::ACTIVITY => {
+                    match tilr_proto::decode::<tilr_proto::PaneActivity>(&packet) {
+                        Ok(activity) => Event::PaneActivity { pane_id, activity },
+                        Err(_) => continue,
+                    }
+                }
                 link::kind::STARTED => Event::PaneStarted { pane_id },
                 link::kind::EXITED => {
                     exit_code = tilr_proto::decode::<PaneExited>(&packet)

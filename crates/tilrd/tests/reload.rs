@@ -4,6 +4,47 @@ mod common;
 
 use common::*;
 
+#[tokio::test]
+async fn a_command_running_across_a_reload_is_reported_when_it_ends() {
+    let server = Server::start(&[]);
+    let (fifo, mut release) = activity_fifo(&server);
+    let command = script(
+        &server,
+        "foreground.sh",
+        &format!(
+            "printf 'foreground-ready\\n'\nread -r _ < '{}'\n",
+            fifo.display()
+        ),
+    );
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &command).await;
+    client.wait_screen("foreground-ready").await;
+    client = reload(&server, client).await;
+    client.hello().await;
+    client.subscribe(pane).await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) if frame.pane_id == pane.to_string() => Some(()),
+            _ => None,
+        })
+        .await;
+    client.activities.clear();
+    release_activity_fifo(&mut release);
+    let activity = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneActivity(a)
+                if a.kind == tilr_proto::PaneActivityKind::CommandFinished as i32 =>
+            {
+                Some(a.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(activity.pane_id, pane.to_string());
+    assert!(activity.at_ms > 0);
+}
+
 /// What must hold after any reload: the shell in `pane_id` is the same one,
 /// with its state and what it printed, and the server works as before.
 async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: PaneId) {

@@ -25,6 +25,9 @@ pub trait Screen {
     /// such as device attributes or cursor position reports).
     fn take_replies(&mut self) -> Vec<u8>;
 
+    /// Bells received since the previous call.
+    fn take_bells(&mut self) -> u32;
+
     /// Resize to `cols` x `rows` cells of `cell` pixels each (the cell is what
     /// image placements are measured in and what pixel size reports say).
     fn resize(&mut self, cols: u16, rows: u16, cell: (u32, u32)) -> Result<()>;
