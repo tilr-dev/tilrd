@@ -617,7 +617,15 @@ impl Shared {
             tokio::task::spawn_blocking(move || crate::durable::rename_synced(&from, &to))
                 .await
                 .map_err(|err| err.to_string())?
-                .map_err(|err| failed(path, &err))
+                .map_err(|err| failed(path, &err))?;
+            // Hold only the writer: the independent watcher must remain able
+            // to report the committed file before this write is acknowledged.
+            #[cfg(feature = "failpoints")]
+            tokio::task::spawn_blocking(|| crate::fail::point("files-write-before-ack"))
+                .await
+                .map_err(|err| err.to_string())?
+                .map_err(|err| err.to_string())?;
+            Ok(())
         }
         .await;
         if outcome.is_err() {
@@ -796,6 +804,8 @@ async fn report_changes(
                     path_bytes,
                 }),
             ));
+            #[cfg(feature = "failpoints")]
+            tracing::info!(client, watch, ?kind, "files change queued");
         }
     }
 }

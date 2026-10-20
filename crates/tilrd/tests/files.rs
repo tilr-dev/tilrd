@@ -221,6 +221,30 @@ async fn changed(client: &mut Client, path: &str) -> FsChanged {
         .await
 }
 
+/// Both results of a save to a watched file.
+async fn written_and_changed(client: &mut Client, request_id: u64, path: &str) -> FsChanged {
+    let mut acknowledged = false;
+    let mut change = None;
+    while !acknowledged || change.is_none() {
+        let msg = client.next().await.expect("connection closed during save");
+        eprintln!(
+            "{:?} awaiting save {request_id} and change: {msg:?}",
+            std::time::SystemTime::now()
+        );
+        match msg {
+            server_message::Msg::FsAck(ack) if ack.request_id == request_id => {
+                assert_eq!(ack.error, "");
+                acknowledged = true;
+            }
+            server_message::Msg::FsChanged(changed) if changed.path == path => {
+                change = Some(changed);
+            }
+            _ => {}
+        }
+    }
+    change.unwrap()
+}
+
 /// Files whose name says they are a write in progress.
 fn temp_files(dir: &Path) -> Vec<String> {
     std::fs::read_dir(dir)
@@ -667,11 +691,8 @@ async fn a_watched_directory_reports_what_changes_in_it() {
 
     // A save through the files protocol is a change of the file; the
     // temporary file it went through is not reported.
-    assert_eq!(
-        write(&mut client, 2, "~/watched/old.txt", b"saved", false, true).await,
-        ""
-    );
-    let change = changed(&mut client, &path_of("old.txt")).await;
+    send_write(&mut client, 2, "~/watched/old.txt", b"saved", false, true).await;
+    let change = written_and_changed(&mut client, 2, &path_of("old.txt")).await;
     assert_eq!(change.kind(), FsChange::Modify);
 
     // Subdirectories are not watched; a new one in the directory is seen.
@@ -721,6 +742,56 @@ async fn a_watched_directory_reports_what_changes_in_it() {
         }))
         .await;
     assert!(ack(&mut client, 5).await.contains("not a directory"));
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_watched_save_can_be_reported_before_its_ack() {
+    let dir = Server::scratch_dir();
+    std::fs::create_dir_all(dir.join("watched")).unwrap();
+    std::fs::write(dir.join("watched/old.txt"), "old").unwrap();
+    let pauses = PauseController::bind(&dir);
+    let server = Server::start_failing(
+        dir,
+        Path::new(env!("CARGO_BIN_EXE_tilrd")),
+        &[],
+        "files-write-before-ack=pause",
+    );
+    let mut client = Client::connect(&server).await;
+    client
+        .send(Msg::FsWatch(FsWatch {
+            request_id: 1,
+            path: "~/watched".into(),
+            ..Default::default()
+        }))
+        .await;
+    assert_eq!(ack(&mut client, 1).await, "");
+
+    send_write(&mut client, 2, "~/watched/old.txt", b"saved", false, true).await;
+    let saved = pauses.wait("files-write-before-ack").await;
+    // Both messages use the same supervisor queue. Release the ack only once
+    // the watcher has queued its notification; leave that message unread.
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let queued = server.log_changed.notified();
+            tokio::pin!(queued);
+            queued.as_mut().enable();
+            if server.logged("files change queued") {
+                break;
+            }
+            queued.await;
+        }
+    })
+    .await
+    .expect("watcher did not queue the saved file change");
+    saved.release().await;
+    let path = home(&server).join("watched/old.txt");
+    let change = written_and_changed(&mut client, 2, &path.to_string_lossy()).await;
+    assert_eq!(change.request_id, 0);
+    assert_eq!(change.watch, "~/watched");
+    assert_eq!(change.kind(), FsChange::Modify);
+    assert_eq!(std::fs::read(&path).unwrap(), b"saved");
+    assert!(temp_files(path.parent().unwrap()).is_empty());
 }
 
 #[tokio::test]
