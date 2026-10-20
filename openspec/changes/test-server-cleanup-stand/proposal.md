@@ -5,8 +5,8 @@
 TILR-162 records Dan's decision to split the deterministic signal/timeout
 stand from TILR-153. The latter needs a way to confirm a test-owned tilrd is
 running, interrupt its test process, and show whether that exact server
-survives. The earlier five green suite runs recorded in
-`test-coverage-gaps/design.md` did not reproduce or explain the leak.
+survives. The earlier suite runs did not reproduce or explain the leak;
+TILR-153 now tracks that investigation in `test-server-leftovers`.
 
 ## What Changes
 
@@ -29,6 +29,3 @@ CLI change. The stand is an explicit developer command. It adds no product
 state or connection, so nothing needs to survive a reload, update, or client
 reconnect. No new outbox traffic or memory pressure is introduced.
 
-## Implementation
-
-Commit: `50feac4`.

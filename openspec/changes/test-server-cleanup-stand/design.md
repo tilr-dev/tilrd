@@ -24,3 +24,23 @@ integration checks use both a surviving child and one that exits when its
 test process dies; they prove red and green outcomes independently of that
 pending fix. The stand adds no product state, reload handoff, or reconnect
 behavior.
+
+## Exit event and bounded failures
+
+Register a kqueue process-exit watcher on macOS or pidfd on Linux after
+READY and before interrupting the fixture. A missing or failed watcher is
+an explicit error; a `kill(pid, 0)` snapshot cannot substitute for an exit
+event. Wait for the event after the fixture exits. A 30-second deadline
+(the same failure bound as READY) only bounds reporting a surviving server;
+it never delays a successful verdict once the event arrives. Cleanup uses
+the same event watcher after killing the owned group.
+
+The ready PID must currently belong to the fixture process group. If
+TILR-153 moves servers to separate groups, it must extend ownership and
+cleanup together rather than bypass this check. Build the fixture with
+`tilrd/failpoints`, matching the documented suite's server binary.
+
+The pgrep-failure integration case applies only on macOS, where the stand
+uses pgrep. Other integration cases exercise both operating systems.
+Script-based `Verified by` references are not recognized by the coverage
+parser, so these two requirements intentionally appear uncovered there.

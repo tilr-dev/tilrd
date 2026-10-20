@@ -18,13 +18,14 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXIT_DEADLINE = 30
 READY = re.compile(rb"TILR_STAND_READY pid=(\d+)")
 
 
 def build_fixture():
     command = [
         "cargo", "test", "-p", "tilrd", "--test", "cleanup_stand",
-        "--no-run", "--locked", "--message-format=json-render-diagnostics",
+        "--no-run", "--features", "tilrd/failpoints", "--locked", "--message-format=json-render-diagnostics",
     ]
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     if result.returncode:
@@ -94,26 +95,27 @@ def exit_watcher(pid):
                 flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
                 fflags=select.KQ_NOTE_EXIT,
             )], 0, 0)
-        except OSError:
+        except OSError as error:
             watcher.close()
-            return None
+            raise RuntimeError(f"cannot register exit watcher for server {pid}: {error}") from error
         return watcher
     if sys.platform.startswith("linux") and hasattr(os, "pidfd_open"):
         try:
             return os.pidfd_open(pid)
-        except OSError:
-            return None
-    return None
+        except OSError as error:
+            raise RuntimeError(f"cannot register exit watcher for server {pid}: {error}") from error
+    raise RuntimeError("no supported server exit watcher on this platform")
 
 
 def wait_for_server_exit(watcher):
+    # The exit event decides success; this deadline only bounds a red outcome.
     if watcher is None:
-        return False
+        raise RuntimeError("server exit watcher is unavailable")
     if isinstance(watcher, int):
-        readable, _, _ = select.select([watcher], [], [], 2)
+        readable, _, _ = select.select([watcher], [], [], EXIT_DEADLINE)
         return bool(readable)
     else:
-        return bool(watcher.control(None, 1, 2))
+        return bool(watcher.control(None, 1, EXIT_DEADLINE))
 
 
 def close_watcher(watcher):
@@ -146,7 +148,7 @@ def run_case(executable, case):
                 raise RuntimeError("fixture exited instead of reaching the controlled timeout")
         process.wait(timeout=5)
         exited = wait_for_server_exit(watcher)
-        by_pid = not exited and server_running(server_pid)
+        by_pid = not exited
         by_pgrep = mac_pgrep_contains(server_pid) if sys.platform == "darwin" else None
         print(f"{case}: server PID {server_pid}, running={by_pid}, mac_pgrep={by_pgrep}", flush=True)
         if by_pgrep is not None and by_pid != by_pgrep:

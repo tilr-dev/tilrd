@@ -1081,7 +1081,11 @@ not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
 The cleanup stand runs an ignored test fixture outside the normal suite. It waits for
 the server's ready notification before interrupting the test process, checks the
 server PID (and `pgrep` on macOS), and removes its own processes even when a check
-fails. It exits nonzero when an interrupted test leaves its server running.
+fails. Success requires an exit event for that exact PID (kqueue on macOS,
+pidfd on Linux); an unavailable watcher is an error. A 30-second deadline bounds
+reporting a surviving server. It exits nonzero when an interrupted test leaves its
+server running. The pgrep-failure selftest runs only on macOS, matching the stand's
+platform check.
 
 The `failpoints` feature compiles in the places where a test can make an update or a reload
 go wrong halfway: fail a step, crash or kill the process there (`crates/tilrd/src/fail.rs`).

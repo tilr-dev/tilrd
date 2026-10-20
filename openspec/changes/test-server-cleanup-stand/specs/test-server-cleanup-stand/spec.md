@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Deterministic interrupted-test stand
 The test-server cleanup stand SHALL start a test-owned tilrd and wait for its
@@ -20,7 +20,9 @@ separate signal and timeout cases without sleeps or repeated runs for ordering.
 The stand SHALL check the exact PID of every server it starts and, on macOS,
 check those PIDs against `pgrep -f target/debug/tilrd`. It SHALL terminate its
 own process group, including servers whose ready message was never received,
-and reap the test process even if a check or the stand itself fails.
+and reap the test process even if a check or the stand itself fails. It SHALL
+require an OS exit event for success and fail explicitly if no exit watcher
+is available.
 
 **Verified by**: `scripts/test_server_cleanup_stand_selftest.py` and a real
 `scripts/test_server_cleanup_stand.py` run.
@@ -40,3 +42,12 @@ and reap the test process even if a check or the stand itself fails.
 #### Scenario: Readiness fails
 - **WHEN** a test-owned server starts but no valid ready message arrives
 - **THEN** the stand terminates that server through its owned process group
+
+#### Scenario: Server shutdown completes after test exit
+- **WHEN** the interrupted test has exited and its server is still shutting down
+- **THEN** the stand waits for that exact server's exit event and passes when it arrives
+- **AND** a 30-second failure deadline bounds reporting a survivor, without sleeps or PID polling
+
+#### Scenario: Exit watcher unavailable
+- **WHEN** the OS cannot register a watcher for the ready server PID
+- **THEN** the stand reports an explicit error and cleans its owned process group
