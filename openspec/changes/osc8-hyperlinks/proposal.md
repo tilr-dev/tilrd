@@ -32,3 +32,8 @@ Checked at 1163abd: still not done. `Run` has `style`, `text`, `wide`, `cluster`
 `crates/tilr-proto/proto/tilr.proto` (`Frame.links`, `Run.link`; additive), `crates/tilr-screen/src/ghostty.rs` (run building), `crates/tilr/src/attach.rs` (draw), README "Protocol", USE_CASES.md. The `server` plugin and tilr-mac copy the schema and may render links later. Reload: nothing new crosses it; no state format change (links in the snapshot are lost as today). Update from the previous release: works; clients that do not know the fields ignore them.
 
 Not breaking: additive messages and fields only, no PROTOCOL_VERSION bump, no close code, state file or CDN change.
+
+## Implemented by
+
+- a585eca — OSC 8 frame fields, URI extraction, attach drawing and tests.
+- Verification blockers and pending manual check are recorded in tasks.md.
