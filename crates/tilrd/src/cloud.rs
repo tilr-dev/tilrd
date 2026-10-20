@@ -351,7 +351,7 @@ async fn session(
     request
         .headers_mut()
         .insert("authorization", format!("Bearer {}", link.token).parse()?);
-    let connecting = tokio_tungstenite::connect_async(request);
+    let connecting = crate::websocket::connect(request);
     let mut ws = match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
         Ok(Ok((ws, _))) => ws,
         Ok(Err(tungstenite::Error::Http(response)))
