@@ -155,12 +155,14 @@ enum Command {
     #[command(hide = true)]
     Pane(pane::Args),
     /// Internal: print the versions of the reload state this executable
-    /// reads. A running server asks before reloading into it.
+    /// reads. A running server asks before reloading into it. Kept for the
+    /// Tilr app; see the daemon-lifecycle spec.
     #[command(hide = true)]
     StateFormats,
     /// List the panes of a running server: id, pid of the pane process,
     /// size, viewers, directory and command. For users: `tilr ps`; kept
-    /// for the Tilr app, which asks with --url and --server-version.
+    /// for the Tilr app, which asks with --url and --server-version; see the
+    /// daemon-lifecycle spec.
     #[command(hide = true)]
     Ps {
         /// Where the server listens, e.g. ws://127.0.0.1:7890. Default: its
@@ -172,7 +174,8 @@ enum Command {
         server_version: bool,
     },
     /// Print the access token clients must present. For users: `tilr
-    /// token`, which runs this in the server; kept for the Tilr app.
+    /// token`, which runs this in the server; kept for the Tilr app; see the
+    /// daemon-lifecycle spec.
     #[command(hide = true)]
     Token,
     /// Link this machine to tilr Cloud, which lists it among your machines

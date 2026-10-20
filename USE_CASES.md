@@ -51,6 +51,7 @@ real Linux containers with the same FIFO barrier.
 | Asking for a pane that does not exist gets an error; so does a name that is not a UUID | `asking_for_a_pane_that_does_not_exist_gets_an_error` |
 | A pane has its own UUID: the shell sees it in `$TILR_PANE`, the pane process on its command line (`pane --id <uuid>`), where the size is given only if it is not 80×24 | `a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps` |
 | `tilrd ps` (for users, `tilr ps`) shows the panes of a running server: id, pid, size, command | `ps_lists_the_panes_of_a_running_server` |
+| The Tilr app's health check `tilrd ps --url <url> --server-version` against a stopped server: exits non-zero within 5 s and prints no version | `ps_server_version_fails_when_nothing_listens` |
 | A server has its own id, the same after a restart; another server has another one | `a_server_keeps_its_id_when_it_restarts` |
 | A server started by a service manager (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` set) still says `READY=1`, but its panes do not get those variables | `a_pane_does_not_get_the_service_managers_variables` |
 
