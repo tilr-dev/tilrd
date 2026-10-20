@@ -13,7 +13,7 @@
 ## Capabilities
 
 ### Modified Capabilities
-- `daemon-lifecycle`: "Foreground service with its log on stderr" names `RUST_LOG`.
+- `daemon-lifecycle`: a new requirement "Log filter from RUST_LOG" (kept apart from "Foreground service with its log on stderr", whose text would then exceed the length strict validation allows).
 
 ## Non-goals
 
