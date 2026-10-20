@@ -29,4 +29,4 @@ Checked at 1163abd: still not done. A pane process shows only the arguments it w
 
 `crates/tilrd/src/pane.rs` (keep the start arguments, title updates, foreground group check), a new `crates/tilrd/src/title.rs` (argv/environment area, Linux and macOS), `crates/tilrd/tests/panes.rs` and `reload.rs`, README "Telling panes apart", USE_CASES.md. Not breaking: anything that matches ` pane --id <id>` in the command line (itests `tt`: `" pane --id "`, `tilrd.* pane --id `) still matches, since the title starts with the start arguments. Reload: nothing new crosses it (no pane state format change); the successor is exec'd with the kept start arguments and sets the title again from its own reads. Update from the previous release: the old pane process execs the new one with its (unchanged) start arguments, so it works.
 
-Implemented by: `7ea8aa1`.
+Implemented by: `b3030c2` feat(panes): show the shell, cwd and command in the pane process title; `5e1f8f3` fix(panes): refresh the title on an exec in the same group (2026-10-20). Hashes before the squash merge into `dev`.
