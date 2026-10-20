@@ -73,7 +73,7 @@ def check(real, script):
                 # Distinct source mtimes make Cargo's freshness decision deterministic.
                 for path in tree.glob("*/src/main.rs"):
                     os.utime(path, (1 if label == "A" else 4102444800, 1 if label == "A" else 4102444800))
-                digest = run("git", "hash-object", "--stdin", input=str(tree.resolve()) + "\n").stdout.strip()
+                digest = run("git", "-C", str(tree), "hash-object", "--stdin", input=str(tree.resolve()) + "\n").stdout.strip()
                 volumes.add("tilr-linux-target-" + digest)
             if not real:
                 tools = root / "bin"
@@ -110,7 +110,7 @@ done
                     second = run(str(b / "scripts/linux.sh"), "sh", "-c", 'set -eu; cargo build --offline --locked --workspace --bins; test "$(/target/debug/tilrd)" = B', env=env, timeout=180)
                 finally:
                     if real:
-                        target = legacy_volume if legacy_volume in (a / "scripts/linux.sh").read_text() else "tilr-linux-target-" + run("git", "hash-object", "--stdin", input=str(a.resolve()) + "\n").stdout.strip()
+                        target = legacy_volume if legacy_volume in (a / "scripts/linux.sh").read_text() else "tilr-linux-target-" + run("git", "-C", str(a), "hash-object", "--stdin", input=str(a.resolve()) + "\n").stdout.strip()
                         container = run("docker", "ps", "-q", "--filter", "volume=" + target).stdout.strip()
                         assert container and "\n" not in container, container
                         run("docker", "exec", container, "sh", "-c", "echo resume > /target/gate", timeout=30)
