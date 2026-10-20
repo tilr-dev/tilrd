@@ -13,8 +13,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tilr_proto::{
-    ClientMessage, Hello, PROTOCOL_VERSION, ServerMessage, StreamClose, StreamData, Subscribe,
-    client_message::Msg, server_message,
+    ClientMessage, ClipboardWrite, Hello, PROTOCOL_VERSION, ServerMessage, StreamClose, StreamData,
+    Subscribe, client_message::Msg, server_message,
 };
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -156,6 +156,15 @@ pub struct Session {
     pub next_socks: u64,
     /// Connections given up on but left open (Keepalive.leak_dead).
     leaked: Vec<Ws>,
+    /// The copy made in a pane that is coming in (`ClipboardWrite`).
+    copy: Option<IncomingCopy>,
+}
+
+/// A copy made in a pane, as its chunks come.
+struct IncomingCopy {
+    first: ClipboardWrite,
+    data: Vec<u8>,
+    chunks: usize,
 }
 
 impl Session {
@@ -194,7 +203,47 @@ impl Session {
             socks: BTreeMap::new(),
             next_socks: 0,
             leaked: Vec::new(),
+            copy: None,
         }
+    }
+
+    /// Take a `ClipboardWrite` chunk: a whole copy is told as `clipboard_write`
+    /// (its text when it is UTF-8), one a newer copy cut short as
+    /// `clipboard_write_cut`.
+    fn on_copy_chunk(&mut self, chunk: &ClipboardWrite) {
+        match &mut self.copy {
+            Some(copy) if copy.first.transfer_id == chunk.transfer_id => {
+                copy.data.extend_from_slice(&chunk.data);
+                copy.chunks += 1;
+            }
+            _ => {
+                if let Some(cut) = self.copy.take() {
+                    emit(json!({
+                        "ev": "clipboard_write_cut", "transfer": cut.first.transfer_id,
+                        "pane": cut.first.pane_id, "received": cut.data.len(),
+                    }));
+                }
+                self.copy = Some(IncomingCopy {
+                    first: ClipboardWrite {
+                        data: Bytes::new(),
+                        ..chunk.clone()
+                    },
+                    data: chunk.data.to_vec(),
+                    chunks: 1,
+                });
+            }
+        }
+        if !chunk.last {
+            return;
+        }
+        let copy = self.copy.take().expect("set above");
+        emit(json!({
+            "ev": "clipboard_write", "transfer": copy.first.transfer_id,
+            "pane": copy.first.pane_id, "mime": copy.first.mime,
+            "total_size": copy.first.total_size, "size": copy.data.len(), "chunks": copy.chunks,
+            "sha256": crate::transfer::sha256(&copy.data),
+            "text": std::str::from_utf8(&copy.data).ok(),
+        }));
     }
 
     pub fn connected(&self) -> bool {
@@ -667,6 +716,7 @@ impl Session {
                     self.finish(download.id, download.background, out);
                 }
             }
+            server_message::Msg::ClipboardWrite(chunk) => self.on_copy_chunk(chunk),
             server_message::Msg::HostEvent(event) => emit(json!({
                 "ev": "host_event", "pane": event.pane_id, "name": event.name,
                 "kind": event.kind, "path": event.path, "args": event.args,

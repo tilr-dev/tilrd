@@ -126,7 +126,9 @@ impl Conn {
         self.send(Msg::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
             client_name: "tilr".into(),
-            features: Vec::new(),
+            // `tilr attach` writes the copies made in its pane to its
+            // terminal; other commands watch no pane, so get none.
+            features: vec![crate::attach::FEATURE_CLIPBOARD_WRITE.into()],
             token,
             client_id: client_id.to_owned(),
         }))

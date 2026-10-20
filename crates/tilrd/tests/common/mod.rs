@@ -16,9 +16,10 @@ pub use std::time::Duration;
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
 pub use tilr_proto::{
-    ClientMessage, ClipboardAck, ClipboardPut, ClosePane, CreatePane, Frame, Hello, HelloAck,
-    HostEvent, KeyInput, ListPanes, PROTOCOL_VERSION, PaneInfo, Ping, RawInput, Resize, Scroll,
-    ServerMessage, Subscribe, Unsubscribe, client_message::Msg, server_message,
+    ClientMessage, ClipboardAck, ClipboardPut, ClipboardWrite, ClosePane, CreatePane, Frame,
+    FsRead, Hello, HelloAck, HostEvent, KeyInput, ListPanes, PROTOCOL_VERSION, PaneInfo, Ping,
+    RawInput, Resize, Scroll, ServerMessage, Subscribe, Unsubscribe, client_message::Msg,
+    server_message,
 };
 pub use tokio::net::TcpStream;
 pub use tokio_tungstenite::tungstenite::Message;
@@ -356,6 +357,8 @@ pub struct Client {
     pub acks: VecDeque<ClipboardAck>,
     /// Host events seen while waiting for something else.
     pub host_events: VecDeque<HostEvent>,
+    /// `ClipboardWrite` chunks seen while waiting for something else.
+    pub copies: VecDeque<ClipboardWrite>,
     /// The server's access token, as `tilrd token` prints it.
     pub token: String,
     /// What `hello` says as `Hello.client_id`; empty: none.
@@ -386,6 +389,7 @@ impl Client {
             frame: None,
             acks: VecDeque::new(),
             host_events: VecDeque::new(),
+            copies: VecDeque::new(),
             token: server.token(),
             client_id: String::new(),
         })
@@ -429,6 +433,9 @@ impl Client {
                         }
                         Some(server_message::Msg::HostEvent(event)) => {
                             self.host_events.push_back(event.clone());
+                        }
+                        Some(server_message::Msg::ClipboardWrite(chunk)) => {
+                            self.copies.push_back(chunk.clone());
                         }
                         _ => {}
                     }
@@ -588,6 +595,76 @@ impl Client {
         }
     }
 
+    /// Say hello as a client that takes the copies made in its panes
+    /// (`"clipboard-write"`).
+    pub async fn hello_copying(&mut self) -> HelloAck {
+        self.hello_with(
+            PROTOCOL_VERSION,
+            &["clipboard", "host-events", "clipboard-write"],
+        )
+        .await;
+        self.wait_for(|msg| match msg {
+            server_message::Msg::HelloAck(ack) => Some(ack.clone()),
+            _ => None,
+        })
+        .await
+    }
+
+    /// The oldest copy not yet asked about that came whole, with the
+    /// transfers before it that ended without their last chunk.
+    pub async fn copied(&mut self) -> Copied {
+        let mut copied: Option<Copied> = None;
+        let mut abandoned = Vec::new();
+        loop {
+            while let Some(chunk) = self.copies.pop_front() {
+                match &mut copied {
+                    Some(copy) if copy.transfer_id == chunk.transfer_id => {
+                        copy.data.extend_from_slice(&chunk.data);
+                        copy.chunks += 1;
+                    }
+                    _ => {
+                        if let Some(older) = copied.take() {
+                            abandoned.push(older.transfer_id);
+                        }
+                        copied = Some(Copied {
+                            transfer_id: chunk.transfer_id,
+                            pane_id: chunk.pane_id.clone(),
+                            mime: chunk.mime.clone(),
+                            total_size: chunk.total_size,
+                            data: chunk.data.to_vec(),
+                            chunks: 1,
+                            abandoned: Vec::new(),
+                        });
+                    }
+                }
+                if chunk.last {
+                    let mut copy = copied.take().unwrap();
+                    copy.abandoned = abandoned;
+                    return copy;
+                }
+            }
+            self.next().await.expect("connection closed");
+        }
+    }
+
+    /// Read a small file through the files protocol: its answer comes on
+    /// the bulk lane, behind whatever the server queued there before.
+    pub async fn sync_bulk(&mut self, server: &Server) {
+        let path = server.dir.join("bulk-sync");
+        std::fs::write(&path, b"sync").unwrap();
+        self.send(Msg::FsRead(FsRead {
+            request_id: 4242,
+            path: path.to_str().unwrap().into(),
+            ..Default::default()
+        }))
+        .await;
+        self.wait_for(|msg| match msg {
+            server_message::Msg::FsData(data) if data.request_id == 4242 && data.last => Some(()),
+            _ => None,
+        })
+        .await;
+    }
+
     /// The outcome of the oldest upload not yet asked about.
     pub async fn clipboard_ack(&mut self) -> ClipboardAck {
         loop {
@@ -600,6 +677,19 @@ impl Client {
 }
 
 /// Bytes that look like nothing in particular, newlines and zeros included.
+/// A copy made in a pane, as a client got it.
+#[derive(Debug)]
+pub struct Copied {
+    pub transfer_id: u64,
+    pub pane_id: String,
+    pub mime: String,
+    pub total_size: u64,
+    pub data: Vec<u8>,
+    pub chunks: usize,
+    /// Transfers that came before it and ended without their last chunk.
+    pub abandoned: Vec<u64>,
+}
+
 pub fn image(len: usize) -> Vec<u8> {
     let mut state = 0x2545_f491_4f6c_dd1du64;
     let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -724,6 +814,7 @@ impl Client {
                 frame: None,
                 acks: VecDeque::new(),
                 host_events: VecDeque::new(),
+                copies: VecDeque::new(),
                 token: server.token(),
                 client_id: String::new(),
             }),

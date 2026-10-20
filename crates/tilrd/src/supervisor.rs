@@ -23,10 +23,10 @@ use anyhow::{Context, Result, bail};
 use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use tilr_proto::{
-    ClientMessage, ClipboardAck, ClipboardPut, CreatePane, Error as ProtoError, Frame, HelloAck,
-    HostEvent, PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState,
-    PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, Viewer, client_message::Msg,
-    close, server_message,
+    ClientMessage, ClipboardAck, ClipboardPut, ClipboardWrite, CreatePane, Error as ProtoError,
+    Frame, HelloAck, HostEvent, PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList,
+    PaneState, PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, Viewer,
+    client_message::Msg, close, server_message,
 };
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -91,6 +91,8 @@ const FEATURE_CLIPBOARD: &str = "clipboard";
 const FEATURE_FILES: &str = "files";
 /// Feature name for `HostEvent`, see `HelloAck.features`.
 const FEATURE_HOST_EVENTS: &str = "host-events";
+/// What a client lists in `Hello.features` to be sent `ClipboardWrite`.
+const FEATURE_CLIPBOARD_WRITE: &str = "clipboard-write";
 /// Feature name for SSH agent forwarding, see `HelloAck.features`.
 const FEATURE_AGENT: &str = "agent";
 /// Feature name for Exec, see `HelloAck.features`.
@@ -154,6 +156,11 @@ enum Event {
     PaneStatus {
         pane_id: PaneId,
         status: PaneStatus,
+    },
+    /// The program in the pane copied to the clipboard (OSC 52).
+    PaneCopy {
+        pane_id: PaneId,
+        copy: ClipboardWrite,
     },
     /// The pane process is gone, and the shell with it. `exit_code` is the
     /// shell's, if the process got to report it; `error` is why the shell
@@ -223,6 +230,9 @@ struct Client {
     host_events: bool,
     /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
     agent: bool,
+    /// Announced "clipboard-write" in `Hello.features`: it is sent the
+    /// copies made in the panes it watches.
+    clipboard_write: bool,
     /// `Hello.client_id`, `client_name` and `token`.
     client_id: String,
     name: String,
@@ -610,6 +620,8 @@ pub fn run(options: Options) -> Result<()> {
                 exec: options.exec,
                 metrics: shared_metrics,
                 next_client_id,
+                copies: HashMap::new(),
+                last_copy: 0,
             };
             if let Some(state) = state {
                 supervisor.resume(state);
@@ -756,8 +768,8 @@ fn set_up_host_socket(
 }
 
 /// Put this executable on the PATH of the panes as the tools they get from
-/// the server: `xclip` and `wl-paste` for the clipboard, `tilr` for host
-/// events. Returns the clipboard's receiver for uploads, if it is on, and the
+/// the server: `xclip`, `wl-paste` and `wl-copy` for the clipboard, `tilr`
+/// for host events. Returns the clipboard's receiver for uploads, if it is on, and the
 /// environment for the panes.
 fn set_up_shims(
     clipboard: Option<clipboard::Limits>,
@@ -770,6 +782,10 @@ fn set_up_shims(
         match clipboard::Store::create(dir.clone()) {
             Ok(store) => {
                 env.push((OsString::from(clipboard::DIR_ENV), dir.into_os_string()));
+                env.push((
+                    OsString::from(clipboard::MAX_ENV),
+                    limits.max_bytes.to_string().into(),
+                ));
                 Some(clipboard::Receiver::new(store, limits))
             }
             Err(err) => {
@@ -1576,6 +1592,11 @@ struct Supervisor {
     metrics: Arc<metrics::Shared>,
     /// The id the next connection gets; handed on in a reload.
     next_client_id: Arc<AtomicU64>,
+    /// The task sending each client a copy made in a pane, while it runs:
+    /// a newer copy ends it.
+    copies: HashMap<ClientId, tokio::task::AbortHandle>,
+    /// `ClipboardWrite.transfer_id` of the last copy sent.
+    last_copy: u64,
 }
 
 impl Supervisor {
@@ -1650,6 +1671,7 @@ impl Supervisor {
                         greeted: false,
                         host_events: false,
                         agent: false,
+                        clipboard_write: false,
                         client_id: String::new(),
                         name: String::new(),
                         token: String::new(),
@@ -1697,6 +1719,10 @@ impl Supervisor {
             // An exec's reply did not fit the client's lane: dropped, as for
             // a frame, rather than left waiting for it.
             Event::Exec(exec::Output::Stuck { client }) => self.drop_stuck(client),
+            Event::PaneCopy { pane_id, copy } => self.on_pane_copy(pane_id, copy),
+            Event::Host { request, reply } if request.name == host::CLIPBOARD_WRITE => {
+                let _ = reply.send(self.on_shim_copy(&request.pane_id));
+            }
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
             }
@@ -2154,6 +2180,8 @@ impl Supervisor {
                     client.greeted = true;
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                     client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
+                    client.clipboard_write =
+                        hello.features.iter().any(|f| f == FEATURE_CLIPBOARD_WRITE);
                     tracing::info!(
                         client = client_id,
                         client_id = hello.client_id,
@@ -2412,6 +2440,94 @@ impl Supervisor {
         }
         tracing::info!(pane = %pane_id, clients = delivered, "host event delivered");
         Ok(delivered)
+    }
+
+    /// A copy the program in a pane made by OSC 52: it becomes the clipboard
+    /// and goes to the clients watching the pane. Dropped while the
+    /// clipboard is off.
+    fn on_pane_copy(&mut self, pane_id: PaneId, copy: ClipboardWrite) {
+        let Some(clipboard) = &self.clipboard else {
+            return;
+        };
+        if copy.data.len() as u64 > clipboard.max_bytes() {
+            tracing::warn!(
+                pane = %pane_id,
+                size = copy.data.len(),
+                "clipboard: a copy over the limit was dropped"
+            );
+            return;
+        }
+        if let Err(err) = clipboard.publish(&copy.mime, &copy.data) {
+            tracing::warn!(pane = %pane_id, "clipboard: store a copy: {err}");
+        }
+        self.send_copy(pane_id, copy.mime, copy.data);
+    }
+
+    /// The server's `xclip` or `wl-copy` in a pane put a copy in the store:
+    /// it goes to the clients watching the pane. Returns how many those are.
+    fn on_shim_copy(&mut self, named: &str) -> Result<usize, String> {
+        let pane_id = self.pane_mut(named).map(|(pane_id, _)| pane_id);
+        let Some(clipboard) = &self.clipboard else {
+            return Err("the clipboard is turned off on this server".into());
+        };
+        let Some(pane_id) = pane_id else {
+            return Err(format!("no such pane: {named}"));
+        };
+        let content = clipboard
+            .take_copied()?
+            .ok_or_else(|| String::from("the clipboard is empty"))?;
+        Ok(self.send_copy(pane_id, content.mime, content.data.into()))
+    }
+
+    /// Send a copy made in `pane_id` to each client watching it that takes
+    /// copies, in chunks on its bulk lane, ending a copy still being sent to
+    /// it. Returns how many clients it goes to.
+    fn send_copy(&mut self, pane_id: PaneId, mime: String, data: Bytes) -> usize {
+        let Some(pane) = self.panes.get(&pane_id) else {
+            return 0;
+        };
+        self.last_copy += 1;
+        let transfer_id = self.last_copy;
+        let mut sent = 0;
+        for &client_id in &pane.subscribers {
+            let Some(client) = self.clients.get(&client_id) else {
+                continue;
+            };
+            if !client.clipboard_write {
+                continue;
+            }
+            let to_client = client.tx.clone();
+            let (pane_id, mime, data) = (pane_id.to_string(), mime.clone(), data.clone());
+            let task = tokio::spawn(async move {
+                let total_size = data.len() as u64;
+                let mut offset = 0;
+                loop {
+                    let end = data.len().min(offset + files::CHUNK);
+                    let last = end == data.len();
+                    let chunk = ClipboardWrite {
+                        transfer_id,
+                        pane_id: pane_id.clone(),
+                        mime: mime.clone(),
+                        total_size,
+                        data: data.slice(offset..end),
+                        last,
+                    };
+                    let packet = tilr_proto::encode(&ServerMessage::from(
+                        server_message::Msg::ClipboardWrite(chunk),
+                    ));
+                    if to_client.send_bulk(packet).await.is_err() || last {
+                        return;
+                    }
+                    offset = end;
+                }
+            });
+            if let Some(older) = self.copies.insert(client_id, task.abort_handle()) {
+                older.abort();
+            }
+            sent += 1;
+        }
+        tracing::info!(pane = %pane_id, clients = sent, size = data.len(), "clipboard: copied in a pane");
+        sent
     }
 
     fn on_clipboard_put(&mut self, client_id: ClientId, put: ClipboardPut) {
@@ -2767,6 +2883,9 @@ impl Supervisor {
         }
         if let Some(clipboard) = &mut self.clipboard {
             clipboard.drop_client(client_id);
+        }
+        if let Some(copy) = self.copies.remove(&client_id) {
+            copy.abort();
         }
         if let Some(files) = &mut self.files {
             files.drop_client(client_id);
@@ -3156,6 +3275,10 @@ async fn read_pane(
                 },
                 link::kind::STATUS => match tilr_proto::decode::<PaneStatus>(&packet) {
                     Ok(status) => Event::PaneStatus { pane_id, status },
+                    Err(_) => continue,
+                },
+                link::kind::CLIPBOARD => match tilr_proto::decode::<ClipboardWrite>(&packet) {
+                    Ok(copy) => Event::PaneCopy { pane_id, copy },
                     Err(_) => continue,
                 },
                 link::kind::STARTED => Event::PaneStarted { pane_id },

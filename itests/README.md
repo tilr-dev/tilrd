@@ -213,7 +213,10 @@ silence), `reconnected` / `reconnect_failed` (auto reconnect; resubscribes), `pa
 `server_error`, `protocol_error`, `stream_open` / `stream_closed` (with `sha256_in`) /
 `stream_lost` (agent streams; a stream is lost with its connection), `host_event` (`pane`,
 `name`, `kind`, `path`, `args`: `tilr edit` / `tilr open` in a pane, to a client with
-"host-events"), `fs_done` (a background transfer ended), `exec_exit` (a background exec). Screens go stale when the connection is
+"host-events"), `clipboard_write` (`pane`, `mime`, `total_size`, `size`, `chunks`, `sha256`,
+`text` when UTF-8: a copy made in a pane came whole, to a client with "clipboard-write") /
+`clipboard_write_cut` (`transfer`, `received`: a newer copy ended one before its last chunk),
+`fs_done` (a background transfer ended), `exec_exit` (a background exec). Screens go stale when the connection is
 lost: `screen` and `wait_for` wait for the full frame of the next connection.
 
 ## Writing a case

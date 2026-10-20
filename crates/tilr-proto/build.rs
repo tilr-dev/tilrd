@@ -4,6 +4,7 @@ fn main() {
         .bytes([
             ".tilr.v1.RawInput.data",
             ".tilr.v1.ClipboardPut.data",
+            ".tilr.v1.ClipboardWrite.data",
             ".tilr.v1.Image.png",
             ".tilr.v1.FsWrite.data",
             ".tilr.v1.FsData.data",
