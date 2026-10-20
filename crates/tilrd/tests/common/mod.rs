@@ -650,8 +650,15 @@ impl Client {
     /// Read a small file through the files protocol: its answer comes on
     /// the bulk lane, behind whatever the server queued there before.
     pub async fn sync_bulk(&mut self, server: &Server) {
+        self.read_through_bulk(server, 4).await;
+    }
+
+    /// Read a file of `len` bytes through the files protocol, to its last
+    /// chunk: the bulk lane gives room to its chunks and to those of other
+    /// senders waiting for it in turn.
+    pub async fn read_through_bulk(&mut self, server: &Server, len: usize) {
         let path = server.dir.join("bulk-sync");
-        std::fs::write(&path, b"sync").unwrap();
+        std::fs::write(&path, vec![b's'; len]).unwrap();
         self.send(Msg::FsRead(FsRead {
             request_id: 4242,
             path: path.to_str().unwrap().into(),

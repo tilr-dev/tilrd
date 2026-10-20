@@ -525,12 +525,12 @@ fn parse_xclip(args: &[String]) -> Request {
             filter = true;
         } else if "display".starts_with(option) || "loops".starts_with(option) {
             args.next();
-        } else if !["silent", "quiet", "noutf8", "sensitive"]
-            .iter()
-            .any(|known| known.starts_with(option))
-            && !("verbose".starts_with(option) && option.len() >= 4)
-        {
-            unknown = true;
+        } else {
+            let harmless = ["silent", "quiet", "noutf8", "sensitive"]
+                .iter()
+                .any(|known| known.starts_with(option))
+                || ("verbose".starts_with(option) && option.len() >= 4);
+            unknown |= !harmless;
         }
     }
     if !clipboard {

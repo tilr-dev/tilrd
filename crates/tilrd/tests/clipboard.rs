@@ -305,13 +305,18 @@ async fn a_large_copy_comes_in_chunks_and_a_newer_one_replaces_it() {
     assert_eq!(copy.data, b"second\n");
     assert_eq!(copy.abandoned.len(), 1, "the first copy must be cut short");
     assert!(copy.abandoned[0] < copy.transfer_id);
-    // And nothing more of it comes: a first copy still going on would be
-    // waiting for room in the lane ahead of this read.
-    client.sync_bulk(&server).await;
+    // And it never ends: a chunk under way when it was cut may still come
+    // (the client drops those), but a first copy still being sent would
+    // take turns in the bulk lane with this 9 MiB read and get to its last
+    // chunk (8 MiB at most) before the read does.
+    client.read_through_bulk(&server, 9 << 20).await;
+    let first = copy.abandoned[0];
     assert!(
-        client.copies.is_empty(),
-        "{} chunks of the first copy came after the second",
-        client.copies.len()
+        client
+            .copies
+            .iter()
+            .all(|chunk| chunk.transfer_id == first && !chunk.last),
+        "the first copy went on after the second"
     );
 }
 
