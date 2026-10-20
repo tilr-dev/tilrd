@@ -30,3 +30,7 @@ Repository hygiene and developer documentation only. No breaking runtime change,
 ## Validation
 
 Verify manually with the coverage command, `git ls-files openspec/coverage` and `git check-ignore` for both reports; no new itests case is needed for repository tracking and documentation changes.
+
+## Implemented by
+
+Local commits `591a8c9` and `d531f14` on `task/TILR-172`.
