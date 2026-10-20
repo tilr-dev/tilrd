@@ -391,7 +391,7 @@ fn check_peer(stream: &UnixStream, path: &Path) -> Result<(), ConnectError> {
 async fn open_remote(
     url: &str,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, ConnectError> {
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.map_err(|err| {
+    let (ws, _) = tilr_websocket::connect(url).await.map_err(|err| {
         use tokio_tungstenite::tungstenite::Error;
         match err {
             Error::Io(err) => ConnectError::NoServer(err),
@@ -404,4 +404,19 @@ async fn open_remote(
         let _ = stream.set_nodelay(true);
     }
     Ok(ws)
+}
+
+#[cfg(test)]
+#[path = "../../tilr-websocket/tests/support/mod.rs"]
+mod tls_test_peer;
+
+#[cfg(test)]
+mod bundled_tls_tests {
+    #[tokio::test]
+    async fn client_uses_the_bundled_trust_anchors() {
+        let (url, server) = super::tls_test_peer::peer_with_bundled_issuer_name().await;
+        let error = super::open_remote(&url).await.unwrap_err();
+        server.await.unwrap();
+        super::tls_test_peer::assert_bundled_root_was_used(error);
+    }
 }

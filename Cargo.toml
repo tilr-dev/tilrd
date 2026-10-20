@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tilr", "crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilrd"]
+members = ["crates/tilr", "crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilrd", "crates/tilr-websocket"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tilr-dev/tilrd"
 
 [workspace.dependencies]
+tilr-websocket = { path = "crates/tilr-websocket" }
 tilr-proto = { path = "crates/tilr-proto" }
 tilr-screen = { path = "crates/tilr-screen" }
 anyhow = "1"

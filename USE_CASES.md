@@ -122,6 +122,19 @@ real Linux containers with the same FIFO barrier.
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
 | A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
 
+## Outgoing WebSocket TLS — shared by Cloud control, tilrd ps, tilr --connect and tilr-driver
+
+Unit tests in `crates/tilr-websocket/src/lib.rs`; all clients use the same explicit connector, including when built separately.
+
+| Use case | Test |
+|---|---|
+| Only patched bundled roots and certificate verifier releases remain in the lock file | `websocket_dependencies_use_only_patched_bundled_roots` |
+| The trust store contains exactly the bundled Mozilla roots | `the_trust_store_is_exactly_the_bundled_mozilla_roots` |
+| Plain WebSockets retain request headers | `plain_websockets_keep_request_headers` |
+| An explicit trusted root permits a TLS WebSocket handshake | `an_explicit_root_allows_a_verified_secure_websocket` |
+| Bundled roots reject an untrusted issuer | `bundled_roots_reject_an_untrusted_issuer` |
+| A trusted certificate for another hostname is rejected | `an_explicit_root_does_not_allow_a_wrong_hostname` |
+
 ## tilr Cloud — `tests/cloud.rs`
 
 In these tests the test itself plays Cloud, and `cloudflared` is a script that
