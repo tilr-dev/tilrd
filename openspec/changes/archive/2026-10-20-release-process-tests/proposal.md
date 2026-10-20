@@ -1,6 +1,6 @@
 # Proposal: Tests for the release scripts and workflows
 
-Implementing commit: `c4545c4` (TILR-77).
+Implemented as part of TILR-77.
 
 ## Why
 
