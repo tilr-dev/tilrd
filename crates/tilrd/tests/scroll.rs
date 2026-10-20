@@ -204,8 +204,19 @@ async fn a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload(
             cell_height_px: 0,
         }))
         .await;
-    client.scroll(pane_id, -1_000_000).await;
+    // Force the resize frame to arrive before the scroll request. The joined
+    // line can already be visible here, while line-2 is still in history.
     client.wait_row("abcdefghijklmnopqrst0123456789").await;
+    assert!(client.frame.as_ref().unwrap().viewport_top > 0);
+    assert!(!client.screen.has_row("line-2"));
+    client.scroll(pane_id, -1_000_000).await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) if frame.viewport_top == 0 => Some(()),
+            _ => None,
+        })
+        .await;
+    assert!(client.screen.has_row("abcdefghijklmnopqrst0123456789"));
     assert!(client.screen.has_row("line-2"));
 }
 
