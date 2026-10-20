@@ -500,6 +500,43 @@ async fn the_title_and_directory_of_a_pane_are_kept_across_a_reload() {
     assert_eq!(after.command, before.command);
 }
 
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn the_pane_process_title_is_set_again_after_a_reload() {
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
+    client
+        .type_line(pane, "cd /tmp; printf '\\033]7;file://localhost/tmp\\007'")
+        .await;
+    let suffix = format!("[shell {shell} in /tmp]");
+    let point = wait_process_title(&controller, &hook, pid, &suffix).await;
+    let before = process_args(pid);
+    assert!(before.contains("--cols 100 --rows 30"));
+    let resumed = format!("pane-resume-live:{pane}");
+    std::fs::write(&points, format!("{resumed}=pause")).unwrap();
+    point.release().await;
+
+    let mut client = reload(&server, client).await;
+    let live = controller.wait(&resumed).await;
+    let after_pid = client.list_panes().await[0].pid;
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    live.release().await;
+    let point = wait_process_title(&controller, &hook, after_pid, &suffix).await;
+    assert_eq!(process_args(after_pid), before);
+    std::fs::remove_file(points).unwrap();
+    point.release().await;
+    client.subscribe(pane).await;
+    assert_eq!(client.run(pane, "test \"$PWD\" = /tmp").await, 0);
+}
+
 #[tokio::test]
 async fn stopping_the_server_ends_the_shells() {
     let server = Server::start(&[]);

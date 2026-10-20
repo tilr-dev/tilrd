@@ -168,11 +168,13 @@ fn supervisor_pipe() -> std::io::Result<pipe::Receiver> {
 }
 
 pub fn run(args: Args) -> Result<()> {
+    let start_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let title = crate::title::Title::new(&start_args);
     // The screen model is not Send, so everything runs on this one thread.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(serve(args));
+    let result = runtime.block_on(serve(args, start_args, title));
     // The stdin reader may sit in a blocking read that only ends when the
     // supervisor closes the pipe; exit without waiting for it.
     runtime.shutdown_background();
@@ -180,6 +182,11 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 struct Pane {
+    start_args: Vec<std::ffi::OsString>,
+    title: crate::title::Title,
+    cwd: String,
+    foreground: Option<libc::pid_t>,
+    foreground_command: Option<Vec<u8>>,
     /// As it goes into every frame.
     id: String,
     /// Where a reload leaves the state for the process that takes over.
@@ -246,7 +253,16 @@ fn micros(duration: Duration) -> u32 {
     u32::try_from(duration.as_micros()).unwrap_or(u32::MAX)
 }
 
-async fn serve(args: Args) -> Result<()> {
+async fn serve(
+    args: Args,
+    start_args: Vec<std::ffi::OsString>,
+    title: crate::title::Title,
+) -> Result<()> {
+    let cwd = if args.cwd.is_empty() {
+        std::env::current_dir()?.to_string_lossy().into_owned()
+    } else {
+        args.cwd.clone()
+    };
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
     let id = args.id.to_string();
@@ -334,6 +350,11 @@ async fn serve(args: Args) -> Result<()> {
     read_supervisor(packet_tx.clone());
 
     let mut pane = Pane {
+        start_args,
+        title,
+        cwd,
+        foreground: None,
+        foreground_command: None,
         id,
         state_path: reload::pane_state_path(&args.id),
         check_path: reload::pane_check_path(&args.id),
@@ -359,6 +380,8 @@ async fn serve(args: Args) -> Result<()> {
         stats: FrameStats::default(),
         last_encode: Duration::ZERO,
     };
+    pane.refresh_title(false);
+    let mut title_tick = tokio::time::interval(Duration::from_secs(1));
     let mut buf = vec![0u8; READ_BUF];
 
     loop {
@@ -419,6 +442,11 @@ async fn serve(args: Args) -> Result<()> {
             () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
                 pane.send_frame().await?;
             }
+            _ = title_tick.tick() => {
+                // A leader can exec without changing its process group. Keep
+                // the pty-read cache, but refresh its cmdline on every tick.
+                pane.refresh_title(true);
+            },
             () = tokio::time::sleep_until(pane.kill_at.unwrap_or_else(Instant::now)), if pane.kill_at.is_some() => {
                 pane.kill_at = None;
                 pane.kill_groups();
@@ -460,6 +488,28 @@ impl Pane {
         stats.output_bytes += bytes.len() as u64;
         stats.reads = stats.reads.saturating_add(1);
         self.dirty = true;
+        self.refresh_title(false);
+    }
+
+    fn refresh_title(&mut self, refresh_command: bool) {
+        let foreground = pty::foreground_group(self.pty.as_fd());
+        let shell = self.shell.pid().unwrap_or_default() as libc::pid_t;
+        if refresh_command || foreground != self.foreground {
+            self.foreground = foreground;
+            #[cfg(feature = "failpoints")]
+            if foreground.is_some_and(|pid| pid != shell) {
+                crate::fail::point(&format!("pane-title-read-command:{}", self.id))
+                    .expect("pane command title test synchronization");
+            }
+            self.foreground_command = foreground
+                .filter(|pid| *pid != shell)
+                .map(crate::title::foreground_command);
+        }
+        self.title
+            .set(shell, &self.cwd, self.foreground_command.as_deref());
+        #[cfg(feature = "failpoints")]
+        crate::fail::point(&format!("pane-title-polled:{}", self.id))
+            .expect("pane title test synchronization");
     }
 
     /// The pty took the first `n` bytes of the pending input.
@@ -630,7 +680,7 @@ impl Pane {
         // The successor shows it can resume before this process is gone.
         let checked = reload::check_successor(
             exe,
-            std::env::args_os().skip(1).collect(),
+            self.start_args.iter().skip(1).cloned().collect(),
             self.check_path.clone(),
             &handover,
         )
@@ -647,7 +697,7 @@ impl Pane {
             Ok(()) => {
                 tracing::info!(pane = self.id, exe = %exe.display(), "reloading");
                 let err = std::process::Command::new(exe)
-                    .args(std::env::args_os().skip(1))
+                    .args(self.start_args.iter().skip(1))
                     .exec();
                 // First thing: `exec` left SIGPIPE at its default.
                 reload::ignore_sigpipe();
@@ -785,6 +835,10 @@ impl Pane {
         self.dirty = false;
         self.last_frame = Instant::now();
         if let Some(status) = self.screen.take_status() {
+            if !status.cwd.is_empty() {
+                self.cwd.clone_from(&status.cwd);
+                self.refresh_title(false);
+            }
             let packet = tilr_proto::encode(&status);
             link::write_tagged(&mut self.to_supervisor, link::kind::STATUS, &packet)
                 .await
