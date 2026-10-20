@@ -57,3 +57,7 @@ is available.
 #### Scenario: Exit watcher unavailable
 - **WHEN** the OS cannot register a watcher for the ready server PID
 - **THEN** the stand reports an explicit error and cleans its owned process group
+
+#### Scenario: The stand receives SIGTERM
+- **WHEN** SIGTERM interrupts the stand while it is checking a ready server
+- **THEN** it removes its owned process group, reaps the fixture, and exits with status 143

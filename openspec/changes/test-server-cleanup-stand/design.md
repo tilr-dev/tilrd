@@ -44,3 +44,11 @@ The pgrep-failure integration case applies only on macOS, where the stand
 uses pgrep. Other integration cases exercise both operating systems.
 Script-based `Verified by` references are not recognized by the coverage
 parser, so these two requirements intentionally appear uncovered there.
+
+### Interruption of the stand
+
+SIGTERM raises SystemExit(143), unwinding the same owned-group cleanup used by
+check failures. The regression fixture announces a server and the wrapper emits
+a pipe event upon entering the server exit wait; only then does the test signal
+the stand. The test also kills its fixture group in a finally block so a failing
+regression cannot leave its deliberately surviving child behind.

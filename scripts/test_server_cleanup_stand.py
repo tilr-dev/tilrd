@@ -173,7 +173,13 @@ def run_case(executable, case):
                 process.stdout.close()
 
 
+def interrupt_stand(signum, frame):
+    # SystemExit unwinds run_case's finally before returning the signal status.
+    raise SystemExit(128 + signum)
+
+
 def main():
+    signal.signal(signal.SIGTERM, interrupt_stand)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", help="already built cleanup_stand test executable")
     args = parser.parse_args()

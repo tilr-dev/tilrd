@@ -4,6 +4,8 @@
 import importlib.util
 from pathlib import Path
 import os
+import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -98,6 +100,64 @@ class CleanupStandTest(unittest.TestCase):
                 ["pgrep", "-f", str(server)], text=True, capture_output=True, check=False,
             )
             self.assertEqual(matches.returncode, 1, matches.stdout + matches.stderr)
+
+    def test_cleans_when_stand_receives_sigterm(self):
+        with tempfile.TemporaryDirectory(prefix="tilr-stand-signal-") as scratch:
+            root = Path(scratch)
+            pids = root / "pids"
+            fixture = root / "fixture.py"
+            fixture.write_text(
+                "#!/usr/bin/env python3\nimport os, subprocess, sys\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import signal; signal.pause()'])\n"
+                f"with open({str(pids)!r}, 'w') as out: "
+                "print(os.getpid(), child.pid, file=out, flush=True)\n"
+                "print(f'TILR_STAND_READY pid={child.pid}', flush=True)\n"
+                "sys.stdin.buffer.read(1)\n"
+            )
+            fixture.chmod(0o755)
+            event_read, event_write = os.pipe()
+            # Signal only after the ready fixture has exited and the stand has
+            # registered the server watcher. The pipe is the ordering event.
+            wrapper = (
+                "import sys; sys.dont_write_bytecode = True; "
+                f"sys.path.insert(0, {str(STAND.parent)!r}); "
+                "import test_server_cleanup_stand as stand; import os\n"
+                "original = stand.wait_for_server_exit\n"
+                "def notify(watcher):\n"
+                f"    os.write({event_write}, b'R')\n"
+                "    return original(watcher)\n"
+                "stand.wait_for_server_exit = notify\n"
+                "sys.exit(stand.main())\n"
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-c", wrapper, "--executable", str(fixture)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                pass_fds=(event_write,),
+            )
+            os.close(event_write)
+            try:
+                self.assertTrue(select.select([event_read], [], [], 30)[0],
+                                "stand did not reach its server exit check")
+                self.assertEqual(os.read(event_read, 1), b"R")
+                process.send_signal(signal.SIGTERM)
+                stdout, stderr = process.communicate(timeout=40)
+                _, server_pid = map(int, pids.read_text().split())
+                survived = stand.server_running(server_pid)
+            finally:
+                os.close(event_read)
+                if process.poll() is None:
+                    process.kill()
+                process.communicate()
+                # Also clean the deliberately failing regression run.
+                if pids.exists():
+                    fixture_pid = int(pids.read_text().split()[0])
+                    try:
+                        os.killpg(fixture_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            self.assertEqual(process.returncode, 143, stdout + stderr)
+            self.assertFalse(survived, f"server {server_pid} survived stand SIGTERM")
 
     def test_detects_survivors_and_cleans_them(self):
         self.check_case(ready=True)

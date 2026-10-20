@@ -6,7 +6,7 @@
 
 - [x] 2.1 Add ignored `cleanup_stand::server_ready_then_wait_for_interruption` fixture; verify it compiles with `cargo test -p tilrd --test cleanup_stand --no-run --locked`.
 - [x] 2.2 Add `scripts/test_server_cleanup_stand.py` with exact-PID and macOS `pgrep` checks; verify real signal and timeout cases report surviving PIDs before TILR-153 and leave no owned server after exit.
-- [x] 2.3 Add `scripts/test_server_cleanup_stand_selftest.py`; verify four integration cases pass, including surviving and clean children plus two failure paths.
+- [x] 2.3 Add `scripts/test_server_cleanup_stand_selftest.py`; verify four integration cases pass, including surviving and clean children plus failure paths; also verify stand SIGTERM cleanup and three exit-watcher contract tests.
 - [x] 2.4 Document both commands in `README.md` and the ignored fixture in `USE_CASES.md`; verify the documented commands match the files and test names.
 
 ## 3. Checks
@@ -17,4 +17,4 @@
 - [x] Rebase onto dev and refresh coverage from current specs.
 - [x] Require an exit event, bound failure at 30 seconds, and fail on unavailable watchers.
 - [x] Check the watcher contract deterministically and scope pgrep selftest to macOS.
-- [ ] Verify macOS/Linux selftests and required checks.
+- [x] Verify macOS/Linux selftests and required checks.

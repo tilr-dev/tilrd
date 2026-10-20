@@ -1082,7 +1082,8 @@ The cleanup stand runs an ignored test fixture outside the normal suite. It wait
 the server's ready notification before interrupting the test process, checks the
 server PID (and `pgrep` on macOS), and removes its own processes even when a check
 fails. Success requires an exit event for that exact PID (kqueue on macOS,
-pidfd on Linux); an unavailable watcher is an error. A 30-second deadline bounds
+pidfd on Linux); an unavailable watcher is an error. SIGTERM to the stand itself
+also runs cleanup and exits with status 143. A 30-second deadline bounds
 reporting a surviving server. It exits nonzero when an interrupted test leaves its
 server running. The pgrep-failure selftest runs only on macOS, matching the stand's
 platform check.
