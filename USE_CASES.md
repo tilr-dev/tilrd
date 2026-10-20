@@ -485,3 +485,5 @@ pane process. The server's counters are at `GET /metrics`.
 - SSH agent: pane sockets left behind after the server crashed (SIGKILL) are
   not cleaned up by anyone. A real `ssh` with a real agent through the client
   has not been tested: the tests play both the program and the client.
+
+- `supervisor::tests::a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo`: a fake pane sends old delta after Subscribe; the new subscriber waits for full, keeps its own input echo across repeated Subscribe, and other viewers continue receiving frames.
