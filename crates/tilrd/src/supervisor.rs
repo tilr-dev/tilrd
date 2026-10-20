@@ -237,8 +237,8 @@ struct Client {
     client_id: String,
     name: String,
     token: String,
-    /// Panes whose frames this client is skipping until a full one, because
-    /// it lagged; see [`Supervisor::on_pane_output`].
+    /// Panes awaiting a full frame after Subscribe or after this client
+    /// lagged; see [`Supervisor::on_pane_output`].
     lagging: HashMap<PaneId, Lag>,
 }
 
@@ -249,6 +249,10 @@ struct Lag {
     /// `last_input_seq`, 0 if none: the full frame that ends the lag carries
     /// it, so every input still gets its echo.
     own_seq: u64,
+    /// Set by `Subscribe`: the client waits for its first full frame, and
+    /// the frames skipped meanwhile are not lag (`frames_skipped`) unless its
+    /// queue lags too.
+    subscribed: bool,
 }
 
 /// How a connection is to end, as its writer is told.
@@ -2245,10 +2249,19 @@ impl Supervisor {
                 };
                 pane.subscribers.insert(client_id);
                 pane.used_at_ms = now_ms();
-                // The pane answers with a full frame.
+                // The pane answers with a full frame, which serves the
+                // clients that lag too.
                 let _ = pane.to_pane.send((packet, None));
+                pane.full_asked = true;
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.subscriptions.insert(pane_id);
+                    // A delta may already be in flight before the pane handles
+                    // Subscribe. Use full-frame recovery to skip it and retain
+                    // this client's own input echoes until the full frame.
+                    client.lagging.entry(pane_id).or_insert(Lag {
+                        own_seq: 0,
+                        subscribed: true,
+                    });
                 }
                 if let Some(agent) = &mut self.agent {
                     agent.subscribed(pane_id, client_id);
@@ -2710,7 +2723,13 @@ impl Supervisor {
                 match client.lagging.get_mut(&pane_id) {
                     Some(lag) if !head.full => {
                         lag.own_seq = lag.own_seq.max(own.unwrap_or(0));
-                        pane.counters.frames_skipped += 1;
+                        if lag.subscribed && client.tx.lagging() {
+                            lag.subscribed = false;
+                            client.tx.want_drained();
+                        }
+                        if !lag.subscribed {
+                            pane.counters.frames_skipped += 1;
+                        }
                         ask_full |= client.tx.drained();
                         continue;
                     }
@@ -2727,6 +2746,7 @@ impl Supervisor {
                             pane_id,
                             Lag {
                                 own_seq: own.unwrap_or(0),
+                                subscribed: false,
                             },
                         );
                         client.tx.want_drained();
@@ -3344,6 +3364,145 @@ async fn read_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fake pane lets the test supply old delta after observing Subscribe.
+    #[tokio::test]
+    async fn a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo() {
+        let (events, _) = mpsc::unbounded_channel();
+        let mut supervisor = Supervisor {
+            events,
+            listener: None,
+            local: None,
+            clients: HashMap::new(),
+            panes: HashMap::new(),
+            starting: HashMap::new(),
+            server_id: Uuid::new_v4(),
+            token: None,
+            tunnel: cloud::Tunnel::off(),
+            clipboard: None,
+            pane_env: Vec::new(),
+            files: None,
+            host_events: false,
+            agent: None,
+            execs: None,
+            exec: false,
+            metrics: Arc::default(),
+            next_client_id: Arc::new(AtomicU64::new(3)),
+            copies: HashMap::new(),
+            last_copy: 0,
+        };
+        let pane_id = PaneId::new_v4();
+        let (to_pane, mut commands) = mpsc::unbounded_channel();
+        supervisor.panes.insert(
+            pane_id,
+            Pane {
+                command: Vec::new(),
+                title: String::new(),
+                cwd: String::new(),
+                created_at_ms: 0,
+                used_at_ms: 0,
+                cols: 80,
+                rows: 24,
+                subscribers: HashSet::new(),
+                pid: 0,
+                to_pane,
+                link: Link {
+                    writer: tokio::spawn(async { None }),
+                    reader: tokio::spawn(async { None }),
+                    stop_reader: Arc::new(Notify::new()),
+                    fds: (-1, -1),
+                },
+                counters: metrics::PaneCounters::default(),
+                full_asked: false,
+            },
+        );
+        let mut viewers = Vec::new();
+        for id in [1, 2] {
+            let (tx, rx) = outbox::channel();
+            let (close, _) = mpsc::unbounded_channel();
+            supervisor.on_event(Event::ClientConnected {
+                id,
+                addr: Peer::Unix(None),
+                local: true,
+                tx,
+                close,
+            });
+            supervisor.clients.get_mut(&id).unwrap().greeted = true;
+            viewers.push(rx);
+        }
+        let subscribe = tilr_proto::encode(&ClientMessage::from(Msg::Subscribe(Subscribe {
+            pane_id: pane_id.to_string(),
+        })));
+        let frame = |supervisor: &mut Supervisor, full, last_input_seq| {
+            let message = ServerMessage::from(server_message::Msg::Frame(Frame {
+                pane_id: pane_id.to_string(),
+                full,
+                last_input_seq,
+                ..Default::default()
+            }));
+            supervisor.on_pane_output(
+                pane_id,
+                tilr_proto::encode(&message),
+                Instant::now(),
+                Some(FrameHead {
+                    full,
+                    last_input_seq,
+                }),
+            );
+        };
+        // Reads the outbox as the connection's writer does, so it drains.
+        fn frames(outbox: &mut outbox::Outbox) -> Vec<Frame> {
+            let mut frames = Vec::new();
+            while let Some(outgoing) = outbox.try_recv() {
+                let msg = tilr_proto::decode::<ServerMessage>(&outgoing.packet)
+                    .unwrap()
+                    .msg;
+                outbox.written(outgoing);
+                if let Some(server_message::Msg::Frame(frame)) = msg {
+                    frames.push(frame);
+                }
+            }
+            frames
+        }
+        supervisor.on_client_packet(1, subscribe.clone(), Instant::now());
+        assert_eq!(commands.try_recv().unwrap().0, subscribe);
+        frame(&mut supervisor, true, 0);
+        assert!(frames(&mut viewers[0])[0].full);
+        // Registration precedes the pane handling Subscribe. Existing viewers
+        // still receive the old delta; the new viewer must wait for full.
+        supervisor.on_client_packet(2, subscribe.clone(), Instant::now());
+        assert_eq!(commands.try_recv().unwrap().0, subscribe);
+        frames(&mut viewers[1]);
+        let own_seq = seq_base(2) + 7;
+        frame(&mut supervisor, false, own_seq);
+        assert!(
+            frames(&mut viewers[1]).is_empty(),
+            "delta arrived before full"
+        );
+        // Waiting for the first full frame is not lag, and the full frame
+        // Subscribe asked for is not asked again.
+        assert_eq!(supervisor.panes[&pane_id].counters.frames_skipped, 0);
+        assert!(commands.try_recv().is_err(), "full frame asked twice");
+        assert_eq!(frames(&mut viewers[0])[0].last_input_seq, own_seq);
+        // A repeated Subscribe preserves the own input echo already saved.
+        supervisor.on_client_packet(2, subscribe.clone(), Instant::now());
+        frame(&mut supervisor, false, seq_base(1) + 9);
+        assert!(frames(&mut viewers[1]).is_empty());
+        assert!(!frames(&mut viewers[0])[0].full);
+        frame(&mut supervisor, true, seq_base(1) + 10);
+        let initial = frames(&mut viewers[1]);
+        assert_eq!(initial.len(), 1);
+        assert!(initial[0].full);
+        assert_eq!(initial[0].last_input_seq, own_seq);
+        assert_eq!(frames(&mut viewers[0])[0].last_input_seq, seq_base(1) + 10);
+        frame(&mut supervisor, false, seq_base(1) + 11);
+        for viewer in &mut viewers {
+            let following = frames(viewer);
+            assert_eq!(following.len(), 1);
+            assert!(!following[0].full);
+            assert_eq!(following[0].last_input_seq, seq_base(1) + 11);
+        }
+    }
 
     #[test]
     fn a_client_is_judged_silent_or_deaf_by_what_it_sends_and_answers() {
