@@ -31,17 +31,26 @@ A server started with `--system` SHALL ignore `TILR_RUNTIME_DIR`, `XDG_RUNTIME_D
 - **THEN** it exits 1 with `/var/lib/tilr belongs to another user`
 
 ### Requirement: Per-user directories of a system server
-A server started with `--system` SHALL make, for each user with a pane, `/run/tilr/users/<uid>/` (0700, owned by that user) holding that user's host-events socket, agent sockets and shims, and MUST make and open it without following links.
+A server started with `--system` SHALL make, for each user with a pane, `/run/tilr/users/<uid>/` and its subdirectories `agent/`, `agent/<pid>/` and `shims/` owned by root (directories 0711, shims 0755), and SHALL bind that user's host-events and agent sockets there itself, each 0600 root until it is made, then owned by the user. Its only user-owned entry SHALL be `panes/` (0700, made empty by root).
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 
 #### Scenario: After alice's first pane
 - **WHEN** a system tilrd runs and alice creates her first pane
-- **THEN** `/run/tilr/users/<alice's uid>/` is 0700 owned by alice, and her pane's `TILR_SOCK` and `SSH_AUTH_SOCK` are in it
+- **THEN** `/run/tilr/users/<alice's uid>/` is 0711 owned by root, her pane's `TILR_SOCK` and `SSH_AUTH_SOCK` are in it, 0600 owned by alice, and `panes/` is 0700 owned by alice
 
-#### Scenario: A link planted in users
-- **WHEN** `/run/tilr/users/<alice's uid>` is a symbolic link to `/etc` before her first pane
-- **THEN** the pane fails, nothing in `/etc` changes, and the log names the path
+### Requirement: Root makes nothing inside a user's directory
+A server started with `--system` (uid 0) MUST NOT make, open or remove any entry inside a directory owned by a user. `panes/` SHALL be written only by that user's pane processes after their drop, and root SHALL remove it only when it is empty.
+
+**Verified by**: not tested yet (a test is named in tasks.md).
+
+#### Scenario: Alice cannot add entries to her directory
+- **WHEN** alice tries to create `shims` or `agent` as a symbolic link to `/etc` in `/run/tilr/users/<alice's uid>/` and then creates panes
+- **THEN** her link is refused with `Permission denied`, and nothing in `/etc` changes
+
+#### Scenario: A link in panes
+- **WHEN** alice makes `panes/<id>.state` a symbolic link to `/etc/passwd` before her pane is reloaded
+- **THEN** the reload writes nothing through it as root (her pane process, as alice, cannot write `/etc/passwd`), and `/etc/passwd` is unchanged
 
 ### Requirement: A system server always asks for a token
 `tilrd --system --no-auth` MUST exit 1 before binding anything with `--no-auth cannot be used with --system`.
@@ -64,3 +73,12 @@ When no server answers on the user's own socket and nothing names a socket, `til
 #### Scenario: Both
 - **WHEN** alice also runs a server of her own
 - **THEN** `tilr ls` lists the panes of her own server
+
+### Requirement: tilr outside the group tilr is told so
+When `tilr` would use `/run/tilr/tilrd.sock` and connecting there fails with permission denied, `tilr` MUST exit 1 with `/run/tilr/tilrd.sock: permission denied: a system tilrd runs here and you are not in the group tilr` and MUST NOT start a server.
+
+**Verified by**: not tested yet (a test is named in tasks.md).
+
+#### Scenario: Not in the group
+- **WHEN** a system tilrd runs and carol, not in the group `tilr` and with no server of her own, runs `tilr ls` or `tilr new -d`
+- **THEN** it exits 1 with `/run/tilr/tilrd.sock: permission denied: a system tilrd runs here and you are not in the group tilr`, and no tilrd runs as carol

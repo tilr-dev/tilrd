@@ -1,13 +1,17 @@
 ## ADDED Requirements
 
 ### Requirement: A system server runs a pane as its connection's user
-On a server started with `--system`, the pane process SHALL take the connection's user (see `access-control`) before it opens the pty: supplementary groups from the group database, then the user's gid, then the uid, and it MUST fail the pane when it could still regain uid 0.
+On a server started with `--system`, the pane process SHALL take the connection's user (see `access-control`) before it opens the pty: supplementary groups from the group database, then the user's gid, then the uid, and, when that user is not root, it MUST fail the pane when it could still regain uid 0.
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 
 #### Scenario: Two users, one server
 - **WHEN** a system tilrd runs as root and users alice and bob each run `tilr new -d` and then `id -un; echo $HOME` in their pane
 - **THEN** alice's pane prints `alice` and her home, bob's prints `bob` and his home, and both pane processes run with the user's uid, not 0
+
+#### Scenario: Root's own pane
+- **WHEN** root on the system socket runs `tilr new -d`
+- **THEN** the pane is made and runs as root
 
 ### Requirement: A pane on a system server gets its user's environment
 On a server started with `--system`, the shell SHALL get an environment built from the user's password entry (`HOME`, `USER`, `LOGNAME`, `SHELL`, a default `PATH`) and the pane variables, not the server's, and SHALL start in the user's home unless `CreatePane.cwd` names a directory that user can enter.

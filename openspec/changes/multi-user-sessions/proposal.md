@@ -1,4 +1,4 @@
-Блокер: the security model of a root tilrd (how a client names the user, how it proves it may, who may ask for another user, which sockets and directories become per-user) is the owner's decision; design.md lays out the options (Q1-Q9) with a recommendation for each. The spec deltas here are written for the recommended options and are rewritten to match the owner's answers before any task is cut from tasks.md.
+Блокер: the security model of a root tilrd (how a client names the user, how it proves it may, who may ask for another user, which sockets and directories become per-user) is the owner's decision; design.md lays out the options (Q1-Q9, Q4b, Q5a, Q7b) with a recommendation for each. The spec deltas here are written for the recommended options and are rewritten to match the owner's answers before any task is cut from tasks.md.
 
 # Proposal: A system tilrd that runs each session as its user
 
@@ -9,7 +9,8 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 ## What Changes
 
 - A new opt-in **system mode**, `tilrd --system`, that needs root (euid 0) and refuses to start otherwise with a clear error (design Q1, Q8). Without `--system` nothing changes, also for root.
-- System mode has its own paths: socket `/run/tilr/tilrd.sock`, state `/var/lib/tilr`, configuration `/etc/tilr/server.toml`, and per-user directories `/run/tilr/users/<uid>/` (host-events, agent and shim sockets, owned by the user, 0700) (Q5).
+- System mode has its own paths: socket `/run/tilr/tilrd.sock`, state `/var/lib/tilr`, configuration `/etc/tilr/server.toml`, and per-user directories `/run/tilr/users/<uid>/` (host-events and agent sockets owned by the user, 0600, in directories owned by root: root never makes an entry in a directory the user owns) (Q5, Q5a).
+- A user outside the group `tilr` gets a clear "permission denied" from `tilr` on a machine with a system server, not a server of her own started behind her back (Q7b).
 - Each connection has a **user**: on the Unix socket the peer's uid (SO_PEERCRED / getpeereid), on TCP the user whose token the `Hello` carries (per-user tokens, `tilr token` prints the caller's) (Q2, Q3).
 - Panes, execs, file requests and server commands of a connection run as its user: the pane process drops to the user (initgroups, setgid, setuid) before it opens the pty, the shell gets the user's passwd entry (HOME, USER, LOGNAME, SHELL, home as start directory) and a clean environment, not root's (Q6).
 - A connection sees and drives only its user's panes; `PaneInfo.user` names the user. Asking for a pane as another user (`CreatePane.run_as`) is refused unless the connection's user is root on the Unix socket (Q4).

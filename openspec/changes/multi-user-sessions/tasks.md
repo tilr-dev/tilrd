@@ -1,16 +1,16 @@
 # Tasks
 
-Research change (TILR-138): this change is designed, not implemented. Groups 1+ are cut into implementation tasks once the owner has answered Q1-Q9 (and Q4b) in design.md; the spec deltas are rewritten to the answers first.
+Research change (TILR-138): this change is designed, not implemented. Groups 1+ are cut into implementation tasks once the owner has answered Q1-Q9 (and Q4b, Q5a, Q7b) in design.md; the spec deltas are rewritten to the answers first.
 
 ## 0. Decision
 
-- [x] 0.1 Write proposal, design (options Q1-Q9 (and Q4b) with recommendations), spec deltas for the recommended options and this plan; verify `openspec validate multi-user-sessions --strict`
-- [ ] 0.2 Owner answers Q1-Q9 (and Q4b); spec deltas (including the requirements in design "Requirements to modify after the answers"), design and the groups below updated to the answers; the `Блокер:` line removed; verify `openspec validate multi-user-sessions --strict`
+- [x] 0.1 Write proposal, design (options Q1-Q9 (and Q4b, Q5a, Q7b) with recommendations), spec deltas for the recommended options and this plan; verify `openspec validate multi-user-sessions --strict`
+- [ ] 0.2 Owner answers Q1-Q9 (and Q4b, Q5a, Q7b); spec deltas (including the requirements in design "Requirements to modify after the answers"), design and the groups below updated to the answers; the `Блокер:` line removed; verify `openspec validate multi-user-sessions --strict`
 
 ## 1. System mode and its paths
 
 - [ ] 1.1 `tilrd --system`: root and capability check before anything is bound, `--no-auth` refused, `/run/tilr`, `/var/lib/tilr`, `/etc/tilr/server.toml` defaults (daemon-lifecycle "System mode needs root", "Paths and modes of a system server"); verify `local::system_mode_needs_root` (non-root run) and itests UC-03C (`uc_03c.py::tilrd_system_refuses_to_start_without_root`); README "Running as a system service"; UC-03C added to itests/USE_CASES.md
-- [ ] 1.2 Per-user directories `/run/tilr/users/<uid>/` made with `openat` from a root-owned parent, no links followed; verify itests UC-03C (`uc_03c.py::a_link_planted_in_users_is_not_followed`); UC-03C entry in itests/USE_CASES.md; README "Running as a system service" (the directories)
+- [ ] 1.2 Per-user directories `/run/tilr/users/<uid>/` owned by root (0711), sockets bound by root and handed to the user (0600), only `panes/` owned by the user and never opened by root (daemon-lifecycle "Per-user directories of a system server", "Root makes nothing inside a user's directory"); verify itests UC-03C (`uc_03c.py::a_user_cannot_plant_a_link_in_her_directory`, `uc_03c.py::a_link_in_panes_is_not_written_through_as_root`); UC-03C entry in itests/USE_CASES.md; README "Running as a system service" (the directories)
 
 ## 2. Who the connection is
 
@@ -30,7 +30,7 @@ Research change (TILR-138): this change is designed, not implemented. Groups 1+ 
 ## 5. Reload, tilr, service
 
 - [ ] 5.1 Reload in system mode: supervisor state records each pane's uid, pane processes re-exec as their user, new state version in `tilrd state-formats` (`reload` delta); verify `reload::a_system_server_reloads_with_panes_of_two_users` (as root) and itests UC-03D (`uc_03d.py::a_reload_keeps_each_users_panes_as_that_user`); USE_CASES.md entry; README "Reload" (system server)
-- [ ] 5.2 `tilr` falls back to `/run/tilr/tilrd.sock`, never starts a system server (daemon-lifecycle "tilr finds a system server and does not start one", `tilr-cli` delta); verify `client::tilr_uses_the_system_server_when_the_user_has_none`; README "tilr" (which socket it uses); USE_CASES.md entry
+- [ ] 5.2 `tilr` falls back to `/run/tilr/tilrd.sock`, never starts a system server, permission denied there is an error, not "no server" (daemon-lifecycle "tilr finds a system server and does not start one", "tilr outside the group tilr is told so", `tilr-cli` delta); verify `client::tilr_uses_the_system_server_when_the_user_has_none`, `client::tilr_outside_the_group_reports_the_system_server_and_starts_nothing`; README "tilr" (which socket it uses); USE_CASES.md entry
 - [ ] 5.3 `tilr service install --system` (systemd system unit, launchd LaunchDaemon) — its own change if the owner wants it
 
 ## 6. Checks and archive

@@ -1,6 +1,6 @@
 # Design: A system tilrd that runs each session as its user
 
-Status: options for the owner. Every question below (Q1-Q9, Q4b) lists the options with their pros and cons and a recommendation (**Rec.**). Nothing is decided; the spec deltas follow the recommendations and change with the answers.
+Status: options for the owner. Every question below (Q1-Q9, Q4b, Q5a, Q7b) lists the options with their pros and cons and a recommendation (**Rec.**). Nothing is decided; the spec deltas follow the recommendations and change with the answers.
 
 ## Where the code assumes one user (dev at 7b320bc)
 
@@ -52,15 +52,25 @@ Status: options for the owner. Every question below (Q1-Q9, Q4b) lists the optio
 |---|---|---|---|
 | main Unix socket | `tilr-<euid>/tilrd.sock` 0600 in 0700 | one `/run/tilr/tilrd.sock`, `root:tilr` 0660, dir `/run/tilr` 0755 root; the peer uid identifies the user | (i) 0666, any local user (no group to manage, every account on the box can get a shell — it already has one); (ii) a socket per user in `/run/tilr/users/<uid>/` — keeps the check as it is, but the daemon must know users in advance |
 | lock, log | next to the socket | `/run/tilr/tilrd.sock.lock` 0600 root; log to stderr (journald / launchd) | — |
-| host-events socket `$TILR_SOCK` | `<runtime>/<server_id>.sock` | `/run/tilr/users/<uid>/<server_id>.sock`, dir 0700 owned by the user | per pane (`…/<pane>.sock`): finer, more sockets |
-| agent sockets `SSH_AUTH_SOCK` | `<runtime>/agent/<pid>/<pane>.sock` | `/run/tilr/users/<uid>/agent/<pid>/<pane>.sock`, owned by the user | — |
-| shims, shell wrappers | `<runtime>/shims`, wrapper dir | `/run/tilr/users/<uid>/shims`, owned by the user (the user's shell reads them) | one shared root-owned read-only copy |
-| reload state | `<runtime>/server-<pid>.state`, `panes/<id>.state` | `/run/tilr/` 0700 root; pane state written by the pane process into `/run/tilr/users/<uid>/panes/` | — |
+| host-events socket `$TILR_SOCK` | `<runtime>/<server_id>.sock` | `/run/tilr/users/<uid>/<server_id>.sock`, socket 0600 owned by the user in a root-owned directory (Q5a) | per pane (`…/<pane>.sock`): finer, more sockets |
+| agent sockets `SSH_AUTH_SOCK` | `<runtime>/agent/<pid>/<pane>.sock` | `/run/tilr/users/<uid>/agent/<pid>/<pane>.sock`, socket 0600 owned by the user, directories root-owned (Q5a) | — |
+| shims, shell wrappers | `<runtime>/shims`, wrapper dir | `/run/tilr/users/<uid>/shims`, root-owned 0755, read-only for the user (the user's shell reads them) (Q5a) | one shared root-owned read-only copy |
+| reload state | `<runtime>/server-<pid>.state`, `panes/<id>.state` | `/run/tilr/` 0700 root; pane state written by the pane process, as the user, into `/run/tilr/users/<uid>/panes/` (the one user-owned directory, Q5a) | — |
 | state (server-id, token, cloud.json) | `~/.local/state/tilr` | `/var/lib/tilr` 0700 root; per-user tokens `/var/lib/tilr/users/<uid>/token` | the user's own `~/.local/state/tilr` — rejected: root writing in a user's home follows the user's links |
 | configuration | `~/.config/tilr/server.toml` | `/etc/tilr/server.toml` | — |
 | clipboard / host events | to every client of the server | only to clients whose user is the pane's user | — |
 
-The directories under `/run/tilr/users/<uid>/` are made by root, `chown`ed to the user and opened with `O_NOFOLLOW`/`openat` from the root-owned `/run/tilr/users` so a user cannot point them elsewhere. **Rec. the table's middle column**, main socket with the group `tilr`.
+**Rec. the table's middle column**, main socket with the group `tilr`; who owns `/run/tilr/users/<uid>/` and who writes in it is Q5a.
+
+### Q5a. Who owns a user's directory and who writes in it
+
+Root (the supervisor) makes the host-events and agent sockets, their directories and the shims. If it does so inside a directory the user owns, the user can plant a link there first (`shims -> /etc/cron.d`, `agent -> /etc`) and root then writes where the link points: a privilege escalation. `openat`/`O_NOFOLLOW` on `/run/tilr/users/<uid>` itself does not help, because the links are one level down, and `bind()` of a Unix socket takes a path, not a directory descriptor. (The same reason rejects the user's `~/.local/state/tilr` for root's state in Q5.)
+
+- (a) **Root never makes an entry in a directory the user owns.** `/run/tilr/users/<uid>/` and everything root makes under it (`agent/`, `agent/<pid>/`, `shims/`) are owned by root: the directories 0711 (the user can reach a socket by its path but not list or add entries), the shims 0755. Root binds each socket there itself, with a umask that leaves it 0600 root while it is being made, then `chown`s it to the user (the user only connects). The one directory the user writes in, `panes/` (reload state), is made by root as an empty 0700 directory owned by the user, and root never opens, makes or removes anything inside it; the pane process, after its drop, writes and removes its state there; root removes `panes/` only when it is empty (`unlinkat` with `AT_REMOVEDIR` in its root-owned parent). File requests and anything else that touches a user's own paths go through the per-user helper of Q6. + No path root writes to is under the user's control; + the sockets keep today's 0600 owner check. − The user cannot clean up or add to the tree; − 0711 instead of 0700: other users can reach a socket by name, but a 0600 socket of another owner refuses them (and the peer check refuses them again).
+- (a′) As (a), with the root-owned directories `0750 root:<user's primary gid>` instead of 0711. + Others cannot even reach the path. − The primary group is often shared (`users`, gid 100), so it keeps out fewer people than it seems; a private group per user cannot be assumed.
+- (b) The draft so far: the directory is the user's (0700), root makes the sockets, `agent/<pid>/` and the shims inside it. + Simplest. − The escalation above; rejected.
+- (c) The user's directory stays the user's, and root never touches it: a per-user helper (dropped to the user, as in Q6) makes the sockets and directories and passes the listening sockets to the supervisor over `SCM_RIGHTS`. + Root never resolves a path in a user's tree at all. − The helper must run before the user's first pane and across reloads; fd passing for every socket; more to test.
+- **Rec. (a)**; (c) if the helper of Q6 turns out to be needed early anyway.
 
 ## Q6. Where the drop to the user happens
 
@@ -77,8 +87,17 @@ The directories under `/run/tilr/users/<uid>/` are made by root, `chown`ed to th
 - "The host-events and agent sockets check the peer's uid": in system mode they accept the socket's user and root and refuse the rest.
 - "The access token …", "TCP clients present the token": per-user tokens (Q3). `--no-auth` with `--system` is refused (`--no-auth` would make every TCP client root's choice of user).
 - "A server command … Unix socket only": stays; it runs as the connection's user (`tilr token` prints that user's token).
-- daemon-lifecycle: `--system` paths; `tilr` never starts a system tilrd (a service manager does: `tilr service install --system` is a later task); the runtime/state directory owner checks expect root for `/run/tilr`, `/var/lib/tilr` and the user for `/run/tilr/users/<uid>`.
+- daemon-lifecycle: `--system` paths; `tilr` never starts a system tilrd (a service manager does: `tilr service install --system` is a later task); the runtime/state directory owner checks expect root for `/run/tilr`, `/var/lib/tilr` and `/run/tilr/users/<uid>` (Q5a), and the user only for its `panes/`.
 - Client: `tilr` today refuses a server of another uid (`check_peer`); for the system socket it must accept a server whose uid is 0.
+
+### Q7b. What a user outside the group `tilr` gets from `tilr`
+
+With the Q5 socket (`root:tilr` 0660), carol (not in `tilr`) gets `EACCES` when she connects to `/run/tilr/tilrd.sock`. `tilr` must tell that apart from "no server there".
+
+- (a) **`EACCES` means "a server is there, you may not use it"**: `tilr` exits 1 with `/run/tilr/tilrd.sock: permission denied: a system tilrd runs here and you are not in the group tilr`, and starts nothing. A user who wants a server of her own names its socket (`--socket`) or runs `tilrd` herself. + The admin's setup is not silently bypassed; + no "my panes are not where I expected" puzzles. − A user who used per-user tilr before the admin installed the system server loses the automatic start until she is added to the group or names her socket.
+- (b) `EACCES` counts as "no server": carol gets a per-user server of her own, as today. + Nothing changes for users outside the group. − Two servers per user possible without anyone noticing; the group no longer decides who uses the system server, only who may.
+- (c) As (b) with a warning on stderr (`a system tilrd runs here but you are not in the group tilr; starting your own`). + Visible and still working. − A warning on every `tilr` run that starts a server.
+- **Rec. (a)**: the deltas (access-control "Not in the group" as a direct connect, daemon-lifecycle "tilr outside the group tilr is told so") follow it.
 
 ## Q8. Without root
 
@@ -120,5 +139,5 @@ The deltas here change only the two peer-uid requirements. With the recommended 
 ## Risks
 
 - Every bug in the user check is a privilege escalation; the tests must run as root with at least two users (itests group D already has uid stands, UC-034/UC-035).
-- Symlink and TOCTOU attacks on `/run/tilr/users/<uid>/` (Q5: create with `openat` from a root-owned parent).
+- Symlink and TOCTOU attacks under `/run/tilr/users/<uid>/` (Q5a: root makes entries only in root-owned directories, the user-owned `panes/` is never opened by root).
 - Token storage: a leaked per-user token is that user's shell, as today.
