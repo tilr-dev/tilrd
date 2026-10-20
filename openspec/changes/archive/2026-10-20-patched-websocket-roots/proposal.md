@@ -8,7 +8,7 @@ dependency is updated. Dan approved an explicit rustls connector (#4202).
 
 ## What Changes
 
-- Keep tilrd's outgoing WebSocket connections on bundled Mozilla roots via
+- Keep tilrd, tilr and tilr-driver's outgoing WebSocket connections on bundled Mozilla roots via
   webpki-roots 1.0.10 directly, with normal certificate and hostname verification.
 - Remove the affected 0.26 dependency without advisory ignores or native roots.
 - Cover the dependency graph, trust roots and local WebSocket TLS handshakes.
@@ -19,5 +19,5 @@ dependency is updated. Dan approved an explicit rustls connector (#4202).
 
 ## Impact
 
-Cargo manifests/lock, tilrd's Cloud and ps connection helper, regression tests.
+Cargo manifests/lock, the shared Cloud, ps, tilr and tilr-driver connector, regression tests.
 No command, protocol or trust-store change.

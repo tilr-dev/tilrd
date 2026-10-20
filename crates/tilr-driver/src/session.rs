@@ -910,3 +910,18 @@ async fn open(target: &Target) -> Result<(Ws, tilr_proto::HelloAck)> {
 pub fn ms(duration: Duration) -> f64 {
     (duration.as_secs_f64() * 10_000.0).round() / 10.0
 }
+
+#[cfg(test)]
+#[path = "../../tilr-websocket/tests/support/mod.rs"]
+mod tls_test_peer;
+
+#[cfg(test)]
+mod bundled_tls_tests {
+    #[tokio::test]
+    async fn client_uses_the_bundled_trust_anchors() {
+        let (url, server) = super::tls_test_peer::peer_with_bundled_issuer_name().await;
+        let error = super::dial(&url, None).await.unwrap_err();
+        server.await.unwrap();
+        super::tls_test_peer::assert_bundled_root_was_used(error);
+    }
+}

@@ -44,6 +44,10 @@ where
 }
 
 #[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod tls_test_peer;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
@@ -53,6 +57,14 @@ mod tests {
     use tokio_tungstenite::tungstenite::handshake::server::{
         Callback, ErrorResponse, Request, Response as ServerResponse,
     };
+
+    #[tokio::test]
+    async fn connect_uses_the_bundled_trust_anchors() {
+        let (url, server) = crate::tls_test_peer::peer_with_bundled_issuer_name().await;
+        let error = connect(url).await.unwrap_err();
+        server.await.unwrap();
+        crate::tls_test_peer::assert_bundled_root_was_used(error);
+    }
 
     struct CheckAuthorization;
 

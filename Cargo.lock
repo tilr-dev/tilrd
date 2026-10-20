@@ -1480,6 +1480,8 @@ dependencies = [
  "flate2",
  "futures-util",
  "libc",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -1487,9 +1489,11 @@ dependencies = [
  "tilr-proto",
  "tilr-websocket",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml",
  "uuid",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1500,14 +1504,18 @@ dependencies = [
  "bytes",
  "futures-util",
  "prost",
+ "rcgen",
  "regex",
+ "rustls",
  "serde_json",
  "sha2",
  "tilr-proto",
  "tilr-websocket",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "uuid",
+ "webpki-roots",
 ]
 
 [[package]]
