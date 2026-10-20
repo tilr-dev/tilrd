@@ -380,7 +380,7 @@ async fn serve(
         stats: FrameStats::default(),
         last_encode: Duration::ZERO,
     };
-    pane.refresh_title();
+    pane.refresh_title(false);
     let mut title_tick = tokio::time::interval(Duration::from_secs(1));
     let mut buf = vec![0u8; READ_BUF];
 
@@ -442,7 +442,11 @@ async fn serve(
             () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
                 pane.send_frame().await?;
             }
-            _ = title_tick.tick() => pane.refresh_title(),
+            _ = title_tick.tick() => {
+                // A leader can exec without changing its process group. Keep
+                // the pty-read cache, but refresh its cmdline on every tick.
+                pane.refresh_title(true);
+            },
             () = tokio::time::sleep_until(pane.kill_at.unwrap_or_else(Instant::now)), if pane.kill_at.is_some() => {
                 pane.kill_at = None;
                 pane.kill_groups();
@@ -484,14 +488,19 @@ impl Pane {
         stats.output_bytes += bytes.len() as u64;
         stats.reads = stats.reads.saturating_add(1);
         self.dirty = true;
-        self.refresh_title();
+        self.refresh_title(false);
     }
 
-    fn refresh_title(&mut self) {
+    fn refresh_title(&mut self, refresh_command: bool) {
         let foreground = pty::foreground_group(self.pty.as_fd());
         let shell = self.shell.pid().unwrap_or_default() as libc::pid_t;
-        if foreground != self.foreground {
+        if refresh_command || foreground != self.foreground {
             self.foreground = foreground;
+            #[cfg(feature = "failpoints")]
+            if foreground.is_some_and(|pid| pid != shell) {
+                crate::fail::point(&format!("pane-title-read-command:{}", self.id))
+                    .expect("pane command title test synchronization");
+            }
             self.foreground_command = foreground
                 .filter(|pid| *pid != shell)
                 .and_then(crate::title::command_line);
@@ -828,7 +837,7 @@ impl Pane {
         if let Some(status) = self.screen.take_status() {
             if !status.cwd.is_empty() {
                 self.cwd.clone_from(&status.cwd);
-                self.refresh_title();
+                self.refresh_title(false);
             }
             let packet = tilr_proto::encode(&status);
             link::write_tagged(&mut self.to_supervisor, link::kind::STATUS, &packet)

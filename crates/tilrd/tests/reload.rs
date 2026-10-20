@@ -503,16 +503,16 @@ async fn the_title_and_directory_of_a_pane_are_kept_across_a_reload() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn the_pane_process_title_is_set_again_after_a_reload() {
-    let dir = Server::scratch_dir();
-    let controller = PauseController::bind(&dir);
-    let server = Server::start_in(dir, std::path::Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
-    let mut client = Client::connect(&server).await;
-    let pane = client.open_pane_with(100, 30, "").await;
-    let shell = shell_pid(&server, &mut client, pane).await;
-    let pid = client.list_panes().await[0].pid;
-    let hook = format!("pane-title-polled:{pane}");
-    let points = server.dir.join("failpoints");
-    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
     client
         .type_line(pane, "cd /tmp; printf '\\033]7;file://localhost/tmp\\007'")
         .await;

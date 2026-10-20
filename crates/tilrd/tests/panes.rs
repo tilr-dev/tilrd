@@ -414,16 +414,16 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn the_pane_process_title_follows_the_directory_and_the_command() {
-    let dir = Server::scratch_dir();
-    let controller = PauseController::bind(&dir);
-    let server = Server::start_in(dir, std::path::Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
-    let mut client = Client::connect(&server).await;
-    let pane = client.open_pane_with(100, 30, "").await;
-    let shell = shell_pid(&server, &mut client, pane).await;
-    let pid = client.list_panes().await[0].pid;
-    let hook = format!("pane-title-polled:{pane}");
-    let points = server.dir.join("failpoints");
-    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
     let initial = format!("[shell {shell} in {}]", server.dir.display());
     let point = wait_process_title(&controller, &hook, pid, &initial).await;
     point.release().await;
@@ -452,6 +452,87 @@ async fn the_pane_process_title_follows_the_directory_and_the_command() {
     let point = wait_process_title(&controller, &hook, pid, &idle).await;
     std::fs::remove_file(points).unwrap();
     point.release().await;
+}
+
+#[tokio::test]
+#[cfg(feature = "failpoints")]
+async fn the_pane_process_title_follows_exec_in_the_same_foreground_group() {
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
+    let gate = server.dir.join("title-gate");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&gate)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let ready = server.dir.join("title-ready");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&ready)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(
+        server.dir.join("title-wrapper"),
+        "echo $$ > title-leader\necho ready > title-ready\nread go < title-gate\nexec sleep 30\n",
+    )
+    .unwrap();
+    // Finish an idle refresh first so the wrapper is a distinct foreground group.
+    let idle = format!("[shell {shell} in {}]", server.dir.display());
+    let point = wait_process_title(&controller, &hook, pid, &idle).await;
+    // Wait for the wrapper's handshake before reading the new leader's argv:
+    // a query between tcsetpgrp and exec must not cache the pre-exec shell here.
+    let query = format!("pane-title-read-command:{pane}");
+    std::fs::write(&points, format!("{query}=pause")).unwrap();
+    client.type_line(pane, "sh ./title-wrapper").await;
+    point.release().await;
+    let point = controller.wait(&query).await;
+    let handshake = tokio::time::timeout(TIMEOUT, tokio::fs::read(&ready))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(handshake, b"ready\n");
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    point.release().await;
+    let wrapper = format!(
+        "[shell {shell} in {}: sh ./title-wrapper]",
+        server.dir.display()
+    );
+    let point = wait_process_title(&controller, &hook, pid, &wrapper).await;
+    // The leader is blocked on the FIFO. Releasing it execs sleep without pty
+    // output or a group change, after its old cmdline has definitely been cached.
+    tokio::time::timeout(TIMEOUT, tokio::fs::write(&gate, b"go\n"))
+        .await
+        .unwrap()
+        .unwrap();
+    let leader: u32 = std::fs::read_to_string(server.dir.join("title-leader"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    point.release().await;
+    let sleeping = format!("[shell {shell} in {}: sleep 30]", server.dir.display());
+    let point = wait_process_title(&controller, &hook, pid, &sleeping).await;
+    assert_eq!(process_args(leader), "sleep 30", "exec kept the leader pid");
+    std::fs::remove_file(points).unwrap();
+    point.release().await;
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"\x03"),
+        }))
+        .await;
 }
 
 #[tokio::test]

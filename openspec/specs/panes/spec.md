@@ -319,7 +319,7 @@ The wrappers in `<runtime dir>/shell/` are shared by all servers of the user. A 
 ### Requirement: The pane process title follows the pane
 After its start arguments, a pane process SHALL show ` [shell <shell pid> in <cwd>]`, or ` [shell <shell pid> in <cwd>: <command>]` while another process group is in the foreground of its pty (`<cwd>` is `PaneInfo.cwd`, `<command>` the group leader's command line, at most 80 bytes). It SHALL update the title within a second of either changing and SHALL set it again after a reload.
 
-**Verified by**: `panes::the_pane_process_title_follows_the_directory_and_the_command` and `reload::the_pane_process_title_is_set_again_after_a_reload`.
+**Verified by**: `panes::the_pane_process_title_follows_the_directory_and_the_command`, `panes::the_pane_process_title_follows_exec_in_the_same_foreground_group` and `reload::the_pane_process_title_is_set_again_after_a_reload`.
 
 #### Scenario: cd in a pane
 - **WHEN** the shell in a pane runs `cd /tmp`
@@ -334,6 +334,10 @@ After its start arguments, a pane process SHALL show ` [shell <shell pid> in <cw
 - **WHEN** the shell is in `/tmp` and the server reloads
 - **THEN** the new pane process image's title ends with `[shell <same shell pid> in /tmp]`
 
+#### Scenario: The foreground leader execs another command
+- **WHEN** a foreground wrapper waits on a test-controlled FIFO and then execs `sleep 30` without changing its pid or process group
+- **THEN** the title first shows the wrapper's command line and within a second of exec shows `sleep 30`, even without pty output
+
 ### Requirement: A title that does not fit is cut
 A title longer than the space the pane process has for it SHALL be cut at the end of that space; when no title can be set at all, the command line SHALL stay the start arguments and the server SHALL log `pane title: no room` once.
 
@@ -346,11 +350,16 @@ A title longer than the space the pane process has for it SHALL be cut at the en
 ### Requirement: Making room for a title preserves the environment
 Moving the environment to make room for the title SHALL preserve every environment entry and the pane's original arguments.
 
-**Verified by**: unit test `title::tests::the_environment_is_unchanged_after_the_move`.
+**Verified by**: unit tests `title::tests::the_environment_is_unchanged_after_the_move` and `title::tests::a_moved_environment_entry_keeps_the_contiguous_prefix`.
 
 #### Scenario: A title overwrites the original environment strings
 - **WHEN** the title is written over the original argv and environment string area
 - **THEN** the copied environment entries and runtime arguments retain their original values
+
+#### Scenario: One environment entry has moved
+- **WHEN** an environment entry points outside the original string area
+- **THEN** the title area includes argv and the environment strings contiguous with it up to the first gap
+- **AND** every environment entry and original argument is preserved, including entries after the gap
 
 ## Notes
 

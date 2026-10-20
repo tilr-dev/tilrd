@@ -128,25 +128,22 @@ unsafe fn move_strings(
             end = p.add(CStr::from_ptr(p).to_bytes_with_nul().len());
         }
         let mut copies = Vec::new();
-        let argv_end = end;
-        let mut contiguous = true;
         let mut env = *environ;
+        // Extend only through the contiguous prefix. A setenv replacement may
+        // live on the heap; it must not discard space before it or bridge a gap.
+        while !(*env).is_null() && *env == end {
+            end = end.add(CStr::from_ptr(*env).to_bytes_with_nul().len());
+            env = env.add(1);
+        }
+        env = *environ;
         while !(*env).is_null() {
             let p = *env;
             let value = CStr::from_ptr(p);
-            if p == end {
-                end = p.add(value.to_bytes_with_nul().len());
-            } else {
-                contiguous = false;
-            }
             copies.push(CString::from(value).into_raw());
             env = env.add(1);
         }
         copies.push(std::ptr::null_mut());
         *environ = Box::leak(copies.into_boxed_slice()).as_mut_ptr();
-        if !contiguous {
-            end = argv_end;
-        }
         let len = end as usize - start as usize;
         // Runtime argument readers keep seeing the start arguments as well.
         // The kernel's ps interface reads the original string area, not argv.
@@ -260,6 +257,40 @@ mod tests {
             assert!((*environ.add(2)).is_null());
             assert_eq!(CStr::from_ptr(argv[0]).to_bytes(), b"tilrd");
             assert_eq!(CStr::from_ptr(argv[1]).to_bytes(), b"pane");
+        }
+    }
+    #[test]
+    fn a_moved_environment_entry_keeps_the_contiguous_prefix() {
+        let bytes = Box::leak(
+            b"tilrd\0pane\0HOME=/tmp\0LAST=kept\0"
+                .to_vec()
+                .into_boxed_slice(),
+        );
+        let p = bytes.as_mut_ptr().cast::<libc::c_char>();
+        let moved = CString::new("TILR=moved").unwrap();
+        // SAFETY: these arrays contain writable, NUL-terminated strings and
+        // remain alive throughout move_strings; only the returned area is reused.
+        unsafe {
+            let mut argv = [p, p.add(6), std::ptr::null_mut()];
+            // The final entry still starts at the end of HOME. Once a gap is
+            // seen, extension must stop even if a later pointer matches end.
+            let mut env = [
+                p.add(11),
+                moved.as_ptr().cast_mut(),
+                p.add(21),
+                std::ptr::null_mut(),
+            ];
+            let mut environ = env.as_mut_ptr();
+            let area = move_strings(2, argv.as_mut_ptr(), &raw mut environ);
+            assert_eq!(area.len(), 21, "argv plus HOME, up to the first gap");
+            write_area(area, b"a title overwrites HOME");
+            assert_eq!(CStr::from_ptr(*environ).to_bytes(), b"HOME=/tmp");
+            assert_eq!(CStr::from_ptr(*environ.add(1)).to_bytes(), b"TILR=moved");
+            assert_eq!(CStr::from_ptr(*environ.add(2)).to_bytes(), b"LAST=kept");
+            assert!((*environ.add(3)).is_null());
+            assert_eq!(CStr::from_ptr(argv[0]).to_bytes(), b"tilrd");
+            assert_eq!(CStr::from_ptr(argv[1]).to_bytes(), b"pane");
+            assert_eq!(CStr::from_ptr(p.add(21)).to_bytes(), b"LAST=kept");
         }
     }
     #[test]

@@ -950,6 +950,44 @@ pub fn process_args(pid: u32) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// A running pane with a title-refresh pause hook ready for inspection.
+#[cfg(feature = "failpoints")]
+pub struct TitleTest {
+    pub server: Server,
+    pub controller: PauseController,
+    pub client: Client,
+    pub pane: PaneId,
+    pub shell: u32,
+    pub pid: u32,
+    pub hook: String,
+    pub points: PathBuf,
+}
+
+#[cfg(feature = "failpoints")]
+impl TitleTest {
+    pub async fn start() -> Self {
+        let server = Server::start(&[]);
+        let controller = PauseController::bind(&server.dir);
+        let mut client = Client::connect(&server).await;
+        let pane = client.open_pane_with(100, 30, "").await;
+        let shell = shell_pid(&server, &mut client, pane).await;
+        let pid = client.list_panes().await[0].pid;
+        let hook = format!("pane-title-polled:{pane}");
+        let points = server.dir.join("failpoints");
+        std::fs::write(&points, format!("{hook}=pause")).unwrap();
+        Self {
+            server,
+            controller,
+            client,
+            pane,
+            shell,
+            pid,
+            hook,
+            points,
+        }
+    }
+}
+
 /// Read ps after a concrete title refresh, keeping the pane paused for inspection.
 #[cfg(feature = "failpoints")]
 pub async fn wait_process_title(
@@ -958,17 +996,19 @@ pub async fn wait_process_title(
     pid: u32,
     suffix: &str,
 ) -> PausedPoint {
+    let mut last = String::new();
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let point = controller.wait(hook).await;
-            if process_args(pid).ends_with(suffix) {
+            last = process_args(pid);
+            if last.ends_with(suffix) {
                 return point;
             }
             point.release().await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("process {pid} did not show {suffix:?}"))
+    .unwrap_or_else(|_| panic!("process {pid} did not show {suffix:?}; last title: {last:?}"))
 }
 
 /// The pid of the shell in the pane, which the shell itself writes to a file.
