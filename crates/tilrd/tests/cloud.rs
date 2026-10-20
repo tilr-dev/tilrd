@@ -631,7 +631,6 @@ async fn a_linked_server_gets_its_tunnel_from_cloud() {
     let (url, mut connections) = cloud().await;
     let server = linked_server(&url, &[]);
     let link_path = server.dir.join("state/cloud.json");
-    let saved_link = std::fs::read(&link_path).unwrap();
     let mut control = connections.recv().await.unwrap();
     assert_eq!(control.authorization, format!("Bearer {MACHINE_TOKEN}"));
 
@@ -640,7 +639,12 @@ async fn a_linked_server_gets_its_tunnel_from_cloud() {
     assert_eq!(hello["auth"], true);
     assert_eq!(hello["platform"], env!("TILR_PLATFORM"));
     assert_eq!(control.next().await["state"], "down");
-    assert_eq!(std::fs::read(link_path).unwrap(), saved_link);
+    // The link written before the start, untouched: its Cloud, not the default.
+    let saved_link: Value = serde_json::from_slice(&std::fs::read(link_path).unwrap()).unwrap();
+    assert_eq!(
+        saved_link,
+        json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN })
+    );
 
     control.send(tunnel("abc234.tilr.test")).await;
     control.tunnel_is("up").await;
