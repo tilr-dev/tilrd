@@ -8,17 +8,17 @@ Written for option (c), decided 2026-10-18 (see the proposal's Decision).
 
 ## 1. One installer
 
-- [ ] 1.1 `git mv itests/installer/install.sh scripts/install.sh`; itests mount it from `scripts/` (`itests/src/tilr_itests/main.py:517`, `itests/tt/__init__.py`), itests/README.md and the `installation` spec's wording ("the installer, `scripts/install.sh`") follow; verify `./itests/dt --only scenarios --filter uc_00` (UC-001..006 PASS)
-- [ ] 1.2 README "Install" names `scripts/install.sh` as what `tilr.sh` serves; verify by review
+- [x] 1.1 `git mv itests/installer/install.sh scripts/install.sh`; itests mount it from `scripts/` (`itests/src/tilr_itests/main.py:517`, `itests/tt/__init__.py`), itests/README.md and the `installation` spec's wording ("the installer, `scripts/install.sh`") follow; verify `./itests/dt --only scenarios --filter uc_00` (UC-001..006 PASS)
+- [x] 1.2 README "Install" names `scripts/install.sh` as what `tilr.sh` serves; verify by review
 
 ## 2. Published with the release
 
-- [ ] 2.1 `scripts/release.sh` uploads `install.sh` after every `latest`, never after a failed upload; verify with the new test `release::the_installer_is_uploaded_after_latest` in `crates/tilrd/tests/release.rs` (a `dist/cdn` laid out in a temp dir, `CLOUDFLARE_ACCOUNT_ID` set, a stub `wrangler` on `PATH`; both scenarios of the spec; the harness is shared with `release-process-tests` 1.1) run in CI
-- [ ] 2.2 The `release-process` spec's Notes drop "The release scripts and workflows have no automated tests" for this requirement; verify `openspec validate --specs --strict`
+- [x] 2.1 `scripts/release.sh` uploads `install.sh` after every `latest`, never after a failed upload; verify with the new test `release::the_installer_is_uploaded_after_latest` in `crates/tilrd/tests/release.rs` (a `dist/cdn` laid out in a temp dir, `CLOUDFLARE_ACCOUNT_ID` set, a stub `wrangler` on `PATH`; both scenarios of the spec; the harness is shared with `release-process-tests` 1.1) run in CI
+- [x] 2.2 The `release-process` spec's Notes drop "The release scripts and workflows have no automated tests" for this requirement; verify `openspec validate --specs --strict`
 
 ## 3. First release
 
-- [ ] 3.1 After the owner merges the first release PR (his explicit word "в main"), check the `cdn` job's log names `install.sh` last; verify `curl -fsSL https://tilr.sh | diff - scripts/install.sh` is empty and `curl -fsSL https://tilr.sh | sh` installs that release on a clean Linux user
+- [x] 3.1 Moved out to TILR-189 (the owner's manual check after the first release; decided 2026-10-20). After the owner merges the first release PR (his explicit word "в main"), check the `cdn` job's log names `install.sh` last; verify `curl -fsSL https://tilr.sh | diff - scripts/install.sh` is empty and `curl -fsSL https://tilr.sh | sh` installs that release on a clean Linux user
 
 ## 4. Checks and archive
 

@@ -205,6 +205,7 @@ Cloud repository.
 | Each requested platform gets its own archive and `latest`; an unknown platform is refused | `each_platform_given_is_built_with_its_own_latest`, `an_unknown_platform_is_refused` |
 | Publishing requires an account ID before building, and uploads archive and checksum before `latest` with the right metadata | `publishing_without_the_account_id_does_nothing`, `publishing_uploads_the_archive_and_its_checksum_before_latest` |
 | Upload-only checks each requested platform and leaves other platforms alone | `upload_only_checks_what_was_built_and_leaves_other_platforms_alone` |
+| The installer (`scripts/install.sh`) is uploaded after every platform's `latest`, and not at all after a failed upload | `the_installer_is_uploaded_after_latest` |
 | The updater finds and installs the archive built by `release.sh` through a local CDN | `the_layout_release_sh_writes_is_what_tilrd_update_reads` |
 | Linux builds use the pinned Debian 12 image; build tools are checksum pinned and used in CI and release builds | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |

@@ -6,6 +6,8 @@
 #   releases/<platform>/latest                                 the version ready for the platform
 #   releases/<version>/tilr-<version>-<platform>.tar.gz        tilrd and tilr
 #   releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
+#   install.sh                                                 scripts/install.sh (uploaded, not
+#                                                              laid out), served by tilr.sh
 #
 # The archive holds the server tilrd and its client tilr at its top level,
 # with LICENSE-APACHE, LICENSE-MIT and README.md; both programs are installed
@@ -122,4 +124,8 @@ for platform in "$@"; do
     # Last: from here on the platform is offered this version.
     put "releases/$platform/latest" "text/plain; charset=utf-8" "no-cache"
 done
+# After every latest, so the installer never offers what the CDN does not have
+# yet; never after a failed upload (set -e).
+wrangler r2 object put tilr-cdn/install.sh --file scripts/install.sh \
+    --content-type "text/x-shellscript; charset=utf-8" --cache-control "public, max-age=300" --remote
 echo "published $version for: $*"

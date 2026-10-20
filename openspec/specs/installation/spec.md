@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Covers the installer (`curl -fsSL https://tilr.sh | sh`, whose copy in this repo is `itests/installer/install.sh`) and the manual install the README describes: which files it fetches and verifies, where it puts `tilrd` and `tilr`, what it does when a release cannot be installed, running it again over an installation, that it sets up no service, and the first run. Updating with `tilrd update` is the `update` spec; `tilr service install` and the daemon's directories are the `tilr-cli` and `daemon-lifecycle` specs.
+Covers the installer (`curl -fsSL https://tilr.sh | sh`, which serves `scripts/install.sh`) and the manual install the README describes: which files it fetches and verifies, where it puts `tilrd` and `tilr`, what it does when a release cannot be installed, running it again over an installation, that it sets up no service, and the first run. Updating with `tilrd update` is the `update` spec; `tilr service install` and the daemon's directories are the `tilr-cli` and `daemon-lifecycle` specs.
 
 ## Requirements
 
@@ -144,5 +144,5 @@ A manual install SHALL need only the CDN layout: read `releases/<platform>/lates
 
 - Requirements without a test: the old-`tilr` restore of "A failed update leaves the installation and its server alone" (no case makes the `tilrd` rename fail).
 - Since 3ba0e93 the installer checks the whole release in a temporary directory before it makes `~/.local/bin`; UC-004 (all its cases) is green. The earlier installer's service setup (`tilr.service`, linger, `TILR_NO_SERVICE`), its move of a `tilr-server` install to `tilrd` and its client-less releases are gone with it, along with the loose per-program files of the CDN (2a8b425).
-- The real installer is served from R2 (`https://cdn.tilr.dev/install.sh`, behind `tilr.sh`) and lives in the `sh` repository; this repo holds only the copy the itests use.
+- The installer is `scripts/install.sh`, the one the itests run; `scripts/release.sh` uploads it to R2 (`https://cdn.tilr.dev/install.sh`, served by `tilr.sh`) after a release's `latest` (`release-process` spec). The `tilr.sh` Worker lives outside this repo.
 - No known red itests case for installation.

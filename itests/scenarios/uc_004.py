@@ -6,7 +6,7 @@ left (no temporary file in the home or in /tmp, no directory made for it), and t
 installer exits non-zero; an installation already there, and its running server, stay
 as they were.
 
-The installer (installer/install.sh) downloads the archive into a directory of mktemp,
+The installer (scripts/install.sh) downloads the archive into a directory of mktemp,
 checks and unpacks it there and runs both programs before it makes ~/.local/bin.
 """
 

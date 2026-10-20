@@ -69,7 +69,8 @@ cargo install --path crates/tilr --locked
 **Linux, from the CDN.** The Linux releases are also on `https://cdn.tilr.dev`, where the
 installer and `tilr update` look for them: one archive per platform,
 `tilr-<version>-<platform>.tar.gz`, holding the server `tilrd` and its client `tilr`, with
-its `.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`) downloads it into a
+its `.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`; `tilr.sh` serves
+`scripts/install.sh`, uploaded with each release) downloads it into a
 temporary directory, checks it, unpacks it there and runs both programs, and only then puts
 both in `~/.local/bin`; anything that fails installs nothing. It sets up no service and
 edits no profile: it prints what to type next (`tilr`, `tilr service install` to start
