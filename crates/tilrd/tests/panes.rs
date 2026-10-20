@@ -571,6 +571,25 @@ async fn ps_lists_the_panes_of_a_running_server() {
 }
 
 #[tokio::test]
+async fn ps_server_version_fails_when_nothing_listens() {
+    // The Tilr app's health check against a server that has stopped: the
+    // port it listened on is closed.
+    let mut server = Server::start(&[]);
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
+
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args(["ps", "--url", &server.addr, "--server-version"])
+        .env("TILR_STATE_DIR", server.dir.join("state"))
+        .output()
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
+}
+
+#[tokio::test]
 async fn a_server_keeps_its_id_when_it_restarts() {
     let mut server = Server::start(&[]);
     let server_id = Client::connect_silent(&server)
