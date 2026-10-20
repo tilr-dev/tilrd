@@ -25,3 +25,7 @@
 ## Impact
 
 `crates/tilrd/src/cloud.rs` (constant, unit test), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `cloud-tunnels-tests` (TILR-147) also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
+
+## Implementation
+
+Implemented in `fd31744` (TILR-79). The default and CLI help name the API host; unit and integration tests verify the default, control URL, and preservation of the saved link. UC-07A passed (3 scenarios, 2 fixtures); coverage exited 0 on 2026-10-20. Strict validation also required shortening the existing reload failpoint requirement without changing its conditions.
