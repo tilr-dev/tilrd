@@ -68,3 +68,7 @@ cleanup it SHALL remove its fixture directory and sockets.
 #### Scenario: Interrupted fixture leaves filesystem artifacts
 - **WHEN** interruption prevents the fixture from running its destructors
 - **THEN** the stand removes its owned scratch directory, notification socket and runtime sockets after terminating its processes
+
+#### Scenario: Ready PID has already disappeared
+- **WHEN** the reported ready PID disappears before process-group validation
+- **THEN** the stand reports "ready PID N is not alive" and cleans its owned process group

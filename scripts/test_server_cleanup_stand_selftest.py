@@ -21,6 +21,14 @@ spec.loader.exec_module(stand)
 
 
 class ReadyEventTest(unittest.TestCase):
+    def test_disappeared_pid_has_explicit_error(self):
+        process = Mock(pid=123)
+        with patch.object(stand.select, "select", return_value=([process.stdout], [], [])), \
+                patch.object(stand.os, "read", return_value=b"TILR_STAND_READY pid=12345\n"), \
+                patch.object(stand.os, "getpgid", side_effect=ProcessLookupError):
+            with self.assertRaisesRegex(RuntimeError, "ready PID 12345 is not alive"):
+                stand.ready_pid(process)
+
     def test_pid_split_across_pipe_reads(self):
         process = Mock(pid=123)
         with patch.object(stand.select, "select", return_value=([process.stdout], [], [])), \
@@ -32,16 +40,15 @@ class ReadyEventTest(unittest.TestCase):
 
 
 class ExitEventTest(unittest.TestCase):
-    def test_shutdown_event_after_old_two_second_window(self):
-        # Model a pending event that the old 2-second wait would miss. No sleep:
-        # the watcher itself controls when the event becomes observable.
+    def test_watcher_receives_full_exit_deadline(self):
+        # The controlled watcher exposes its event only with the full deadline.
         class ControlledWatcher:
             def control(self, changes, count, timeout):
-                return [object()] if timeout >= 30 else []
+                return [object()] if timeout == stand.EXIT_DEADLINE else []
 
         self.assertTrue(stand.wait_for_server_exit(ControlledWatcher()))
         with patch.object(stand.select, "select", side_effect=lambda r, w, x, timeout:
-                          (r if timeout >= 30 else [], [], [])):
+                          (r if timeout == stand.EXIT_DEADLINE else [], [], [])):
             self.assertTrue(stand.wait_for_server_exit(123))
 
     def test_missing_watcher_is_an_error(self):
@@ -120,7 +127,9 @@ class CleanupStandTest(unittest.TestCase):
             )
             self.assertEqual(matches.returncode, 1, matches.stdout + matches.stderr)
 
-    def test_cleans_when_stand_receives_sigterm(self):
+    # Model an orphan zombie: kill(pid, 0) can still succeed after exit.
+    @patch.object(stand, "server_running", return_value=True)
+    def test_cleans_when_stand_receives_sigterm(self, _pid_probe):
         with tempfile.TemporaryDirectory(prefix="tilr-stand-signal-") as scratch:
             root = Path(scratch)
             pids = root / "pids"
@@ -155,16 +164,20 @@ class CleanupStandTest(unittest.TestCase):
                 pass_fds=(event_write,),
             )
             os.close(event_write)
+            watcher = None
             try:
                 self.assertTrue(select.select([event_read], [], [], 30)[0],
                                 "stand did not reach its server exit check")
                 self.assertEqual(os.read(event_read, 1), b"R")
-                process.send_signal(signal.SIGTERM)
-                stdout, stderr = process.communicate(timeout=40)
                 _, pid, directory = pids.read_text().split()
                 server_pid = int(pid)
-                survived = stand.server_running(server_pid)
+                watcher = stand.exit_watcher(server_pid)
+                process.send_signal(signal.SIGTERM)
+                stdout, stderr = process.communicate(timeout=40)
+                self.assertTrue(stand.wait_for_server_exit(watcher),
+                                f"server {server_pid} survived stand SIGTERM")
             finally:
+                stand.close_watcher(watcher)
                 os.close(event_read)
                 if process.poll() is None:
                     process.kill()
@@ -177,7 +190,6 @@ class CleanupStandTest(unittest.TestCase):
                     except ProcessLookupError:
                         pass
             self.assertEqual(process.returncode, 143, stdout + stderr)
-            self.assertFalse(survived, f"server {server_pid} survived stand SIGTERM")
             self.assertFalse(Path(directory).exists(), f"fixture artifacts remain: {directory}")
 
     def test_detects_survivors_and_cleans_them(self):

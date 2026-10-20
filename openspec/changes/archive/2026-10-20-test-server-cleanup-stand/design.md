@@ -64,3 +64,11 @@ host socket inside that directory on macOS. After process cleanup, a Python
 context manager removes the directory even when readiness fails or SIGTERM
 interrupts the stand. This replaces fixture-only scratch ownership, whose
 Rust destructor cannot run after the test process is killed.
+
+## Supervisor return: orphan exit observation
+The SIGTERM selftest used kill(pid, 0) after the stand exited. An orphan zombie
+can still satisfy that check until init reaps it. Register a parent-owned exit
+watcher before SIGTERM and assert its event after communicate; reaping latency
+must not determine the verdict. Model delayed reaping by forcing the old PID
+probe to return True. READY uses a named readiness deadline; a vanished PID
+gets an explicit error. The fixture blocks on stdin without a release protocol.

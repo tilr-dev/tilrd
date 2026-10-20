@@ -19,3 +19,7 @@
 - [x] Check the watcher contract deterministically and scope pgrep selftest to macOS.
 - [x] Verify macOS/Linux selftests and required checks.
 - [x] Own the fixture directory in the external stand and verify artifact cleanup after interruption and readiness/check failures.
+
+## Supervisor corrections
+- [x] Observe SIGTERM cleanup with a parent-owned exit watcher, including a controlled zombie model; verify CleanupStandTest.test_cleans_when_stand_receives_sigterm.
+- [x] Name readiness deadlines and watcher contract tests, diagnose vanished READY PIDs, and remove the unused fixture release protocol; verify ReadyEventTest and ExitEventTest.

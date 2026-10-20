@@ -20,6 +20,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 EXIT_DEADLINE = 30
+READY_DEADLINE = 30
 READY = re.compile(rb"TILR_STAND_READY pid=(\d+)\n")
 
 
@@ -47,15 +48,15 @@ def build_fixture():
 
 def ready_pid(process):
     """Read the fixture's confirmed-ready event; deadline only bounds a failure."""
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + READY_DEADLINE
     output = bytearray()
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise RuntimeError("fixture did not report READY within 30 seconds")
+            raise RuntimeError(f"fixture did not report READY within {READY_DEADLINE} seconds")
         readable, _, _ = select.select([process.stdout], [], [], remaining)
         if not readable:
-            raise RuntimeError("fixture did not report READY within 30 seconds")
+            raise RuntimeError(f"fixture did not report READY within {READY_DEADLINE} seconds")
         chunk = os.read(process.stdout.fileno(), 4096)
         if not chunk:
             raise RuntimeError(f"fixture exited before READY: {output.decode(errors='replace')}")
@@ -63,7 +64,11 @@ def ready_pid(process):
         match = READY.search(output)
         if match:
             pid = int(match.group(1))
-            if pid <= 0 or os.getpgid(pid) != process.pid:
+            try:
+                group = os.getpgid(pid) if pid > 0 else None
+            except ProcessLookupError as error:
+                raise RuntimeError(f"ready PID {pid} is not alive") from error
+            if group != process.pid:
                 raise RuntimeError(f"ready PID {pid} is not in the stand's process group")
             return pid
 

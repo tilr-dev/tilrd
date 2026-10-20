@@ -25,8 +25,7 @@ fn server_ready_then_wait_for_interruption() {
 
     println!("TILR_STAND_READY pid={}", server.child.id());
     std::io::stdout().flush().unwrap();
-    let mut release = [0];
-    std::io::stdin().read_exact(&mut release).unwrap();
-    assert_eq!(release, [b'R']);
+    let mut input = [0];
+    std::io::stdin().read_exact(&mut input).unwrap();
     drop(server);
 }
