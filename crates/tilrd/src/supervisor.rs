@@ -249,6 +249,10 @@ struct Lag {
     /// `last_input_seq`, 0 if none: the full frame that ends the lag carries
     /// it, so every input still gets its echo.
     own_seq: u64,
+    /// Set by `Subscribe`: the client waits for its first full frame, and
+    /// the frames skipped meanwhile are not lag (`frames_skipped`) unless its
+    /// queue lags too.
+    subscribed: bool,
 }
 
 /// How a connection is to end, as its writer is told.
@@ -2245,14 +2249,19 @@ impl Supervisor {
                 };
                 pane.subscribers.insert(client_id);
                 pane.used_at_ms = now_ms();
-                // The pane answers with a full frame.
+                // The pane answers with a full frame, which serves the
+                // clients that lag too.
                 let _ = pane.to_pane.send((packet, None));
+                pane.full_asked = true;
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.subscriptions.insert(pane_id);
                     // A delta may already be in flight before the pane handles
                     // Subscribe. Use full-frame recovery to skip it and retain
                     // this client's own input echoes until the full frame.
-                    client.lagging.entry(pane_id).or_default();
+                    client.lagging.entry(pane_id).or_insert(Lag {
+                        own_seq: 0,
+                        subscribed: true,
+                    });
                 }
                 if let Some(agent) = &mut self.agent {
                     agent.subscribed(pane_id, client_id);
@@ -2714,7 +2723,13 @@ impl Supervisor {
                 match client.lagging.get_mut(&pane_id) {
                     Some(lag) if !head.full => {
                         lag.own_seq = lag.own_seq.max(own.unwrap_or(0));
-                        pane.counters.frames_skipped += 1;
+                        if lag.subscribed && client.tx.lagging() {
+                            lag.subscribed = false;
+                            client.tx.want_drained();
+                        }
+                        if !lag.subscribed {
+                            pane.counters.frames_skipped += 1;
+                        }
                         ask_full |= client.tx.drained();
                         continue;
                     }
@@ -2731,6 +2746,7 @@ impl Supervisor {
                             pane_id,
                             Lag {
                                 own_seq: own.unwrap_or(0),
+                                subscribed: false,
                             },
                         );
                         client.tx.want_drained();
@@ -3432,14 +3448,15 @@ mod tests {
                 }),
             );
         };
+        // Reads the outbox as the connection's writer does, so it drains.
         fn frames(outbox: &mut outbox::Outbox) -> Vec<Frame> {
             let mut frames = Vec::new();
             while let Some(outgoing) = outbox.try_recv() {
-                if let Some(server_message::Msg::Frame(frame)) =
-                    tilr_proto::decode::<ServerMessage>(&outgoing.packet)
-                        .unwrap()
-                        .msg
-                {
+                let msg = tilr_proto::decode::<ServerMessage>(&outgoing.packet)
+                    .unwrap()
+                    .msg;
+                outbox.written(outgoing);
+                if let Some(server_message::Msg::Frame(frame)) = msg {
                     frames.push(frame);
                 }
             }
@@ -3453,12 +3470,17 @@ mod tests {
         // still receive the old delta; the new viewer must wait for full.
         supervisor.on_client_packet(2, subscribe.clone(), Instant::now());
         assert_eq!(commands.try_recv().unwrap().0, subscribe);
+        frames(&mut viewers[1]);
         let own_seq = seq_base(2) + 7;
         frame(&mut supervisor, false, own_seq);
         assert!(
             frames(&mut viewers[1]).is_empty(),
             "delta arrived before full"
         );
+        // Waiting for the first full frame is not lag, and the full frame
+        // Subscribe asked for is not asked again.
+        assert_eq!(supervisor.panes[&pane_id].counters.frames_skipped, 0);
+        assert!(commands.try_recv().is_err(), "full frame asked twice");
         assert_eq!(frames(&mut viewers[0])[0].last_input_seq, own_seq);
         // A repeated Subscribe preserves the own input echo already saved.
         supervisor.on_client_packet(2, subscribe.clone(), Instant::now());
