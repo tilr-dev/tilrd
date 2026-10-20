@@ -34,7 +34,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 
 use crate::{clipboard, identity};
 
-pub const DEFAULT_URL: &str = "https://cloud.tilr.dev";
+pub const DEFAULT_URL: &str = "https://wss.tilr.dev";
 /// Version of the control protocol, see SPEC.md of tilr Cloud.
 const PROTOCOL: u32 = 1;
 const LINK_FILE: &str = "cloud.json";
@@ -126,6 +126,11 @@ fn host_name() -> String {
     } else {
         String::new()
     }
+}
+
+/// `--url` / `TILR_CLOUD`: empty, as `TILR_CLOUD=` leaves it, is the default.
+pub fn parse_url(url: &str) -> Result<String, String> {
+    Ok(if url.is_empty() { DEFAULT_URL } else { url }.to_owned())
 }
 
 /// Link this machine to a user of Cloud: show a code, wait until the user
@@ -923,15 +928,33 @@ mod tests {
     }
 
     #[test]
+    fn the_default_cloud_is_the_api_host() {
+        assert_eq!(DEFAULT_URL, "https://wss.tilr.dev");
+        assert_eq!(
+            control_url(DEFAULT_URL).unwrap(),
+            "wss://wss.tilr.dev/v1/machine/connect"
+        );
+    }
+
+    #[test]
+    fn an_empty_cloud_address_is_the_default() {
+        assert_eq!(parse_url("").unwrap(), DEFAULT_URL);
+        assert_eq!(
+            parse_url("http://127.0.0.1:8787").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+    }
+
+    #[test]
     fn the_control_address_follows_the_cloud_address() {
         assert_eq!(
-            control_url("https://cloud.tilr.dev").unwrap(),
-            "wss://cloud.tilr.dev/v1/machine/connect"
+            control_url("https://wss.tilr.dev").unwrap(),
+            "wss://wss.tilr.dev/v1/machine/connect"
         );
         assert_eq!(
             control_url("http://127.0.0.1:8787/").unwrap(),
             "ws://127.0.0.1:8787/v1/machine/connect"
         );
-        assert!(control_url("cloud.tilr.dev").is_err());
+        assert!(control_url("wss.tilr.dev").is_err());
     }
 }

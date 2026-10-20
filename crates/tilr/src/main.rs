@@ -136,8 +136,13 @@ enum CloudCommand {
     /// Link this machine to your account: shows a code to confirm in a
     /// browser.
     Login {
-        /// Where tilr Cloud is.
-        #[arg(long, env = "TILR_CLOUD")]
+        // Not given, tilrd applies its default (and its own TILR_CLOUD);
+        // named here for help, a test keeps it tilrd's `cloud::DEFAULT_URL`.
+        #[arg(
+            long,
+            env = "TILR_CLOUD",
+            help = "Where tilr Cloud is [default: https://wss.tilr.dev]"
+        )]
         url: Option<String>,
         /// What to call this machine there. The host name, if not given.
         #[arg(long)]

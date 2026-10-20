@@ -438,7 +438,7 @@ What Cloud can and cannot do:
 
 The link (`cloud.json`, next to the token) holds a token of the machine's own for Cloud; it
 is not the access token. `--url` or `TILR_CLOUD` names another Cloud than
-`https://cloud.tilr.dev`.
+`https://wss.tilr.dev`.
 
 ## SOCKS proxy
 

@@ -204,7 +204,12 @@ enum CloudCommand {
     /// browser.
     Login {
         /// Where tilr Cloud is.
-        #[arg(long, env = "TILR_CLOUD", default_value = cloud::DEFAULT_URL)]
+        #[arg(
+            long,
+            env = "TILR_CLOUD",
+            default_value = cloud::DEFAULT_URL,
+            value_parser = cloud::parse_url
+        )]
         url: String,
         /// What to call this machine there. The host name, if not given.
         #[arg(long)]
@@ -348,5 +353,22 @@ fn check_resume(state: &Path) -> anyhow::Result<()> {
         None => supervisor::check(&server_options(cli)?, state),
         Some(Command::Pane(args)) => pane::check(&args, state),
         Some(_) => anyhow::bail!("not the command line of a server or a pane process"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_cloud_url_on_the_command_line_is_the_default() {
+        let cli = Cli::try_parse_from(["tilrd", "cloud", "login", "--url", ""]).unwrap();
+        let Some(Command::Cloud {
+            command: CloudCommand::Login { url, .. },
+        }) = cli.command
+        else {
+            panic!("not cloud login");
+        };
+        assert_eq!(url, cloud::DEFAULT_URL);
     }
 }

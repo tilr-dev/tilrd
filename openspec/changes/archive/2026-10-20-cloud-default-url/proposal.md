@@ -9,7 +9,7 @@
 
 ## What Changes
 
-- `DEFAULT_URL` becomes `https://wss.tilr.dev`; `tilrd cloud login --help`, `tilr cloud login --help` (inherits it), README "tilr Cloud" and the spec name it.
+- `DEFAULT_URL` becomes `https://wss.tilr.dev`; `tilrd cloud login --help`, `tilr cloud login --help` (names the same default; tilrd applies it), README "tilr Cloud" and the spec name it.
 - A machine already linked keeps the URL stored in its link (`cloud.json`, field `url`, `crates/tilrd/src/cloud.rs:64,172`); nothing rewrites it.
 
 ## Capabilities
@@ -24,4 +24,8 @@
 
 ## Impact
 
-`crates/tilrd/src/cloud.rs` (constant, unit test), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `cloud-tunnels-tests` (TILR-147) also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
+`crates/tilrd/src/cloud.rs` (constant, unit test; an empty `--url` / `TILR_CLOUD` is the default), `crates/tilr/src/main.rs` (help default), README.md:379-380, the `cloud-tunnels` spec. Not breaking: the control protocol and `cloud.json` are unchanged. A reload or update keeps every linked machine's stored URL; nothing new crosses a reload. No PROTOCOL_VERSION or feature change. `cloud-tunnels-tests` (TILR-147) also modifies "Login links the machine through a device code" (its Verified by line): whichever lands second re-copies the requirement from `openspec/specs/` before archiving.
+
+## Implementation
+
+Implemented in the TILR-79 branch (`fix(cloud): использовать wss.tilr.dev по умолчанию`), rebased onto dev after TILR-147; the requirements are re-copied from dev's spec with TILR-147's "Verified by" lines kept. The default and CLI help name the API host; unit and integration tests verify the default, control URL, and preservation of the saved link. UC-07A passed (3 scenarios, 2 fixtures); coverage exited 0 on 2026-10-20.
