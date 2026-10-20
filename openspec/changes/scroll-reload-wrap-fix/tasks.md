@@ -9,4 +9,4 @@
 
 - [x] 2.1 Run the narrow regression test.
 - [x] 2.2 Fresh-context self-review and full bin/check (deny blocked by TILR-244; all other checks green, see design.md).
-- [ ] 2.3 Finish and submit to Review.
+- [x] 2.3 Prepare the completed change for archive and Review submission via bin/finish.
