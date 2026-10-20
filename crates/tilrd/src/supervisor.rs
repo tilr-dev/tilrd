@@ -3388,6 +3388,8 @@ mod tests {
             exec: false,
             metrics: Arc::default(),
             next_client_id: Arc::new(AtomicU64::new(3)),
+            copies: HashMap::new(),
+            last_copy: 0,
         };
         let pane_id = PaneId::new_v4();
         let (to_pane, mut commands) = mpsc::unbounded_channel();
