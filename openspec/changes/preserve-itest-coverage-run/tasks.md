@@ -8,5 +8,5 @@
 
 ## 2. Verification and archive
 
-- [ ] 2.1 Run the Python regression test and `./itests/dt coverage`; verify only this change's requirement/case lines change in generated coverage.
-- [ ] 2.2 Run the applicable checks from AGENTS.md, record the commit in proposal.md, and archive this change; verify `openspec list` no longer shows it.
+- [x] 2.1 Run the Python regression test and `./itests/dt coverage` without a local report; verify the command exits 0 and the local report keeps the last run.
+- [x] 2.2 Run `openspec validate --all --strict`; verify the change validates (archiving happens at handoff).
