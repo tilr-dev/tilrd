@@ -6,7 +6,7 @@ For every connection accepted on the Unix socket the server SHALL read the peer'
 **Verified by**: `local::another_user_is_turned_away_even_where_the_permissions_let_it_in` and itests UC-034 (`uc_034.py::another_user_cannot_use_the_socket`); the system-server scenarios are not tested yet (planned itests UC-03C).
 
 #### Scenario: Permissions keep another user out
-- **WHEN** another uid runs `tilrd ps` against the socket with the default modes
+- **WHEN** another uid runs `tilrd ps` against the socket of a per-user server with the default modes
 - **THEN** it fails
 
 #### Scenario: Permissions opened by hand
@@ -31,7 +31,7 @@ The host-events socket (`$TILR_SOCK` in each pane, see `clipboard-host-events`) 
 - **THEN** the connection is refused and no client receives a `HostEvent`
 
 #### Scenario: Agent socket modes
-- **WHEN** a pane is created with agent forwarding on
+- **WHEN** a pane is created with agent forwarding on, on a per-user server
 - **THEN** its `SSH_AUTH_SOCK` is mode 0600 in a directory of mode 0700
 
 #### Scenario: Bob writes to alice's host socket on a system server

@@ -13,6 +13,15 @@ On a server started with `--system`, the pane process SHALL take the connection'
 - **WHEN** root on the system socket runs `tilr new -d`
 - **THEN** the pane is made and runs as root
 
+### Requirement: The supervisor trusts no pane process about who it is
+On a server started with `--system`, the supervisor SHALL take a pane's uid, its id and the connections its host events, clipboard writes and agent streams go to only from what it recorded when it made the pane, and MUST treat every message from a pane process as untrusted input of that pane's user.
+
+**Verified by**: not tested yet (a test is named in tasks.md).
+
+#### Scenario: A pane process claims another pane
+- **WHEN** alice's pane process sends the supervisor a message naming bob's pane id
+- **THEN** nothing reaches bob's pane or bob's connections, and the supervisor logs the message as refused
+
 ### Requirement: A pane on a system server gets its user's environment
 On a server started with `--system`, the shell SHALL get an environment built from the user's password entry (`HOME`, `USER`, `LOGNAME`, `SHELL`, a default `PATH`) and the pane variables, not the server's, and SHALL start in the user's home unless `CreatePane.cwd` names a directory that user can enter.
 

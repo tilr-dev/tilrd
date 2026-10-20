@@ -1,16 +1,16 @@
 # Tasks
 
-Research change (TILR-138): this change is designed, not implemented. Groups 1+ are cut into implementation tasks once the owner has answered Q1-Q9 (and Q4b, Q5a, Q7b) in design.md; the spec deltas are rewritten to the answers first.
+Research change (TILR-138): this change is designed, not implemented. Groups 1+ are cut into implementation tasks once the owner has answered Q1-Q9 (and Q4b, Q5a, Q7b, Q7c) in design.md; the spec deltas are rewritten to the answers first.
 
 ## 0. Decision
 
-- [x] 0.1 Write proposal, design (options Q1-Q9 (and Q4b, Q5a, Q7b) with recommendations), spec deltas for the recommended options and this plan; verify `openspec validate multi-user-sessions --strict`
-- [ ] 0.2 Owner answers Q1-Q9 (and Q4b, Q5a, Q7b); spec deltas (including the requirements in design "Requirements to modify after the answers"), design and the groups below updated to the answers; the `Блокер:` line removed; verify `openspec validate multi-user-sessions --strict`
+- [x] 0.1 Write proposal, design (options Q1-Q9 (and Q4b, Q5a, Q7b, Q7c) with recommendations), spec deltas for the recommended options and this plan; verify `openspec validate multi-user-sessions --strict`
+- [ ] 0.2 Owner answers Q1-Q9 (and Q4b, Q5a, Q7b, Q7c); spec deltas (including the requirements in design "Requirements to modify after the answers"), design and the groups below updated to the answers; the `Блокер:` line removed; verify `openspec validate multi-user-sessions --strict`
 
 ## 1. System mode and its paths
 
 - [ ] 1.1 `tilrd --system`: root and capability check before anything is bound, `--no-auth` refused, `/run/tilr`, `/var/lib/tilr`, `/etc/tilr/server.toml` defaults (daemon-lifecycle "System mode needs root", "Paths and modes of a system server"); verify `local::system_mode_needs_root` (non-root run) and itests UC-03C (`uc_03c.py::tilrd_system_refuses_to_start_without_root`); README "Running as a system service"; UC-03C added to itests/USE_CASES.md
-- [ ] 1.2 Per-user directories `/run/tilr/users/<uid>/` owned by root (0711), sockets bound by root and handed to the user (0600), only `panes/` owned by the user and never opened by root (daemon-lifecycle "Per-user directories of a system server", "Root makes nothing inside a user's directory"); verify itests UC-03C (`uc_03c.py::a_user_cannot_plant_a_link_in_her_directory`, `uc_03c.py::a_link_in_panes_is_not_written_through_as_root`); UC-03C entry in itests/USE_CASES.md; README "Running as a system service" (the directories)
+- [ ] 1.2 Per-user directories `/run/tilr/users/<uid>/` owned by root (0711), sockets bound by root and handed to the user (0600), only `panes/` owned by the user and never opened by root (daemon-lifecycle "Per-user directories of a system server", "Root makes nothing inside a user's directory"); verify itests UC-03C (`uc_03c.py::a_user_cannot_plant_a_link_in_her_directory`, `uc_03c.py::a_link_in_panes_is_not_written_through_as_root`, `uc_03c.py::a_crashed_pane_leaves_no_state_behind`); UC-03C entry in itests/USE_CASES.md; README "Running as a system service" (the directories)
 
 ## 2. Who the connection is
 
@@ -19,7 +19,7 @@ Research change (TILR-138): this change is designed, not implemented. Groups 1+ 
 
 ## 3. Panes as their user
 
-- [ ] 3.1 Pane process drops to the user (initgroups, setgid, setuid, cannot regain root) before the pty; environment from the password entry; start directory (panes "A system server runs a pane as its connection's user"); verify itests UC-03D (`uc_03d.py::two_users_get_panes_as_themselves`, `uc_03d.py::roots_environment_does_not_leak_into_a_pane`); UC-03D added to itests/USE_CASES.md; README "Running as a system service" (who a pane runs as)
+- [ ] 3.1 Pane process drops to the user (initgroups, setgid, setuid, cannot regain root) before the pty; environment from the password entry; start directory (panes "A system server runs a pane as its connection's user", "The supervisor trusts no pane process about who it is"); supervisor takes nothing about identity or routing from a pane; verify itests UC-03D (`uc_03d.py::two_users_get_panes_as_themselves`, `uc_03d.py::roots_environment_does_not_leak_into_a_pane`, `uc_03d.py::a_pane_process_cannot_claim_another_pane`); UC-03D added to itests/USE_CASES.md; README "Running as a system service" (who a pane runs as)
 - [ ] 3.2 Pane visibility per user, `PaneInfo.user`, `CreatePane.run_as` for root only (panes "A connection sees and drives only its user's panes", "Only root may ask for a pane as another user"); verify itests UC-03D (`uc_03d.py::bob_does_not_see_or_drive_alices_panes`, `uc_03d.py::only_root_runs_a_pane_as_another_user`) and `panes::run_as_on_a_per_user_server_is_refused`; README "Protocol" (`PaneInfo.user`, `CreatePane.run_as`); USE_CASES.md entry
 - [ ] 3.3 Exec runs as the connection's user; file requests through a per-user helper process; `files` and `exec` spec deltas; verify itests UC-03D (`uc_03d.py::files_and_exec_run_as_the_user`); README "Files" / "Exec" notes; USE_CASES.md entries
 

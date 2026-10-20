@@ -40,7 +40,7 @@ A server started with `--system` SHALL make, for each user with a pane, `/run/ti
 - **THEN** `/run/tilr/users/<alice's uid>/` is 0711 owned by root, her pane's `TILR_SOCK` and `SSH_AUTH_SOCK` are in it, 0600 owned by alice, and `panes/` is 0700 owned by alice
 
 ### Requirement: Root makes nothing inside a user's directory
-A server started with `--system` (uid 0) MUST NOT make, open or remove any entry inside a directory owned by a user. `panes/` SHALL be written only by that user's pane processes after their drop, and root SHALL remove it only when it is empty.
+A server started with `--system` (uid 0) MUST NOT make, open or remove any entry inside a directory owned by a user. `panes/` SHALL be written only by that user's pane processes after their drop, and root SHALL remove it only when it is empty; a new pane process of that user, after its drop, SHALL remove the state files of panes that no longer run.
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 
@@ -52,6 +52,10 @@ A server started with `--system` (uid 0) MUST NOT make, open or remove any entry
 - **WHEN** alice makes `panes/<id>.state` a symbolic link to `/etc/passwd` before her pane is reloaded
 - **THEN** the reload writes nothing through it as root (her pane process, as alice, cannot write `/etc/passwd`), and `/etc/passwd` is unchanged
 
+#### Scenario: A crashed pane leaves no state behind
+- **WHEN** one of alice's pane processes is killed after it wrote `panes/<id>.state` and alice then creates a pane
+- **THEN** that state file is gone and was removed by a process running as alice
+
 ### Requirement: A system server always asks for a token
 `tilrd --system --no-auth` MUST exit 1 before binding anything with `--no-auth cannot be used with --system`.
 
@@ -62,7 +66,7 @@ A server started with `--system` (uid 0) MUST NOT make, open or remove any entry
 - **THEN** it exits 1 with `--no-auth cannot be used with --system` and nothing listens
 
 ### Requirement: tilr finds a system server and does not start one
-When no server answers on the user's own socket and nothing names a socket, `tilr` SHALL use `/run/tilr/tilrd.sock` if a tilrd answers there, accepting that its server runs as uid 0. `tilr` MUST NOT start a system server; with neither socket answering it starts a per-user server as today.
+When no server answers on the user's own socket and nothing names a socket, `tilr` SHALL use `/run/tilr/tilrd.sock` if a tilrd answers there, accepting that its server runs as uid 0. `tilr` MUST NOT start a system server; with neither socket answering it starts a per-user server as today. A system socket that refuses the connection with permission denied counts as a server that is there (see "tilr outside the group tilr is told so").
 
 **Verified by**: not tested yet (a test is named in tasks.md).
 
