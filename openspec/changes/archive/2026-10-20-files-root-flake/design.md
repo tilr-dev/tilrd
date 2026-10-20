@@ -3,7 +3,7 @@
 ## D1. The files fixture raced startup root lookup (TILR-151)
 
 `files::nothing_outside_the_shared_directories_is_served` originally started the server
-before creating `~/shared` (fixed in `01a3306`). The harness returns at `listening on`,
+before creating `~/shared` (fixed in `417a7b9`, PR #5). The harness returns at `listening on`,
 but `Files::new` resolves roots later, once. If it runs before the test creates the
 directory, it leaves that root out; creating the directory afterward cannot change the
 server's root list. This is a test setup race, not a product bug: the files requirement
