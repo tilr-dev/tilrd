@@ -117,6 +117,25 @@ class CoverageRunTest(unittest.TestCase):
         self.assertEqual(old_json.read_text(), "old json")
         self.assertEqual(old_md.read_text(), "old markdown")
 
+    def test_unreadable_previous_coverage_fails_without_writing(self):
+        self.out.mkdir()
+        old_json = self.out / "coverage.json"
+        old_md = self.out / "coverage.md"
+        old_md.write_text("old markdown")
+        for name, content in {"truncated": '{"cases": [', "missing keys": "{}", "wrong type": "[1]",
+                              "bad case": '{"cases": [1], "generated_from": {}}'}.items():
+            with self.subTest(name):
+                old_json.write_text(content)
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as error:
+                        self.generate()
+
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(f"cannot read previous coverage.json at {old_json}", stderr.getvalue())
+                self.assertEqual(old_json.read_text(), content)
+                self.assertEqual(old_md.read_text(), "old markdown")
+
 
 if __name__ == "__main__":
     unittest.main()

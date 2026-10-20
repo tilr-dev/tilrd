@@ -59,13 +59,22 @@ def load_registry() -> dict:
         sys.exit(1)
 
 
+class PreviousCoverageError(Exception):
+    """The fallback coverage.json exists but cannot be read."""
+
+
 def last_run(path: Path, coverage_path: Path) -> tuple[dict, dict]:
     if not path.exists():
         if not coverage_path.exists():
             return {}, {}
-        previous = json.loads(coverage_path.read_text())
-        status = {case["id"]: case["last_run"] for case in previous["cases"] if case.get("last_run")}
-        return status, previous["generated_from"].get("last_run") or {}
+        try:
+            previous = json.loads(coverage_path.read_text())
+            status = {case["id"]: case["last_run"] for case in previous["cases"] if case.get("last_run")}
+            return status, previous["generated_from"].get("last_run") or {}
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+            reason = f"missing key {e}" if isinstance(e, KeyError) else str(e)
+            raise PreviousCoverageError(f"cannot read previous coverage.json at {coverage_path}: {reason}; "
+                                        "delete it or pass --report PATH") from e
     report = json.loads(path.read_text())
     status: dict[str, str] = {}
     for t in report["tests"]:
@@ -178,8 +187,11 @@ def main() -> int:
         ap.error(f"report not found: {args.report}")
     specs = specmod.load(REPO / "openspec" / "specs")
     registry = load_registry()
-    status, meta = last_run(args.report or ITESTS / "results" / "latest" / "report.json",
-                            args.out / "coverage.json")
+    try:
+        status, meta = last_run(args.report or ITESTS / "results" / "latest" / "report.json",
+                                args.out / "coverage.json")
+    except PreviousCoverageError as e:
+        ap.error(str(e))
     data = build(registry, specs, status, meta)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "coverage.json").write_text(json.dumps(data, indent=1) + "\n")
