@@ -5,8 +5,9 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 
 const MACHINE_TOKEN: &str = "tilr_m_test";
@@ -16,6 +17,20 @@ struct Control {
     ws: WebSocketStream<TcpStream>,
     /// The `Authorization` header the server connected with.
     authorization: String,
+}
+
+struct CloudRequest {
+    method: String,
+    path: String,
+    authorization: String,
+    body: Value,
+    answer: oneshot::Sender<(u16, Value)>,
+}
+
+impl CloudRequest {
+    fn respond(self, status: u16, body: Value) {
+        self.answer.send((status, body)).unwrap();
+    }
 }
 
 impl Control {
@@ -65,11 +80,30 @@ impl Control {
 
 /// A Cloud that accepts control connections and hands them to the test.
 async fn cloud() -> (String, mpsc::UnboundedReceiver<Control>) {
+    let (url, connections, _requests) = cloud_with_http().await;
+    (url, connections)
+}
+
+async fn cloud_with_http() -> (
+    String,
+    mpsc::UnboundedReceiver<Control>,
+    mpsc::UnboundedReceiver<CloudRequest>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (connected, connections) = mpsc::unbounded_channel();
+    let (requested, requests) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
+            let mut first = [0];
+            if stream.peek(&mut first).await.is_err() {
+                continue;
+            }
+            if first[0] != b'G' {
+                let requested = requested.clone();
+                tokio::spawn(async move { answer_http(stream, requested).await });
+                continue;
+            }
             let mut authorization = String::new();
             let mut path = String::new();
             #[expect(
@@ -95,7 +129,121 @@ async fn cloud() -> (String, mpsc::UnboundedReceiver<Control>) {
             }
         }
     });
-    (url, connections)
+    (url, connections, requests)
+}
+
+async fn read_headers(stream: &mut TcpStream) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+        let mut chunk = [0; 1024];
+        let size = stream.read(&mut chunk).await.unwrap();
+        assert!(size > 0, "Cloud HTTP request ended before headers");
+        bytes.extend_from_slice(&chunk[..size]);
+    }
+    bytes
+}
+
+async fn answer_http(mut stream: TcpStream, requested: mpsc::UnboundedSender<CloudRequest>) {
+    let mut bytes = read_headers(&mut stream).await;
+    let header_end = bytes
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+    let mut lines = headers.lines();
+    let request_line = lines.next().unwrap();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap().to_owned();
+    let path = parts.next().unwrap().to_owned();
+    let mut content_length = 0;
+    let mut authorization = String::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse().unwrap();
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = value.trim().to_owned();
+            }
+        }
+    }
+    while bytes.len() - header_end < content_length {
+        let mut chunk = [0; 1024];
+        let size = stream.read(&mut chunk).await.unwrap();
+        assert!(size > 0, "Cloud HTTP request ended before body");
+        bytes.extend_from_slice(&chunk[..size]);
+    }
+    let body = if content_length == 0 {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap()
+    };
+    let (answer, response) = oneshot::channel();
+    requested
+        .send(CloudRequest {
+            method,
+            path,
+            authorization,
+            body,
+            answer,
+        })
+        .unwrap();
+    let (status, body) = response.await.unwrap();
+    let body = body.to_string();
+    let reason = match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+fn cloud_command(dir: &Path, args: &[&str]) -> Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tilrd"));
+    command.args(["cloud"]).args(args);
+    Server::environment(&mut command, dir, "");
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.spawn().unwrap()
+}
+
+async fn command_output(child: Child) -> std::process::Output {
+    tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap()
+}
+
+async fn next_request(requests: &mut mpsc::UnboundedReceiver<CloudRequest>) -> CloudRequest {
+    tokio::time::timeout(TIMEOUT, requests.recv())
+        .await
+        .expect("timed out waiting for a Cloud HTTP request")
+        .expect("Cloud HTTP listener stopped")
+}
+
+fn enroll_answer() -> Value {
+    json!({
+        "device_code": "device-test", "user_code": "ABCD-EFGH",
+        "verify_url": "https://cloud.tilr.test/verify", "interval": 1,
+    })
+}
+
+fn approved_answer() -> Value {
+    json!({ "status": "approved", "machine_id": "m1", "machine_token": MACHINE_TOKEN })
+}
+
+fn link(dir: &Path, url: &str, machine_id: &str, token: &str) -> PathBuf {
+    let path = dir.join("state/cloud.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({ "url": url, "machine_id": machine_id, "token": token }).to_string(),
+    )
+    .unwrap();
+    path
 }
 
 /// A server linked to the Cloud at `url`, with the stand-in `cloudflared`.
@@ -115,12 +263,7 @@ fn linked_server(url: &str, args: &[&str]) -> Server {
 fn linked_server_in(dir: PathBuf, url: &str, args: &[&str], name: &str, then: &str) -> Server {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::create_dir_all(dir.join("state")).unwrap();
-    std::fs::write(
-        dir.join("state/cloud.json"),
-        json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
-    )
-    .unwrap();
+    link(&dir, url, "m1", MACHINE_TOKEN);
     let cloudflared = dir.join(name);
     std::fs::write(
         &cloudflared,
@@ -130,6 +273,7 @@ fn linked_server_in(dir: PathBuf, url: &str, args: &[&str], name: &str, then: &s
              echo \"$@\" > cloudflared.args\n\
              cat \"$3\" > cloudflared.config\n\
              echo $$ > cloudflared.pid\n\
+             echo $$ >> cloudflared.launches\n\
              echo 'INF Registered tunnel connection connIndex=0' >&2\n\
              {then}",
             dir = dir.display()
@@ -173,6 +317,301 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn login_prints_the_code_and_polls_until_confirmed() {
+    let (url, _, mut requests) = cloud_with_http().await;
+    let dir = Server::scratch_dir();
+    let child = cloud_command(&dir, &["login", "--url", &url, "--name", "test-machine"]);
+    let enroll = next_request(&mut requests).await;
+    assert_eq!(
+        (enroll.method.as_str(), enroll.path.as_str()),
+        ("POST", "/v1/enroll")
+    );
+    assert_eq!(enroll.body["name"], "test-machine");
+    assert!(
+        enroll.body["server_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert_eq!(enroll.body["platform"], env!("TILR_PLATFORM"));
+    assert!(enroll.body["version"].as_str().is_some());
+    enroll.respond(200, enroll_answer());
+
+    let pending = next_request(&mut requests).await;
+    assert_eq!(
+        (pending.method.as_str(), pending.path.as_str()),
+        ("POST", "/v1/enroll/poll")
+    );
+    assert_eq!(pending.body, json!({ "device_code": "device-test" }));
+    pending.respond(200, json!({ "status": "pending" }));
+    let confirmed = next_request(&mut requests).await;
+    assert_eq!(confirmed.body, json!({ "device_code": "device-test" }));
+    confirmed.respond(200, approved_answer());
+
+    let output = command_output(child).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("To link this machine, open"), "{stdout}");
+    assert!(
+        stdout.contains("https://cloud.tilr.test/verify"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("and confirm the code ABCD-EFGH"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Linked. A running tilrd connects on its own."),
+        "{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn login_keeps_the_link_once_confirmed_and_an_expired_code_links_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (url, _, mut requests) = cloud_with_http().await;
+    let linked_dir = Server::scratch_dir();
+    let child = cloud_command(&linked_dir, &["login", "--url", &url]);
+    next_request(&mut requests)
+        .await
+        .respond(200, enroll_answer());
+    next_request(&mut requests)
+        .await
+        .respond(200, approved_answer());
+    let output = command_output(child).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let link_path = linked_dir.join("state/cloud.json");
+    let link: Value = serde_json::from_slice(&std::fs::read(&link_path).unwrap()).unwrap();
+    assert_eq!(
+        link,
+        json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN })
+    );
+    assert_eq!(
+        std::fs::metadata(link_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let expired_dir = Server::scratch_dir();
+    let child = cloud_command(&expired_dir, &["login", "--url", &url]);
+    next_request(&mut requests)
+        .await
+        .respond(200, enroll_answer());
+    next_request(&mut requests).await.respond(404, json!({}));
+    let output = command_output(child).await;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("the code expired, nothing was linked")
+    );
+    assert!(!expired_dir.join("state/cloud.json").exists());
+}
+
+#[tokio::test]
+async fn logout_unlinks_the_machine_whether_or_not_cloud_hears() {
+    let (url, _, mut requests) = cloud_with_http().await;
+    let dir = Server::scratch_dir();
+    let no_link = command_output(cloud_command(&dir, &["logout"])).await;
+    assert!(no_link.status.success());
+    assert!(String::from_utf8_lossy(&no_link.stdout).contains("This machine is not linked."));
+
+    let link_path = link(&dir, &url, "m1", MACHINE_TOKEN);
+    let child = cloud_command(&dir, &["logout"]);
+    let delete = next_request(&mut requests).await;
+    assert_eq!(
+        (delete.method.as_str(), delete.path.as_str()),
+        ("DELETE", "/v1/machine")
+    );
+    assert_eq!(delete.authorization, format!("Bearer {MACHINE_TOKEN}"));
+    delete.respond(401, json!({}));
+    let output = command_output(child).await;
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Unlinked."));
+    assert!(!link_path.exists());
+
+    let unreachable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unreachable_url = format!("http://{}", unreachable.local_addr().unwrap());
+    link(&dir, &unreachable_url, "m1", MACHINE_TOKEN);
+    let child = cloud_command(&dir, &["logout"]);
+    let (connection, _) = tokio::time::timeout(TIMEOUT, unreachable.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(connection);
+    let output = command_output(child).await;
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Unlinked here, but"));
+    assert!(!link_path.exists());
+}
+
+#[tokio::test]
+async fn the_control_connection_is_retried_and_the_tunnel_kept_meanwhile() {
+    let (url, mut connections) = cloud().await;
+    let server = linked_server(&url, &[]);
+    let mut first = tokio::time::timeout(TIMEOUT, connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    first.greet().await;
+    first.tunnel_is("down").await;
+    first.send(tunnel("abc234.tilr.test")).await;
+    first.tunnel_is("up").await;
+    let pid = std::fs::read_to_string(server.dir.join("cloudflared.pid")).unwrap();
+    assert!(alive(pid.trim()));
+
+    first.ws.close(None).await.unwrap();
+    let mut second = tokio::time::timeout(TIMEOUT, connections.recv())
+        .await
+        .expect("Cloud did not see the retry")
+        .unwrap();
+    second.greet().await;
+    second.tunnel_is("up").await;
+    assert_eq!(
+        std::fs::read_to_string(server.dir.join("cloudflared.pid")).unwrap(),
+        pid
+    );
+    assert!(alive(pid.trim()));
+    assert_eq!(
+        std::fs::read_to_string(server.dir.join("cloudflared.launches"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_cloudflared_that_exits_is_reported_and_started_again() {
+    let (url, mut connections) = cloud().await;
+    let server = linked_server_in(Server::scratch_dir(), &url, &[], "cloudflared", "exit 7\n");
+    let mut control = tokio::time::timeout(TIMEOUT, connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    control.greet().await;
+    control.tunnel_is("down").await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    let failed = control.tunnel_is("failed").await;
+    assert!(
+        failed["detail"]
+            .as_str()
+            .unwrap()
+            .contains("cloudflared stopped"),
+        "{failed}"
+    );
+    let retried = control.tunnel_is("failed").await;
+    assert!(
+        retried["detail"]
+            .as_str()
+            .unwrap()
+            .contains("cloudflared stopped"),
+        "{retried}"
+    );
+    let launches = std::fs::read_to_string(server.dir.join("cloudflared.launches")).unwrap();
+    assert_eq!(launches.lines().count(), 2, "{launches}");
+}
+
+#[tokio::test]
+async fn a_link_cloud_revokes_stops_the_tunnel_until_linked_again() {
+    use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+
+    let (url, mut connections) = cloud().await;
+    let server = linked_server(&url, &[]);
+    let mut control = tokio::time::timeout(TIMEOUT, connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    control.greet().await;
+    control.tunnel_is("down").await;
+    control.send(tunnel("abc234.tilr.test")).await;
+    control.tunnel_is("up").await;
+    let pid = std::fs::read_to_string(server.dir.join("cloudflared.pid")).unwrap();
+
+    control
+        .ws
+        .close(Some(CloseFrame {
+            code: CloseCode::from(4001),
+            reason: "revoked".into(),
+        }))
+        .await
+        .unwrap();
+    server
+        .wait_logged("does not know this machine; link it again")
+        .await;
+    server.wait_logged("tunnel closed").await;
+    assert!(!alive(pid.trim()));
+    assert!(connections.try_recv().is_err());
+
+    let link_path = server.dir.join("state/cloud.json");
+    let replacement = link(&server.dir.join("relinked"), &url, "m2", "tilr_m_relinked");
+    std::fs::rename(replacement, link_path).unwrap();
+    let mut relinked = tokio::time::timeout(TIMEOUT, connections.recv())
+        .await
+        .expect("Cloud did not see the new link")
+        .unwrap();
+    assert_eq!(relinked.authorization, "Bearer tilr_m_relinked");
+    relinked.greet().await;
+    relinked.tunnel_is("down").await;
+
+    let rejecting = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let rejected_url = format!("http://{}", rejecting.local_addr().unwrap());
+    let rejected_server = linked_server(&rejected_url, &[]);
+    let (mut stream, _) = tokio::time::timeout(TIMEOUT, rejecting.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = read_headers(&mut stream).await;
+    assert!(
+        std::str::from_utf8(&request)
+            .unwrap()
+            .starts_with("GET /v1/machine/connect ")
+    );
+    stream
+        .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    rejected_server
+        .wait_logged("does not know this machine; link it again")
+        .await;
+}
+
+#[tokio::test]
+async fn a_server_without_a_tcp_port_does_not_connect_to_cloud() {
+    let (url, mut connections) = cloud().await;
+    let dir = Server::scratch_dir();
+    link(&dir, &url, "m1", MACHINE_TOKEN);
+    let cloudflared = dir.join("cloudflared");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tilrd"));
+    command.args([
+        "--no-listen",
+        "--cloudflared",
+        cloudflared.to_str().unwrap(),
+    ]);
+    Server::environment(&mut command, &dir, "");
+    command.stdin(Stdio::null()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let log = tokio::task::spawn_blocking(move || {
+        BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+            .find(|line| line.contains("no TCP port: no tilr Cloud tunnel"))
+    });
+    let observed = tokio::time::timeout(TIMEOUT, log).await.unwrap().unwrap();
+    assert!(observed.is_some(), "server exited without no-TCP log");
+    assert!(connections.try_recv().is_err());
+    assert!(!dir.join("cloudflared.pid").exists());
+    child.kill().unwrap();
+    child.wait().unwrap();
 }
 
 #[tokio::test]
@@ -277,11 +716,7 @@ async fn a_reload_replaces_cloudflared_with_one_of_the_new_server() {
 async fn a_server_linked_while_it_runs_connects_on_its_own() {
     let (url, mut connections) = cloud().await;
     let server = Server::start(&[]);
-    std::fs::write(
-        server.dir.join("state/cloud.json"),
-        json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
-    )
-    .unwrap();
+    link(&server.dir, &url, "m1", MACHINE_TOKEN);
     let mut control = tokio::time::timeout(TIMEOUT, connections.recv())
         .await
         .expect("the server did not connect")

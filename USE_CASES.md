@@ -112,6 +112,13 @@ Cloud repository.
 
 | Use case | Test |
 |---|---|
+| Login sends an enrollment request, prints the verification link and code, and polls through pending until approved | `login_prints_the_code_and_polls_until_confirmed` |
+| An approved login saves a private link file; an expired code leaves no link | `login_keeps_the_link_once_confirmed_and_an_expired_code_links_nothing` |
+| Logout without a link reports it; with a link it calls Cloud and removes local state even when Cloud rejects the request | `logout_unlinks_the_machine_whether_or_not_cloud_hears` |
+| Cloud revokes a link by close 4001 or HTTP 401; the tunnel stops and a new link reconnects | `a_link_cloud_revokes_stops_the_tunnel_until_linked_again` |
+| When the control connection drops, the server reconnects while the same `cloudflared` keeps running | `the_control_connection_is_retried_and_the_tunnel_kept_meanwhile` |
+| A failed `cloudflared` reports failure and is started again | `a_cloudflared_that_exits_is_reported_and_started_again` |
+| A linked server without a TCP port logs that Cloud is disabled and makes no Cloud connection | `a_server_without_a_tcp_port_does_not_connect_to_cloud` |
 | A linked server connects to Cloud with its own token; given a tunnel, it starts `cloudflared` pointed at its own port only; tunnel revoked: `cloudflared` stopped, secret removed | `a_linked_server_gets_its_tunnel_from_cloud` |
 | A server with `--no-auth` refuses the tunnel | `a_server_without_authentication_takes_no_tunnel` |
 | A tunnel description that would extend the `cloudflared` config (another service) is rejected | `a_tunnel_that_would_lead_elsewhere_is_refused` |
@@ -417,9 +424,8 @@ pane process. The server's counters are at `GET /metrics`.
   themselves, Dvorak and AZERTY, where the Latin character decides, and the
   base key in the kitty protocol); end-to-end use cases are itests UC-079.
 - Scrolling while the pane is resized.
-- tilr Cloud: `tilr cloud login` / `logout` are checked by hand only,
-  against a local Cloud (`wrangler dev`). A real `cloudflared` and a real
-  Cloudflare tunnel have never been tested.
+- tilr Cloud: automated tests play Cloud and `cloudflared`. A real
+  `cloudflared` and a real Cloudflare tunnel have never been tested.
 - A `cloudflared` left behind after the server crashed (SIGKILL) is not
   cleaned up by anyone.
 - Files: the temporary file of a write cut short by a reload is removed by
