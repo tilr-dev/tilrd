@@ -4,7 +4,7 @@
 
 - [x] Reproduce and fix a foreground leader's exec within the same group; re-read cmdline on the one-second tick and cover the silent exec with a FIFO-controlled integration test.
 - [x] Reproduce and fix loss of the contiguous environment prefix when a later entry has moved; preserve all environment values and original argv.
-- [ ] Share the title-test setup between panes and reload; run narrow tests, self-review and bin/finish checks.
+- [x] Share the title-test setup between panes and reload; verify narrow tests and self-review, then complete bin/finish checks before Review.
 
 ## 1. Keep the start arguments
 
