@@ -1065,6 +1065,24 @@ scripts/linux-build.sh            # release binaries into dist/<platform>/
 TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
 ```
 
+Each physical worktree has its own persistent target cache, named
+`tilr-linux-target-<path hash><platform suffix>`. The hash is Git's hash-object of
+the physical absolute checkout path plus a newline; the platform suffix replaces
+each non-lowercase-alphanumeric character with `-` (e.g. `linux-amd64`). Separate
+worktrees can build concurrently, even with identical directory names. Serialize
+runs within one worktree. The cargo registry remains shared per platform.
+`linux-build.sh` builds and copies from the same worktree's target.
+
+To clear a worktree's target, stop its containers, then run from its root:
+
+```sh
+docker volume rm "tilr-linux-target-$(pwd -P | git hash-object --stdin)"
+# For TILR_LINUX_PLATFORM=linux/amd64, append linux-amd64 to that volume name.
+```
+
+The old shared `tilr-linux-target` (or its platform-suffixed variant) is no longer
+used and can also be removed once all older runs have stopped.
+
 ## Releases
 
 Releases are made by [release-please](https://github.com/googleapis/release-please)

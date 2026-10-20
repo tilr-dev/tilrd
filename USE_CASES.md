@@ -13,6 +13,16 @@ failpoints (`src/fail.rs`) and are compiled only with that feature.
 
 The test's name is the statement of the use case.
 
+## Linux build scripts — `tests/linux_script.rs`
+
+| Use case | Test |
+|---|---|
+| Two worktrees with the same basename overlap builds without replacing each other's binaries; targets are reused through symlinks, separated by platform, and used by release copying; commands use their own built image and a failed build starts no command | `parallel_worktrees_keep_their_linux_build_outputs` |
+
+The script integration fixture uses a Docker stand-in in the cargo suite. Run
+`python3 scripts/test-linux.py --docker` to compile the two fixture binaries in
+real Linux containers with the same FIFO barrier.
+
 ## Connection and panes — `tests/panes.rs`
 
 | Use case | Test |
