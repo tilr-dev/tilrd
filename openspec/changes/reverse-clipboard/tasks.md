@@ -9,7 +9,7 @@
 ## 2. Shims
 
 - [ ] 2.1 `xclip -selection clipboard -i` and a new `wl-copy` shim (parse, limit, publish, host socket `clipboard-write`) (D3); `TILR_CLIPBOARD_MAX` in the pane environment; verify with unit tests `clipboard::tests::xclip_copy_requests`, `clipboard::tests::wl_copy_requests` and `clipboard::xclip_in_a_pane_reaches_the_watching_client`, `clipboard::a_copy_over_the_limit_is_refused`
-- [ ] 2.2 Hand-over to the real tool when no client takes it; verify with `clipboard::a_copy_nobody_takes_goes_to_the_real_tool`
+- [ ] 2.2 A copy no client takes stays in the store only: the shim exits 0 without running the real tool, and a client subscribing later gets nothing; verify with `clipboard::a_copy_nobody_takes_stays_in_the_shared_buffer`
 - [ ] 2.3 Update `clipboard::the_clipboard_can_be_turned_off` for `wl-copy`; README "Pasting images: the shared clipboard" gets "Copying from a pane"; verify the test and review of README
 
 ## 3. tilr

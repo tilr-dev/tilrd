@@ -82,14 +82,18 @@ A shim copy over `--clipboard-max` SHALL fail with `<tool>: too large: <size>, t
 - **WHEN** the server runs with `--clipboard-max 1K` and a pane copies 2 KiB with `xclip -selection clipboard -i`
 - **THEN** `xclip` exits non-zero with `too large`, no `ClipboardWrite` is sent, and the clipboard holds what it held before
 
-### Requirement: A copy nobody takes goes to the real tool too
-When a shim copy reaches no client with `"clipboard-write"`, the shim SHALL still exit 0 with the content in the shared clipboard, and SHALL first give the content on stdin to the next real `xclip` / `wl-copy` on `PATH` with the same arguments when there is one.
+### Requirement: A copy nobody takes stays in the shared buffer only
+When a copy reaches no client with `"clipboard-write"`, the server SHALL keep it only in the shared clipboard (until `--clipboard-ttl`): a shim copy SHALL exit 0 without running the next real `xclip` / `wl-copy` on `PATH`, and a client that connects or subscribes to the pane later SHALL NOT be sent it.
 
-**Verified by**: `clipboard::a_copy_nobody_takes_goes_to_the_real_tool`.
+**Verified by**: `clipboard::a_copy_nobody_takes_stays_in_the_shared_buffer`.
 
 #### Scenario: A real xclip is installed
-- **WHEN** no client watches the pane, a fake `xclip` later on `PATH` records its stdin, and a pane runs `echo hi | xclip -selection clipboard -i`
-- **THEN** the fake `xclip` received `hi`, and `xclip -selection clipboard -o` prints `hi`
+- **WHEN** no client watches the pane, a fake `xclip` later on `PATH` records whether it ran, and a pane runs `echo hi | xclip -selection clipboard -i`
+- **THEN** the shim exits 0, the fake `xclip` did not run, and `xclip -selection clipboard -o` prints `hi`
+
+#### Scenario: A client that comes later
+- **WHEN** a copy reached no client and then a client with `"clipboard-write"` subscribes to the pane
+- **THEN** that client receives no `ClipboardWrite` for it
 
 ### Requirement: tilr passes copied text to its terminal
 `tilr` SHALL list `"clipboard-write"` in `Hello.features` and SHALL write a completed `ClipboardWrite` whose MIME type is text to its terminal as `ESC ] 52 ; c ; <base64> ESC \`; other types SHALL be ignored.

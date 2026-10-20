@@ -11,7 +11,7 @@ Checked at 1163abd: still one way. The server's `xclip` hands copying (`-i`, a f
 - New push `ClipboardWrite { transfer_id, pane_id, mime, total_size, data, last }` in chunks of at most 256 KiB on the bulk lane, sent to every client subscribed to the pane that lists `"clipboard-write"` in `Hello.features`.
 - Sources: OSC 52 / OSC 1337 Copy to the standard clipboard in a pane's output (`text/plain;charset=utf-8`), and the server's `xclip -selection clipboard -i [-t <mime>]` and a new `wl-copy [-t <mime>] [TEXT...]` shim in panes.
 - A copy also becomes the server's shared clipboard (what `xclip -o` / `wl-paste` in any pane then read), with `--clipboard-ttl` as for uploads; content over `--clipboard-max` is refused (the shim exits non-zero with the limit; an OSC 52 write is dropped with a log line).
-- A shim copy that reaches no client with `"clipboard-write"` is handed, with its content, to the real `xclip` / `wl-copy` when there is one (a desktop session keeps working); it succeeds either way since the server clipboard holds it.
+- A copy that reaches no client with `"clipboard-write"` stays only in the server's shared clipboard until `--clipboard-ttl`, as in tmux: it is not handed to the real `xclip` / `wl-copy` and not sent to a client that attaches later; the shim succeeds since the server clipboard holds it (Dan, 2026-10-20).
 - `tilr attach` lists `"clipboard-write"` and writes text it receives to the local terminal as OSC 52, so the user's own terminal applies its clipboard policy.
 - No new `HelloAck.features` entry and no PROTOCOL_VERSION bump (protocol-v3 rule): the push is part of the `"clipboard"` capability, which `--no-clipboard` turns off along with every shim; a client that does not list `"clipboard-write"` gets nothing new.
 
