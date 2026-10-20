@@ -132,17 +132,24 @@ async fn cloud_with_http() -> (
     (url, connections, requests)
 }
 
-async fn answer_http(mut stream: TcpStream, requested: mpsc::UnboundedSender<CloudRequest>) {
+async fn read_headers(stream: &mut TcpStream) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let header_end = loop {
+    while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
         let mut chunk = [0; 1024];
         let size = stream.read(&mut chunk).await.unwrap();
         assert!(size > 0, "Cloud HTTP request ended before headers");
         bytes.extend_from_slice(&chunk[..size]);
-        if let Some(pos) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-            break pos + 4;
-        }
-    };
+    }
+    bytes
+}
+
+async fn answer_http(mut stream: TcpStream, requested: mpsc::UnboundedSender<CloudRequest>) {
+    let mut bytes = read_headers(&mut stream).await;
+    let header_end = bytes
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
     let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
     let mut lines = headers.lines();
     let request_line = lines.next().unwrap();
@@ -228,6 +235,17 @@ fn approved_answer() -> Value {
     json!({ "status": "approved", "machine_id": "m1", "machine_token": MACHINE_TOKEN })
 }
 
+fn link(dir: &Path, url: &str, machine_id: &str, token: &str) -> PathBuf {
+    let path = dir.join("state/cloud.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({ "url": url, "machine_id": machine_id, "token": token }).to_string(),
+    )
+    .unwrap();
+    path
+}
+
 /// A server linked to the Cloud at `url`, with the stand-in `cloudflared`.
 fn linked_server(url: &str, args: &[&str]) -> Server {
     linked_server_in(
@@ -245,12 +263,7 @@ fn linked_server(url: &str, args: &[&str]) -> Server {
 fn linked_server_in(dir: PathBuf, url: &str, args: &[&str], name: &str, then: &str) -> Server {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::create_dir_all(dir.join("state")).unwrap();
-    std::fs::write(
-        dir.join("state/cloud.json"),
-        json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
-    )
-    .unwrap();
+    link(&dir, url, "m1", MACHINE_TOKEN);
     let cloudflared = dir.join(name);
     std::fs::write(
         &cloudflared,
@@ -411,16 +424,7 @@ async fn logout_unlinks_the_machine_whether_or_not_cloud_hears() {
     assert!(no_link.status.success());
     assert!(String::from_utf8_lossy(&no_link.stdout).contains("This machine is not linked."));
 
-    let link_path = dir.join("state/cloud.json");
-    std::fs::create_dir_all(link_path.parent().unwrap()).unwrap();
-    let write_link = || {
-        std::fs::write(
-            &link_path,
-            json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
-        )
-        .unwrap()
-    };
-    write_link();
+    let link_path = link(&dir, &url, "m1", MACHINE_TOKEN);
     let child = cloud_command(&dir, &["logout"]);
     let delete = next_request(&mut requests).await;
     assert_eq!(
@@ -436,11 +440,7 @@ async fn logout_unlinks_the_machine_whether_or_not_cloud_hears() {
 
     let unreachable = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unreachable_url = format!("http://{}", unreachable.local_addr().unwrap());
-    std::fs::write(
-        &link_path,
-        json!({ "url": unreachable_url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
-    )
-    .unwrap();
+    link(&dir, &unreachable_url, "m1", MACHINE_TOKEN);
     let child = cloud_command(&dir, &["logout"]);
     let (connection, _) = tokio::time::timeout(TIMEOUT, unreachable.accept())
         .await
@@ -552,15 +552,7 @@ async fn a_link_cloud_revokes_stops_the_tunnel_until_linked_again() {
     assert!(connections.try_recv().is_err());
 
     let link_path = server.dir.join("state/cloud.json");
-    let replacement = server.dir.join("state/cloud-relinked.json");
-    std::fs::write(
-        &replacement,
-        json!({
-            "url": url, "machine_id": "m2", "token": "tilr_m_relinked"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let replacement = link(&server.dir.join("relinked"), &url, "m2", "tilr_m_relinked");
     std::fs::rename(replacement, link_path).unwrap();
     let mut relinked = tokio::time::timeout(TIMEOUT, connections.recv())
         .await
@@ -577,13 +569,7 @@ async fn a_link_cloud_revokes_stops_the_tunnel_until_linked_again() {
         .await
         .unwrap()
         .unwrap();
-    let mut request = Vec::new();
-    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
-        let mut chunk = [0; 1024];
-        let read = stream.read(&mut chunk).await.unwrap();
-        assert!(read > 0, "control handshake ended before its headers");
-        request.extend_from_slice(&chunk[..read]);
-    }
+    let request = read_headers(&mut stream).await;
     assert!(
         std::str::from_utf8(&request)
             .unwrap()
@@ -602,15 +588,7 @@ async fn a_link_cloud_revokes_stops_the_tunnel_until_linked_again() {
 async fn a_server_without_a_tcp_port_does_not_connect_to_cloud() {
     let (url, mut connections) = cloud().await;
     let dir = Server::scratch_dir();
-    std::fs::create_dir_all(dir.join("state")).unwrap();
-    std::fs::write(
-        dir.join("state/cloud.json"),
-        json!({
-            "url": url, "machine_id": "m1", "token": MACHINE_TOKEN
-        })
-        .to_string(),
-    )
-    .unwrap();
+    link(&dir, &url, "m1", MACHINE_TOKEN);
     let cloudflared = dir.join("cloudflared");
     let mut command = Command::new(env!("CARGO_BIN_EXE_tilrd"));
     command.args([
@@ -738,11 +716,7 @@ async fn a_reload_replaces_cloudflared_with_one_of_the_new_server() {
 async fn a_server_linked_while_it_runs_connects_on_its_own() {
     let (url, mut connections) = cloud().await;
     let server = Server::start(&[]);
-    std::fs::write(
-        server.dir.join("state/cloud.json"),
-        json!({ "url": url, "machine_id": "m1", "token": MACHINE_TOKEN }).to_string(),
-    )
-    .unwrap();
+    link(&server.dir, &url, "m1", MACHINE_TOKEN);
     let mut control = tokio::time::timeout(TIMEOUT, connections.recv())
         .await
         .expect("the server did not connect")
