@@ -1,7 +1,7 @@
 # spec-coverage Specification
 
 ## Purpose
-TBD - created by archiving change untrack-spec-coverage. Update Purpose after archive.
+Keep generated spec coverage reports available locally without storing run-specific artifacts in git.
 
 ## Requirements
 
