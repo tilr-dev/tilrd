@@ -203,6 +203,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| Hyperlinks become plain text after reload; newly printed links work | `hyperlinks_are_plain_text_after_a_reload_and_new_ones_work` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
 | With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
@@ -442,3 +443,12 @@ pane process. The server's counters are at `GET /metrics`.
 - SSH agent: pane sockets left behind after the server crashed (SIGKILL) are
   not cleaned up by anyone. A real `ssh` with a real agent through the client
   has not been tested: the tests play both the program and the client.
+
+## OSC 8 hyperlink frames
+
+| Use case | Test |
+|---|---|
+| Links split runs, share a frame URI table across rows, and disappear from unlinked frames | `tilr-screen`: `ghostty::tests::a_hyperlink_goes_with_its_run` |
+| URIs longer than 8 KiB remain plain text | `tilr-screen`: `ghostty::tests::an_overlong_hyperlink_is_left_out` |
+| Attach opens and closes OSC 8 around a linked run | `tilr`: `attach::tests::a_linked_run_is_drawn_inside_osc_8` |
+| A URI containing invalid UTF-8 leaves its text intact | `tilr-screen`: `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` |

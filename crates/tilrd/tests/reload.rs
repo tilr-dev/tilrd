@@ -4,6 +4,86 @@ mod common;
 
 use common::*;
 
+#[tokio::test]
+async fn hyperlinks_are_plain_text_after_a_reload_and_new_ones_work() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    client
+        .type_line(
+            pane_id,
+            r"printf '\033]8;;https://example.com/\033\\old-link\033]8;;\033\\\n'",
+        )
+        .await;
+    client
+        .wait_for(|msg| match msg {
+            tilr_proto::server_message::Msg::Frame(frame)
+                if frame
+                    .changed
+                    .iter()
+                    .flat_map(|row| &row.runs)
+                    .any(|run| run.text == "old-link" && run.link != 0) =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+
+    server.signal("-USR1");
+    let mut client = reconnect(&server, client).await;
+    client.subscribe(pane_id).await;
+    let frame = client
+        .wait_for(|msg| match msg {
+            tilr_proto::server_message::Msg::Frame(frame) if frame.full => Some(frame.clone()),
+            _ => None,
+        })
+        .await;
+    assert!(frame.links.is_empty());
+    assert!(
+        frame
+            .changed
+            .iter()
+            .flat_map(|row| &row.runs)
+            .all(|run| run.link == 0)
+    );
+    assert!(frame.changed.iter().any(|row| {
+        row.runs
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect::<String>()
+            .contains("old-link")
+    }));
+
+    client
+        .type_line(
+            pane_id,
+            r"printf '\033]8;;https://example.org/\033\\new-link\033]8;;\033\\\n'",
+        )
+        .await;
+    let frame = client
+        .wait_for(|msg| match msg {
+            tilr_proto::server_message::Msg::Frame(frame)
+                if frame
+                    .changed
+                    .iter()
+                    .flat_map(|row| &row.runs)
+                    .any(|run| run.text == "new-link" && run.link != 0) =>
+            {
+                Some(frame.clone())
+            }
+            _ => None,
+        })
+        .await;
+    let run = frame
+        .changed
+        .iter()
+        .flat_map(|row| &row.runs)
+        .find(|run| run.text == "new-link")
+        .unwrap();
+    assert_eq!(frame.links[run.link as usize - 1], "https://example.org/");
+}
+
 /// What must hold after any reload: the shell in `pane_id` is the same one,
 /// with its state and what it printed, and the server works as before.
 async fn assert_pane_survived(server: &mut Server, mut client: Client, pane_id: PaneId) {

@@ -433,7 +433,7 @@ A reload SHALL NOT wait for a child whose start ended in a panic: the next reloa
 - **THEN** the log has `resumed after reload` and no `reload failed`, and the successor starts `cloudflared` again
 
 ### Requirement: Tests explicitly release paused failpoints
-With the `failpoints` feature, `name=pause` in `TILR_FAILPOINTS` or the file named by `TILR_FAILPOINTS_FILE` SHALL connect to the Unix stream socket named by `TILR_FAILPOINTS_SOCKET`, send the point name followed by a newline, and wait for the byte `r` on that connection before continuing. Each hit SHALL use a new connection. No elapsed time SHALL release a point. Missing socket configuration, connection/read/write failure, EOF or a byte other than `r` SHALL fail the point. Without `failpoints`, these variables SHALL have no effect. Async callers that need the runtime to keep serving SHALL run the blocking point on a blocking thread and await it.
+With `failpoints`, `name=pause` configured by `TILR_FAILPOINTS` or `TILR_FAILPOINTS_FILE` SHALL connect to the Unix stream socket `TILR_FAILPOINTS_SOCKET`, send `name\n`, and wait for `r`. Every hit SHALL open a new connection; time SHALL NOT release it. Missing configuration, I/O failure, EOF, or another byte SHALL fail the point. Without `failpoints`, these variables SHALL do nothing. Async callers requiring a responsive runtime SHALL await the point on a blocking thread.
 
 **Verified by**: `reload::a_successor_is_checked_while_the_server_serves_and_then_reloaded_into`, `reload::a_runtime_named_pause_holds_a_pane_check_until_released`, `reload::a_disconnected_pause_controller_refuses_the_reload`.
 

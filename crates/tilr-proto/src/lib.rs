@@ -160,6 +160,7 @@ mod tests {
                         text: "hello world ".repeat(6),
                         wide: false,
                         cluster: false,
+                        link: 0,
                     }],
                 })
                 .collect(),

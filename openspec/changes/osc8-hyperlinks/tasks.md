@@ -13,5 +13,5 @@
 ## 3. Checks and archive
 
 - [ ] 3.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
-- [ ] 3.2 `./itests/dt UC-079 UC-06A` (input and reload with frames) green, then `./itests/dt coverage` exits 0
+- [ ] 3.2 `./itests/dt --only scenarios --filter uc_079` and `./itests/dt --only scenarios --filter uc_06a` (input and reload with frames) green, then `./itests/dt coverage` exits 0
 - [ ] 3.3 Record the commit in proposal.md ("Implemented by") and archive the change; verify `openspec validate --all --strict`

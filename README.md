@@ -691,6 +691,10 @@ images keep their places,
 those scrolled into the history too. A pane being closed (`ClosePane`, its program not
 gone yet) is still killed at its deadline, 2 s after the close, by the successor.
 
+OSC 8 hyperlinks on the screen and in scrollback become plain text after a reload:
+libghostty's VT snapshot formatter does not preserve per-cell links. Their text and styles
+remain; newly printed hyperlinks work normally.
+
 A process is exec'd with the arguments it was started with, so it looks the same in `ps`
 before and after. What it hands to its successor goes into a file in the runtime directory
 that the successor finds by name: `server-<pid>.state` for the supervisor (an exec keeps the
@@ -762,6 +766,13 @@ a feature. `Hello.client_id`, `KeyInput.code`, the `bytes` twins of file paths, 
 bulk window paced by pongs, `PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002
 are all part of version 3. The Tilr app's `server` plugin and tilr-mac need version 3 to
 talk to this server; `tilr` and `tilr-driver` are built with it.
+
+`Frame.links` is a table of hyperlink URIs used by its changed rows, deduplicated within
+the frame. `Run.link` is the URI's index plus one, or 0 for plain text; runs split when
+the link changes. URIs longer than 8 KiB are omitted and their cells remain plain text.
+`tilr attach` draws linked runs with OSC 8 in the local terminal. These fields have
+harmless defaults: clients ignoring them still show the text, with protocol version 3
+and no feature flag.
 
 `HelloAck.features` lists only what a server can be run without, so a client checks it
 before sending that capability's requests, in this order:

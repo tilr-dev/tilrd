@@ -873,6 +873,8 @@ message Run {
   // Every cell of this run is two columns wide.
   bool wide = 3;
   bool cluster = 4;
+  // Index into Frame.links plus one; 0 = no hyperlink.
+  uint32 link = 5;
 }
 
 // Replaces viewport row `y` entirely. Columns past the last run are blank.
@@ -906,6 +908,9 @@ message Cursor {
 // frames it missed is carried by that full frame's `last_input_seq`, so every
 // input of a client still gets a frame that echoes it.
 message Frame {
+  // Hyperlink URIs used by changed rows, deduplicated within this frame.
+  // Run.link indexes this table plus one; URIs over 8 KiB are omitted.
+  repeated string links = 20;
   string pane_id = 1;
   uint64 seq = 2;
   bool full = 3;

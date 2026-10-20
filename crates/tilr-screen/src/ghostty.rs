@@ -296,6 +296,9 @@ impl Screen for GhosttyScreen {
         };
 
         let mut styles = StyleTable::default();
+        let mut links = Vec::<String>::new();
+        let mut link_indices = std::collections::HashMap::<String, u32>::new();
+        let mut uri_buf = [0u8; 8192];
         let mut changed = Vec::new();
         self.placeholders
             .resize_with(usize::from(self.size.1), Vec::new);
@@ -303,6 +306,7 @@ impl Screen for GhosttyScreen {
         let mut y = 0u32;
         while let Some(row) = row_iter.next() {
             if all_rows || row.dirty()? {
+                let row_has_links = row.raw_row()?.has_hyperlink()?;
                 let mut runs = RunBuilder::default();
                 let mut placeholders = PlaceholderRuns::default();
                 let mut column = 0u32;
@@ -316,6 +320,29 @@ impl Screen for GhosttyScreen {
                     };
                     let x = column;
                     column += if wide { 2 } else { 1 };
+                    let link = if row_has_links && raw.has_hyperlink()? {
+                        match self
+                            .term
+                            .grid_ref(Point::Viewport(PointCoordinate { x: x as u16, y }))?
+                            .hyperlink_uri(&mut uri_buf)
+                        {
+                            Ok(0) | Err(libghostty_vt::error::Error::OutOfSpace { .. }) => 0,
+                            Ok(len) => {
+                                if let Ok(uri) = std::str::from_utf8(&uri_buf[..len]) {
+                                    *link_indices.entry(uri.to_owned()).or_insert_with(|| {
+                                        links.push(uri.to_owned());
+                                        links.len() as u32
+                                    })
+                                } else {
+                                    // Protobuf strings cannot carry arbitrary OSC bytes.
+                                    0
+                                }
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    } else {
+                        0
+                    };
                     let styled = raw.has_styling()?;
                     let mut style = if styled {
                         style_to_proto(cell.style()?)
@@ -346,14 +373,14 @@ impl Screen for GhosttyScreen {
                             // image's row and column from the diacritics.
                             let vt_style = if styled { Some(cell.style()?) } else { None };
                             placeholders.push(x, &cps, vt_style);
-                            runs.push_char(' ', style, wide);
+                            runs.push_char(' ', style, wide, link);
                         } else {
-                            runs.push_cluster(cps.into_iter().collect(), style, wide);
+                            runs.push_cluster(cps.into_iter().collect(), style, wide, link);
                         }
                         continue;
                     }
                     placeholders.end();
-                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide);
+                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide, link);
                 }
                 if let Some(slot) = self.placeholders.get_mut(y as usize) {
                     *slot = placeholders.finish();
@@ -403,6 +430,7 @@ impl Screen for GhosttyScreen {
             cols: u32::from(self.size.0),
             rows: u32::from(self.size.1),
             styles: styles.list,
+            links,
             changed,
             cursor: Some(cursor),
             title,
@@ -1459,9 +1487,11 @@ struct RunBuilder {
 }
 
 impl RunBuilder {
-    fn push_char(&mut self, ch: char, style: u32, wide: bool) {
+    fn push_char(&mut self, ch: char, style: u32, wide: bool, link: u32) {
         match self.runs.last_mut() {
-            Some(run) if run.style == style && run.wide == wide && !run.cluster => {
+            Some(run)
+                if run.style == style && run.wide == wide && run.link == link && !run.cluster =>
+            {
                 run.text.push(ch);
             }
             _ => self.runs.push(Run {
@@ -1469,16 +1499,18 @@ impl RunBuilder {
                 text: ch.to_string(),
                 wide,
                 cluster: false,
+                link,
             }),
         }
     }
 
-    fn push_cluster(&mut self, text: String, style: u32, wide: bool) {
+    fn push_cluster(&mut self, text: String, style: u32, wide: bool, link: u32) {
         self.runs.push(Run {
             style,
             text,
             wide,
             cluster: true,
+            link,
         });
     }
 
@@ -1987,6 +2019,53 @@ mod tests {
         screen.feed(b"\x1b[D");
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(frame.cursor.unwrap().x, 2);
+    }
+
+    #[test]
+    fn a_hyperlink_goes_with_its_run() {
+        let mut screen = screen();
+        screen.feed(b"a\x1b]8;;https://example.com/\x1b\\link\x1b]8;;\x1b\\b\r\n\x1b]8;;https://example.com/\x1b\\again\x1b]8;;\x1b\\");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(frame.links, ["https://example.com/"]);
+        let runs = &frame.changed[0].runs;
+        assert_eq!(
+            runs.iter()
+                .map(|r| (r.text.as_str(), r.link))
+                .collect::<Vec<_>>(),
+            [("a", 0), ("link", 1), ("b", 0)]
+        );
+        assert_eq!(frame.changed[1].runs[0].link, 1);
+        screen.feed(b"\x1b[2J\x1b[Hplain");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert!(frame.links.is_empty());
+        assert!(
+            frame
+                .changed
+                .iter()
+                .flat_map(|row| &row.runs)
+                .all(|run| run.link == 0)
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_hyperlink_is_plain_text() {
+        let mut screen = screen();
+        screen.feed(b"\x1b]8;;https://example.com/\xff\x1b\\x\x1b]8;;\x1b\\");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "x");
+        assert!(frame.links.is_empty());
+        assert_eq!(frame.changed[0].runs[0].link, 0);
+    }
+
+    #[test]
+    fn an_overlong_hyperlink_is_left_out() {
+        let mut screen = screen();
+        let uri = format!("https://example.com/{}", "x".repeat(8193));
+        screen.feed(format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\").as_bytes());
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "link");
+        assert_eq!(frame.changed[0].runs[0].link, 0);
+        assert!(frame.links.is_empty());
     }
 
     #[test]
