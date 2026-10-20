@@ -2,8 +2,10 @@
 //! keeps the release gates and packaging contract.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+#[path = "common/cdn.rs"]
+mod cdn;
+use cdn::serve_files;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -300,34 +302,6 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     );
 }
 
-fn serve_files(root: PathBuf) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming().take(3) {
-            let mut stream = stream.unwrap();
-            let mut request = Vec::new();
-            let mut byte = [0];
-            while !request.ends_with(b"\r\n\r\n") {
-                stream.read_exact(&mut byte).unwrap();
-                request.push(byte[0]);
-            }
-            let request = String::from_utf8(request).unwrap();
-            let path = request.split_whitespace().nth(1).unwrap();
-            let file = root.join(path.trim_start_matches('/'));
-            let body = fs::read(file).unwrap();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(&body).unwrap();
-        }
-    });
-    url
-}
-
 #[test]
 fn the_layout_release_sh_writes_is_what_tilrd_update_reads() {
     let f = Fixture::new();
@@ -374,7 +348,16 @@ fn the_layout_release_sh_writes_is_what_tilrd_update_reads() {
     let installed = f.dir.join("installed");
     fs::create_dir(&installed).unwrap();
     let exe = installed.join("tilrd");
-    fs::copy(binary, &exe).unwrap();
+    // cp writes only in its own process, so concurrent test children cannot
+    // inherit a writable descriptor and keep this executable busy on Linux.
+    assert!(
+        Command::new("cp")
+            .arg(binary)
+            .arg(&exe)
+            .status()
+            .unwrap()
+            .success()
+    );
     let cdn = serve_files(f.dir.join("dist/cdn"));
     let output = Command::new(&exe)
         .args(["update", "--cdn", &cdn])
@@ -542,20 +525,30 @@ fn ci_runs_every_gate_of_agents_md() {
     }
 }
 
-#[test]
-fn ci_smoke_tests_both_executables() {
-    let ci = active(&text_file(".github/workflows/ci.yml"));
+fn assert_smoke_contract(ci: &str) {
+    let ci = active(ci);
     let test = job(&ci, "test");
     for clause in [
         "cargo build -p tilrd -p tilr --locked",
-        "for exe in tilrd tilr",
-        "--version",
-        "--help",
+        "for exe in tilrd tilr; do",
+        "case \"$(\"target/debug/$exe\" --version)\" in",
+        "\"$exe $version-$(git rev-parse --short HEAD) (\"*\")\") ;;",
+        "*) \"target/debug/$exe\" --version; exit 1 ;;",
+        "\"target/debug/$exe\" --help >/dev/null",
         "git rev-parse --short HEAD",
         "cargo metadata --format-version 1 --no-deps --locked",
     ] {
         assert!(test.contains(clause), "missing smoke check: {clause}");
     }
+}
+
+#[test]
+fn ci_smoke_tests_both_executables() {
+    let ci = text_file(".github/workflows/ci.yml");
+    assert_smoke_contract(&ci);
+    let removed = ci.replace("$exe $version-", "$exe wrong-");
+    assert_ne!(removed, ci);
+    assert!(std::panic::catch_unwind(|| assert_smoke_contract(&removed)).is_err());
 }
 
 #[test]
@@ -680,9 +673,8 @@ fn a_release_builds_and_packages_every_target() {
     }
 }
 
-#[test]
-fn the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built() {
-    let release = active(&text_file(".github/workflows/release.yml"));
+fn assert_cdn_contract(release: &str) {
+    let release = active(release);
     let cdn = job(&release, "cdn");
     for clause in [
         "needs: [release-please, upload]",
@@ -691,13 +683,23 @@ fn the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built() {
         "pattern: cdn-*",
         "merge-multiple: true",
         "for platform in $PLATFORMS",
-        "dist/cdn/releases/$platform/latest",
+        "want=\"${TAG#v}-$(git rev-parse --short HEAD)\"",
+        "test \"$(cat \"dist/cdn/releases/$platform/latest\")\" = \"$want\"",
         "CLOUDFLARE_API_TOKEN:",
         "CLOUDFLARE_ACCOUNT_ID:",
         "scripts/release.sh --upload-only $PLATFORMS",
     ] {
         assert!(cdn.contains(clause), "{clause}");
     }
+}
+
+#[test]
+fn the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built() {
+    let release = text_file(".github/workflows/release.yml");
+    assert_cdn_contract(&release);
+    let removed = release.replace("= \"$want\"", "= wrong");
+    assert_ne!(removed, release);
+    assert!(std::panic::catch_unwind(|| assert_cdn_contract(&removed)).is_err());
 }
 
 #[test]
