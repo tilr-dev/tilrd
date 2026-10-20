@@ -433,7 +433,7 @@ A reload SHALL NOT wait for a child whose start ended in a panic: the next reloa
 - **THEN** the log has `resumed after reload` and no `reload failed`, and the successor starts `cloudflared` again
 
 ### Requirement: Tests explicitly release paused failpoints
-With the `failpoints` feature, `name=pause` in `TILR_FAILPOINTS` or the file named by `TILR_FAILPOINTS_FILE` SHALL connect to the Unix stream socket named by `TILR_FAILPOINTS_SOCKET`, send the point name followed by a newline, and wait for the byte `r` on that connection before continuing. Each hit SHALL use a new connection. No elapsed time SHALL release a point. Missing socket configuration, connection/read/write failure, EOF or a byte other than `r` SHALL fail the point. Without `failpoints`, these variables SHALL have no effect. Async callers that need the runtime to keep serving SHALL run the blocking point on a blocking thread and await it.
+With `failpoints`, each `name=pause` hit configured by `TILR_FAILPOINTS` or `TILR_FAILPOINTS_FILE` SHALL open a new Unix stream connection to `TILR_FAILPOINTS_SOCKET`, send its name and a newline, and wait for byte `r`. Time SHALL NOT release a point. Missing socket configuration, I/O failure, EOF or another byte SHALL fail the point. Without `failpoints`, these variables SHALL have no effect.
 
 **Verified by**: `reload::a_successor_is_checked_while_the_server_serves_and_then_reloaded_into`, `reload::a_runtime_named_pause_holds_a_pane_check_until_released`, `reload::a_disconnected_pause_controller_refuses_the_reload`.
 
@@ -448,6 +448,10 @@ With the `failpoints` feature, `name=pause` in `TILR_FAILPOINTS` or the file nam
 #### Scenario: Controller disappears
 - **WHEN** the test closes a paused successor's connection without sending `r`
 - **THEN** the check fails and the original server keeps serving
+
+#### Scenario: The async runtime keeps serving
+- **WHEN** an async caller needs the runtime to keep serving while a failpoint is paused
+- **THEN** it SHALL run the blocking point on a blocking thread and await it
 
 ## Notes
 
