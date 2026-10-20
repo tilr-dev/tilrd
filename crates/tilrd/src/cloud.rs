@@ -128,13 +128,13 @@ fn host_name() -> String {
     }
 }
 
-/// Link this machine to a user of Cloud: show a code, wait until the user
-/// confirms it in their browser, keep the token Cloud hands over.
 /// `--url` / `TILR_CLOUD`: empty, as `TILR_CLOUD=` leaves it, is the default.
 pub fn parse_url(url: &str) -> Result<String, String> {
     Ok(if url.is_empty() { DEFAULT_URL } else { url }.to_owned())
 }
 
+/// Link this machine to a user of Cloud: show a code, wait until the user
+/// confirms it in their browser, keep the token Cloud hands over.
 pub fn login(url: &str, name: Option<String>) -> Result<()> {
     let url = url.trim_end_matches('/');
     let asked = post(

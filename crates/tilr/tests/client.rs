@@ -1179,12 +1179,12 @@ fn cloud_login_help_names_the_default_of_tilrd() {
         let help = String::from_utf8(output.stdout).unwrap();
         help.lines()
             .find_map(|line| {
-                line.split_once("[default: ")
-                    .map(|(_, rest)| rest.to_owned())
+                let (_, rest) = line.split_once("[default: ")?;
+                Some(rest.split(']').next()?.to_owned())
             })
             .unwrap_or_else(|| panic!("no default in {help}"))
     };
     let tilr = default(Path::new(TILR));
-    assert_eq!(tilr, "https://wss.tilr.dev]");
+    assert_eq!(tilr, "https://wss.tilr.dev");
     assert_eq!(tilr, default(&Path::new(TILR).with_file_name("tilrd")));
 }

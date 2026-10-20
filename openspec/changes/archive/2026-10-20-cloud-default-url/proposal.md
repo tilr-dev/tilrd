@@ -9,7 +9,7 @@
 
 ## What Changes
 
-- `DEFAULT_URL` becomes `https://wss.tilr.dev`; `tilrd cloud login --help`, `tilr cloud login --help` (the same default, passed on to tilrd), README "tilr Cloud" and the spec name it.
+- `DEFAULT_URL` becomes `https://wss.tilr.dev`; `tilrd cloud login --help`, `tilr cloud login --help` (names the same default; tilrd applies it), README "tilr Cloud" and the spec name it.
 - A machine already linked keeps the URL stored in its link (`cloud.json`, field `url`, `crates/tilrd/src/cloud.rs:64,172`); nothing rewrites it.
 
 ## Capabilities
