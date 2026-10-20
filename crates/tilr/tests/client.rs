@@ -537,7 +537,11 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     machine.ok(&["new", "-d"]);
     let server_pid = machine.server_pid();
 
-    let version_output = Command::new(&server_exe).arg("--version").output().unwrap();
+    let version_output = Command::new(&server_exe)
+        .env_remove("RUST_LOG")
+        .arg("--version")
+        .output()
+        .unwrap();
     assert!(version_output.status.success());
     let version_line = String::from_utf8(version_output.stdout).unwrap();
     let mut words = version_line.split_whitespace();

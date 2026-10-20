@@ -771,7 +771,11 @@ async fn server_commands_run_for_local_clients_only() {
 /// An executable that reads the state but not the socket (no `unix-socket
 /// 1`) in place of `exe`.
 fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
-    let formats = Command::new(exe).arg("state-formats").output().unwrap();
+    let formats = Command::new(exe)
+        .env_remove("RUST_LOG")
+        .arg("state-formats")
+        .output()
+        .unwrap();
     let formats = String::from_utf8(formats.stdout).unwrap();
     let older: String = formats
         .lines()

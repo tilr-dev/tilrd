@@ -20,6 +20,7 @@ fn twin(file: &Path, extension: &str) -> PathBuf {
 /// them: `tilrd 0.1.0-26449dd (linux-aarch64)`.
 fn version_and_platform() -> (String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .arg("--version")
         .output()
         .unwrap();
@@ -106,6 +107,7 @@ fn update(exe: &Path, cdn: &str) -> std::process::Output {
 fn update_failing(exe: &Path, cdn: &str, failpoints: &str) -> Child {
     spawn_copied(
         Command::new(exe)
+            .env_remove("RUST_LOG")
             .args(["update", "--cdn", cdn])
             .env("TILR_FAILPOINTS", failpoints)
             .stdout(Stdio::piped())
