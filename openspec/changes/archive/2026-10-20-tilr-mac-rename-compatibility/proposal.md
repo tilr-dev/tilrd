@@ -28,4 +28,4 @@
 
 ## Commits
 
-- `7cf8f06` docs(spec): keep the output of the hidden commands the Tilr app runs (requirement, test `panes::ps_server_version_fails_when_nothing_listens`, doc comments).
+- docs(spec): keep the output of the hidden commands the Tilr app runs (requirement, test `panes::ps_server_version_fails_when_nothing_listens`, doc comments).
