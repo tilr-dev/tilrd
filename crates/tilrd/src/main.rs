@@ -309,7 +309,6 @@ fn main() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// What the command line and the configuration file make of a server.
 /// The log filter from `RUST_LOG` (tracing directives), `info` when it is
 /// unset or empty; an invalid value gives `info` and the reason to log once
 /// the logger is up.
@@ -329,6 +328,7 @@ fn log_filter(
     }
 }
 
+/// What the command line and the configuration file make of a server.
 fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
     if cli.no_listen && cli.no_socket {
         anyhow::bail!("nothing to listen on: --no-socket and --no-listen");
