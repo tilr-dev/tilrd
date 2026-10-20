@@ -12,9 +12,9 @@
 
 ## Capabilities
 
-### New Capabilities
+### Modified Capabilities
 
-- `itest-coverage`: report selection and preservation of the last recorded run.
+- `spec-coverage`: adds report selection and preservation of the last recorded run.
 
 ## Non-goals
 
@@ -23,4 +23,4 @@
 
 ## Impact
 
-`itests/tools/coverage.py`, its Python regression test, and `itests/README.md`. This is an offline tool; no server reload, client reconnect, protocol or state migration applies. An update from the previous release can use an existing coverage file immediately. No feature flag or PROTOCOL_VERSION change is needed.
+Capability `spec-coverage`; `itests/tools/coverage.py`, its Python regression test, and `itests/README.md`. This is an offline tool; no server reload, client reconnect, protocol or state migration applies. An update from the previous release can use an existing coverage file immediately. No feature flag or PROTOCOL_VERSION change is needed.
