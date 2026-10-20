@@ -9,4 +9,4 @@
 
 - [x] 2.1 Share the explicit connector with tilr and tilr-driver.
 - [x] 2.2 Verify client TLS regression and date the upstream workaround.
-- [ ] 2.3 Run self-review and checks again.
+- [x] 2.3 Run self-review and checks again.
