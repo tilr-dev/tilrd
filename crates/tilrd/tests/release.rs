@@ -25,7 +25,9 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.dir).unwrap();
+        if let Err(error) = fs::remove_dir_all(&self.dir) {
+            eprintln!("could not remove fixture {}: {error}", self.dir.display());
+        }
     }
 }
 
@@ -262,7 +264,11 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     assert!(!f.log().contains("releases/linux-x86_64/latest"));
 
     fs::remove_file(f.cdn().join("linux-aarch64/latest")).unwrap();
-    assert_exit(&f.run(&["--upload-only", "linux-aarch64"], true), 1);
+    let output = f.run(&["--upload-only", "linux-aarch64"], true);
+    assert_exit(&output, 1);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("nothing built for linux-aarch64: no ")
+    );
     fs::write(
         f.cdn().join("linux-aarch64/latest"),
         format!("{}\n", f.version()),
@@ -270,10 +276,12 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     .unwrap();
 
     fs::write(f.cdn().join("linux-x86_64/latest"), "other-version\n").unwrap();
-    assert_exit(
-        &f.run(&["--upload-only", "linux-aarch64", "linux-x86_64"], true),
-        1,
-    );
+    let output = f.run(&["--upload-only", "linux-aarch64", "linux-x86_64"], true);
+    assert_exit(&output, 1);
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
+        "linux-x86_64 is built as other-version, not {}",
+        f.version()
+    )));
     fs::write(
         f.cdn().join("linux-x86_64/latest"),
         format!("{}\n", f.version()),
@@ -281,7 +289,10 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     .unwrap();
 
     fs::write(archive(&f, "linux-aarch64"), "corrupt").unwrap();
-    assert_exit(&f.run(&["--upload-only", "linux-aarch64"], true), 1);
+    let output = f.run(&["--upload-only", "linux-aarch64"], true);
+    assert_exit(&output, 1);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("tilr-"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("linux-aarch64.tar.gz: FAILED"));
     assert_eq!(
         f.log().lines().count(),
         3,
@@ -479,6 +490,17 @@ fn assert_ci_gates(ci: &str) {
     let test = job(&ci, "test");
     let deny = job(&ci, "deny");
     let secrets = job(&ci, "secrets");
+    let msrv = job(&ci, "msrv");
+    for gate in [
+        "rustup toolchain install 1.90 --profile minimal",
+        "rustup default 1.90",
+        "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
+    ] {
+        assert!(msrv.contains(gate), "missing MSRV gate: {gate}");
+    }
+    let checkout = secrets.split("- name: Install gitleaks").next().unwrap();
+    assert!(checkout.contains("uses: actions/checkout@"));
+    assert!(checkout.contains("fetch-depth: 0"));
     for gate in [
         "- run: cargo fmt --all --check",
         "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
@@ -496,9 +518,28 @@ fn assert_ci_gates(ci: &str) {
 fn ci_runs_every_gate_of_agents_md() {
     let ci = text_file(".github/workflows/ci.yml");
     assert_ci_gates(&ci);
-    let removed = ci.replace("      - run: cargo fmt --all --check\n", "");
+    let removed = ci.replace(&format!("  msrv:\n{}", job(&ci, "msrv")), "");
     assert_ne!(removed, ci);
     assert!(std::panic::catch_unwind(|| assert_ci_gates(&removed)).is_err());
+    for clause in [
+        "rustup toolchain install 1.90 --profile minimal",
+        "rustup default 1.90",
+        "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
+        "fetch-depth: 0",
+        "- run: cargo fmt --all --check",
+        "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
+        "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
+        "- run: cargo test --workspace --features tilrd/failpoints --locked",
+        "- run: '\"$CARGO_DENY\" --locked check'",
+        "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'",
+    ] {
+        let removed = ci.replace(clause, "");
+        assert_ne!(removed, ci, "mutation did not remove {clause}");
+        assert!(
+            std::panic::catch_unwind(|| assert_ci_gates(&removed)).is_err(),
+            "accepted missing {clause}"
+        );
+    }
 }
 
 #[test]
@@ -550,9 +591,8 @@ fn release_please_bumps_the_workspace_version_and_lock() {
     }
 }
 
-#[test]
-fn a_release_builds_and_packages_every_target() {
-    let release = active(&text_file(".github/workflows/release.yml"));
+fn assert_release_contract(release: &str, package: &str) {
+    let release = active(release);
     let build = job(&release, "build");
     for target in [
         "aarch64-apple-darwin",
@@ -573,9 +613,71 @@ fn a_release_builds_and_packages_every_target() {
     ] {
         assert!(build.contains(clause), "{clause}");
     }
+    let version = build
+        .split("- name: Check the version\n")
+        .nth(1)
+        .expect("missing version check");
+    let version = version.split("      - ").next().unwrap();
+    for clause in [
+        "if: matrix.native",
+        "for exe in tilrd tilr; do",
+        "case \"$(\"$BIN_DIR/$exe\" --version)\" in",
+        "\"$exe ${TAG#v}-$(git rev-parse --short HEAD) (\"*\")\") ;;",
+        "*) \"$BIN_DIR/$exe\" --version; exit 1 ;;",
+    ] {
+        assert!(
+            version.contains(clause),
+            "missing native version check: {clause}"
+        );
+    }
+    let package = active(package);
+    for clause in [
+        "NAME=tilr-$TAG-$TARGET",
+        "cp \"$BIN_DIR/tilrd\" \"$BIN_DIR/tilr\" \"$STAGE/$NAME/\"",
+        "cp \"$ROOT/LICENSE-APACHE\" \"$ROOT/LICENSE-MIT\" \"$ROOT/README.md\" \"$STAGE/$NAME/\"",
+        "COPYFILE_DISABLE=1 tar -czf \"$OUT/$NAME.tar.gz\" -C \"$STAGE\" \"$NAME\"",
+        "(cd \"$OUT\" && shasum -a 256 \"$NAME.tar.gz\" >\"$NAME.tar.gz.sha256\")",
+    ] {
+        assert!(
+            package.contains(clause),
+            "missing packaging contract: {clause}"
+        );
+    }
     let upload = job(&release, "upload");
     assert!(upload.contains("needs: [release-please, build]"));
     assert!(upload.contains("gh release upload"));
+}
+
+#[test]
+fn a_release_builds_and_packages_every_target() {
+    let release = text_file(".github/workflows/release.yml");
+    let package = text_file("scripts/package.sh");
+    assert_release_contract(&release, &package);
+    for clause in [
+        "if: matrix.native",
+        "${TAG#v}-$(git rev-parse --short HEAD)",
+    ] {
+        let removed = release.replace(clause, "");
+        assert_ne!(removed, release);
+        assert!(std::panic::catch_unwind(|| assert_release_contract(&removed, &package)).is_err());
+    }
+    for clause in [
+        "\"$BIN_DIR/tilrd\"",
+        "\"$BIN_DIR/tilr\"",
+        "\"$ROOT/LICENSE-APACHE\"",
+        "\"$ROOT/LICENSE-MIT\"",
+        "\"$ROOT/README.md\"",
+        "tar -czf",
+        "shasum -a 256",
+        "$NAME.tar.gz.sha256",
+    ] {
+        let removed = package.replace(clause, "");
+        assert_ne!(removed, package, "mutation did not remove {clause}");
+        assert!(
+            std::panic::catch_unwind(|| assert_release_contract(&release, &removed)).is_err(),
+            "accepted missing {clause}"
+        );
+    }
 }
 
 #[test]
