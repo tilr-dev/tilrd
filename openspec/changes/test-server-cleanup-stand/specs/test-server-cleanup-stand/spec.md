@@ -12,6 +12,10 @@ separate signal and timeout cases without sleeps or repeated runs for ordering.
 - **WHEN** the stand receives the ready event and server PID
 - **THEN** it signals the test process and checks whether that server remains
 
+#### Scenario: Ready message is split across pipe reads
+- **WHEN** the fixture's ready line arrives in fragments, including a split within its PID
+- **THEN** the stand waits for the complete newline-terminated message and checks the full PID
+
 #### Scenario: Controlled timeout after ready
 - **WHEN** the stand receives the ready event and server PID
 - **THEN** it triggers a process wait timeout, terminates the test process, and checks whether that server remains

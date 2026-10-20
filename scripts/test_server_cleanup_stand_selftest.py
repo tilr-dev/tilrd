@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 STAND = Path(__file__).with_name("test_server_cleanup_stand.py")
@@ -18,6 +18,17 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("cleanup_stand", STAND)
 stand = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stand)
+
+
+class ReadyEventTest(unittest.TestCase):
+    def test_pid_split_across_pipe_reads(self):
+        process = Mock(pid=123)
+        with patch.object(stand.select, "select", return_value=([process.stdout], [], [])), \
+                patch.object(stand.os, "read", side_effect=[
+                    b"fixture output\nTILR_STAND_READY pid=12", b"345\n",
+                ]) as read, patch.object(stand.os, "getpgid", return_value=process.pid):
+            self.assertEqual(stand.ready_pid(process), 12345)
+            self.assertEqual(read.call_count, 2)
 
 
 class ExitEventTest(unittest.TestCase):

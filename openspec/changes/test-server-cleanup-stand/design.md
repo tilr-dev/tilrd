@@ -52,3 +52,8 @@ check failures. The regression fixture announces a server and the wrapper emits
 a pipe event upon entering the server exit wait; only then does the test signal
 the stand. The test also kills its fixture group in a finally block so a failing
 regression cannot leave its deliberately surviving child behind.
+
+The ready parser accepts only a complete newline-terminated message. Pipe reads
+may split the decimal PID anywhere, so an incomplete suffix cannot identify a
+server. A deterministic regression feeds `pid=12` and `345\n` as separate reads
+and requires PID 12345.

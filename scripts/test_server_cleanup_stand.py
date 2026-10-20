@@ -19,7 +19,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 EXIT_DEADLINE = 30
-READY = re.compile(rb"TILR_STAND_READY pid=(\d+)")
+READY = re.compile(rb"TILR_STAND_READY pid=(\d+)\n")
 
 
 def build_fixture():
