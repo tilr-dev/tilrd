@@ -23,6 +23,12 @@ The script integration fixture uses a Docker stand-in in the cargo suite. Run
 `python3 scripts/test-linux.py --docker` to compile the two fixture binaries in
 real Linux containers with the same FIFO barrier.
 
+## Test harness — `tests/harness.rs`
+
+| Use case | Test |
+|---|---|
+| A failed async or blocking log wait, or a panic with a poisoned log, preserves diagnostics and cleans up the server without aborting the test process | `a_failed_log_wait_unwinds_and_cleans_up_the_server` |
+
 ## Connection and panes — `tests/panes.rs`
 
 | Use case | Test |
