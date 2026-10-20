@@ -10,5 +10,5 @@
 ## 2. Checks and archive
 
 - [ ] 2.1 Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
-- [ ] 2.2 `./itests/dt uc_016` green (no itests case added), then `./itests/dt coverage` exits 0 and `openspec/coverage/` is regenerated
+- [ ] 2.2 `./itests/dt uc_016` green (no itests case added), then `./itests/dt coverage` exits 0 and local, git-ignored `openspec/coverage/` reports are regenerated without committing them
 - [ ] 2.3 Record the commit in proposal.md ("Implemented by") and archive the change; verify `openspec list` no longer shows it

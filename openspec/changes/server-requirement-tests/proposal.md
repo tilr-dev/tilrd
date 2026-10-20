@@ -2,7 +2,7 @@
 
 ## Why
 
-`openspec/coverage/coverage.md` (`./itests/dt coverage`, regenerated 2026-10-18) lists server requirements without a test: `exec` 1, `metrics` 1, `panes` 2, `reload` 1, `socks-proxy` 2, `ssh-agent-forwarding` 1. Checked at 1163abd: none of them has gained a test.
+The local coverage report (`./itests/dt coverage` → `openspec/coverage/coverage.md`, git-ignored; generated 2026-10-18) lists server requirements without a test: `exec` 1, `metrics` 1, `panes` 2, `reload` 1, `socks-proxy` 2, `ssh-agent-forwarding` 1. Checked at 1163abd: none of them has gained a test.
 
 ## What Changes
 

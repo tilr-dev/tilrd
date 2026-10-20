@@ -2,7 +2,7 @@
 
 ## Why
 
-`installation` "Manual install from the CDN" has no test (`openspec/coverage/coverage.md`, regenerated 2026-10-18): the README's manual steps are checked by nothing.
+`installation` "Manual install from the CDN" has no test according to the local, git-ignored coverage report (`./itests/dt coverage` → `openspec/coverage/coverage.md`, generated 2026-10-18): the README's manual steps are checked by nothing.
 
 ## What Changes
 

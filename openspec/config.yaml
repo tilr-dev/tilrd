@@ -58,7 +58,8 @@ context: |
   run with ./dt); a case for a missing feature is written first and stays red (FAIL).
   Each case carries spec tags, `@case(spec=["<capability>/<requirement-slug>[#<scenario-
   slug>]"])`, matching the `**Verified by**` lines of openspec/specs/;
-  `./itests/dt coverage` (itests/tools/coverage.py, offline) writes openspec/coverage/.
+  `./itests/dt coverage` (itests/tools/coverage.py, offline) writes local, git-ignored reports in
+  openspec/coverage/ on demand; generated reports are not committed.
   Python runs via `uv run`.
 
   CI gates (.github/workflows/ci.yml): cargo fmt --all --check; cargo clippy
@@ -102,7 +103,7 @@ rules:
     - Specs describe observable behavior (wire messages and fields from tilr.proto, close codes, CLI output and exit status, files and sockets in the runtime/state directory and their modes, pane environment, flags and config keys, metric names, log lines), not internal function names.
     - When a requirement is backed by a test, name it in the requirement text - cargo tests as `file_stem::test_name` (crates/*/tests/*.rs) and Dagger cases as itests `UC-xxx` (`uc_xxx.py::case`); list requirements without a test in the spec's Notes.
     - A requirement whose itests case is red states the intended behavior, and Notes say the case is currently failing.
-    - A requirement added, renamed or removed, or a `**Verified by**` line changed, updates the spec tags of the itests cases (`@case(spec=[...])` in itests/scenarios/) in the same change, and `./itests/dt coverage` is run to regenerate openspec/coverage/ (it fails on a tag naming no requirement).
+    - A requirement added, renamed or removed, or a `**Verified by**` line changed, updates the spec tags of the itests cases (`@case(spec=[...])` in itests/scenarios/) in the same change, and `./itests/dt coverage` is run to regenerate local, git-ignored openspec/coverage/ reports without committing them (it fails on a tag naming no requirement).
   design:
     - Describe what happens on a reload (supervisor and pane exec in place) and on a client reconnect for any new state or connection.
     - Keep data in quantity on the bulk lane of the client outbox; say how backpressure bounds memory.

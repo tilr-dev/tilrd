@@ -2,7 +2,7 @@
 
 ## Why
 
-`openspec/coverage/coverage.md` (`./itests/dt coverage`, regenerated 2026-10-18) lists 8 `cloud-tunnels` requirements without a test. Checked at 1163abd: `crates/tilrd/tests/cloud.rs` has five tests, none of login, logout, revoke, retry, a failing `cloudflared`, `--no-listen` or a SIGKILLed server. USE_CASES.md says Cloud login/logout were checked only by hand against a local Cloud.
+The local coverage report (`./itests/dt coverage` → `openspec/coverage/coverage.md`, git-ignored; generated 2026-10-18) lists 8 `cloud-tunnels` requirements without a test. Checked at 1163abd: `crates/tilrd/tests/cloud.rs` has five tests, none of login, logout, revoke, retry, a failing `cloudflared`, `--no-listen` or a SIGKILLed server. USE_CASES.md says Cloud login/logout were checked only by hand against a local Cloud.
 
 ## Scope
 
