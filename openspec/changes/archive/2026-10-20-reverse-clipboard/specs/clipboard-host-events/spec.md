@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: The clipboard can be turned off
-With `--no-clipboard` the `"clipboard"` feature MUST be absent and `clipboard_max_bytes` 0; a `ClipboardPut` transfer MUST be answered once, on its first chunk, with `ClipboardAck` `ok` false and `the clipboard is turned off on this server`; the panes MUST get neither the server's `xclip`/`wl-paste`/`wl-copy` nor `TILR_CLIPBOARD_DIR` (its `tilr` stays); and no `ClipboardWrite` MUST be sent.
+With `--no-clipboard` the `"clipboard"` feature MUST be absent and `clipboard_max_bytes` 0; a `ClipboardPut` transfer MUST be answered once, on its first chunk, with `ClipboardAck` `ok` false and `the clipboard is turned off on this server`; the panes MUST get neither the server's `xclip`/`wl-paste`/`wl-copy` nor `TILR_CLIPBOARD_DIR`, `TILR_CLIPBOARD_MAX` or `TILR_CLIPBOARD_TTL` (its `tilr` stays); and no `ClipboardWrite` MUST be sent.
 
 **Verified by**: `clipboard::the_clipboard_can_be_turned_off` and `clipboard::nothing_is_copied_to_clients_with_the_clipboard_turned_off`.
 
@@ -15,7 +15,7 @@ With `--no-clipboard` the `"clipboard"` feature MUST be absent and `clipboard_ma
 - **THEN** a subscribed client with `"clipboard-write"` receives no `ClipboardWrite`
 
 ### Requirement: The panes get the server's xclip and wl-paste first on PATH
-With the clipboard on, the server SHALL link its executable as `xclip`, `wl-paste` and `wl-copy` (and `tilr`) in `bin/` of the runtime directory, put that directory first on every pane's `PATH`, and set `TILR_SHIMS` to it, `TILR_CLIPBOARD_DIR` to the clipboard directory and `TILR_CLIPBOARD_MAX` to `--clipboard-max` in bytes, so a profile that resets `PATH` can restore it with `PATH="$TILR_SHIMS:$PATH"`.
+With the clipboard on, the server SHALL link its executable as `xclip`, `wl-paste` and `wl-copy` (and `tilr`) in `bin/` of the runtime directory, put that directory first on every pane's `PATH`, and set `TILR_SHIMS` to it, `TILR_CLIPBOARD_DIR` to the clipboard directory, `TILR_CLIPBOARD_MAX` to `--clipboard-max` in bytes and, with a `--clipboard-ttl`, `TILR_CLIPBOARD_TTL` to it in seconds, so a profile that resets `PATH` can restore it with `PATH="$TILR_SHIMS:$PATH"`.
 
 **Verified by**: `clipboard::a_pasted_image_reaches_a_program_that_reads_the_clipboard` and `clipboard::the_clipboard_can_be_turned_off`.
 
@@ -82,14 +82,18 @@ A shim copy over `--clipboard-max` SHALL fail with `<tool>: too large: <size>, t
 - **WHEN** the server runs with `--clipboard-max 1K` and a pane copies 2 KiB with `xclip -selection clipboard -i`
 - **THEN** `xclip` exits non-zero with `too large`, no `ClipboardWrite` is sent, and the clipboard holds what it held before
 
-### Requirement: A copy nobody takes goes to the real tool too
-When a shim copy reaches no client with `"clipboard-write"`, the shim SHALL still exit 0 with the content in the shared clipboard, and SHALL first give the content on stdin to the next real `xclip` / `wl-copy` on `PATH` with the same arguments when there is one.
+### Requirement: A copy nobody takes stays in the shared buffer only
+When a copy reaches no client with `"clipboard-write"`, the server SHALL keep it only in the shared clipboard (until `--clipboard-ttl`): a shim copy SHALL exit 0 without running the next real `xclip` / `wl-copy` on `PATH`, and a client that connects or subscribes to the pane later SHALL NOT be sent it.
 
-**Verified by**: `clipboard::a_copy_nobody_takes_goes_to_the_real_tool`.
+**Verified by**: `clipboard::a_copy_nobody_takes_stays_in_the_shared_buffer`.
 
 #### Scenario: A real xclip is installed
-- **WHEN** no client watches the pane, a fake `xclip` later on `PATH` records its stdin, and a pane runs `echo hi | xclip -selection clipboard -i`
-- **THEN** the fake `xclip` received `hi`, and `xclip -selection clipboard -o` prints `hi`
+- **WHEN** no client watches the pane, a fake `xclip` later on `PATH` records whether it ran, and a pane runs `echo hi | xclip -selection clipboard -i`
+- **THEN** the shim exits 0, the fake `xclip` did not run, and `xclip -selection clipboard -o` prints `hi`
+
+#### Scenario: A client that comes later
+- **WHEN** a copy reached no client and then a client with `"clipboard-write"` subscribes to the pane
+- **THEN** that client receives no `ClipboardWrite` for it
 
 ### Requirement: tilr passes copied text to its terminal
 `tilr` SHALL list `"clipboard-write"` in `Hello.features` and SHALL write a completed `ClipboardWrite` whose MIME type is text to its terminal as `ESC ] 52 ; c ; <base64> ESC \`; other types SHALL be ignored.

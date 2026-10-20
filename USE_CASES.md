@@ -103,6 +103,7 @@ real Linux containers with the same FIFO barrier.
 | `kill -TERM` of an attached `tilr`: it ends by SIGTERM, the terminal back in cooked mode (`icanon`, `echo`), cursor shown, main screen, nothing printed; the pane stays | `a_terminated_attach_restores_the_terminal` |
 | A reconnect that connects but loses the connection before the pane list comes (a stand-in server on a TCP port): a failed attempt on the status line, the next one attaches and typing gets through | `an_error_right_after_a_reconnect_is_retried` |
 | Ctrl+] d while a reconnect attempt waits on a server that accepts and never answers: detached at once, not after the 5 s connect timeout | `detach_works_while_a_reconnect_attempt_hangs` |
+| Unit: a text copy made in the attached pane goes to the terminal as `ESC ] 52 ; c ; <base64> ESC \`, once its last chunk came; a copy cut short by a newer one, an image, and one with more data than announced are not (`src/attach.rs`) | `attach::tests::copied_text_goes_to_the_terminal_as_osc_52` |
 
 ## Access — `tests/auth.rs`
 
@@ -284,6 +285,16 @@ state format; platforms other than `linux-aarch64`.
 | An upload that is too large is refused, and no old image comes back | `an_upload_over_the_limit_is_refused_and_leaves_no_stale_content` |
 | A flag turns the clipboard off | `the_clipboard_can_be_turned_off` |
 | Clipboard content expires | `pasted_content_expires` |
+| OSC 52 printed in a pane reaches the client watching it that takes copies (`"clipboard-write"`) with the pane, `text/plain;charset=utf-8` and the text, and becomes the clipboard another pane pastes; a watcher without `"clipboard-write"` and a client watching another pane get nothing | `osc_52_in_a_pane_reaches_the_watching_client` |
+| `xclip -selection clipboard -t image/png -i` in a pane: the client gets the image byte for byte, `wl-paste -t image/png` in another pane prints it; `wl-copy TEXT` and `wl-copy` from stdin copy | `xclip_in_a_pane_reaches_the_watching_client` |
+| A 1 MiB copy comes in 4 chunks of one transfer; an 8 MiB copy to a client that reads nothing is cut short by the next copy and never gets its last chunk (a 9 MiB read taking turns with it in the bulk lane ends first) | `a_large_copy_comes_in_chunks_and_a_newer_one_replaces_it` |
+| `--no-clipboard`: OSC 52 in a pane is not sent to a client that takes copies | `nothing_is_copied_to_clients_with_the_clipboard_turned_off` |
+| `--clipboard-max 1K`: `TILR_CLIPBOARD_MAX` is 1024 in the pane; `xclip -i` of 2 KiB exits 1 with `too large: 2 KB, the clipboard takes at most 1 KB` and the clipboard keeps what it held; an OSC 52 copy of 2 KiB is dropped with a log line and not sent | `a_copy_over_the_limit_is_refused` |
+| A copy no client takes: `xclip -i` exits 0 without running a real `xclip` later on `PATH`, the copy is the clipboard until `--clipboard-ttl`, and a client that subscribes later is not sent it | `a_copy_nobody_takes_stays_in_the_shared_buffer` |
+| Unit: `xclip` copy requests (`-i` or no `-o`, `-t`, files, `-rmlastnl`; the primary selection is not ours) (`src/clipboard.rs`) | `clipboard::tests::xclip_copy_requests` |
+| Unit: `wl-copy` requests (`-t`, `--type=`, `-n`, text arguments, `--`; `--primary` and `--clear` are not ours) (`src/clipboard.rs`) | `clipboard::tests::wl_copy_requests` |
+| Unit: a copy over the limit is refused with its whole size, from text or files (`src/clipboard.rs`) | `clipboard::tests::copies_over_the_limit_are_refused` |
+| Unit: OSC 52 (BEL and ST) and OSC 1337 Copy to the clipboard are reported as copies of `text/plain;charset=utf-8`; the primary selection, reads and clearing are not (`crates/tilr-screen/src/ghostty.rs`) | `ghostty::tests::osc_52_is_reported_as_a_clipboard_write` |
 
 ## Files and `tilr edit` — `tests/files.rs`
 

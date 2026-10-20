@@ -14,12 +14,17 @@
 //! with this client's id, and reconnecting would take the pane back from it
 //! in a loop.
 //!
+//! Text a program in the pane copies to the clipboard (`ClipboardWrite`) is
+//! written to the terminal as OSC 52, so the user's terminal puts it on the
+//! clipboard of their machine, as it decides for a program over ssh.
+//!
 //! SIGTERM, SIGHUP and SIGINT restore the terminal, then end the process.
 
 use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
+use base64::Engine;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
     EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton as TermButton,
@@ -36,9 +41,9 @@ use crossterm::terminal::{
 use crossterm::{cursor, execute, queue, terminal};
 use futures_util::StreamExt;
 use tilr_proto::{
-    Color, CursorShape, Frame, KeyAction, KeyInput, MouseAction, MouseButton, MouseInput, NamedKey,
-    Paste, Resize, Scroll, Style, Subscribe, Underline, attrs, client_message::Msg, color, mods,
-    server_message,
+    ClipboardWrite, Color, CursorShape, Frame, KeyAction, KeyInput, MouseAction, MouseButton,
+    MouseInput, NamedKey, Paste, Resize, Scroll, Style, Subscribe, Underline, attrs,
+    client_message::Msg, color, mods, server_message,
 };
 use tokio::time::Instant;
 
@@ -67,6 +72,10 @@ pub enum Exit {
     Superseded,
 }
 
+/// What `tilr` lists in `Hello.features` to be sent the copies made in the
+/// pane it is attached to.
+pub const FEATURE_CLIPBOARD_WRITE: &str = "clipboard-write";
+
 /// Attach to `pane_id` over `conn` until detached or the pane ends.
 pub async fn run(conn: Conn, target: &Target, client_id: &str, pane_id: &str) -> Result<Exit> {
     let guard = TerminalGuard::enter()?;
@@ -76,6 +85,7 @@ pub async fn run(conn: Conn, target: &Target, client_id: &str, pane_id: &str) ->
         pane_id,
         mouse_captured: false,
         prefix: false,
+        copy: Incoming::default(),
     };
     let outcome = attach.event_loop(conn).await;
     drop(guard);
@@ -90,6 +100,59 @@ struct Attach<'a> {
     mouse_captured: bool,
     /// Ctrl+] was pressed: the next key is a command.
     prefix: bool,
+    /// The copy coming from the pane.
+    copy: Incoming,
+}
+
+/// A copy made in the pane, as its chunks come.
+#[derive(Default)]
+struct Incoming {
+    /// The newest transfer seen; ids only grow on a connection.
+    newest: u64,
+    /// The copy under way: its type, size and what came of it.
+    under_way: Option<(String, u64, Vec<u8>)>,
+}
+
+impl Incoming {
+    /// Take a chunk. Returns what to write to the terminal once a copy of
+    /// text is whole; other types are not passed on. A transfer that another
+    /// one starts before its last chunk is dropped, as are late chunks of it.
+    fn take(&mut self, chunk: ClipboardWrite) -> Option<Vec<u8>> {
+        if chunk.transfer_id < self.newest {
+            return None;
+        }
+        if chunk.transfer_id > self.newest {
+            self.newest = chunk.transfer_id;
+            self.under_way = Some((chunk.mime, chunk.total_size, Vec::new()));
+        }
+        let (_, total_size, data) = self.under_way.as_mut()?;
+        if data.len() as u64 + chunk.data.len() as u64 > *total_size {
+            // More than announced: not a copy to trust.
+            self.under_way = None;
+            return None;
+        }
+        data.extend_from_slice(&chunk.data);
+        if !chunk.last {
+            return None;
+        }
+        let (mime, total_size, data) = self.under_way.take()?;
+        let text = mime
+            .get(..5)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("text/"));
+        (text && data.len() as u64 == total_size).then(|| osc_52(&data))
+    }
+}
+
+/// The OSC 52 sequence that puts `data` on the terminal's clipboard.
+fn osc_52(data: &[u8]) -> Vec<u8> {
+    let mut out = b"\x1b]52;c;".to_vec();
+    out.extend(
+        base64::engine::general_purpose::STANDARD
+            .encode(data)
+            .bytes(),
+    );
+    out.extend(b"\x1b\\");
+    out
 }
 
 /// What one key does.
@@ -138,6 +201,8 @@ impl Attach<'_> {
                 match outcome {
                     Attempt::Connected(fresh) => {
                         conn = Some(fresh);
+                        // A new connection numbers its transfers afresh.
+                        self.copy = Incoming::default();
                         retry = RETRY_FIRST;
                         attempts = 0;
                     }
@@ -160,6 +225,14 @@ impl Attach<'_> {
                     Ok(server_message::Msg::Frame(frame)) if frame.pane_id == self.pane_id => {
                         self.capture_mouse(frame.mouse_tracking)?;
                         draw(&frame)?;
+                        None
+                    }
+                    Ok(server_message::Msg::ClipboardWrite(chunk)) if chunk.pane_id == self.pane_id => {
+                        if let Some(osc) = self.copy.take(chunk) {
+                            let mut out = std::io::stdout().lock();
+                            out.write_all(&osc)?;
+                            out.flush()?;
+                        }
                         None
                     }
                     Ok(server_message::Msg::PaneExited(exited)) if exited.pane_id == self.pane_id => {
@@ -688,7 +761,48 @@ mod tests {
             pane_id: "p",
             mouse_captured: false,
             prefix: false,
+            copy: Incoming::default(),
         }
+    }
+
+    fn chunk(
+        transfer_id: u64,
+        mime: &str,
+        total_size: u64,
+        data: &[u8],
+        last: bool,
+    ) -> ClipboardWrite {
+        ClipboardWrite {
+            transfer_id,
+            pane_id: "p".into(),
+            mime: mime.into(),
+            total_size,
+            data: bytes::Bytes::copy_from_slice(data),
+            last,
+        }
+    }
+
+    #[test]
+    fn copied_text_goes_to_the_terminal_as_osc_52() {
+        let mut copy = Incoming::default();
+        let text = "text/plain;charset=utf-8";
+        assert_eq!(copy.take(chunk(1, text, 2, b"h", false)), None);
+        assert_eq!(
+            copy.take(chunk(1, text, 2, b"i", true)).as_deref(),
+            Some(&b"\x1b]52;c;aGk=\x1b\\"[..])
+        );
+        // A copy cut short by a newer one is dropped, and so is a chunk of
+        // it that comes late.
+        assert_eq!(copy.take(chunk(2, text, 8, b"lost", false)), None);
+        assert_eq!(copy.take(chunk(3, text, 5, b"the", false)), None);
+        assert_eq!(copy.take(chunk(2, text, 8, b"late", false)), None);
+        assert_eq!(
+            copy.take(chunk(3, text, 5, b"re", true)).as_deref(),
+            Some(&b"\x1b]52;c;dGhlcmU=\x1b\\"[..])
+        );
+        // Not text, or more than announced: nothing.
+        assert_eq!(copy.take(chunk(4, "image/png", 3, b"png", true)), None);
+        assert_eq!(copy.take(chunk(5, text, 1, b"too much", true)), None);
     }
 
     #[test]

@@ -65,7 +65,10 @@ message Hello {
   // The PROTOCOL_VERSION the client was built against.
   uint32 protocol_version = 1;
   string client_name = 2;
-  // Optional capabilities the client supports.
+  // Optional capabilities the client supports:
+  //   "host-events" - takes HostEvent
+  //   "agent" - serves the SSH agent (StreamOpen with kind "ssh-agent")
+  //   "clipboard-write" - takes ClipboardWrite
   repeated string features = 3;
   // The server's access token (`tilr token` on its machine). A server that asks for
   // one answers a Hello without it, or with another, with an Error and
@@ -561,6 +564,7 @@ message ServerMessage {
     ExecOutput exec_output = 19;
     ExecExit exec_exit = 20;
     ExecInputAck exec_input_ack = 21;
+    ClipboardWrite clipboard_write = 22;
   }
 }
 
@@ -570,7 +574,8 @@ message HelloAck {
   // The capabilities this server can be run without and offers, in this
   // order (what is part of the protocol version, such as Ping, is never
   // listed):
-  //   "clipboard" - ClipboardPut (off with --no-clipboard)
+  //   "clipboard" - ClipboardPut, and ClipboardWrite to clients that list
+  //                 "clipboard-write" (off with --no-clipboard)
   //   "files" - FsList, FsStat, FsRead, FsWrite, FsMkdir, FsRename, FsDelete,
   //             FsWatch, FsUnwatch (off with --no-files)
   //   "host-events" - HostEvent (when the host-events socket is up)
@@ -779,6 +784,33 @@ message HostEvent {
   string path = 4;
   // Anything else the program gave.
   repeated string args = 5;
+}
+
+// A program in a pane copied to the clipboard (OSC 52 or OSC 1337 Copy in its
+// output, or the server's `xclip -selection clipboard -i` / `wl-copy`). The
+// copy is the server's clipboard from then on, and goes to every client
+// subscribed to the pane that has "clipboard-write" in its Hello.features;
+// a copy nobody watches for stays on the server and is not sent later. Part
+// of the "clipboard" feature (HelloAck.features).
+//
+// Content comes on the bulk lane in chunks of at most 256 KiB sharing one
+// `transfer_id`, `mime` and `total_size`, the last with `last`. A newer copy
+// ends a transfer still under way without its `last` chunk: a client drops a
+// transfer whose chunks stop coming before `last` once another `transfer_id`
+// starts, and takes only a transfer that ends with `last`.
+message ClipboardWrite {
+  // Chosen by the server, larger than those of its previous transfers. A
+  // chunk of a transfer older than the one under way is dropped: a newer
+  // copy may overtake the last chunk of the one it ends.
+  uint64 transfer_id = 1;
+  // The pane the program runs in.
+  string pane_id = 2;
+  // MIME type of the content: "text/plain;charset=utf-8" for OSC 52.
+  string mime = 3;
+  // Size of the whole content in bytes.
+  uint64 total_size = 4;
+  bytes data = 5;
+  bool last = 6;
 }
 
 // A program connected to the server for a stream to this client; see
@@ -1052,6 +1084,9 @@ message SupervisorState {
   optional int32 local_listener = 6;
   optional int32 local_lock = 7;
   string local_path = 8;
+  // The last ClipboardWrite.transfer_id given out, so ids only grow across
+  // a reload. 0 = not recorded.
+  uint64 last_copy_id = 9;
 }
 
 message PaneState {

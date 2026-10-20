@@ -39,7 +39,7 @@ environment lacks them (an inherited `HOME` wins); launchd's `XPC_SERVICE_NAME` 
 `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC`, `WATCHDOG_PID`) are dropped. A pane with a
 command runs it as given, without a shell.
 
-The server's tools for the panes (`xclip`, `wl-paste`, `tilr`; their directory is
+The server's tools for the panes (`xclip`, `wl-paste`, `wl-copy`, `tilr`; their directory is
 `$TILR_SHIMS`) come first on `PATH`, also when a startup file sets `PATH` from scratch: zsh,
 bash and fish start through small wrappers in `<runtime dir>/shell/` that run the user's
 files as that login shell would and then put `$TILR_SHIMS` first (zsh: `ZDOTDIR` pointed
@@ -180,6 +180,11 @@ another connection of this client]` and exits 0, rather than take the pane back 
 other in a loop. SIGTERM, SIGHUP or SIGINT (`kill -INT`; Ctrl+C is a key for the pane)
 restore the terminal (cooked mode, cursor, main screen) and end `tilr` by that signal,
 printing nothing; the pane goes on.
+
+**Copies.** `tilr` lists `clipboard-write` in `Hello.features`: text a program in the
+attached pane copies (see [Copying from a pane](#copying-from-a-pane)) is written to the
+terminal as `ESC ] 52 ; c ; <base64> ESC \`, for the terminal to put on the clipboard
+of the user's machine as its settings allow; other types (an image) are not passed on.
 
 **Which server.** `--socket PATH` / `TILR_SOCKET`, or `--connect ws://HOST:PORT` /
 `TILR_CONNECT` with `--token` / `TILR_TOKEN` for a server's TCP port (not started from
@@ -656,8 +661,8 @@ Rules:
   user.
 - Content expires after `--clipboard-ttl`.
 - While the clipboard is empty, the server's `xclip` and `wl-paste` hand over to the real
-  tools further down the `PATH`, if any. They also do for anything they do not serve:
-  copying, the primary selection.
+  tools further down the `PATH`, if any. They also do for anything they do not serve: the
+  primary selection, `wl-paste --watch`, `wl-copy --clear`.
 
 Limits of this approach:
 
@@ -671,6 +676,39 @@ Limits of this approach:
 Files live in `$XDG_RUNTIME_DIR/tilr` (or `tilr-<uid>` under the temp directory), readable
 by the user only. To use the clipboard from a shell outside tilr, say an SSH session on the
 same machine, put the `bin` directory there first on its `PATH`.
+
+### Copying from a pane
+
+The other way works too: what a program in a pane copies reaches the clipboard of the user's
+computer, as it does over ssh in a terminal that takes OSC 52, and as in tmux.
+
+1. The program copies: it prints OSC 52 (or OSC 1337 Copy), as vim, neovim, tmux and most
+   terminal programs do over ssh; or it runs `xclip -selection clipboard -i [-t TYPE]
+   [FILE…]` or `wl-copy [-t TYPE] [TEXT…]`, which are the server's (`wl-copy` too is first
+   on the pane's `PATH`).
+2. The copy becomes the server's clipboard, the one `xclip -o` / `wl-paste` in any pane
+   read, until `--clipboard-ttl`.
+3. The server sends it as `ClipboardWrite` (chunks of 256 KB on the bulk lane) to every
+   client watching the pane that lists `clipboard-write` in `Hello.features`. `tilr`
+   writes text to its terminal as OSC 52, so the user's terminal puts it on their clipboard
+   (if it allows programs to: iTerm2, kitty, WezTerm, Ghostty, Alacritty, Windows Terminal
+   do, some only once allowed).
+
+Rules:
+
+- A copy nobody takes (no client that takes copies watches the pane) stays only in the
+  server's clipboard: it is not handed to a real `xclip` / `wl-copy`, and a client that
+  attaches later is not sent it. The shim exits 0 either way.
+- A copy over `--clipboard-max` is refused: the shim exits 1 with `too large: …, the
+  clipboard takes at most …` and the clipboard keeps what it held; an OSC 52 copy over it
+  is dropped, with `clipboard: a copy over the limit was dropped` in the log. The panes
+  have the limit in `TILR_CLIPBOARD_MAX` (bytes).
+- A newer copy ends one still being sent to a client: a program copying in a loop holds one
+  copy per client in the server, the last.
+- OSC 52 reads (`?`) are never answered: a program in a pane cannot read the user's
+  clipboard. OSC 52 to the primary selection, and `xclip -selection primary`, are not
+  passed on.
+- `--no-clipboard` turns copying off with the rest: no `wl-copy`, nothing sent.
 
 ## Reloading without closing shells
 
@@ -768,13 +806,15 @@ before sending that capability's requests, in this order:
 
 | feature | messages | off with |
 |---|---|---|
-| `clipboard` | `ClipboardPut` | `--no-clipboard` |
+| `clipboard` | `ClipboardPut`; `ClipboardWrite` to clients that list `clipboard-write` | `--no-clipboard` |
 | `files` | `FsList`, `FsStat`, `FsRead`, `FsWrite`, `FsMkdir`, `FsRename`, `FsDelete`, `FsWatch`, `FsUnwatch` | `--no-files`, `[files] enabled = false` |
 | `host-events` | `HostEvent` | the host-events socket not up |
 | `agent` | SSH agent forwarding (`StreamOpen` with kind `ssh-agent`) | `--no-agent`, `agent = false` |
 | `exec` | `ExecStart`, `ExecInput`, `ExecSignal`, `ExecCancel` | `--no-exec`, `exec = false` |
 
-`Hello.features` says what the client can serve (`host-events`, `agent`).
+`Hello.features` says what the client can serve: `host-events` (it takes `HostEvent`),
+`agent` (it serves the SSH agent), `clipboard-write` (it takes `ClipboardWrite`, the copies
+programs in its panes make; see [Copying from a pane](#copying-from-a-pane)).
 
 A connection starts with `Hello`, which carries the protocol version of the client and the
 [access token](#who-may-connect). A server that speaks another version, or is sent another

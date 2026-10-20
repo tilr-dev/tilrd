@@ -13,6 +13,13 @@
 //! that pane that announced "host-events" in its `Hello`, then answers `{"ok": true, "clients": 2}`, or `{"ok": false,
 //! "error": "no tilr client attached"}` when nobody would hear it.
 //!
+//! `{"name": "clipboard-write", "pane_id": "6f1c…", "copy_id": 1234}` is the
+//! server's `xclip` or `wl-copy` saying it has put a copy in the clipboard's
+//! store (see [`crate::clipboard`]): the server sends it to the clients
+//! watching the pane as `ClipboardWrite` and answers `{"ok": true, "clients":
+//! N}`, N being 0 when nobody took it (or the store holds another copy by
+//! now).
+//!
 //! The program is this executable under the name `tilr` (put on the PATH of
 //! the panes, see [`shim`]) or `tilrd edit` / `tilrd open`. The socket is
 //! 0600 in a 0700 directory, and a connection from another uid is refused
@@ -46,6 +53,8 @@ pub const SHIM: &str = "tilr";
 const MAX_SOCKET_PATH: usize = 103;
 /// Most a program may send on one connection.
 const MAX_INPUT: u64 = 1 << 20;
+/// [`Request::name`] of a copy to the clipboard.
+pub const CLIPBOARD_WRITE: &str = "clipboard-write";
 /// How long `tilr edit` waits for the server.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -61,6 +70,10 @@ pub struct Request {
     pub path: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// For [`CLIPBOARD_WRITE`]: the store's id of the copy (see
+    /// [`clipboard::Store::publish`]), so that nothing else is sent for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_id: Option<u64>,
 }
 
 fn open() -> String {
@@ -389,6 +402,7 @@ pub fn run(command: Command) -> ExitCode {
         kind,
         path,
         args,
+        copy_id: None,
     };
     match ask(Path::new(&sock), &request) {
         Ok(Reply { ok: true, .. }) => ExitCode::SUCCESS,
@@ -412,7 +426,8 @@ fn has_scheme(target: &str) -> bool {
     })
 }
 
-fn ask(sock: &Path, request: &Request) -> Result<Reply> {
+/// Send `request` to the server listening on `sock` and wait for the answer.
+pub fn ask(sock: &Path, request: &Request) -> Result<Reply> {
     let mut stream =
         UnixStream::connect(sock).with_context(|| format!("connect to {}", sock.display()))?;
     // Nothing goes to a socket another user serves: the request names the

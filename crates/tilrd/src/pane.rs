@@ -20,8 +20,8 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use prost::Message;
 use tilr_proto::{
-    ClientMessage, FrameTiming, PaneExited, PaneHandover, PendingInput, ServerMessage,
-    client_message::Msg, server_message,
+    ClientMessage, ClipboardWrite, FrameTiming, PaneExited, PaneHandover, PendingInput,
+    ServerMessage, client_message::Msg, server_message,
 };
 use tilr_screen::{GhosttyScreen, Screen};
 use tokio::io::Stdout;
@@ -370,7 +370,10 @@ async fn serve(args: Args) -> Result<()> {
                     // the shell is gone.
                     Ok(Ok(0)) => break,
                     Ok(Err(err)) if err.raw_os_error() == Some(libc::EIO) => break,
-                    Ok(Ok(n)) => pane.on_output(&buf[..n]),
+                    Ok(Ok(n)) => {
+                        pane.on_output(&buf[..n]);
+                        pane.send_copies().await?;
+                    }
                     Ok(Err(err)) => return Err(err).context("read pty"),
                     Err(_would_block) => {}
                 }
@@ -744,6 +747,36 @@ impl Pane {
             }
             // Everything else is handled by the supervisor.
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Pass what the program copied to the clipboard on to the supervisor,
+    /// which decides (the clipboard on, its limit) and gives it to the
+    /// clients.
+    async fn send_copies(&mut self) -> Result<()> {
+        for copy in self.screen.take_copies() {
+            let size = copy.data.len() as u64;
+            // The link takes no packet larger than its limit, whatever the
+            // clipboard's.
+            if copy.data.len() > link::MAX_PACKET / 2 {
+                tracing::warn!(
+                    pane = self.id,
+                    size,
+                    "clipboard: a copy over the limit was dropped"
+                );
+                continue;
+            }
+            let packet = tilr_proto::encode(&ClipboardWrite {
+                mime: copy.mime,
+                total_size: size,
+                data: copy.data.into(),
+                last: true,
+                ..Default::default()
+            });
+            link::write_tagged(&mut self.to_supervisor, link::kind::CLIPBOARD, &packet)
+                .await
+                .context("send a copy to supervisor")?;
         }
         Ok(())
     }

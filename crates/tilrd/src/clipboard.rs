@@ -1,11 +1,13 @@
 //! The server's clipboard: content a client uploads with `ClipboardPut` so
-//! that programs in the panes can paste it.
+//! that programs in the panes can paste it, and content programs in the panes
+//! copy, which goes to the clients as `ClipboardWrite`.
 //!
 //! A program on a remote machine has no way to reach the clipboard of the
-//! user's computer; it asks the local one, usually by running `xclip` or
-//! `wl-paste`. The server therefore keeps the uploaded content in a file and
-//! puts its own `xclip` and `wl-paste` first on the PATH of every pane: this
-//! executable under another name (see [`shim`]), answering from that file.
+//! user's computer; it asks the local one, usually by running `xclip`,
+//! `wl-paste` or `wl-copy`. The server therefore keeps the content in a file
+//! and puts its own `xclip`, `wl-paste` and `wl-copy` first on the PATH of
+//! every pane: this executable under another name (see [`shim`]), answering
+//! from that file, and telling the server of a copy over the host socket.
 //!
 //! The clipboard is one per user and machine, shared by all panes. Any shell
 //! of the same user can join in by putting [`shim_dir`] on its PATH.
@@ -13,7 +15,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -24,9 +26,17 @@ use anyhow::{Context, Result, bail};
 use tilr_proto::{ClipboardAck, ClipboardPut};
 
 /// Names this executable answers to as a clipboard tool.
-pub const SHIMS: [&str; 2] = ["xclip", "wl-paste"];
+pub const SHIMS: [&str; 3] = ["xclip", "wl-paste", "wl-copy"];
 /// Tells the shims where the clipboard is. Set for every pane.
 pub const DIR_ENV: &str = "TILR_CLIPBOARD_DIR";
+/// The largest copy the clipboard takes, in bytes (`--clipboard-max`). Set
+/// for every pane while the clipboard is on.
+pub const MAX_ENV: &str = "TILR_CLIPBOARD_MAX";
+/// How long a copy stays, in seconds (`--clipboard-ttl`); unset: until
+/// replaced. Set for every pane while the clipboard is on and has a TTL.
+pub const TTL_ENV: &str = "TILR_CLIPBOARD_TTL";
+/// MIME type of copied text.
+pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// The directory of the tools the server puts first on the PATH of every pane
 /// (`xclip`, `wl-paste`, `tilr`). A pane runs a login shell, whose profile
 /// may set PATH from scratch (Debian's /etc/profile, a `PATH=...` without
@@ -146,8 +156,10 @@ impl Store {
     }
 
     /// Replace the content. Readers see the old content or the new, never a
-    /// mix. `ttl` of `None` keeps it until replaced.
-    pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<()> {
+    /// mix. `ttl` of `None` keeps it until replaced. Returns the id of this
+    /// content (its file's inode), which [`Store::read_with_id`] gives with it
+    /// for as long as nothing replaced it.
+    pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<u64> {
         let expires = ttl.map_or(0, |ttl| unix_now_ms() + ttl.as_millis() as u64);
         let tmp = self
             .dir
@@ -156,7 +168,9 @@ impl Store {
             let mut file = fs::File::create(&tmp)?;
             writeln!(file, "{mime}\n{expires}")?;
             file.write_all(data)?;
-            fs::rename(&tmp, self.file())
+            let id = file.metadata()?.ino();
+            fs::rename(&tmp, self.file())?;
+            Ok(id)
         })();
         if written.is_err() {
             let _ = fs::remove_file(&tmp);
@@ -166,7 +180,15 @@ impl Store {
 
     /// The content, unless there is none or it has expired.
     pub fn read(&self) -> Option<Content> {
-        let raw = fs::read(self.file()).ok()?;
+        self.read_with_id().map(|(content, _)| content)
+    }
+
+    /// The content and its id (see [`Store::publish`]).
+    pub fn read_with_id(&self) -> Option<(Content, u64)> {
+        let mut file = fs::File::open(self.file()).ok()?;
+        let id = file.metadata().ok()?.ino();
+        let mut raw = Vec::new();
+        file.read_to_end(&mut raw).ok()?;
         let mut parts = raw.splitn(3, |&byte| byte == b'\n');
         let mime = std::str::from_utf8(parts.next()?).ok()?.to_owned();
         let expires: u64 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
@@ -174,8 +196,21 @@ impl Store {
         if expires != 0 && unix_now_ms() >= expires {
             return None;
         }
-        Some(Content { mime, data })
+        Some((Content { mime, data }, id))
     }
+}
+
+/// `--clipboard-max` as the server put it in this process's environment;
+/// `None` when the clipboard is off.
+pub fn max_from_env() -> Option<u64> {
+    std::env::var(MAX_ENV).ok()?.parse().ok()
+}
+
+/// `--clipboard-ttl` as the server put it in this process's environment;
+/// `None`: until replaced.
+fn ttl_from_env() -> Option<Duration> {
+    let seconds: u64 = std::env::var(TTL_ENV).ok()?.parse().ok()?;
+    (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
 /// Milliseconds since the Unix epoch.
@@ -224,6 +259,30 @@ impl Receiver {
 
     pub fn max_bytes(&self) -> u64 {
         self.limits.max_bytes
+    }
+
+    /// Make `data`, copied in a pane, the clipboard's content.
+    pub fn publish(&self, mime: &str, data: &[u8]) -> io::Result<u64> {
+        self.store.publish(mime, data, self.limits.ttl)
+    }
+
+    /// The copy a shim in a pane put in the store as `id`; `None` if the
+    /// store holds something else by now (a newer copy or upload, which
+    /// goes its own way) or nothing. Content over the limit (the shim
+    /// checks it first) is removed.
+    pub fn take_copied(&self, id: u64) -> Result<Option<Content>, String> {
+        let Some((content, stored)) = self.store.read_with_id() else {
+            return Ok(None);
+        };
+        if id != stored {
+            return Ok(None);
+        }
+        let size = content.data.len() as u64;
+        if size > self.limits.max_bytes {
+            self.store.clear();
+            return Err(too_large(size, self.limits.max_bytes));
+        }
+        Ok(Some(content))
     }
 
     pub fn drop_client(&mut self, client: u64) {
@@ -286,10 +345,7 @@ impl Receiver {
     /// Check the first chunk of a transfer.
     fn begin(&self, put: &ClipboardPut) -> Result<(String, usize), String> {
         let mime = put.mime.trim();
-        let valid = !mime.is_empty()
-            && mime.len() <= MAX_MIME_LEN
-            && mime.chars().all(|c| c.is_ascii_graphic());
-        if !valid {
+        if !valid_mime(mime) {
             return Err("clipboard content has no valid MIME type".into());
         }
         if put.total_size == 0 {
@@ -334,6 +390,11 @@ impl Receiver {
     }
 }
 
+/// What the store can keep as a MIME type: its first line.
+fn valid_mime(mime: &str) -> bool {
+    !mime.is_empty() && mime.len() <= MAX_MIME_LEN && mime.chars().all(|c| c.is_ascii_graphic())
+}
+
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     if bytes < 1024 {
@@ -371,7 +432,7 @@ pub fn parse_size(text: &str) -> Result<u64, String> {
 }
 
 // ---------------------------------------------------------------------------
-// xclip / wl-paste
+// xclip / wl-paste / wl-copy
 // ---------------------------------------------------------------------------
 
 /// What a clipboard tool was asked for.
@@ -381,9 +442,32 @@ enum Request {
     Types,
     /// Print the content as this type; `None` asks for text.
     Get(Option<String>),
-    /// Anything the server's clipboard does not do: copying, other
-    /// selections, watching. Left to the real tool.
+    /// Copy to the clipboard.
+    Copy(CopyRequest),
+    /// Anything the server's clipboard does not do: other selections,
+    /// watching, clearing. Left to the real tool.
     Other,
+}
+
+/// A copy to the clipboard.
+#[derive(Debug, PartialEq, Eq)]
+struct CopyRequest {
+    /// MIME type of the content; `None` is text.
+    mime: Option<String>,
+    from: Source,
+    /// Drop a newline at the end (`xclip -rmlastnl`, `wl-copy -n`).
+    trim_newline: bool,
+    /// Print the content too (`xclip -filter`).
+    filter: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Source {
+    Stdin,
+    /// These files, one after the other.
+    Files(Vec<String>),
+    /// The arguments, joined by spaces.
+    Text(Vec<String>),
 }
 
 fn is_text_target(target: &str) -> bool {
@@ -402,16 +486,29 @@ fn get(target: Option<&str>) -> Request {
     }
 }
 
+/// The MIME type to copy as for `-t`: `None` is text.
+fn copy_mime(target: Option<&str>) -> Option<String> {
+    target
+        .filter(|target| !is_text_target(target))
+        .map(str::to_owned)
+}
+
 /// xclip takes any unambiguous prefix of an option: `-sel`, `-o`, `-t`.
+/// Without `-o` it copies, from stdin or the files named. A copy with an
+/// option this does not know (`-help`, `-version`) is left to the real tool.
 fn parse_xclip(args: &[String]) -> Request {
     let mut out = false;
     let mut clipboard = false;
     let mut target = None;
+    let mut trim_newline = false;
+    let mut filter = false;
+    let mut unknown = false;
+    let mut files = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let Some(option) = arg.strip_prefix('-').filter(|option| !option.is_empty()) else {
-            // A file to copy from.
-            return Request::Other;
+            files.push(arg.clone());
+            continue;
         };
         if "selection".starts_with(option) && option.len() >= 3 {
             // Only the first letter of the selection name counts.
@@ -421,15 +518,86 @@ fn parse_xclip(args: &[String]) -> Request {
         } else if "out".starts_with(option) {
             out = true;
         } else if "in".starts_with(option) {
-            return Request::Other;
+            out = false;
+        } else if "rmlastnl".starts_with(option) {
+            trim_newline = true;
+        } else if "filter".starts_with(option) {
+            filter = true;
         } else if "display".starts_with(option) || "loops".starts_with(option) {
             args.next();
+        } else {
+            let harmless = ["silent", "quiet", "noutf8", "sensitive"]
+                .iter()
+                .any(|known| known.starts_with(option))
+                || ("verbose".starts_with(option) && option.len() >= 4);
+            unknown |= !harmless;
         }
     }
-    if !out || !clipboard {
+    if !clipboard {
         return Request::Other;
     }
-    get(target)
+    if out {
+        // Pasting into a file is not ours.
+        return if files.is_empty() {
+            get(target)
+        } else {
+            Request::Other
+        };
+    }
+    if unknown {
+        return Request::Other;
+    }
+    Request::Copy(CopyRequest {
+        mime: copy_mime(target),
+        from: if files.is_empty() {
+            Source::Stdin
+        } else {
+            Source::Files(files)
+        },
+        trim_newline,
+        filter,
+    })
+}
+
+/// `wl-copy [-t TYPE] [-n] [TEXT...]`: the text given, or stdin.
+fn parse_wl_copy(args: &[String]) -> Request {
+    let mut target = None;
+    let mut trim_newline = false;
+    let mut text = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-t" | "--type" => target = args.next().map(String::as_str),
+            "-n" | "--trim-newline" => trim_newline = true,
+            "-s" | "--seat" => {
+                args.next();
+            }
+            // Ways of serving the copy that make no difference here.
+            "-o" | "--paste-once" | "-f" | "--foreground" => {}
+            "--" => text.extend(args.by_ref().cloned()),
+            "-p" | "--primary" | "-c" | "--clear" | "-h" | "--help" | "-v" | "--version" => {
+                return Request::Other;
+            }
+            _ => {
+                if let Some(value) = arg.strip_prefix("--type=") {
+                    target = Some(value);
+                } else if arg.starts_with("--seat=") {
+                } else if !arg.starts_with('-') {
+                    text.push(arg.clone());
+                }
+            }
+        }
+    }
+    Request::Copy(CopyRequest {
+        mime: copy_mime(target),
+        from: if text.is_empty() {
+            Source::Stdin
+        } else {
+            Source::Text(text)
+        },
+        trim_newline,
+        filter: false,
+    })
 }
 
 fn parse_wl_paste(args: &[String]) -> Request {
@@ -491,13 +659,121 @@ fn answer(tool: &str, request: &Request, content: &Content) -> Result<Vec<u8>, S
             wanted.as_deref().unwrap_or("text"),
             content.mime
         )),
-        Request::Other => unreachable!("handled by the real tool"),
+        Request::Copy(_) | Request::Other => unreachable!("not an answer from the clipboard"),
     }
 }
 
-/// Run as `xclip` or `wl-paste`: answer from the server's clipboard, or hand
-/// over to the real tool when the clipboard is empty or the request is not
-/// one it serves.
+fn too_large(size: u64, max: u64) -> String {
+    format!(
+        "too large: {}, the clipboard takes at most {}",
+        human_size(size),
+        human_size(max)
+    )
+}
+
+/// Read what `from` names, refusing more than `max` bytes. Content over the
+/// limit is read to its end all the same, without keeping it, to say how
+/// large it was (and so that a program writing to the pipe is not cut off).
+fn read_copy(from: &Source, max: u64) -> Result<Vec<u8>, String> {
+    let mut readers: Vec<(String, Box<dyn Read>)> = match from {
+        Source::Stdin => vec![("stdin".into(), Box::new(io::stdin().lock()))],
+        Source::Files(files) => files
+            .iter()
+            .map(|file| {
+                fs::File::open(file)
+                    .map(|reader| (file.clone(), Box::new(reader) as Box<dyn Read>))
+                    .map_err(|err| format!("{file}: {err}"))
+            })
+            .collect::<Result<_, _>>()?,
+        Source::Text(words) => {
+            let text = words.join(" ").into_bytes();
+            let size = text.len() as u64;
+            return if size > max {
+                Err(too_large(size, max))
+            } else {
+                Ok(text)
+            };
+        }
+    };
+    let mut data = Vec::new();
+    let mut size = 0u64;
+    for (name, reader) in &mut readers {
+        let room = max.saturating_add(1).saturating_sub(data.len() as u64);
+        let read = reader
+            .take(room)
+            .read_to_end(&mut data)
+            .map_err(|err| format!("{name}: {err}"))?;
+        size += read as u64;
+        if size > max {
+            size += io::copy(reader, &mut io::sink()).map_err(|err| format!("{name}: {err}"))?;
+        }
+    }
+    if size > max {
+        return Err(too_large(size, max));
+    }
+    Ok(data)
+}
+
+/// Run as `xclip -i` or `wl-copy`: put the content in the store, then tell
+/// the server, which hands it to the clients watching the pane. Nothing goes
+/// to a real tool: a copy no client takes stays in the store.
+fn copy(tool: &str, copy: CopyRequest, dir: PathBuf) -> ExitCode {
+    let fail = |message: String| {
+        eprintln!("{tool}: {message}");
+        ExitCode::FAILURE
+    };
+    let mime = copy.mime.as_deref().unwrap_or(TEXT_MIME);
+    if !valid_mime(mime) {
+        return fail(format!("not a MIME type: {mime:?}"));
+    }
+    let max = max_from_env().unwrap_or(u64::MAX);
+    let mut data = match read_copy(&copy.from, max) {
+        Ok(data) => data,
+        Err(message) => return fail(message),
+    };
+    if copy.trim_newline && data.last() == Some(&b'\n') {
+        data.pop();
+    }
+    let id = match Store::at(dir).publish(mime, &data, ttl_from_env()) {
+        Ok(id) => id,
+        Err(err) => return fail(format!("store the copy: {err}")),
+    };
+    let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    // Outside a pane of a server with a host socket there is nobody to
+    // tell: the copy is in the store, for the panes to paste.
+    let (Some(pane_id), Some(sock)) = (var(crate::pty::PANE_ENV), var(crate::host::SOCK_ENV))
+    else {
+        return ExitCode::SUCCESS;
+    };
+    let request = crate::host::Request {
+        pane_id,
+        name: crate::host::CLIPBOARD_WRITE.into(),
+        kind: String::new(),
+        path: String::new(),
+        args: Vec::new(),
+        copy_id: Some(id),
+    };
+    let told = crate::host::ask(Path::new(&sock), &request);
+    if copy.filter {
+        let mut stdout = io::stdout().lock();
+        if stdout
+            .write_all(&data)
+            .and_then(|()| stdout.flush())
+            .is_err()
+        {
+            return ExitCode::FAILURE;
+        }
+    }
+    match told {
+        Ok(crate::host::Reply { ok: true, .. }) => ExitCode::SUCCESS,
+        Ok(crate::host::Reply { error, .. }) => fail(error.unwrap_or_else(|| "refused".into())),
+        Err(err) => fail(format!("cannot reach the tilr server: {err:#}")),
+    }
+}
+
+/// Run as `xclip`, `wl-paste` or `wl-copy`: copy to the server's clipboard
+/// or answer from it, or hand over to the real tool when the clipboard is
+/// empty or the request is not one it serves.
 pub fn shim(tool: &str, exe: &Path, args: Vec<OsString>) -> ExitCode {
     let text_args: Option<Vec<String>> = args
         .iter()
@@ -505,6 +781,7 @@ pub fn shim(tool: &str, exe: &Path, args: Vec<OsString>) -> ExitCode {
         .collect();
     let request = match (&text_args, tool) {
         (Some(args), "xclip") => parse_xclip(args),
+        (Some(args), "wl-copy") => parse_wl_copy(args),
         (Some(args), _) => parse_wl_paste(args),
         (None, _) => Request::Other,
     };
@@ -512,6 +789,7 @@ pub fn shim(tool: &str, exe: &Path, args: Vec<OsString>) -> ExitCode {
         .filter(|dir| !dir.is_empty())
         .map_or_else(|| clipboard_dir(&runtime_dir()), PathBuf::from);
     let content = match request {
+        Request::Copy(request) => return copy(tool, request, dir),
         Request::Other => None,
         _ => Store::at(dir).read(),
     };
@@ -668,18 +946,134 @@ mod tests {
             parse_xclip(&args("-o -sel clip -target UTF8_STRING")),
             Request::Get(None)
         );
-        // Not ours: copying, the primary selection, a file argument.
-        assert_eq!(parse_xclip(&args("-selection clipboard")), Request::Other);
-        assert_eq!(
-            parse_xclip(&args("-selection clipboard -i")),
-            Request::Other
-        );
+        // Not ours: the primary selection, pasting into a file.
         assert_eq!(parse_xclip(&args("-o")), Request::Other);
         assert_eq!(parse_xclip(&args("-selection primary -o")), Request::Other);
         assert_eq!(
             parse_xclip(&args("-selection clipboard -o file.txt")),
             Request::Other
         );
+    }
+
+    fn copy_request(mime: Option<&str>, from: Source, trim_newline: bool) -> Request {
+        Request::Copy(CopyRequest {
+            mime: mime.map(str::to_owned),
+            from,
+            trim_newline,
+            filter: false,
+        })
+    }
+
+    #[test]
+    fn xclip_copy_requests() {
+        // Copying is the default, `-i` says so.
+        for line in [
+            "-selection clipboard",
+            "-selection clipboard -i",
+            "-sel c -in",
+        ] {
+            assert_eq!(
+                parse_xclip(&args(line)),
+                copy_request(None, Source::Stdin, false),
+                "{line}"
+            );
+        }
+        // A type; text targets are text.
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -t image/png -i")),
+            copy_request(Some("image/png"), Source::Stdin, false)
+        );
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -t UTF8_STRING -i")),
+            copy_request(None, Source::Stdin, false)
+        );
+        // From files; without the last newline.
+        assert_eq!(
+            parse_xclip(&args("-selection clipboard -rmlastnl a.txt b.txt")),
+            copy_request(
+                None,
+                Source::Files(vec!["a.txt".into(), "b.txt".into()]),
+                true
+            )
+        );
+        // Options that make no difference here; -filter prints it too.
+        assert_eq!(
+            parse_xclip(&args(
+                "-selection clipboard -silent -quiet -verbose -noutf8"
+            )),
+            copy_request(None, Source::Stdin, false)
+        );
+        assert_eq!(
+            parse_xclip(&args("-sel c -f")),
+            Request::Copy(CopyRequest {
+                mime: None,
+                from: Source::Stdin,
+                trim_newline: false,
+                filter: true,
+            })
+        );
+        // Help, the version, an option unknown here: the real tool's.
+        for line in ["-sel c -h", "-sel c -version", "-sel c -nonsense"] {
+            assert_eq!(parse_xclip(&args(line)), Request::Other, "{line}");
+        }
+        // The primary selection, xclip's default, is not ours.
+        assert_eq!(parse_xclip(&args("-i")), Request::Other);
+        assert_eq!(parse_xclip(&args("")), Request::Other);
+        assert_eq!(parse_xclip(&args("-selection primary -i")), Request::Other);
+    }
+
+    #[test]
+    fn wl_copy_requests() {
+        assert_eq!(
+            parse_wl_copy(&args("")),
+            copy_request(None, Source::Stdin, false)
+        );
+        assert_eq!(
+            parse_wl_copy(&args("--type image/png")),
+            copy_request(Some("image/png"), Source::Stdin, false)
+        );
+        assert_eq!(
+            parse_wl_copy(&args("--type=text/plain -n")),
+            copy_request(None, Source::Stdin, true)
+        );
+        assert_eq!(
+            parse_wl_copy(&args("-o hello world")),
+            copy_request(
+                None,
+                Source::Text(vec!["hello".into(), "world".into()]),
+                false
+            )
+        );
+        assert_eq!(
+            parse_wl_copy(&args("-- -n x")),
+            copy_request(None, Source::Text(vec!["-n".into(), "x".into()]), false)
+        );
+        // Not ours: the primary selection, clearing.
+        assert_eq!(parse_wl_copy(&args("--primary")), Request::Other);
+        assert_eq!(parse_wl_copy(&args("--clear")), Request::Other);
+    }
+
+    #[test]
+    fn copies_over_the_limit_are_refused() {
+        let text = Source::Text(vec!["hello".into(), "world".into()]);
+        assert_eq!(read_copy(&text, 11).unwrap(), b"hello world");
+        let error = read_copy(&text, 10).unwrap_err();
+        assert_eq!(error, "too large: 11 B, the clipboard takes at most 10 B");
+
+        let dir = std::env::temp_dir().join(format!("tilr-test-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        fs::write(&a, vec![b'a'; 3000]).unwrap();
+        fs::write(&b, vec![b'b'; 2000]).unwrap();
+        let files = Source::Files(vec![a.to_str().unwrap().into(), b.to_str().unwrap().into()]);
+        assert_eq!(read_copy(&files, 5000).unwrap().len(), 5000);
+        // No limit given (a shell outside the panes).
+        assert_eq!(read_copy(&files, u64::MAX).unwrap().len(), 5000);
+        // The whole size is told, though only up to the limit was kept.
+        let error = read_copy(&files, 4096).unwrap_err();
+        assert!(error.starts_with("too large: 4.9 KB,"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -761,6 +1155,30 @@ mod tests {
         // Rewrite the expiry into the past.
         fs::write(store.file(), b"text/plain\n1\nold").unwrap();
         assert_eq!(store.read(), None);
+    }
+
+    #[test]
+    fn a_shims_copy_is_taken_only_while_the_store_holds_it() {
+        let receiver = receiver("copied", 100);
+        let id = receiver.store.publish("text/plain", b"mine", None).unwrap();
+        let taken = receiver.take_copied(id).unwrap().unwrap();
+        assert_eq!(taken.data, b"mine");
+        assert_eq!(receiver.store.read_with_id().unwrap().1, id);
+        // Something else replaced it before the server heard of the copy.
+        let other = receiver
+            .store
+            .publish("text/plain", b"other", None)
+            .unwrap();
+        assert_ne!(other, id);
+        assert_eq!(receiver.take_copied(id).unwrap(), None);
+        // Over the limit: refused and removed.
+        let id = receiver
+            .store
+            .publish("text/plain", &[b'x'; 101], None)
+            .unwrap();
+        let error = receiver.take_copied(id).unwrap_err();
+        assert!(error.starts_with("too large: 101 B"), "{error}");
+        assert_eq!(receiver.store.read(), None);
     }
 
     #[test]
