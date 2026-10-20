@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Deterministic interrupted-test stand
 The test-server cleanup stand SHALL start a test-owned tilrd and wait for its

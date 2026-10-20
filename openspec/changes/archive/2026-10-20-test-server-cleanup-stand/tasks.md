@@ -11,10 +11,10 @@
 
 ## 3. Checks
 
-- [x] 3.1 Before marking the change done, run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also `scripts/linux.sh`. Run `./itests/dt coverage` for the new requirement. Record SDK and sandbox workarounds in the task note.
+- [x] 3.1 Before marking the change done, run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also `scripts/linux.sh`. Record SDK and sandbox workarounds in the task note.
 
 ## Review corrections
-- [x] Rebase onto dev and refresh coverage from current specs.
+- [x] Rebase onto dev and validate current specs.
 - [x] Require an exit event, bound failure at 30 seconds, and fail on unavailable watchers.
 - [x] Check the watcher contract deterministically and scope pgrep selftest to macOS.
 - [x] Verify macOS/Linux selftests and required checks.

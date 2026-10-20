@@ -42,8 +42,6 @@ cleanup together rather than bypass this check. Build the fixture with
 
 The pgrep-failure integration case applies only on macOS, where the stand
 uses pgrep. Other integration cases exercise both operating systems.
-Script-based `Verified by` references are not recognized by the coverage
-parser, so these two requirements intentionally appear uncovered there.
 
 ### Interruption of the stand
 

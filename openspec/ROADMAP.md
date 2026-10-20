@@ -58,7 +58,6 @@ All of phase 2 is done (see "Done").
 | test-server-leftovers | no `target/debug` test servers left running after `cargo test` (TILR-153) | S | - | no | ready |
 | reconnect-output-flake | the `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` flake (TILR-111) | S | - | no | ready |
 | hangup-shell-flake | the `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` flake, reopened (TILR-117) | S | - | no | ready |
-| test-server-cleanup-stand | deterministic signal/timeout stand for test-server cleanup (TILR-162) | S | - | no | in progress |
 
 ## Phase 4: release infrastructure
 
@@ -114,6 +113,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 
 | change | commit |
 |---|---|
+| test-server-cleanup-stand | [PR #13](https://github.com/tilr-dev/tilrd/pull/13) |
 | test-controlled-time | 7e63724 |
 | manual-install-itest | - |
 | openspec-setup | 27be1ea, 40d6057, 552dcd9 |
