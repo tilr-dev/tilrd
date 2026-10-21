@@ -2,9 +2,7 @@
 
 ### Requirement: Interrupted shared Ghostty build recovery
 
-The shared build script SHALL record its owner PID in the prefix lock. When that process is no longer alive, a subsequent invocation SHALL recover the lock, remove abandoned temporary build directories for that prefix, and build again. It SHALL refuse to disturb a lock owned by a live process. Before publishing a completed installation, it SHALL remove an incomplete destination prefix.
-
-Recovery SHALL be serialized by an advisory lock that is released on process exit, including an untrappable termination. A lock directory left before its owner PID was recorded SHALL also be recoverable.
+The shared build script SHALL record its owner PID and serialize recovery with an advisory lock released on process exit. It SHALL preserve live owners, recover abandoned locks (including missing PIDs), remove abandoned temporary directories, replace incomplete prefixes before publication, and clean leftovers beside completed prefixes without rebuilding.
 
 #### Scenario: Recover an abandoned build
 - **WHEN** a lock records the PID of an exited process and temporary build directories remain
