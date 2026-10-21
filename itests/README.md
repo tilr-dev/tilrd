@@ -92,9 +92,11 @@ docker run --rm --network none -v "$PWD":/src:ro -w /src python:3.12-slim \
    root, so `crates/tilrd/tests/local.rs` also acts as another user (uid 65534).
    The filtered source snapshot also includes `scripts/`, the CI and release
    workflows, `release-please-config.json`, `.cargo/config.toml` and `.gitignore`
-   for the release and Linux script regression fixtures. The runtime provides
-   `shasum` through `libdigest-sha-perl`; those fixtures use substitutes for Docker
-   and upload tools and need no release credentials.
+   for the release and Linux script regression fixtures. The runtime gets `shasum`
+   from `perl`, a dependency of `git` (verified 2026-10-21 with
+   `docker run --rm ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y --no-install-recommends git >/dev/null && dpkg -S /usr/bin/shasum'`).
+   Those fixtures use substitutes for Docker and upload tools and need no release
+   credentials.
 3. **fixtures** — each fixture is a Dagger layer: parents' `/fx` merged, then
    `python3 -m tt fixture MODULE:NAME` (build, then its mandatory check). *Source tier*
    fixtures have no binaries in the container and survive any code change; *tilr tier*
