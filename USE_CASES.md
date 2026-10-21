@@ -432,6 +432,7 @@ pane process. The server's counters are at `GET /metrics`.
 
 | Use case | Test |
 |---|---|
+| A fixed test clock assigns distinct parse/build/encode durations; parse accumulates across two invisible reads and a visible read, and changing the configuration leaves encode reporting the previous frame | `frame_stage_durations_are_controlled_per_operation` |
 | Before any input `last_input_seq` = 0; frames after input with `seq` carry it, `timing` is always there, `build_us` > 0, a frame with output has `output_bytes` and `reads`; input without `seq` does not disturb the number; a `Scroll` with `seq` that moved nothing gets its own frame; a client numbering from 1 without `seq_base` works | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
 | Input that changed nothing on screen (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
 | Reconnecting (a page reload): the new `seq_base` is greater than the old one; the full frame carries the old connection's number, not its own; input of the new one carries its number | `a_client_that_reconnects_tells_its_input_from_before` |

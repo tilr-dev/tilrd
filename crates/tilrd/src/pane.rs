@@ -484,6 +484,8 @@ impl Pane {
         let start = measurement_instant();
         self.screen.feed(bytes);
         self.pending_input.extend(self.screen.take_replies());
+        #[cfg(feature = "failpoints")]
+        crate::time::advance_frame_stage(crate::time::FrameStage::Parse);
         let stats = &mut self.stats;
         stats.parse += measurement_instant().saturating_duration_since(start);
         stats.first_output_at.get_or_insert(start);
@@ -891,8 +893,12 @@ impl Pane {
         let Some(mut frame) = built else {
             // The output seen so far waits for the frame that shows it, and
             // `wait_us` counts from the first of it.
+            #[cfg(feature = "failpoints")]
+            crate::fail::point("frame-stage-no-frame")?;
             return Ok(());
         };
+        #[cfg(feature = "failpoints")]
+        crate::time::advance_frame_stage(crate::time::FrameStage::Build);
         let build = measurement_instant().saturating_duration_since(build_start);
         self.input_credited = false;
         let stats = std::mem::take(&mut self.stats);
@@ -917,6 +923,8 @@ impl Pane {
         };
         let encode_start = measurement_instant();
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::Frame(frame)));
+        #[cfg(feature = "failpoints")]
+        crate::time::advance_frame_stage(crate::time::FrameStage::Encode);
         self.last_encode = measurement_instant().saturating_duration_since(encode_start);
         link::write_tagged(
             &mut self.to_supervisor,

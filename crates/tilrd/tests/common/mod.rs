@@ -226,6 +226,7 @@ impl Server {
             .env("PS1", "$ ")
             // Each test opts into its own clock through `start_with_env`.
             .env_remove("TILR_TEST_TIME_FILE")
+            .env_remove("TILR_TEST_FRAME_STAGE_TIME_FILE")
             // No real clipboard for the shims to fall back to, and no shell
             // startup file.
             .env_remove("DISPLAY")
