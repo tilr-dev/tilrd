@@ -379,17 +379,17 @@ impl Server {
     ) {
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            {
-                let log = self.log.lock().unwrap_or_else(|err| err.into_inner());
-                if done(&log) {
-                    return;
-                }
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "{what}\n{}",
-                    log.join("\n")
-                );
+            // The guard ends here: a failed wait panics with none held, so
+            // the log is left unpoisoned for the cleanup that follows.
+            let met = done(&self.log.lock().unwrap_or_else(|err| err.into_inner()));
+            if met {
+                return;
             }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{what}\n{}",
+                log_text(&self.log)
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
