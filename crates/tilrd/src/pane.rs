@@ -10,7 +10,7 @@
 //! and the rest travel in a file named after the pane, which the new process
 //! finds by the id it is started with.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -66,7 +66,7 @@ pub struct Args {
 /// Version of what a reloading pane process leaves its successor
 /// ([`PaneHandover`]). Raise it with any change an older or newer pane
 /// process would misread.
-pub const STATE_FORMAT: u32 = 3;
+pub const STATE_FORMAT: u32 = 4;
 
 /// The state the pane process that exec'd this one left for it. `None` if
 /// this process starts a pane of its own.
@@ -206,6 +206,9 @@ struct Pane {
     hung_up: Vec<libc::pid_t>,
     /// Input waiting for the pty to accept it.
     pending_input: Vec<u8>,
+    delivery: HashMap<String, tilr_proto::InputDeliveryState>,
+    pending_delivery: VecDeque<tilr_proto::PendingDelivery>,
+    delivery_acks: Vec<tilr_proto::PaneInputAck>,
     seq: u64,
     dirty: bool,
     want_full: bool,
@@ -266,6 +269,8 @@ async fn serve(
     };
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
+    let mut delivery = HashMap::new();
+    let mut pending_delivery = VecDeque::new();
     let id = args.id.to_string();
     let mut last_input_seq = 0;
     let mut inputs = VecDeque::new();
@@ -279,6 +284,12 @@ async fn serve(
         let master = unsafe { OwnedFd::from_raw_fd(handover.master) };
         pty::set_cloexec(master.as_raw_fd(), true)?;
         pending_input = handover.pending_input;
+        delivery = handover
+            .delivery_states
+            .into_iter()
+            .map(|state| (state.identity.clone(), state))
+            .collect();
+        pending_delivery = handover.pending_delivery.into();
         last_input_seq = handover.last_input_seq;
         let now = Instant::now();
         let measurement_now = measurement_instant();
@@ -369,6 +380,9 @@ async fn serve(
         kill_at,
         hung_up,
         pending_input,
+        delivery,
+        pending_delivery,
+        delivery_acks: Vec::new(),
         seq,
         // A resumed pane redraws its clients from the restored screen.
         dirty: seq > 0,
@@ -387,6 +401,19 @@ async fn serve(
     let mut buf = vec![0u8; READ_BUF];
 
     loop {
+        for mut ack in std::mem::take(&mut pane.delivery_acks) {
+            let (cols, rows) = pane.screen.size();
+            ack.cols = cols.into();
+            ack.rows = rows.into();
+            crate::fail::point("input-before-ack")?;
+            link::write_tagged(
+                &mut pane.to_supervisor,
+                link::kind::INPUT_ACK,
+                &tilr_proto::encode(&ack),
+            )
+            .await
+            .context("acknowledge input")?;
+        }
         tokio::select! {
             guard = pane.pty.readable() => {
                 let read = guard?.try_io(|fd| pty::read(fd.as_raw_fd(), &mut buf));
@@ -552,6 +579,7 @@ impl Pane {
         self.pending_input.drain(..n);
         self.written += n as u64;
         self.settle_inputs();
+        self.settle_delivery();
     }
 
     /// Note an input message named by `seq`: it is credited once what is
@@ -684,6 +712,15 @@ impl Pane {
             cols: u32::from(cols),
             rows: u32::from(rows),
             pending_input: self.pending_input.clone(),
+            delivery_states: self.delivery.values().cloned().collect(),
+            pending_delivery: self
+                .pending_delivery
+                .iter()
+                .map(|mark| tilr_proto::PendingDelivery {
+                    end: mark.end.saturating_sub(self.written),
+                    ..mark.clone()
+                })
+                .collect(),
             snapshot: snapshot.to_vec(),
             cell_width_px: cell.0,
             cell_height_px: cell.1,
@@ -745,7 +782,67 @@ impl Pane {
         err
     }
 
+    fn settle_delivery(&mut self) {
+        while self
+            .pending_delivery
+            .front()
+            .is_some_and(|mark| mark.end <= self.written)
+        {
+            let mark = self.pending_delivery.pop_front().expect("front exists");
+            let state = self
+                .delivery
+                .get_mut(&mark.identity)
+                .expect("accepted identity");
+            state.applied = mark.seq;
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                identity: mark.identity,
+                seq: mark.seq,
+                probe: 0,
+                ..Default::default()
+            });
+        }
+    }
+
     fn on_message(&mut self, msg: ClientMessage) -> Result<()> {
+        if msg.input_probe != 0 {
+            let seq = self
+                .delivery
+                .get(&msg.input_identity)
+                .map_or(0, |state| state.applied);
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                identity: msg.input_identity,
+                seq,
+                probe: msg.input_probe,
+                ..Default::default()
+            });
+            return Ok(());
+        }
+        let delivery_seq = msg.input_seq;
+        let identity = msg.input_identity.clone();
+        let reliable = delivery_seq != 0
+            && !identity.is_empty()
+            && msg.msg.as_ref().and_then(tilr_proto::input::pane).is_some();
+        if reliable {
+            let state = self.delivery.entry(identity.clone()).or_insert_with(|| {
+                tilr_proto::InputDeliveryState {
+                    identity: identity.clone(),
+                    accepted: 0,
+                    applied: 0,
+                }
+            });
+            if delivery_seq <= state.accepted {
+                self.delivery_acks.push(tilr_proto::PaneInputAck {
+                    identity,
+                    seq: state.applied,
+                    probe: 0,
+                    ..Default::default()
+                });
+                return Ok(());
+            }
+            // WebSocket ordering and ordered replay guarantee increasing sequences.
+            state.accepted = delivery_seq;
+            crate::fail::point("input-before-apply")?;
+        }
         /// How an input message is credited.
         enum Credit {
             /// Once its bytes are written to the pty.
@@ -763,6 +860,15 @@ impl Pane {
             _ => None,
         };
         self.handle_message(msg)?;
+        if reliable {
+            self.pending_delivery
+                .push_back(tilr_proto::PendingDelivery {
+                    identity,
+                    seq: delivery_seq,
+                    end: self.written + self.pending_input.len() as u64,
+                });
+            self.settle_delivery();
+        }
         match (received, credit) {
             (Some(received), Some(Credit::Written)) => self.mark_input(seq, received),
             (Some(received), Some(Credit::Applied)) => self.credit_input(seq, received),

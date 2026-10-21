@@ -981,6 +981,8 @@ const FAKE_PANE: &str = "fake-pane-0123456789";
 enum Serve {
     /// Hello, the pane list, a frame on Subscribe; then it closes.
     ThenClose,
+    /// Close after receiving a key, before acknowledging it.
+    CloseOnKey,
     /// Hello, then it closes on `ListPanes` without answering.
     CloseOnListPanes,
     /// Accepts and says nothing, not even the WebSocket handshake.
@@ -1052,7 +1054,12 @@ fn fake_connection(
         let Message::Binary(packet) = message else {
             continue;
         };
-        let Ok(ClientMessage { msg: Some(msg), .. }) = tilr_proto::decode(&packet) else {
+        let Ok(ClientMessage {
+            msg: Some(msg),
+            input_seq,
+            ..
+        }) = tilr_proto::decode(&packet)
+        else {
             continue;
         };
         let sent = match msg {
@@ -1107,7 +1114,16 @@ fn fake_connection(
             }
             client_message::Msg::Key(key) => {
                 let _ = keys.send(key.text);
-                Ok(())
+                if matches!(serve, Serve::CloseOnKey) {
+                    return;
+                }
+                send(
+                    &mut ws,
+                    server_message::Msg::InputAck(tilr_proto::InputAck {
+                        pane_id: key.pane_id,
+                        seq: input_seq,
+                    }),
+                )
             }
             _ => Ok(()),
         };
@@ -1223,5 +1239,28 @@ fn a_panicking_test_stops_its_copied_daemon_without_a_command_socket() {
     assert!(
         exited,
         "the copied daemon survived its test without a command socket"
+    );
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+#[test]
+fn attach_replays_a_key_when_the_connection_ends_without_an_ack() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    terminal.expect("fake screen 2");
+    terminal.write("y");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "y"
     );
 }

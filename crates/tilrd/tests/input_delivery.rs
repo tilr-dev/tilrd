@@ -1,0 +1,247 @@
+//! Acknowledged input survives disconnects and exec without duplicate PTY bytes.
+#![cfg(feature = "failpoints")]
+mod common;
+use common::*;
+use tilr_proto::input::Outbox;
+
+fn server() -> Server {
+    let dir = Server::scratch_dir();
+    Server::start_failing(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[], "")
+}
+
+async fn identify(server: &Server) -> (Client, HelloAck) {
+    let mut client = Client::connect_silent(server).await;
+    client.client_id = "input-session".into();
+    let hello = client.hello().await;
+    (client, hello)
+}
+
+fn queued(queue: &mut Outbox, pane: PaneId, data: &[u8]) -> ClientMessage {
+    queue
+        .push(
+            Msg::Raw(RawInput {
+                pane_id: pane.to_string(),
+                data: Bytes::copy_from_slice(data),
+            })
+            .into(),
+        )
+        .unwrap()
+}
+async fn send(client: &mut Client, message: &ClientMessage) {
+    client
+        .ws
+        .send(Message::Binary(tilr_proto::encode(message)))
+        .await
+        .unwrap();
+}
+async fn ack(client: &mut Client, pane: PaneId, seq: u64) -> tilr_proto::InputAck {
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::InputAck(ack)
+                if ack.pane_id == pane.to_string() && ack.seq == seq =>
+            {
+                Some(ack.clone())
+            }
+            _ => None,
+        })
+        .await
+}
+async fn resume(server: &Server, queue: &mut Outbox) -> (Client, HelloAck) {
+    let (mut client, hello) = identify(server).await;
+    for applied in &hello.applied_input {
+        queue.acknowledge(applied);
+    }
+    for message in queue.pending() {
+        send(&mut client, message).await;
+    }
+    (client, hello)
+}
+fn pause(server: &Server, name: &str) {
+    std::fs::write(server.dir.join("failpoints"), format!("{name}=pause")).unwrap();
+}
+fn clear(server: &Server) {
+    std::fs::write(server.dir.join("failpoints"), "").unwrap();
+}
+async fn collector(server: &Server, client: &mut Client, pane: PaneId) -> PathBuf {
+    let file = server.dir.join("typed");
+    client.type_line(pane, &format!("stty -echo; printf 'collector-%s\\n' ready; cat > '{}'; printf 'collector-%s\\n' finished", file.display())).await;
+    client.wait_screen("collector-ready").await;
+    file
+}
+async fn finish(client: &mut Client, pane: PaneId, file: &Path) {
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"\x04"),
+        }))
+        .await;
+    client.wait_screen("collector-finished").await;
+    assert_eq!(std::fs::read(file).unwrap(), b"first\nsecond\n");
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+// @spec reload/client-connections-end-and-clients-reconnect
+#[tokio::test]
+async fn unread_input_is_replayed_after_reload_in_the_middle_of_a_batch() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let file = collector(&server, &mut client, pane).await;
+    let mut queue = Outbox::default();
+    let first = queued(&mut queue, pane, b"first\n");
+    send(&mut client, &first).await;
+    queue.acknowledge(&ack(&mut client, pane, 1).await);
+    pause(&server, "reload-after-drain");
+    server.signal("-USR1");
+    let hit = pauses.wait("reload-after-drain").await;
+    // The supervisor has made its last read. This successful socket write
+    // cannot be included in the state handed to the successor.
+    let second = queued(&mut queue, pane, b"second\n");
+    send(&mut client, &second).await;
+    clear(&server);
+    hit.release().await;
+    let mut client = reconnect(&server, client).await;
+    drop(client);
+    let (fresh, hello) = resume(&server, &mut queue).await;
+    client = fresh;
+    assert_eq!(
+        hello
+            .applied_input
+            .iter()
+            .find(|a| a.pane_id == pane.to_string())
+            .unwrap()
+            .seq,
+        1
+    );
+    client.subscribe(pane).await;
+    queue.acknowledge(&ack(&mut client, pane, 2).await);
+    assert_eq!(queue.pending().count(), 0);
+    finish(&mut client, pane, &file).await;
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+#[tokio::test]
+async fn applied_input_with_a_lost_ack_is_not_applied_twice() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let file = collector(&server, &mut client, pane).await;
+    let mut queue = Outbox::default();
+    pause(&server, "input-before-ack");
+    let first = queued(&mut queue, pane, b"first\n");
+    send(&mut client, &first).await;
+    let hit = pauses.wait("input-before-ack").await;
+    // The PTY already owns these bytes. Close before any acknowledgement.
+    drop(client);
+    clear(&server);
+    hit.release().await;
+    let (mut client, hello) = resume(&server, &mut queue).await;
+    assert_eq!(
+        hello
+            .applied_input
+            .iter()
+            .find(|a| a.pane_id == pane.to_string())
+            .unwrap()
+            .seq,
+        1
+    );
+    assert_eq!(queue.pending().count(), 0);
+    // Even a stale replay must be harmless.
+    send(&mut client, &first).await;
+    ack(&mut client, pane, 1).await;
+    let second = queued(&mut queue, pane, b"second\n");
+    send(&mut client, &second).await;
+    ack(&mut client, pane, 2).await;
+    client.subscribe(pane).await;
+    finish(&mut client, pane, &file).await;
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+#[tokio::test]
+async fn disconnect_before_application_replays_one_copy() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let file = collector(&server, &mut client, pane).await;
+    let mut queue = Outbox::default();
+    pause(&server, "input-before-apply");
+    let first = queued(&mut queue, pane, b"first\n");
+    send(&mut client, &first).await;
+    let hit = pauses.wait("input-before-apply").await;
+    drop(client);
+    clear(&server);
+    hit.release().await;
+    let (mut client, _) = resume(&server, &mut queue).await;
+    let second = queued(&mut queue, pane, b"second\n");
+    send(&mut client, &second).await;
+    ack(&mut client, pane, 2).await;
+    client.subscribe(pane).await;
+    finish(&mut client, pane, &file).await;
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+// @spec reload/pane-input-and-output-are-not-lost-across-a-reload
+#[tokio::test]
+async fn partially_written_input_keeps_its_boundary_through_exec() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let (fifo, mut release) = activity_fifo(&server);
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let file = server.dir.join("large-input");
+    let tail = server.dir.join("after-input");
+    client.type_line(pane, &format!(
+        "stty -echo -icanon min 1 time 0; printf 'reader-%s\\n' ready; read -r _ < '{}'; head -c 1048576 > '{}'; head -c 4 > '{}'; printf 'reader-%s\\n' finished",
+        fifo.display(), file.display(), tail.display()
+    )).await;
+    client.wait_screen("reader-ready").await;
+    let mut queue = Outbox::default();
+    pause(&server, "input-before-apply");
+    let message = queued(&mut queue, pane, &vec![b'a'; 1048576]);
+    send(&mut client, &message).await;
+    let hit = pauses.wait("input-before-apply").await;
+    clear(&server);
+    hit.release().await;
+    drop(client);
+    // A probe is ordered after acceptance; the blocked reader prevents the
+    // whole frame fitting in the PTY. No applied ACK is allowed yet.
+    let (mut client, hello) = resume(&server, &mut queue).await;
+    assert_eq!(
+        hello
+            .applied_input
+            .iter()
+            .find(|a| a.pane_id == pane.to_string())
+            .unwrap()
+            .seq,
+        0
+    );
+    pause(&server, "reload-after-drain");
+    server.signal("-USR1");
+    let hit = pauses.wait("reload-after-drain").await;
+    clear(&server);
+    hit.release().await;
+    client = reconnect(&server, client).await;
+    drop(client);
+    let (mut client, hello) = resume(&server, &mut queue).await;
+    assert_eq!(
+        hello
+            .applied_input
+            .iter()
+            .find(|a| a.pane_id == pane.to_string())
+            .unwrap()
+            .seq,
+        0
+    );
+    client.subscribe(pane).await;
+    release_activity_fifo(&mut release);
+    ack(&mut client, pane, 1).await;
+    let end = queued(&mut queue, pane, b"END\n");
+    send(&mut client, &end).await;
+    ack(&mut client, pane, 2).await;
+    client.wait_screen("reader-finished").await;
+    assert_eq!(std::fs::read(file).unwrap(), vec![b'a'; 1048576]);
+    assert_eq!(std::fs::read(tail).unwrap(), b"END\n");
+}

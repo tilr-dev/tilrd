@@ -121,6 +121,7 @@ impl From<client_message::Msg> for ClientMessage {
         Self {
             msg: Some(msg),
             seq: 0,
+            ..Default::default()
         }
     }
 }
@@ -131,6 +132,7 @@ impl ClientMessage {
         Self {
             msg: Some(msg),
             seq,
+            ..Default::default()
         }
     }
 }
@@ -241,3 +243,5 @@ mod tests {
         ));
     }
 }
+
+pub mod input;
