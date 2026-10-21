@@ -1,9 +1,8 @@
 # test-server-lifetime Specification
 
 ## Purpose
-A test process can disappear without running destructors. Its test servers and
-copied executables then outlive it. Startup also has an unguarded interval before
-readiness, and client cleanup depends on a command socket that tests can remove.
+Define integration-test ownership of real servers so panic, interruption and
+forced timeout cannot leave supervisors, panes or shells running after the test.
 
 ## Requirements
 
