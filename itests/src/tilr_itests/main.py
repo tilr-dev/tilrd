@@ -39,7 +39,7 @@ TARGET = "/target"
 # Version string of the "next release" the update scenarios install.
 NEXT_PACKAGE_VERSION = "0.1.1"
 
-SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "crates/*/target/", "!rustfmt.toml",
+SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crates/*/target/", "!rustfmt.toml",
                  "!.rustfmt.toml", "!clippy.toml"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
