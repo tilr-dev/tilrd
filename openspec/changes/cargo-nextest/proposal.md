@@ -2,7 +2,7 @@
 
 ## Why
 
-`cargo test` runs the workspace's test binaries one after another; most of the suite is integration tests that start real servers, so one slow binary holds up the rest. cargo-nextest runs every test as its own process and the binaries in parallel: locally the suite drops from about 179 s to about 100 s.
+`cargo test` runs the workspace's test binaries one after another; most of the suite is integration tests that start real servers, so one slow binary holds up the rest. cargo-nextest runs every test as its own process and the binaries in parallel instead of one after another, so the suite finishes in roughly half the time.
 
 The test command is written down in several places (AGENTS.md, README, `scripts/linux.sh`, the Linux container, CI). The static check of CI (`release::ci_runs_every_gate_of_agents_md`) only stays honest if every place runs the same command, so all of them switch together, to exactly `cargo nextest run --workspace --features tilrd/failpoints --locked`.
 
