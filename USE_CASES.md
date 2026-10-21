@@ -133,7 +133,7 @@ real Linux containers with the same FIFO barrier.
 | The token is kept in a file readable by the user only (the state directory is 0700) and survives a restart; `tilrd token` prints the same one | `the_token_is_kept_for_the_user_only_and_across_restarts` |
 | A state directory left 0755 with an id and a token in it is set to 0700 at start; the server keeps that id and token | `an_existing_state_directory_is_made_private` |
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
-| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
+| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays; only `tilrd_client_drops_total{reason="no_hello"}` goes up | `a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_no_hello` |
 
 ## Outgoing WebSocket TLS — shared by Cloud control, tilrd ps, tilr --connect and tilr-driver
 
@@ -287,7 +287,8 @@ state format; platforms other than `linux-aarch64`.
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
 | With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
-| The new executable reads another state format (supervisor's or pane's), or cannot show it can resume (no `reload-check 1`): no reload, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| `state-formats` prints this build's formats; a new executable that reads another pane state format is not reloaded into, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| Unit: a successor that reads another supervisor or pane state format, cannot show it can resume (no `reload-check 1`), names no format or an unparseable one is refused with that reason; one with the same formats is accepted (`src/reload.rs`) | `reload::tests::check_formats_rejects_every_format_mismatch`, `reload::tests::an_executable_reading_the_same_formats_can_take_over` |
 | After a reload the server and pane processes look the same in `ps` as before; the files with the handed-over state are read and removed | `a_reload_shows_in_no_command_line_and_leaves_no_file_behind` |
 | A reload with no panes | `a_reload_with_no_panes_open_works` |
 | A second server of the same user (on `<server_id>-<pid>.sock`) keeps its host socket across a reload: `tilr edit` in a pane from before reaches its clients | `a_second_server_keeps_its_host_socket_across_a_reload` |
@@ -452,7 +453,7 @@ pane process. The server's counters are at `GET /metrics`.
 | A request that arrives in pieces (the request line and the empty line split) | `a_metrics_request_may_come_in_pieces` |
 | After input and frames: the pane's frame, byte and input counters, the routing and loop-lag histograms, CPU and memory of the supervisor and the pane process | `metrics_count_frames_input_and_routing` |
 | An old connection superseded by the same client is counted in `tilrd_client_drops_total{reason="superseded"}` | `metrics_count_the_clients_let_go_and_why` |
-| A wrong-token Hello is refused without a drop; a connection that never says Hello is closed with 4002 and increments only `tilrd_client_drops_total{reason="no_hello"}` | `metrics_count_the_clients_let_go_and_why`, `a_connection_that_never_says_hello_is_counted_as_no_hello` |
+| A wrong-token Hello is refused without a drop | `metrics_count_the_clients_let_go_and_why` |
 | A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilrd_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
 
 ## Test infrastructure — `tests/cleanup_stand.rs`

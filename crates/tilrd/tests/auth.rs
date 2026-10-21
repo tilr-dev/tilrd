@@ -126,9 +126,21 @@ async fn a_server_started_without_authentication_asks_for_no_token() {
 }
 
 #[tokio::test]
-async fn a_connection_that_never_says_hello_is_closed_after_10_s() {
+async fn a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_no_hello() {
     // No client timeout: only the Hello deadline lets the silent one go.
     let server = Server::start(&["--client-timeout", "0"]);
+    let url = format!("/metrics?token={}", server.token());
+    let (_, text) = http_get(&server, &url, &[]).await;
+    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
+        assert_eq!(
+            sample(
+                &text,
+                &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}")
+            ),
+            Some(0.0),
+            "{text}"
+        );
+    }
     let started = std::time::Instant::now();
     let mut silent = Client::connect_silent(&server).await;
     let mut greets = Client::connect_silent(&server).await;
@@ -156,4 +168,23 @@ async fn a_connection_that_never_says_hello_is_closed_after_10_s() {
     // The one that said Hello after a second stays.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(greets.list_panes().await.is_empty());
+
+    // Only the silent one is counted, and as no_hello.
+    let (status, text) = http_get(&server, &url, &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        sample(&text, "tilrd_client_drops_total{reason=\"no_hello\"}"),
+        Some(1.0),
+        "{text}"
+    );
+    for reason in ["superseded", "too_slow", "silent", "no_pong"] {
+        assert_eq!(
+            sample(
+                &text,
+                &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}")
+            ),
+            Some(0.0),
+            "{text}"
+        );
+    }
 }
