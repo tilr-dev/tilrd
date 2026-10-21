@@ -33,4 +33,3 @@ test explicitly resumes reading. Sending client messages SHALL remain possible.
 #### Scenario: Paused client keeps its socket open
 - **WHEN** the test pauses a connected client's reads
 - **THEN** the connection remains open, the client can send messages and reads resume only when requested
-
