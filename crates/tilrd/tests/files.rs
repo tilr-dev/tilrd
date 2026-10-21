@@ -1064,6 +1064,7 @@ async fn tilr_edit_fails_with_no_client_watching_or_outside_a_pane() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_tilrd"));
         command
             .args(["edit", "notes.md"])
+            .env_remove("RUST_LOG")
             .env_remove("TILR_PANE")
             .env_remove("TILR_SOCK")
             .envs(env.iter().copied());

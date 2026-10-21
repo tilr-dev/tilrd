@@ -327,6 +327,7 @@ async fn the_configuration_file_names_the_allowed_origins() {
     // stops the server from starting, and says where the file is.
     let dir = configured("allow_origin = []\n");
     let output = std::process::Command::new(exe)
+        .env_remove("RUST_LOG")
         .args(["--listen", "127.0.0.1:0"])
         .env("TILR_CONFIG_DIR", dir.join("config"))
         .env("TILR_STATE_DIR", dir.join("state"))
@@ -543,6 +544,7 @@ async fn ps_lists_the_panes_of_a_running_server() {
     let pid = client.list_panes().await[0].pid;
 
     let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .args(["ps", "--url", &server.addr])
         // Where the server keeps its access token.
         .env("TILR_STATE_DIR", server.dir.join("state"))
@@ -559,6 +561,7 @@ async fn ps_lists_the_panes_of_a_running_server() {
     assert!(lines[1].ends_with("/bin/sh"), "{listed}");
 
     let version = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .args(["ps", "--url", &server.addr, "--server-version"])
         .env("TILR_STATE_DIR", server.dir.join("state"))
         .output()

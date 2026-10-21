@@ -225,6 +225,13 @@ tilrd --listen 0.0.0.0:7890           # TCP on every address (the token is still
 tilrd --no-listen                     # the Unix socket only
 ```
 
+**Log level.** `RUST_LOG` sets the log filter in tracing's directive syntax: `debug`,
+`tilrd=debug,info`, `tilrd::supervisor=trace`. Unset or empty, the server logs at `info`; a
+value that does not parse is ignored with one line `RUST_LOG ignored: <reason>` and the
+server logs at `info`. It applies to the supervisor and the pane processes alike. `RUST_LOG`
+stays in the server's environment, so a reload keeps the level and the shells in panes
+inherit the variable like any other.
+
 **TCP.** On by default, on loopback: `127.0.0.1:7890` (`--listen ADDR` or `TILR_LISTEN`),
 where the Tilr app, an SSH tunnel (`ssh -L 7890:127.0.0.1:7890`) and the
 [Cloud tunnel](#tilr-cloud) reach the server with the access token. `--listen [::]:7890` is

@@ -66,6 +66,7 @@ async fn the_token_is_kept_for_the_user_only_and_across_restarts() {
 
     // `tilrd token` prints the same one.
     let printed = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .arg("token")
         .env("TILR_STATE_DIR", server.dir.join("state"))
         .output()

@@ -223,7 +223,10 @@ impl Server {
             .env_remove("TILR_CLIPBOARD_DIR")
             // Nor the Unix socket of the server whose pane the tests may
             // run in: each server's goes in its own runtime directory.
-            .env_remove("TILR_SOCKET");
+            .env_remove("TILR_SOCKET")
+            // Nor the log filter of the shell running the tests: what a
+            // server under test logs is the default.
+            .env_remove("RUST_LOG");
     }
 
     /// Whether the server has logged a line with `needle` so far, as far as

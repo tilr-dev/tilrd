@@ -162,7 +162,11 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     // The formats the running server writes, as it reports them itself.
-    let formats = Command::new(&exe).arg("state-formats").output().unwrap();
+    let formats = Command::new(&exe)
+        .env_remove("RUST_LOG")
+        .arg("state-formats")
+        .output()
+        .unwrap();
     assert_eq!(
         String::from_utf8(formats.stdout).unwrap(),
         "supervisor-state 2\npane-state 3\nunix-socket 1\nreload-check 1\n"

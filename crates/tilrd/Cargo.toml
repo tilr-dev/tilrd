@@ -36,6 +36,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 tokio-tungstenite = "0.30"
 toml = "1.1"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "3"
 uuid = { version = "1", features = ["v4"] }

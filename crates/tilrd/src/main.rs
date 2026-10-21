@@ -266,11 +266,16 @@ fn main() -> anyhow::Result<ExitCode> {
     // Colors for a terminal only: the log of a server `tilr` started is a file.
     let colors = std::io::IsTerminal::is_terminal(&std::io::stderr())
         && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
+    let (filter, ignored) = log_filter(std::env::var_os("RUST_LOG"));
     tracing_subscriber::fmt()
+        .with_env_filter(filter)
         .with_ansi(colors)
         .with_writer(std::io::stderr)
         .log_internal_errors(false)
         .init();
+    if let Some(reason) = ignored {
+        tracing::warn!("RUST_LOG ignored: {reason}");
+    }
 
     let cli = Cli::parse();
     match cli.command {
@@ -302,6 +307,25 @@ fn main() -> anyhow::Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The log filter from `RUST_LOG` (tracing directives), `info` when it is
+/// unset or empty; an invalid value gives `info` and the reason to log once
+/// the logger is up.
+fn log_filter(
+    value: Option<std::ffi::OsString>,
+) -> (tracing_subscriber::EnvFilter, Option<String>) {
+    let info = || tracing_subscriber::EnvFilter::new("info");
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return (info(), None);
+    };
+    let Some(value) = value.to_str() else {
+        return (info(), Some("not valid UTF-8".to_owned()));
+    };
+    match tracing_subscriber::EnvFilter::try_new(value) {
+        Ok(filter) => (filter, None),
+        Err(err) => (info(), Some(err.to_string())),
+    }
 }
 
 /// What the command line and the configuration file make of a server.

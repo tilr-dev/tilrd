@@ -48,8 +48,8 @@ impl Daemon {
             command.env("NOTIFY_SOCKET", &path);
             Some(socket)
         };
-        command.args(args).envs(env.iter().copied());
         Server::environment(&mut command, dir, "");
+        command.args(args).envs(env.iter().copied());
         // The TCP port a server has by default: not the one of the machine.
         command.env("TILR_LISTEN", "127.0.0.1:0");
         command.stdin(Stdio::null()).stderr(Stdio::piped());
@@ -342,6 +342,62 @@ fn a_service_manager_is_told_when_the_server_is_ready() {
     let n = manager.recv(&mut message).expect("READY=1");
     assert_eq!(&message[..n], b"READY=1");
     daemon.wait_listening();
+}
+
+/// What a server logs with `RUST_LOG` set to `filter` (none if `None`)
+/// when a connection to its Unix socket is not a WebSocket: all of it, read
+/// to the end after the server has stopped. With `logged`, once that line
+/// is there.
+fn log_of_a_failed_handshake(filter: Option<&str>, logged: bool) -> String {
+    use std::io::{Read, Write};
+    let scratch = Scratch::new();
+    let env: Vec<(&str, &Path)> = filter
+        .map(|f| ("RUST_LOG", Path::new(f)))
+        .into_iter()
+        .collect();
+    let exe = Path::new(env!("CARGO_BIN_EXE_tilrd"));
+    let mut daemon = Daemon::spawn_env(exe, &scratch.0, &["--no-listen"], &env);
+    daemon.wait_ready();
+    let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
+    stream.write_all(b"not a handshake\r\n\r\n").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    // The server closes the connection as the handshake fails, and logs it
+    // right after, in the same poll of the connection's task.
+    let _ = stream.read_to_end(&mut Vec::new());
+    if logged {
+        wait_logged(&daemon, "websocket handshake failed");
+    }
+    daemon.signal(libc::SIGTERM);
+    let (status, log) = daemon.exit();
+    assert!(status.success(), "{status}: {log}");
+    log
+}
+
+#[test]
+fn rust_log_sets_the_log_level() {
+    let debug = log_of_a_failed_handshake(Some("debug"), true);
+    assert!(
+        debug
+            .lines()
+            .any(|line| line.contains("DEBUG") && line.contains("websocket handshake failed")),
+        "{debug}"
+    );
+    assert!(!debug.contains("RUST_LOG ignored"), "{debug}");
+
+    for unset in [None, Some("")] {
+        let info = log_of_a_failed_handshake(unset, false);
+        assert!(info.contains("Unix socket for local clients"), "{info}");
+        assert!(!info.contains("websocket handshake failed"), "{info}");
+        assert!(!info.contains("RUST_LOG ignored"), "{info}");
+    }
+
+    let invalid = log_of_a_failed_handshake(Some("tilrd=[bad"), false);
+    assert_eq!(invalid.matches("RUST_LOG ignored:").count(), 1, "{invalid}");
+    assert!(
+        invalid.contains("Unix socket for local clients"),
+        "{invalid}"
+    );
+    assert!(!invalid.contains("websocket handshake failed"), "{invalid}");
 }
 
 #[test]
@@ -715,7 +771,11 @@ async fn server_commands_run_for_local_clients_only() {
 /// An executable that reads the state but not the socket (no `unix-socket
 /// 1`) in place of `exe`.
 fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
-    let formats = Command::new(exe).arg("state-formats").output().unwrap();
+    let formats = Command::new(exe)
+        .env_remove("RUST_LOG")
+        .arg("state-formats")
+        .output()
+        .unwrap();
     let formats = String::from_utf8(formats.stdout).unwrap();
     let older: String = formats
         .lines()
