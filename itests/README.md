@@ -120,11 +120,18 @@ a tree could fail to compile against it.
 `tt-fresh DIR... -- CMD` (main.py `FRESH`) wraps every cargo call on a shared target
 dir (`build`, the next release, clippy and fmt): it takes the
 dir's lock (concurrent runs of other trees wait), compares the sha256 of every source
-file with `DIR/.tt-sources.json` (the tree the dir was last given), sets the mtime of
-each file that differs to now, records the new tree and runs CMD. A changed file is
+file with `DIR/.tt-sources.json` (the last successfully built tree), sets the mtime of
+each file that differs to now, invalidates the records and runs CMD. A changed file is
 then always newer than anything built before it; an unchanged one is rebuilt only if
-cargo thinks so. The record is written before CMD, so a build that fails halfway still
-counts as given that tree.
+cargo thinks so. Records are published only after CMD succeeds. A failed or interrupted
+command leaves no successful record, so the next run refreshes all sources even if it
+sees identical bytes with old mtimes. This also covers a build that never reaches
+`/target-next`, whose generated protocol may still belong to the previous tree.
+
+The deterministic regression in `tests/test_fresh.py` uses a dependency-free Cargo
+build script to generate Rust from a schema, fails between the two target builds,
+then restores old source mtimes to model a new mount. Run it with
+`python3 -m unittest discover -s itests/tests -p test_fresh.py` from the repo root.
 
 Checked by building three trees in a row with `./dt call --commit X --source DIR server`:
 A, then B (A with one more value in `enum FsChange` of tilr.proto and nothing else),
