@@ -30,7 +30,7 @@ ZIG_VERSION = "0.15.2"
 DISTROS = {"ubuntu": "ubuntu:24.04"}
 RUNTIME_APT = ["python3", "procps", "psmisc", "util-linux", "bash", "ca-certificates", "curl",
                "vim", "htop", "less", "iproute2", "lsof", "iptables", "openssh-client", "openssh-server",
-               "git", "strace", "zsh", "fish"]
+               "git", "strace", "zsh", "fish", "libdigest-sha-perl"]
 
 # Same paths in every container: test executables bake CARGO_MANIFEST_DIR and
 # CARGO_BIN_EXE_* at compile time.
@@ -39,8 +39,11 @@ TARGET = "/target"
 # Version string of the "next release" the update scenarios install.
 NEXT_PACKAGE_VERSION = "0.1.1"
 
+# Rust integration tests also execute repository scripts and inspect release config.
 SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crates/*/target/", "!rustfmt.toml",
-                 "!.rustfmt.toml", "!clippy.toml"]
+                 "!.rustfmt.toml", "!clippy.toml", "!scripts/", "!.github/workflows/ci.yml",
+                 "!.github/workflows/release.yml", "!.cargo/config.toml", "!.gitignore",
+                 "!release-please-config.json"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
 # Runs one test command and writes a single JSON result, so the module reads one file
