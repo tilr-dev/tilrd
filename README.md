@@ -641,6 +641,22 @@ A server has an id of its own too, in `HelloAck.server_id`: a UUID made the firs
 runs on a machine and kept in `$XDG_STATE_HOME/tilr/server-id` (`~/.local/state/tilr`), so
 it is the same after a restart.
 
+## Pane activity
+
+Every greeted client receives `PaneActivity { pane_id, kind, at_ms }`, whether
+or not it watches the pane. `kind` is `BELL` or `COMMAND_FINISHED`; `at_ms` is
+Unix time in milliseconds. The client decides whether to notify.
+
+Bells come from the terminal parser: a BEL ending an OSC sequence is not a bell.
+A pane reports at most one bell per second; extra bells are dropped, not deferred.
+Command completion follows the pty foreground process group returning to the
+shell's, checked after output reads and once a second. It needs a shell with job
+control. A command that runs and ends between checks without output can be missed.
+
+A command still in the foreground after a reload remains tracked. The bell window
+restarts after a reload. Reconnecting clients receive later events only; there is
+no replay.
+
 ## Pasting images: the shared clipboard
 
 A program in a pane cannot reach the clipboard of the user's computer. When it is asked to
@@ -824,6 +840,9 @@ before sending that capability's requests, in this order:
 | `host-events` | `HostEvent` | the host-events socket not up |
 | `agent` | SSH agent forwarding (`StreamOpen` with kind `ssh-agent`) | `--no-agent`, `agent = false` |
 | `exec` | `ExecStart`, `ExecInput`, `ExecSignal`, `ExecCancel` | `--no-exec`, `exec = false` |
+
+`PaneActivity` is an additive server push to every greeted client and needs no
+feature negotiation. See [Pane activity](#pane-activity).
 
 `Hello.features` says what the client can serve: `host-events` (it takes `HostEvent`),
 `agent` (it serves the SSH agent), `clipboard-write` (it takes `ClipboardWrite`, the copies

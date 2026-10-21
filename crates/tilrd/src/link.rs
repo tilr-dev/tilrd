@@ -70,6 +70,8 @@ pub mod kind {
     /// A `ClipboardWrite` packet, whole (`pane_id` and `transfer_id` left
     /// empty): the program in the pane copied this to the clipboard.
     pub const CLIPBOARD: u8 = 6;
+    /// A `PaneActivity` packet to broadcast to every greeted client.
+    pub const ACTIVITY: u8 = 7;
 }
 
 /// What a `FRAME` packet says of its frame ahead of the `ServerMessage`.

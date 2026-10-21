@@ -45,6 +45,7 @@ pub struct GhosttyScreen {
     term: Terminal<'static, 'static>,
 
     replies: Rc<RefCell<Vec<u8>>>,
+    bells: Rc<Cell<u32>>,
     title_changed: Rc<Cell<bool>>,
     status_changed: Rc<Cell<bool>>,
     copies: Rc<RefCell<Vec<ClipboardCopy>>>,
@@ -67,6 +68,7 @@ impl GhosttyScreen {
         let mut term = new_terminal(cols, rows, MAX_SCROLLBACK)?;
 
         let replies = Rc::new(RefCell::new(Vec::new()));
+        let bells = Rc::new(Cell::new(0u32));
         let title_changed = Rc::new(Cell::new(false));
         let status_changed = Rc::new(Cell::new(false));
         let copies = Rc::new(RefCell::new(Vec::new()));
@@ -104,6 +106,10 @@ impl GhosttyScreen {
                 }
                 Ok(())
             })?;
+            let bells = Rc::clone(&bells);
+            term.on_bell(move |_term: &Terminal<'_, '_>| {
+                bells.set(bells.get().saturating_add(1));
+            })?;
         }
 
         Ok(Self {
@@ -117,6 +123,7 @@ impl GhosttyScreen {
             mouse_event: mouse::Event::new()?,
             term,
             replies,
+            bells,
             title_changed,
             status_changed,
             copies,
@@ -141,6 +148,7 @@ impl GhosttyScreen {
         screen.feed(snapshot);
         // Nobody is waiting for answers to anything in a snapshot.
         screen.take_replies();
+        screen.take_bells();
         Ok(screen)
     }
 
@@ -258,6 +266,10 @@ impl Screen for GhosttyScreen {
 
     fn take_replies(&mut self) -> Vec<u8> {
         std::mem::take(&mut *self.replies.borrow_mut())
+    }
+
+    fn take_bells(&mut self) -> u32 {
+        self.bells.replace(0)
     }
 
     fn resize(&mut self, cols: u16, rows: u16, cell: (u32, u32)) -> Result<()> {
@@ -1715,6 +1727,21 @@ fn map_key(input: &KeyInput) -> (key::Key, Option<char>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bell_is_counted() {
+        let mut screen = screen();
+        screen.feed(b"\x07\x07");
+        assert_eq!(screen.take_bells(), 2);
+        assert_eq!(screen.take_bells(), 0);
+    }
+
+    #[test]
+    fn a_bel_ending_an_osc_is_not_a_bell() {
+        let mut screen = screen();
+        screen.feed(b"\x1b]0;title\x07");
+        assert_eq!(screen.take_bells(), 0);
+    }
 
     fn screen() -> GhosttyScreen {
         GhosttyScreen::new(20, 4).unwrap()

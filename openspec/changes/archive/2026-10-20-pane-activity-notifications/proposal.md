@@ -33,3 +33,5 @@ Nothing of it exists at 1163abd: no `PaneActivity` in `crates/tilr-proto/proto/t
 ## Impact
 
 `crates/tilr-proto/proto/tilr.proto` (one `ServerMessage` variant and its enum, additive), `crates/tilr-screen/src/{lib,ghostty}.rs` (bell callback, `Screen::take_bells`), `crates/tilrd/src/pane.rs` (detection), `crates/tilrd/src/link.rs` (packet kind), `crates/tilrd/src/supervisor.rs` (fan-out), `crates/tilrd/tests/{panes,reload}.rs`, README "Protocol", USE_CASES.md. Not breaking: no PROTOCOL_VERSION bump, no feature. Survives a reload without new state: after the exec the pane reads the foreground group again and knows whether a command runs (it is not the shell's group), so no pane-state format bump; a bell's rate-limit timestamp is not kept. Clients reconnect after a reload and miss events sent while they were away (no replay).
+
+Implemented on 2026-10-20: bell detection, foreground-command completion tracking and activity delivery to greeted clients, with deterministic integration coverage.

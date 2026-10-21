@@ -371,6 +371,8 @@ pub struct Client {
     pub host_events: VecDeque<HostEvent>,
     /// `ClipboardWrite` chunks seen while waiting for something else.
     pub copies: VecDeque<ClipboardWrite>,
+    /// Pane activity seen while waiting for another message.
+    pub activities: VecDeque<tilr_proto::PaneActivity>,
     /// The server's access token, as `tilrd token` prints it.
     pub token: String,
     /// What `hello` says as `Hello.client_id`; empty: none.
@@ -402,6 +404,7 @@ impl Client {
             acks: VecDeque::new(),
             host_events: VecDeque::new(),
             copies: VecDeque::new(),
+            activities: VecDeque::new(),
             token: server.token(),
             client_id: String::new(),
         })
@@ -448,6 +451,9 @@ impl Client {
                         }
                         Some(server_message::Msg::ClipboardWrite(chunk)) => {
                             self.copies.push_back(chunk.clone());
+                        }
+                        Some(server_message::Msg::PaneActivity(activity)) => {
+                            self.activities.push_back(activity.clone());
                         }
                         _ => {}
                     }
@@ -740,6 +746,30 @@ pub fn script(server: &Server, name: &str, script: &str) -> String {
     format!("sh '{}'", path.display())
 }
 
+/// A FIFO kept open at both ends so sending a short release never waits for
+/// a reader. The command under test still blocks until we write a line.
+pub fn activity_fifo(server: &Server) -> (PathBuf, std::fs::File) {
+    let fifo = server.dir.join("activity-release");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let release = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fifo)
+        .unwrap();
+    (fifo, release)
+}
+
+pub fn release_activity_fifo(release: &mut std::fs::File) {
+    use std::io::Write;
+    release.write_all(b"continue\n").unwrap();
+}
+
 /// Start a second server in the scratch directory of `first`, a running
 /// one: one user's two servers, with one state directory (so one server id
 /// and token) and Unix sockets of their own.
@@ -834,6 +864,7 @@ impl Client {
                 acks: VecDeque::new(),
                 host_events: VecDeque::new(),
                 copies: VecDeque::new(),
+                activities: VecDeque::new(),
                 token: server.token(),
                 client_id: String::new(),
             }),

@@ -20,8 +20,8 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use prost::Message;
 use tilr_proto::{
-    ClientMessage, ClipboardWrite, FrameTiming, PaneExited, PaneHandover, PendingInput,
-    ServerMessage, client_message::Msg, server_message,
+    ClientMessage, ClipboardWrite, FrameTiming, PaneActivity, PaneActivityKind, PaneExited,
+    PaneHandover, PendingInput, ServerMessage, client_message::Msg, server_message,
 };
 use tilr_screen::{GhosttyScreen, Screen};
 use tokio::io::Stdout;
@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::time::measurement_instant;
+use crate::time::{activity_instant, measurement_instant, now_ms};
 use crate::{link, pty, reload};
 
 /// Minimum spacing between frames. Output arriving faster is coalesced.
@@ -198,6 +198,7 @@ struct Pane {
     screen: GhosttyScreen,
     to_supervisor: Stdout,
     shell: pty::Process,
+    last_bell_at: Option<Instant>,
     /// When to kill a shell that was asked to close and has not exited.
     kill_at: Option<Instant>,
     /// The process groups hung up (the shell's, the pty's foreground one),
@@ -364,6 +365,7 @@ async fn serve(
         screen,
         to_supervisor,
         shell,
+        last_bell_at: None,
         kill_at,
         hung_up,
         pending_input,
@@ -380,8 +382,8 @@ async fn serve(
         stats: FrameStats::default(),
         last_encode: Duration::ZERO,
     };
-    pane.refresh_title(false);
-    let mut title_tick = tokio::time::interval(Duration::from_secs(1));
+    pane.poll_foreground(false).await?;
+    let mut foreground_tick = tokio::time::interval(Duration::from_secs(1));
     let mut buf = vec![0u8; READ_BUF];
 
     loop {
@@ -394,7 +396,7 @@ async fn serve(
                     Ok(Ok(0)) => break,
                     Ok(Err(err)) if err.raw_os_error() == Some(libc::EIO) => break,
                     Ok(Ok(n)) => {
-                        pane.on_output(&buf[..n]);
+                        pane.on_output(&buf[..n]).await?;
                         pane.send_copies().await?;
                     }
                     Ok(Err(err)) => return Err(err).context("read pty"),
@@ -442,10 +444,10 @@ async fn serve(
             () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
                 pane.send_frame().await?;
             }
-            _ = title_tick.tick() => {
+            _ = foreground_tick.tick() => {
                 // A leader can exec without changing its process group. Keep
                 // the pty-read cache, but refresh its cmdline on every tick.
-                pane.refresh_title(true);
+                pane.poll_foreground(true).await?;
             },
             () = tokio::time::sleep_until(pane.kill_at.unwrap_or_else(Instant::now)), if pane.kill_at.is_some() => {
                 pane.kill_at = None;
@@ -478,7 +480,7 @@ async fn serve(
 }
 
 impl Pane {
-    fn on_output(&mut self, bytes: &[u8]) {
+    async fn on_output(&mut self, bytes: &[u8]) -> Result<()> {
         let start = measurement_instant();
         self.screen.feed(bytes);
         self.pending_input.extend(self.screen.take_replies());
@@ -488,12 +490,29 @@ impl Pane {
         stats.output_bytes += bytes.len() as u64;
         stats.reads = stats.reads.saturating_add(1);
         self.dirty = true;
-        self.refresh_title(false);
+        if self.screen.take_bells() > 0 {
+            let at = activity_instant();
+            if self
+                .last_bell_at
+                .is_none_or(|last| at.saturating_duration_since(last) >= Duration::from_secs(1))
+            {
+                self.last_bell_at = Some(at);
+                self.report_activity(PaneActivityKind::Bell, now_ms())
+                    .await?;
+            }
+        }
+        self.poll_foreground(false).await
     }
 
-    fn refresh_title(&mut self, refresh_command: bool) {
+    /// Read the pty's foreground process group once: the process title
+    /// follows it, and its return from another group to the shell's is a
+    /// finished command.
+    async fn poll_foreground(&mut self, refresh_command: bool) -> Result<()> {
         let foreground = pty::foreground_group(self.pty.as_fd());
         let shell = self.shell.pid().unwrap_or_default() as libc::pid_t;
+        let finished = self.shell.pid().is_some()
+            && foreground == Some(shell)
+            && self.foreground.is_some_and(|old| old != shell);
         if refresh_command || foreground != self.foreground {
             self.foreground = foreground;
             #[cfg(feature = "failpoints")]
@@ -510,6 +529,22 @@ impl Pane {
         #[cfg(feature = "failpoints")]
         crate::fail::point(&format!("pane-title-polled:{}", self.id))
             .expect("pane title test synchronization");
+        if finished {
+            self.report_activity(PaneActivityKind::CommandFinished, now_ms())
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn report_activity(&mut self, kind: PaneActivityKind, at_ms: u64) -> Result<()> {
+        let packet = tilr_proto::encode(&PaneActivity {
+            pane_id: self.id.clone(),
+            kind: kind as i32,
+            at_ms,
+        });
+        link::write_tagged(&mut self.to_supervisor, link::kind::ACTIVITY, &packet)
+            .await
+            .context("report activity to supervisor")
     }
 
     /// The pty took the first `n` bytes of the pending input.
@@ -837,7 +872,7 @@ impl Pane {
         if let Some(status) = self.screen.take_status() {
             if !status.cwd.is_empty() {
                 self.cwd.clone_from(&status.cwd);
-                self.refresh_title(false);
+                self.poll_foreground(false).await?;
             }
             let packet = tilr_proto::encode(&status);
             link::write_tagged(&mut self.to_supervisor, link::kind::STATUS, &packet)

@@ -33,6 +33,11 @@ real Linux containers with the same FIFO barrier.
 
 | Use case | Test |
 |---|---|
+| A bell reaches greeted clients that do not watch the pane | `a_bell_in_an_unwatched_pane_is_reported` |
+| Bells within a second are dropped, and the next second permits a bell | `bells_are_reported_once_a_second` (`failpoints`) |
+| BEL ending an OSC title sequence is not reported as activity | `a_bel_ending_an_osc_is_not_reported` |
+| A foreground job returning control to its shell reports command completion | `a_finished_foreground_command_is_reported` |
+| Typing at the prompt reports no activity | `typing_at_the_prompt_reports_nothing` |
 | The client says hello, the server reports its protocol version (3), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
 | A client with another protocol version (newer, older, none) gets an error naming both versions ("this server speaks 3"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
 | The first thing a client gets is the answer to its `Hello`: pane lists are not sent to it before, and after that it gets them like everyone else | `the_first_thing_a_client_hears_is_the_answer_to_its_hello` |
@@ -266,6 +271,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
 | With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
