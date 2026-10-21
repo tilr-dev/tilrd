@@ -17,6 +17,9 @@ pub use std::time::Duration;
 pub mod server_owner;
 pub use server_owner::Owner;
 
+pub mod scrape;
+pub use scrape::{http_get, http_request, sample};
+
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
 pub use tilr_proto::{

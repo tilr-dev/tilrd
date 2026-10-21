@@ -213,37 +213,27 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
         "supervisor-state 2\npane-state 3\nunix-socket 1\nreload-check 1\n"
     );
 
-    // A version that runs fine but keeps its state differently, first for
-    // the supervisor, then for the panes. Taking over, it would misread what
-    // it is left and lose the shells.
-    for (formats, refusal) in [
-        (
-            "supervisor-state 1\npane-state 3",
-            "reads supervisor-state format 1, this server writes 2",
-        ),
-        (
-            "supervisor-state 2\npane-state 2",
-            "reads pane-state format 2, this server writes 3",
-        ),
-        // The same formats, from a release before the reload check: started
-        // for the check, it would run as a server of its own.
-        (
-            "supervisor-state 2\npane-state 3\nunix-socket 1",
-            "cannot show that it can resume (no `reload-check 1`)",
-        ),
-    ] {
-        let staged = dir.join("tilrd.new");
-        std::fs::write(&staged, format!("#!/bin/sh\necho '{formats}'\n")).unwrap();
-        let mut mode = std::fs::metadata(&staged).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
-        std::fs::set_permissions(&staged, mode).unwrap();
-        std::fs::rename(&staged, &exe).unwrap();
+    // A version that runs fine but keeps the panes' state differently.
+    // Taking over, it would misread what it is left and lose the shells.
+    // Every other way a successor can disagree on formats is in the unit
+    // test `reload::tests::check_formats_rejects_every_format_mismatch`.
+    let staged = dir.join("tilrd.new");
+    std::fs::write(
+        &staged,
+        "#!/bin/sh\necho 'supervisor-state 2\npane-state 2'\n",
+    )
+    .unwrap();
+    let mut mode = std::fs::metadata(&staged).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    std::fs::set_permissions(&staged, mode).unwrap();
+    std::fs::rename(&staged, &exe).unwrap();
 
-        server.wait_logged_within(refusal, JUDGED).await;
-        // Same server, same connection, same shell.
-        assert!(server.is_running());
-        assert_eq!(client.run(pane_id, "true").await, 0);
-    }
+    server
+        .wait_logged_within("reads pane-state format 2, this server writes 3", JUDGED)
+        .await;
+    // Same server, same connection, same shell.
+    assert!(server.is_running());
+    assert_eq!(client.run(pane_id, "true").await, 0);
 
     // A version that reads this server's state is then reloaded into.
     let staged = dir.join("tilrd.new");
