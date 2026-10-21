@@ -2224,16 +2224,16 @@ impl Supervisor {
         let Some(greeted) = self.clients.get(&client_id).map(|client| client.greeted) else {
             return;
         };
-        let (packet, numbered) = match tilr_proto::decode::<ClientMessage>(&packet) {
+        let (packet, input_seq) = match tilr_proto::decode::<ClientMessage>(&packet) {
             Ok(mut envelope) => {
-                let numbered = envelope.input_seq != 0;
+                let input_seq = envelope.input_seq;
                 envelope.input_probe = 0;
                 envelope.input_identity = self
                     .clients
                     .get(&client_id)
                     .map(|client| client.input_identity.clone())
                     .unwrap_or_default();
-                (tilr_proto::encode(&envelope), numbered)
+                (tilr_proto::encode(&envelope), input_seq)
             }
             Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
         };
@@ -2273,13 +2273,29 @@ impl Supervisor {
             _ if !greeted => return self.refuse(client_id, "expected Hello first"),
             _ => {}
         }
-        if numbered
+        if input_seq != 0
             && self
                 .clients
                 .get(&client_id)
                 .is_some_and(|client| client.input_identity.is_empty())
         {
             return self.send_error(client_id, "numbered input requires a stable client_id");
+        }
+        if input_seq != 0
+            && let Some(named) = tilr_proto::input::pane(&msg)
+            && self.pane_mut(named).is_none()
+        {
+            // No future replay can apply input to this missing pane. Finish
+            // delivery without claiming application in any pane's counters.
+            self.send_no_pane(client_id, named);
+            self.send(
+                client_id,
+                server_message::Msg::InputAck(tilr_proto::InputAck {
+                    pane_id: named.to_owned(),
+                    seq: input_seq,
+                }),
+            );
+            return;
         }
         match msg {
             Msg::Hello(hello) => {
@@ -2419,7 +2435,7 @@ impl Supervisor {
                 let Some((_, pane)) = self.pane_mut(&resize.pane_id) else {
                     return self.send_no_pane(client_id, &resize.pane_id);
                 };
-                if !numbered {
+                if input_seq == 0 {
                     pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
                     pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
                 }

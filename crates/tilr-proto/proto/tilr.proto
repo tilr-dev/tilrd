@@ -1169,7 +1169,9 @@ message PendingInput {
   uint64 age_us = 3;
 }
 
-// Cumulative applied input for one pane of the greeted client.
+// Cumulative completed input for one pane of the greeted client: applied to
+// the PTY, or terminally rejected with Error because that pane does not exist.
+// HelloAck.applied_input contains only applied counters from running panes.
 message InputAck {
   string pane_id = 1;
   uint64 seq = 2;

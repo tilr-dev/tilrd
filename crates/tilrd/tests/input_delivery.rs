@@ -16,6 +16,164 @@ async fn identify(server: &Server) -> (Client, HelloAck) {
     (client, hello)
 }
 
+async fn delivery_responses(client: &mut Client) -> (Vec<String>, Vec<tilr_proto::InputAck>) {
+    client.ping(315).await;
+    let mut errors = Vec::new();
+    let mut acknowledgements = Vec::new();
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Error(error) => {
+                errors.push(error.message.clone());
+                None
+            }
+            server_message::Msg::InputAck(ack) => {
+                acknowledgements.push(ack.clone());
+                None
+            }
+            // Supervisor replies before processing this ordered barrier.
+            server_message::Msg::Pong(pong) if pong.nonce == 315 => Some(()),
+            _ => None,
+        })
+        .await;
+    (errors, acknowledgements)
+}
+
+// @spec protocol/missing-pane-input-receives-a-terminal-acknowledgement
+#[tokio::test]
+async fn missing_pane_input_is_rejected_and_reclaimed_across_reconnect() {
+    let server = server();
+    let (mut client, _) = identify(&server).await;
+    let live = client.open_pane().await;
+    let mut queue = Outbox::default();
+    // Retain an unsent live-pane entry to prove rejection is scoped by pane.
+    queued(&mut queue, live, b"live");
+    let missing = uuid::Uuid::new_v4().to_string();
+    let mut expected = Vec::new();
+    for named in [missing.as_str(), "not-a-pane"] {
+        for msg in [
+            Msg::Key(KeyInput {
+                pane_id: named.into(),
+                ..Default::default()
+            }),
+            Msg::Mouse(tilr_proto::MouseInput {
+                pane_id: named.into(),
+                ..Default::default()
+            }),
+            Msg::Paste(tilr_proto::Paste {
+                pane_id: named.into(),
+                ..Default::default()
+            }),
+            Msg::Raw(RawInput {
+                pane_id: named.into(),
+                ..Default::default()
+            }),
+            Msg::Scroll(Scroll {
+                pane_id: named.into(),
+                ..Default::default()
+            }),
+            Msg::Resize(Resize {
+                pane_id: named.into(),
+                cols: 80,
+                rows: 24,
+                ..Default::default()
+            }),
+        ] {
+            let message = queue.push(msg.into()).unwrap();
+            expected.push(tilr_proto::InputAck {
+                pane_id: named.into(),
+                seq: message.input_seq,
+            });
+            send(&mut client, &message).await;
+        }
+    }
+    let (errors, acks) = delivery_responses(&mut client).await;
+    assert_eq!(
+        errors,
+        expected
+            .iter()
+            .map(|a| format!("no such pane: {}", a.pane_id))
+            .collect::<Vec<_>>()
+    );
+    // Intentionally lose the first acknowledgements: all rejected entries
+    // remain retained and must get the same terminal response on replay.
+    assert_eq!(acks, expected);
+    drop(client);
+    let (mut client, hello) = resume(&server, &mut queue).await;
+    assert!(
+        hello
+            .applied_input
+            .iter()
+            .all(|a| a.pane_id == live.to_string())
+    );
+    let (errors, acks) = delivery_responses(&mut client).await;
+    assert_eq!(errors.len(), expected.len());
+    let rejected: Vec<_> = acks
+        .iter()
+        .filter(|a| a.pane_id != live.to_string())
+        .cloned()
+        .collect();
+    assert_eq!(rejected, expected);
+    // The live pane may answer asynchronously; only consume the rejections.
+    for ack in &rejected {
+        queue.acknowledge(ack);
+    }
+    assert_eq!(queue.pending().count(), 1);
+    assert_eq!(
+        tilr_proto::input::pane(queue.pending().next().unwrap().msg.as_ref().unwrap()),
+        Some(live.to_string().as_str())
+    );
+    let live_ack = match acks.iter().find(|a| a.pane_id == live.to_string()) {
+        Some(ack) => ack.clone(),
+        None => ack(&mut client, live, 1).await,
+    };
+    queue.acknowledge(&live_ack);
+    assert_eq!(queue.pending().count(), 0);
+    // Reclaimed capacity admits new input and keeps the per-pane counter.
+    let next = queue
+        .push(
+            Msg::Raw(RawInput {
+                pane_id: missing.clone(),
+                ..Default::default()
+            })
+            .into(),
+        )
+        .unwrap();
+    assert_eq!(next.input_seq, 7);
+    send(&mut client, &next).await;
+    let (_, acks) = delivery_responses(&mut client).await;
+    for ack in &acks {
+        queue.acknowledge(ack);
+    }
+    assert_eq!(queue.pending().count(), 0);
+    drop(client);
+    let (mut client, hello) = resume(&server, &mut queue).await;
+    assert!(
+        hello
+            .applied_input
+            .iter()
+            .all(|a| a.pane_id == live.to_string())
+    );
+    let (errors, acks) = delivery_responses(&mut client).await;
+    assert!(errors.is_empty());
+    assert!(acks.is_empty());
+
+    // Neither unnumbered input nor non-input controls acquire delivery acks.
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: missing.clone(),
+            ..Default::default()
+        }))
+        .await;
+    client
+        .send(Msg::Subscribe(Subscribe {
+            pane_id: missing.clone(),
+        }))
+        .await;
+    let (errors, acks) = delivery_responses(&mut client).await;
+    assert_eq!(errors, vec![format!("no such pane: {missing}"); 2]);
+    assert!(acks.is_empty());
+}
+
 #[tokio::test]
 async fn a_pending_hello_is_superseded_before_the_pane_answers() {
     let server = server();
