@@ -91,7 +91,7 @@ A client instance SHALL name itself in `Hello.client_id` (a UUID v4 made when it
 ### Requirement: Another token supersedes nobody
 A `Hello` whose token differs from the older connection's SHALL NOT supersede it, whatever `client_id` it names. On a server with a token such a `Hello` is refused ("wrong access token") and the older connection stays; on a server started with `--no-auth`, a connection with another token is another client and both stay.
 
-**Verified by**: `reconnect::the_same_client_id_under_another_token_supersedes_nobody` and itests UC-048 (`uc_048.py`) and UC-052 (`uc_052.py::the_same_client_id_under_another_token_supersedes_nobody`).
+**Verified by**: `reconnect::the_same_client_id_under_another_token_supersedes_nobody` and itests UC-052 (`uc_052.py::the_same_client_id_under_another_token_supersedes_nobody`).
 
 #### Scenario: Spoofed client id
 - **WHEN** a connection says `Hello` with an existing connection's `client_id` and a wrong token
@@ -121,7 +121,7 @@ A new connection SHALL subscribe again and receive a full first pane frame. Clie
 ### Requirement: Panes say who watches them
 `PaneInfo.viewers` SHALL be the number of connections subscribed to the pane, and `PaneInfo.viewed_by` one `Viewer` per such connection, in no particular order: `client_id` (`Hello.client_id`, empty if none), `client_name` (`Hello.client_name`) and `address` (the peer as the server sees it, `ip:port` on TCP, `unix` or `unix (pid N)` on the Unix socket). The log MUST name a client's `client_id` and address on hello, supersede and drop.
 
-**Verified by**: `reconnect::a_client_back_on_a_new_connection_supersedes_its_old_one_at_once` and itests UC-048 (`uc_048.py`) and UC-052 (`uc_052.py::two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live`).
+**Verified by**: `reconnect::a_client_back_on_a_new_connection_supersedes_its_old_one_at_once` and itests UC-052 (`uc_052.py::two_tabs_of_one_host_with_client_ids_of_their_own_both_stay_live`).
 
 #### Scenario: Three viewers
 - **WHEN** a client without `client_id` and two with ids A and B watch one pane over loopback TCP
