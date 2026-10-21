@@ -877,9 +877,11 @@ access token and on the same transport (the Unix socket, or TCP: neither speaks 
 other), the server closes that older connection at once with close code 4000
 (`superseded`): it is the same client come back (from another network, after a reload of
 its page), and the old connection is what the network it left still holds, a ghost viewer
-otherwise until the client timeout. The new connection starts afresh and subscribes itself;
-nothing is carried over and no input is replayed (input sent into the old connection may be
-lost, never doubled). A client does not reconnect a connection closed as superseded
+otherwise until the client timeout. The new connection subscribes again and receives a
+full screen. Its stable identity keeps the input delivery sequence: after Hello reports applied counters, the client replays
+unacknowledged input in order, and the pane deduplicates it. Admitted input reaches the
+pane exactly once even if the old connection revives. A client does not reconnect a
+connection closed as superseded
 (`tilr` ends its attach). Another token, or the other transport, with the same id
 supersedes nobody; an empty `client_id` neither supersedes
 nor is superseded. `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,

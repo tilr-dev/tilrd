@@ -14,7 +14,9 @@ An input frame successfully sent to a socket can disappear when that connection 
 ### Modified Capabilities
 - `protocol`: input delivery sequence, acknowledgements and handshake recovery in the existing version contract.
 - `reload`: exactly-once application across connection loss and exec.
+- `client-liveness`: fresh subscriptions with input replay and deduplication across connections.
+- `tilr-cli`: retain input during reconnection and report bounded queue overflow.
 
 ## Impact
 
-Protobuf schema, pane handover, supervisor routing, terminal client, driver and deterministic integration tests. The protocol version stays unchanged.
+Protobuf schema, pane handover, supervisor routing, terminal client, driver and deterministic integration tests. The protocol version and pane state format remain 3; their contracts change in place.

@@ -66,7 +66,7 @@ pub struct Args {
 /// Version of what a reloading pane process leaves its successor
 /// ([`PaneHandover`]). Raise it with any change an older or newer pane
 /// process would misread.
-pub const STATE_FORMAT: u32 = 4;
+pub const STATE_FORMAT: u32 = 3;
 
 /// The state the pane process that exec'd this one left for it. `None` if
 /// this process starts a pane of its own.
