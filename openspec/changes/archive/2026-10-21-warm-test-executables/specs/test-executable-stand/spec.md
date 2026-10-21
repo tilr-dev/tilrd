@@ -1,13 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Warm executable installations
-Reload and update integration tests SHALL create private server installations by
-hardlinking warmed executable inodes. The harness SHALL warm the original server and a reusable pair of inodes with
-successful `--version` invocations once per test binary. The pair SHALL reuse the
-original inode when it is on the tests' filesystem, or use a once-created local
-copy when Cargo's output is on a separate filesystem.
-Replacement helpers SHALL select an inode different from the current executable,
-including on consecutive replacements, so rename cannot become a no-op.
+Reload and update tests SHALL hardlink private installations to two reusable
+inodes. Once per test binary, the harness SHALL warm the original and each new
+inode with a successful `--version`. It SHALL reuse the original inode on the
+same filesystem, or copy it once into the tests' filesystem otherwise.
+Replacements SHALL alternate inodes so rename consumes the staged path.
 
 **Verified by**: `reload::warm_executable_links_reuse_inodes_and_replace_repeatedly`.
 
