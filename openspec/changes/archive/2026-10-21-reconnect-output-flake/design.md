@@ -34,8 +34,14 @@ this ordering.
 ## Reconnect coverage
 
 `output_printed_while_nobody_watched_is_there_on_reconnect` now uses the existing
-`controlled_reconnect` fixture with the failpoints feature. Its shell script
-acknowledges readiness before waiting on a FIFO. After an acknowledged
+`controlled_reconnect` fixture with the failpoints feature. The fixture holds
+shell startup behind a separate FIFO, queues the script command and observes
+its PTY echo before releasing the first prompt, using the same startup gate as
+the regression. Its script prints a readiness marker with a leading newline
+and no trailing newline before waiting on the output FIFO. The leading newline
+isolates readiness from the late prompt; without it the exact readiness row
+never appears. No trailing bytes can produce another frame after readiness is
+observed. After an acknowledged
 Unsubscribe, the fixture releases output, pauses unwatched output, client
 acceptance, subscription and full-frame delivery in order, then checks that the
 first full frame already contains the output. It no longer waits for a later
