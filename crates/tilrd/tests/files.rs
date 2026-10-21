@@ -803,6 +803,7 @@ async fn nothing_outside_the_shared_directories_is_served() {
     std::os::unix::fs::symlink("../secret", home.join("shared/door")).unwrap();
     std::os::unix::fs::symlink("../secret/key", home.join("shared/key-link")).unwrap();
     let server = start_in_with_config(home.clone(), "[files]\nroots = [\"~/shared\"]\n", &[]);
+    server.wait_logged("files on").await;
     let mut client = Client::connect(&server).await;
 
     let (_, entries) = list(&mut client, 1, "~/shared").await.unwrap();
