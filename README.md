@@ -1109,6 +1109,16 @@ triggering the operation, receive the point name plus newline, and send `r` to r
 that hit. `TILR_FAILPOINTS_FILE` supports names learned at runtime. The harness provides
 `PauseController::wait` and `PausedPoint::release`; `fail.rs` documents the protocol,
 error handling and how to call a blocking point from a Tokio task.
+Reconnect controls in `supervisor.rs` are `reconnect-client-accepted` (after the
+WebSocket handshake, before registration), `reconnect-unwatched-output:<pane id>`
+(a frame received without viewers), `reconnect-subscribe:<pane id>` (before
+registration and the full-frame request), `reconnect-full-frame:<pane id>`
+(before enqueueing a full frame for each viewer), and
+`reconnect-client-lagging:<pane id>` (before the first skipped delta). The latter
+four hold supervisor event processing; socket tasks keep running. Configure only
+the hits needed and release each before awaiting another supervisor response.
+The test client's `pause_reads` acknowledges the pause on return; its handle's
+`resume` permits reads again, while sending remains possible throughout.
 Without it those tests are left out and the rest runs. A release is built without it.
 Tests can also set `TILR_TEST_TIME_FILE` to a file containing Unix microseconds and replace
 that file atomically between protocol events. The supervisor reads it for pane timestamps,

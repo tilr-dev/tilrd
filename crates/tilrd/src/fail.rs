@@ -38,6 +38,16 @@
 
 use anyhow::Result;
 
+/// Hold a test stage without blocking a Tokio runtime worker. A controller
+/// failure must fail the operation rather than silently advance its ordering.
+#[cfg(feature = "failpoints")]
+pub async fn point_async(name: String) {
+    tokio::task::spawn_blocking(move || point(&name))
+        .await
+        .expect("failpoint task panicked")
+        .expect("failpoint failed");
+}
+
 /// A place where a test may make things go wrong.
 #[cfg(not(feature = "failpoints"))]
 #[inline(always)]

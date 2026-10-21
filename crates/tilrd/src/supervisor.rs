@@ -1138,6 +1138,9 @@ async fn serve_websocket<S>(
         socks::serve_websocket(ws, client_timeout, addr).await;
         return;
     }
+    // reconnect-client-accepted: WebSocket established, before registration.
+    #[cfg(feature = "failpoints")]
+    crate::fail::point_async("reconnect-client-accepted".into()).await;
     tracing::info!(client = id, %addr, "client connected");
     if !local {
         limit_unsent(socket);
@@ -1626,7 +1629,7 @@ impl Supervisor {
                     }
                 }
                 Event::Shutdown => break,
-                event => self.on_event(event),
+                event => self.on_event(event).await,
             }
         }
         // Closing the pipes to the pane processes makes them end what runs
@@ -1665,7 +1668,7 @@ impl Supervisor {
         }
     }
 
-    fn on_event(&mut self, event: Event) {
+    async fn on_event(&mut self, event: Event) {
         match event {
             Event::ClientConnected {
                 id,
@@ -1698,7 +1701,7 @@ impl Supervisor {
                 id,
                 packet,
                 received,
-            } => self.on_client_packet(id, packet, received),
+            } => self.on_client_packet(id, packet, received).await,
             Event::ClientGone { id, why } => {
                 self.drop_client(id, why.map_or(Gone::Disconnected, Gone::Dropped));
             }
@@ -1709,7 +1712,7 @@ impl Supervisor {
                 packet,
                 read_at,
                 head,
-            } => self.on_pane_output(pane_id, packet, read_at, head),
+            } => self.on_pane_output(pane_id, packet, read_at, head).await,
             Event::PaneStatus { pane_id, status } => {
                 if let Some(pane) = self.panes.get_mut(&pane_id) {
                     pane.title = status.title;
@@ -1945,7 +1948,7 @@ impl Supervisor {
         while let Ok(event) = events.try_recv() {
             match event {
                 Event::Shutdown => return true,
-                event => self.on_event(event),
+                event => self.on_event(event).await,
             }
         }
         // A test stops here, after the last read of the events.
@@ -2024,7 +2027,7 @@ impl Supervisor {
                 event = events.recv() => match event {
                     None | Some(Event::Shutdown) => return None,
                     Some(Event::Reload) => {}
-                    Some(event) => self.on_event(event),
+                    Some(event) => self.on_event(event).await,
                 },
             }
         }
@@ -2155,7 +2158,7 @@ impl Supervisor {
         err
     }
 
-    fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
+    async fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
         // A client the supervisor has dropped may still have packets on the
         // way. Acting on them would subscribe a client nobody will ever
         // remove again.
@@ -2260,6 +2263,9 @@ impl Supervisor {
                 let Some((pane_id, pane)) = self.pane_mut(&named) else {
                     return self.send_no_pane(client_id, &named);
                 };
+                // reconnect-subscribe:<pane>: before registering the viewer or asking for full.
+                #[cfg(feature = "failpoints")]
+                crate::fail::point_async(format!("reconnect-subscribe:{pane_id}")).await;
                 pane.subscribers.insert(client_id);
                 pane.used_at_ms = now_ms();
                 // The pane answers with a full frame, which serves the
@@ -2708,7 +2714,7 @@ impl Supervisor {
     /// gets no more frames of the pane until a full one, asked of the pane
     /// once its queue is written out, brings it the screen as it is then.
     /// Its own input echoed in the frames it missed is carried by that one.
-    fn on_pane_output(
+    async fn on_pane_output(
         &mut self,
         pane_id: PaneId,
         packet: Bytes,
@@ -2718,6 +2724,11 @@ impl Supervisor {
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
+        // reconnect-unwatched-output:<pane>: frame received with no viewers, before forwarding.
+        #[cfg(feature = "failpoints")]
+        if head.is_some() && pane.subscribers.is_empty() {
+            crate::fail::point_async(format!("reconnect-unwatched-output:{pane_id}")).await;
+        }
         // What a pane process relays is its frames.
         pane.counters.frames += 1;
         pane.counters.frame_bytes += packet.len() as u64;
@@ -2754,6 +2765,10 @@ impl Supervisor {
                         }
                     }
                     None if !head.full && client.tx.lagging() => {
+                        // reconnect-client-lagging:<pane>: lag detected, before skipping this frame.
+                        #[cfg(feature = "failpoints")]
+                        crate::fail::point_async(format!("reconnect-client-lagging:{pane_id}"))
+                            .await;
                         tracing::debug!(client = client_id, pane = %pane_id, "client lags, skipping frames");
                         client.lagging.insert(
                             pane_id,
@@ -2771,6 +2786,11 @@ impl Supervisor {
                     }
                     None => {}
                 }
+            }
+            // reconnect-full-frame:<pane>: before enqueueing a full frame for each viewer.
+            #[cfg(feature = "failpoints")]
+            if head.is_some_and(|head| head.full) {
+                crate::fail::point_async(format!("reconnect-full-frame:{pane_id}")).await;
             }
             let outgoing = Outgoing::new(packet, Some(read_at));
             if client.tx.try_send(outgoing).is_ok() {
@@ -3445,35 +3465,39 @@ mod tests {
         for id in [1, 2] {
             let (tx, rx) = outbox::channel();
             let (close, _) = mpsc::unbounded_channel();
-            supervisor.on_event(Event::ClientConnected {
-                id,
-                addr: Peer::Unix(None),
-                local: true,
-                tx,
-                close,
-            });
+            supervisor
+                .on_event(Event::ClientConnected {
+                    id,
+                    addr: Peer::Unix(None),
+                    local: true,
+                    tx,
+                    close,
+                })
+                .await;
             supervisor.clients.get_mut(&id).unwrap().greeted = true;
             viewers.push(rx);
         }
         let subscribe = tilr_proto::encode(&ClientMessage::from(Msg::Subscribe(Subscribe {
             pane_id: pane_id.to_string(),
         })));
-        let frame = |supervisor: &mut Supervisor, full, last_input_seq| {
+        let frame = async |supervisor: &mut Supervisor, full, last_input_seq| {
             let message = ServerMessage::from(server_message::Msg::Frame(Frame {
                 pane_id: pane_id.to_string(),
                 full,
                 last_input_seq,
                 ..Default::default()
             }));
-            supervisor.on_pane_output(
-                pane_id,
-                tilr_proto::encode(&message),
-                Instant::now(),
-                Some(FrameHead {
-                    full,
-                    last_input_seq,
-                }),
-            );
+            supervisor
+                .on_pane_output(
+                    pane_id,
+                    tilr_proto::encode(&message),
+                    Instant::now(),
+                    Some(FrameHead {
+                        full,
+                        last_input_seq,
+                    }),
+                )
+                .await;
         };
         // Reads the outbox as the connection's writer does, so it drains.
         fn frames(outbox: &mut outbox::Outbox) -> Vec<Frame> {
@@ -3489,17 +3513,21 @@ mod tests {
             }
             frames
         }
-        supervisor.on_client_packet(1, subscribe.clone(), Instant::now());
+        supervisor
+            .on_client_packet(1, subscribe.clone(), Instant::now())
+            .await;
         assert_eq!(commands.try_recv().unwrap().0, subscribe);
-        frame(&mut supervisor, true, 0);
+        frame(&mut supervisor, true, 0).await;
         assert!(frames(&mut viewers[0])[0].full);
         // Registration precedes the pane handling Subscribe. Existing viewers
         // still receive the old delta; the new viewer must wait for full.
-        supervisor.on_client_packet(2, subscribe.clone(), Instant::now());
+        supervisor
+            .on_client_packet(2, subscribe.clone(), Instant::now())
+            .await;
         assert_eq!(commands.try_recv().unwrap().0, subscribe);
         frames(&mut viewers[1]);
         let own_seq = seq_base(2) + 7;
-        frame(&mut supervisor, false, own_seq);
+        frame(&mut supervisor, false, own_seq).await;
         assert!(
             frames(&mut viewers[1]).is_empty(),
             "delta arrived before full"
@@ -3510,17 +3538,19 @@ mod tests {
         assert!(commands.try_recv().is_err(), "full frame asked twice");
         assert_eq!(frames(&mut viewers[0])[0].last_input_seq, own_seq);
         // A repeated Subscribe preserves the own input echo already saved.
-        supervisor.on_client_packet(2, subscribe.clone(), Instant::now());
-        frame(&mut supervisor, false, seq_base(1) + 9);
+        supervisor
+            .on_client_packet(2, subscribe.clone(), Instant::now())
+            .await;
+        frame(&mut supervisor, false, seq_base(1) + 9).await;
         assert!(frames(&mut viewers[1]).is_empty());
         assert!(!frames(&mut viewers[0])[0].full);
-        frame(&mut supervisor, true, seq_base(1) + 10);
+        frame(&mut supervisor, true, seq_base(1) + 10).await;
         let initial = frames(&mut viewers[1]);
         assert_eq!(initial.len(), 1);
         assert!(initial[0].full);
         assert_eq!(initial[0].last_input_seq, own_seq);
         assert_eq!(frames(&mut viewers[0])[0].last_input_seq, seq_base(1) + 10);
-        frame(&mut supervisor, false, seq_base(1) + 11);
+        frame(&mut supervisor, false, seq_base(1) + 11).await;
         for viewer in &mut viewers {
             let following = frames(viewer);
             assert_eq!(following.len(), 1);

@@ -4,6 +4,125 @@ mod common;
 
 use common::*;
 
+/// Walk each reconnect boundary under explicit controller release. The FIFO
+/// makes output happen only after Unsubscribe has been acknowledged. The ready
+/// marker has no trailing bytes that could produce another frame after it is seen.
+#[cfg(feature = "failpoints")]
+async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
+    let server = Server::start(&["--client-timeout", "0"]);
+    let controller = PauseController::bind(&server.dir);
+    let mut first = Client::connect(&server).await;
+    let pane = first.open_pane_with(300, 100, "").await;
+    let (fifo, mut release) = activity_fifo(&server);
+    let command = script(
+        &server,
+        "wait-for-output.sh",
+        &format!(
+            "printf 'ready for release'; read -r release < '{}'; printf '\\nprinted while unwatched\\n'\n",
+            fifo.display()
+        ),
+    );
+    first.type_line(pane, &command).await;
+    first.wait_row("ready for release").await;
+    first
+        .send(Msg::Unsubscribe(Unsubscribe {
+            pane_id: pane.to_string(),
+        }))
+        .await;
+    assert_eq!(first.list_panes().await[0].viewers, 0);
+    drop(first);
+
+    let points = server.dir.join("failpoints");
+    let output = format!("reconnect-unwatched-output:{pane}");
+    std::fs::write(&points, format!("{output}=pause")).unwrap();
+    release_activity_fifo(&mut release);
+    let output_hit = controller.wait(&output).await;
+    std::fs::write(&points, "reconnect-client-accepted=pause").unwrap();
+    output_hit.release().await;
+
+    // Bound the kernel buffer so the lag variant exercises an unread socket.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let addr = server.addr.trim_start_matches("ws://").parse().unwrap();
+    let stream = socket.connect(addr).await.unwrap();
+    let (ws, _) = tokio_tungstenite::client_async(&server.addr, MaybeTlsStream::Plain(stream))
+        .await
+        .unwrap();
+    let mut client = Client::from_socket(&server, ws);
+    let accepted = controller.wait("reconnect-client-accepted").await;
+    let subscribe = format!("reconnect-subscribe:{pane}");
+    let full = format!("reconnect-full-frame:{pane}");
+    std::fs::write(&points, format!("{subscribe}=pause;{full}=pause")).unwrap();
+    accepted.release().await;
+    client.hello().await;
+    client.subscribe(pane).await;
+    let subscribed = controller.wait(&subscribe).await;
+    std::fs::write(&points, format!("{full}=pause")).unwrap();
+    subscribed.release().await;
+    let sending_full = controller.wait(&full).await;
+    std::fs::write(&points, "").unwrap();
+    sending_full.release().await;
+    assert!(next_frame(&mut client).await.full);
+    client.wait_row("printed while unwatched").await;
+    (server, client, pane, controller)
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect() {
+    let (_server, mut client, pane, _controller) = controlled_reconnect().await;
+    assert_eq!(client.run(pane, "true").await, 0);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_test_pauses_socket_reads_until_reconnected_client_lags() {
+    let (server, mut client, pane, controller) = controlled_reconnect().await;
+    let hook = format!("reconnect-client-lagging:{pane}");
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    let stop = server.dir.join("stop-output");
+    let command = script(
+        &server,
+        "produce-until-lag.sh",
+        &format!(
+            "while [ ! -e '{}' ]; do head -c 65536 /dev/urandom | base64; done\nprintf '\\nlag output stopped\\n'\n",
+            stop.display()
+        ),
+    );
+    let reads = client.pause_reads();
+    client.type_line(pane, &command).await;
+    // Keep a read in flight while output fills the socket. Without the pause,
+    // next consumes a message and this branch fails before lag is observed.
+    let lagging = tokio::select! {
+        biased;
+        message = client.next() => panic!("socket read completed while paused: {message:?}"),
+        hit = controller.wait(&hook) => hit,
+    };
+    // Stop at the observed decision, rather than guessing how many bytes fill
+    // a particular machine's buffers. The shell acknowledges the stop on screen.
+    std::fs::write(&stop, "stop").unwrap();
+    std::fs::write(&points, "").unwrap();
+    reads.resume();
+    lagging.release().await;
+    let mut recovered_full = false;
+    while !client.screen.has_row("lag output stopped") {
+        recovered_full |= next_frame(&mut client).await.full;
+    }
+    assert!(recovered_full, "lag recovery did not send a full frame");
+    assert_eq!(client.run(pane, "true").await, 0);
+}
+
+#[tokio::test]
+#[should_panic(expected = "read pause dropped without resume")]
+async fn a_dropped_read_pause_fails_the_next_read() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let reads = client.pause_reads();
+    drop(reads);
+    client.next().await;
+}
+
 #[tokio::test]
 async fn a_client_that_reconnects_finds_its_pane_as_it_left_it() {
     let server = Server::start(&[]);
