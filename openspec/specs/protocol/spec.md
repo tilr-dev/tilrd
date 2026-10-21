@@ -138,7 +138,7 @@ The server SHALL echo a client-chosen `request_id`: `CreatePane`'s in `PaneCreat
 - **WHEN** a pane appears, goes away or changes
 - **THEN** every greeted client receives `PaneList` with `request_id` 0
 
-### Requirement: Version 3 is one contract
+### Requirement: Version 1 is one contract
 A server speaking version 1 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, and `PaneInfo.viewed_by` / `used_at_ms`; none of them SHALL appear in `HelloAck.features`.
 
 **Verified by**: `panes::hello_announces_the_clipboard_and_its_limit` (no `ping` in the list); each part is verified by the requirement that specifies it (`client-liveness`, `files`, `screen-frames`, `panes`).

@@ -28,4 +28,3 @@ A server speaking version 1 SHALL implement, without a feature flag, `Ping`, `He
 #### Scenario: A v1 client relies on the twins
 - **WHEN** a client greeted with `protocol_version` 1 names a file by `path_bytes`
 - **THEN** the server goes by the bytes, and `HelloAck.features` never lists `path-bytes`, `client-id`, `key-code` or `ping`
-
