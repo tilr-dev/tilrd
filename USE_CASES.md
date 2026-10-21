@@ -183,6 +183,7 @@ Cloud repository.
 | Explicit pauses order unwatched output, accepted reconnect, subscription and full-frame enqueue | `a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect` (`failpoints`) |
 | A reconnected client's reads stay paused while it can send; continuous output reaches the lag decision, then explicit resume receives full-frame recovery | `a_test_pauses_socket_reads_until_reconnected_client_lags` (`failpoints`) |
 | Subscribing again sends the whole screen again | `subscribing_again_sends_the_whole_screen_again` |
+| Dropping a read-pause handle without resume fails the next read | `a_dropped_read_pause_fails_the_next_read` |
 | Many reconnects leave no "ghost" viewers | `many_reconnects_leave_no_viewers_behind` |
 | A client vanished silently (connection open, no answer to pings): the server drops it on its own, the others get an updated list; once back, the client reconnects to its pane | `a_client_that_vanishes_without_closing_is_dropped` |
 | A client still sends (its own `Ping`s) but no longer hears the server: it does not read and does not answer the server's pings (the direction to the client is cut); the server drops it as unresponsive, not as silent | `a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped` |

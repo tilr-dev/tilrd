@@ -90,17 +90,14 @@ async fn a_test_pauses_socket_reads_until_reconnected_client_lags() {
         ),
     );
     let reads = client.pause_reads();
-    // Polling next while paused must not consume even an already queued packet.
-    {
-        let mut next = Box::pin(client.next());
-        std::future::poll_fn(|cx| {
-            assert!(std::future::Future::poll(next.as_mut(), cx).is_pending());
-            std::task::Poll::Ready(())
-        })
-        .await;
-    }
     client.type_line(pane, &command).await;
-    let lagging = controller.wait(&hook).await;
+    // Keep a read in flight while output fills the socket. Without the pause,
+    // next consumes a message and this branch fails before lag is observed.
+    let lagging = tokio::select! {
+        biased;
+        message = client.next() => panic!("socket read completed while paused: {message:?}"),
+        hit = controller.wait(&hook) => hit,
+    };
     // Stop at the observed decision, rather than guessing how many bytes fill
     // a particular machine's buffers. The shell acknowledges the stop on screen.
     std::fs::write(&stop, "stop").unwrap();
@@ -113,6 +110,16 @@ async fn a_test_pauses_socket_reads_until_reconnected_client_lags() {
     }
     assert!(recovered_full, "lag recovery did not send a full frame");
     assert_eq!(client.run(pane, "true").await, 0);
+}
+
+#[tokio::test]
+#[should_panic(expected = "read pause dropped without resume")]
+async fn a_dropped_read_pause_fails_the_next_read() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let reads = client.pause_reads();
+    drop(reads);
+    client.next().await;
 }
 
 #[tokio::test]
