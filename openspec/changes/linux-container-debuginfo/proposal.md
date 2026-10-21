@@ -7,6 +7,7 @@ On the host, the developer's `~/.cargo/config.toml` sets `[profile.dev] debug = 
 ## What Changes
 
 - `scripts/linux.sh` passes `CARGO_PROFILE_DEV_DEBUG=line-tables-only` into the container, so the dev profile's debuginfo there matches the host's.
+- A `CARGO_PROFILE_DEV_DEBUG` exported on the host overrides that default (e.g. `full` for gdb with locals).
 - Release builds (`scripts/linux-build.sh`, `cargo build --release`) are unaffected: the variable sets only the dev profile.
 - The target volume name does not change: cargo fingerprints the profile's debug setting and rebuilds the dev artifacts on its own the first time.
 - Not breaking; no protocol change; nothing crosses a reload or an update.

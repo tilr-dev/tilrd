@@ -505,8 +505,10 @@ fn the_linux_dev_container_builds_with_line_tables_only_debuginfo() {
     // The host's ~/.cargo/config.toml is not visible in the container.
     let linux = active(&text_file("scripts/linux.sh"));
     assert!(
-        linux.contains("-e CARGO_PROFILE_DEV_DEBUG=line-tables-only"),
-        "scripts/linux.sh must pass CARGO_PROFILE_DEV_DEBUG=line-tables-only into the container"
+        linux.contains(
+            r#"-e CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}""#
+        ),
+        "scripts/linux.sh must pass CARGO_PROFILE_DEV_DEBUG, line-tables-only by default, into the container"
     );
 }
 

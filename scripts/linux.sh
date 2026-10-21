@@ -32,11 +32,12 @@ fi
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi
 # --init: a proper pid 1 that reaps orphaned processes, as on a real system.
-# CARGO_PROFILE_DEV_DEBUG: the host cargo config is not visible here; keep dev debuginfo as on the host.
+# CARGO_PROFILE_DEV_DEBUG: the host cargo config is not visible here; default to line-tables-only
+# as on the host, override by exporting it (e.g. CARGO_PROFILE_DEV_DEBUG=full for gdb with locals).
 exec docker run --rm --init $tty ${platform:+--platform "$platform"} \
     -e TILR_BUILD_COMMIT \
     -e TILR_LINUX_USER \
-    -e CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+    -e CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}" \
     -v "$PWD":/src \
     -v "$target":/target \
     -v "tilr-linux-cargo$suffix":/usr/local/cargo/registry \
