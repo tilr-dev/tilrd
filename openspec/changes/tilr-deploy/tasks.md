@@ -9,7 +9,7 @@ Written for option (a), decided 2026-10-18 (see the proposal's Decision).
 ## 2. The command
 
 - [x] 2.1 `tilr deploy` argument parsing, `ssh` with a private `ControlPath` (D1), platform mapping (D2) and archive choice (D3); verify with unit tests `deploy::tests::uname_names_the_platform` and `client::deploy_names_a_platform_without_a_release` (a stub `ssh` on `PATH` answering `uname -sm` with `SunOS i86pc`)
-- [x] 2.2 Remote install script and start (D4, D5); verify with `client::deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect` (stub `ssh` that runs the command locally with `HOME` in a temp dir)
+- [ ] 2.2 Remote install script and start (D4, D5); verify with `client::deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect` (stub `ssh` that runs the command locally with `HOME` in a temp dir)
 - [x] 2.3 README `tilr` commands and USE_CASES.md entries; `tilr-cli` "Command set" lists `deploy` in the same commit; verify by review and `openspec validate --specs --strict`
 
 ## 3. Black-box case
