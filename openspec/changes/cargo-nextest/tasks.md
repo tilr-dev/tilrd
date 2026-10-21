@@ -9,9 +9,9 @@
 ## 2. The command
 
 - [x] 2.1 `scripts/linux.sh` default command, CI `test` job, AGENTS.md, README, USE_CASES.md and `openspec/config.yaml` name `cargo nextest run --workspace --features tilrd/failpoints --locked`; verify `release::ci_runs_every_gate_of_agents_md` and the new `release::the_test_command_is_the_same_everywhere`
-- [ ] 2.2 The suite passes under nextest on macOS and in the Linux container
+- [x] 2.2 The suite passes under nextest on macOS and in the Linux container
 
 ## 3. Checks and archive
 
-- [ ] 3.1 The checks from AGENTS.md green; `openspec validate --all --strict`
-- [ ] 3.2 Archive the change
+- [x] 3.1 The checks from AGENTS.md green; `openspec validate --all --strict`
+- [x] 3.2 Archive the change
