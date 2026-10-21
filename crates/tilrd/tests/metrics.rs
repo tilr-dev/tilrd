@@ -284,9 +284,31 @@ async fn a_scroll_is_credited_while_key_input_waits_for_the_pty() {
     frame_with_seq(&mut client, base + 2, |seq| seq == 0).await;
 }
 
+/// Publish `us` as the servers' measurement clock (`TILR_TEST_TIME_FILE`):
+/// a rename, so a reader sees one whole value.
+#[cfg(feature = "failpoints")]
+fn set_test_time(path: &std::path::Path, us: u64) {
+    let next = path.with_extension("next");
+    std::fs::write(&next, us.to_string()).unwrap();
+    std::fs::rename(next, path).unwrap();
+}
+
+// The wait of an input is measured on the test's clock: the pane's own
+// time across a reload (a check run of the successor and an exec) is not
+// counted, so a real clock gives no bound the reload itself cannot break.
+#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn the_last_input_and_input_still_waiting_survive_a_reload() {
-    let server = Server::start(&[]);
+    const START: u64 = 1_700_000_000_000_000;
+    const SECOND: u64 = 1_000_000;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    set_test_time(&clock, START);
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
     let (mut client, base) = connect_with_base(&server).await;
     let pane_id = client.open_pane().await;
     let (fifo, mut release) = activity_fifo(&server);
@@ -323,10 +345,22 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     )
     .await;
 
-    // The pane process holds the input across the reload: it has waited at
-    // least from here, before the reload began, to its release below.
-    let held = std::time::Instant::now();
+    // The input's clock starts as the pane process takes the message, which
+    // the counter above does not show. A full frame asked for after it, on
+    // the same way to the pane, does: the pane takes messages in order, so
+    // once `witness` has its frame the clock is running.
+    let mut witness = Client::connect(&server).await;
+    witness.subscribe(pane_id).await;
+    while !next_frame(&mut witness).await.full {}
+    let _ = witness.ws.close(None).await;
+
+    // A second passes before the reload, and another after it: the clock
+    // is set once the input's has started, then once the successor has
+    // taken over the input (it does before it logs that it resumed).
+    set_test_time(&clock, START + SECOND);
     let mut client = reload(&server, client).await;
+    server.wait_logged("resumed after reload pane=").await;
+    set_test_time(&clock, START + 2 * SECOND);
     let (mut other, other_base) = connect_with_base(&server).await;
     assert!(other_base > base, "ids go on after a reload");
     let _ = other.ws.close(None).await;
@@ -335,14 +369,14 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     assert!(redraw.full);
     assert_eq!(redraw.last_input_seq, base + 1);
     release_activity_fifo(&mut release);
-    let held = held.elapsed();
     let through = frame_with_seq(&mut client, base + 2, |seq| seq == base + 1).await;
-    // Counted from when the server got it, before `held` started; a clock
-    // that restarted with the successor would count less than `held`.
-    let waited = through.timing.unwrap().input_us;
+    // A clock that survives the reload counts both seconds; one restarted
+    // with the successor, only the second. Each reading also moves the
+    // clock on by a microsecond, which half a second leaves room for.
+    let waited = u64::from(through.timing.unwrap().input_us);
     assert!(
-        u128::from(waited) >= held.as_micros(),
-        "{waited} µs, held {held:?} since the reload"
+        (2 * SECOND - SECOND / 2..2 * SECOND + SECOND / 2).contains(&waited),
+        "{waited} µs of the two seconds held"
     );
 }
 
