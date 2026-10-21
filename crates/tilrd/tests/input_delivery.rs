@@ -281,3 +281,35 @@ async fn partially_written_input_keeps_its_boundary_through_exec() {
     assert_eq!(std::fs::read(file).unwrap(), vec![b'a'; 1048576]);
     assert_eq!(std::fs::read(tail).unwrap(), b"END\n");
 }
+
+#[tokio::test]
+async fn an_old_input_ack_cannot_leave_a_later_unnumbered_resize_stale() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let mut queue = Outbox::default();
+    pause(&server, "input-before-ack");
+    send(&mut client, &queued(&mut queue, pane, b"")).await;
+    let hit = pauses.wait("input-before-ack").await;
+    client
+        .send(Msg::Resize(Resize {
+            pane_id: pane.to_string(),
+            cols: 120,
+            rows: 40,
+            ..Default::default()
+        }))
+        .await;
+    let info = client.list_panes().await;
+    assert_eq!((info[0].cols, info[0].rows), (120, 40));
+    clear(&server);
+    hit.release().await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) if frame.cols == 120 && frame.rows == 40 => Some(()),
+            _ => None,
+        })
+        .await;
+    let info = client.list_panes().await;
+    assert_eq!((info[0].cols, info[0].rows), (120, 40));
+}

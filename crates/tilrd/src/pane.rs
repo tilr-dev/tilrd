@@ -860,7 +860,19 @@ impl Pane {
             Some(Msg::Scroll(_) | Msg::Resize(_)) => Some(Credit::Applied),
             _ => None,
         };
+        let unnumbered_resize = !reliable && matches!(msg.msg, Some(Msg::Resize(_)));
         self.handle_message(msg)?;
+        if unnumbered_resize {
+            // Publish the applied size after any older delivery acknowledgement.
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                seq: self
+                    .delivery
+                    .get(&identity)
+                    .map_or(0, |state| state.applied),
+                identity: identity.clone(),
+                ..Default::default()
+            });
+        }
         if reliable {
             self.pending_delivery
                 .push_back(tilr_proto::PendingDelivery {
