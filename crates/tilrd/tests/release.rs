@@ -501,6 +501,16 @@ fn the_linux_build_runs_in_the_pinned_debian_12_image() {
 }
 
 #[test]
+fn the_linux_dev_container_builds_with_line_tables_only_debuginfo() {
+    // The host's ~/.cargo/config.toml is not visible in the container.
+    let linux = active(&text_file("scripts/linux.sh"));
+    assert!(
+        linux.contains("-e CARGO_PROFILE_DEV_DEBUG=line-tables-only"),
+        "scripts/linux.sh must pass CARGO_PROFILE_DEV_DEBUG=line-tables-only into the container"
+    );
+}
+
+#[test]
 fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
     let tools = active(&text_file("scripts/install-tools.sh"));
     assert!(tools.contains("ZIG_VERSION=0.15.2"));

@@ -68,6 +68,7 @@ All of phase 2 is done (see "Done").
 | cloud-default-url | `https://wss.tilr.dev` becomes the default Cloud URL | S | - | no | ready |
 | installer-atomic-install | the archive installer served at tilr.sh with the first release | S | release-process-tests | no | ready |
 | tilr-mac-rename-compatibility | the Tilr app moves to tilrd (tracking; work in desktop-mac) | S here, M there | - | no | ready |
+| linux-container-debuginfo | `scripts/linux.sh` builds the dev profile with line-tables-only debuginfo, as on the host | S | - | no | ready |
 
 ## Phase 5: features
 
