@@ -64,13 +64,21 @@ printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescript
     # An exited child supplies a known dead PID without timing or PID guesses.
     child = subprocess.Popen(["/bin/sh", "-c", "exit 0"])
     child.wait()
+    lock = Path(f"{prefix}.lock")
+    leftover = Path(f"{prefix}.tmp.abandoned")
+    lock.mkdir()
+    (lock / "pid").write_text(f"{child.pid}\n")
+    leftover.mkdir()
+    (leftover / "checkout").touch()
+    recovered_published = run()
+    assert recovered_published.returncode == 0, recovered_published.stderr
+    assert recovered_published.stdout == first.stdout and events.read_text() == log
+    assert not lock.exists() and not leftover.exists()
     shutil.rmtree(prefix)
     prefix.mkdir()
     (prefix / "unfinished").touch()
-    lock = Path(f"{prefix}.lock")
     lock.mkdir()
     (lock / "pid").write_text(f"{child.pid}\n")
-    leftover = Path(f"{prefix}.tmp.abandoned")
     leftover.mkdir()
     (leftover / "checkout").touch()
     recovered_stale = run()

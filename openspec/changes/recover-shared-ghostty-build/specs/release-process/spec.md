@@ -26,3 +26,7 @@ Recovery SHALL be serialized by an advisory lock that is released on process exi
 #### Scenario: Concurrent recovery
 - **WHEN** one invocation holds the advisory lock while recovering an abandoned build
 - **THEN** another invocation reports a build in progress without removing the first invocation's lock or working directory, even if the owner metadata is stale
+
+#### Scenario: Interrupted cleanup after publication
+- **WHEN** a completed prefix exists alongside an abandoned lock or temporary build directory
+- **THEN** the next invocation removes the abandoned state under the advisory lock and reuses the prefix without fetching or building again

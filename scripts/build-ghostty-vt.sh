@@ -21,7 +21,9 @@ mkdir -p "$cache"
 cache=$(cd "$cache" && pwd -P)
 key=$(printf '%s\n' "$revision" "$zig_version" "$host" "$arch" "$sdk" "$developer" ReleaseFast baseline | git hash-object --stdin)
 prefix=$cache/$revision/$key
-if [[ -f "$prefix/.complete" ]]; then
+shopt -s nullglob
+leftovers=("${prefix}".tmp.*)
+if [[ -f "$prefix/.complete" && ! -e "${prefix}.lock" && ${#leftovers[@]} == 0 ]]; then
     printf '%s\n' "$prefix"
     exit 0
 fi
