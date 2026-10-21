@@ -16,6 +16,42 @@ async fn identify(server: &Server) -> (Client, HelloAck) {
     (client, hello)
 }
 
+#[tokio::test]
+async fn a_pending_hello_is_superseded_before_the_pane_answers() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let mut owner = Client::connect(&server).await;
+    owner.open_pane().await;
+    pause(&server, "input-before-probe");
+    let mut old = Client::connect_silent(&server).await;
+    old.client_id = "input-session".into();
+    old.hello_as(PROTOCOL_VERSION).await;
+    let hit = pauses.wait("input-before-probe").await;
+    let mut new = Client::connect_silent(&server).await;
+    new.client_id = old.client_id.clone();
+    new.hello_as(PROTOCOL_VERSION).await;
+    // Superseding must finish while the first handshake is still blocked.
+    let closed = tokio::time::timeout(TIMEOUT, async {
+        while let Some(Ok(message)) = old.ws.next().await {
+            if let Message::Close(Some(frame)) = message {
+                return u16::from(frame.code);
+            }
+        }
+        panic!("missing superseded close frame");
+    })
+    .await
+    .expect("pending handshake was left open");
+    assert_eq!(closed, tilr_proto::close::SUPERSEDED);
+    clear(&server);
+    hit.release().await;
+    new.wait_for(|msg| match msg {
+        server_message::Msg::HelloAck(ack) => Some(ack.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(new.list_panes().await.len(), 1);
+}
+
 fn queued(queue: &mut Outbox, pane: PaneId, data: &[u8]) -> ClientMessage {
     queue
         .push(

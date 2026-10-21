@@ -3135,7 +3135,7 @@ impl Supervisor {
             .iter()
             .filter(|&(&id, client)| {
                 id != new
-                    && client.greeted
+                    && (client.greeted || client.hello_pending.is_some())
                     && client.local == local
                     && client.client_id == client_id
                     && auth::matches(&client.token, token)

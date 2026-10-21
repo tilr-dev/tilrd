@@ -169,8 +169,10 @@ latest `PaneInfo.used_at_ms` (a subscribe, or input).
 **Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as it runs. A
 connection that drops (a reload of the server, the network) is made again with it 0.1 s
 after the loss, then after waits from 0.1 s doubling to 2 s; the bottom row says
-`disconnected …, reconnecting…` meanwhile, and what is typed then is dropped, not sent
-later. An attempt that connects but loses the connection (or gets no answer) before the pane
+`disconnected …, reconnecting…` meanwhile. Input stays queued until the pane acknowledges
+application to its PTY and is replayed after reconnect without applying duplicates. The
+queue holds at most 4 MiB or 4096 messages; a full queue rejects new input with a visible
+`input buffer full` error. An attempt that connects but loses the connection (or gets no answer) before the pane
 is listed and subscribed is a failed attempt like a refused one, and Ctrl+] d detaches at
 once also while an attempt waits. It pings every 5 s, on the Unix socket as over TCP, and
 takes 15 s of silence as a dropped connection. A pane gone after the reconnect, or a local
