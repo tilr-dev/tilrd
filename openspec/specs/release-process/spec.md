@@ -101,7 +101,7 @@ With `--publish`, `scripts/release.sh` SHALL upload with `wrangler r2 object put
 - **THEN** it says `<platform> is built as <v1>, not <v2>`, exits 1 and uploads nothing
 
 ### Requirement: CI gates every change
-Every pull request and push to `main` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo test --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
+Every pull request and push to `main` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
@@ -119,13 +119,13 @@ CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version`
 - **THEN** the `test` job fails
 
 ### Requirement: Build tools are pinned and checked
-`scripts/install-tools.sh DIR [zig|protoc]` SHALL install Zig 0.15.2 and protoc 36.2 into `DIR` for Linux or macOS on x86_64 or aarch64, each checked against a pinned SHA-256; CI, release jobs and the Linux build image SHALL use it.
+`scripts/install-tools.sh DIR [zig|protoc|nextest]` SHALL install Zig 0.15.2, protoc 36.2 and cargo-nextest 0.9.149 into `DIR` for Linux or macOS on x86_64 or aarch64, each checked against a pinned SHA-256; CI, release jobs and the Linux build image SHALL use it.
 
 **Verified by**: `release::build_tools_are_pinned_by_checksum_and_used_everywhere` (static: `scripts/install-tools.sh`, the workflows and `scripts/linux.Dockerfile`).
 
 #### Scenario: Install both
 - **WHEN** `scripts/install-tools.sh "$RUNNER_TEMP/tools"` runs on Linux x86_64
-- **THEN** `DIR/zig` and `DIR/protoc` are in place after their checksums matched
+- **THEN** `DIR/zig`, `DIR/protoc` and `DIR/cargo-nextest` are in place after their checksums matched
 
 ### Requirement: release-please opens the release PR
 On `main`, release-please (`simple` strategy, `release-please-config.json`, acting as the `tilr-bot` GitHub App) SHALL keep a release PR open from the `feat` / `fix` Conventional Commits, bumping `[workspace.package] version` in `Cargo.toml`, the workspace crates' versions in `Cargo.lock`, and `CHANGELOG.md`. Versions and the changelog SHALL NOT be edited by hand. The release PR SHALL pass the same required checks as any PR.
