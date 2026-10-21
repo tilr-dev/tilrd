@@ -56,6 +56,8 @@ const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
 /// queued for it.
 const DETACH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a pane may hold up Hello while reporting applied input.
+const HELLO_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A reload asked for while a pane is starting is tried again this much
 /// later.
 const RELOAD_RETRY: Duration = Duration::from_millis(200);
@@ -221,6 +223,12 @@ impl std::fmt::Display for Peer {
     }
 }
 
+struct PendingHello {
+    ack: HelloAck,
+    waiting: HashSet<PaneId>,
+    started: Instant,
+}
+
 struct Client {
     tx: ToClient,
     close: mpsc::UnboundedSender<Closing>,
@@ -235,7 +243,7 @@ struct Client {
     /// else is taken from the client before that.
     greeted: bool,
     input_identity: String,
-    hello_pending: Option<(HelloAck, HashSet<PaneId>)>,
+    hello_pending: Option<PendingHello>,
     /// Announced "host-events" in `Hello.features`: it is sent `HostEvent`s.
     host_events: bool,
     /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
@@ -301,6 +309,8 @@ struct Pane {
     /// A full frame is asked for, for clients that lagged, and has not come
     /// yet.
     full_asked: bool,
+    /// A probe timeout has already signalled this process; await link closure.
+    probe_killed: bool,
 }
 
 /// The tasks moving packets to and from one pane process.
@@ -1766,6 +1776,7 @@ impl Supervisor {
             Event::Tick(due) => {
                 self.metrics.loop_lag.observe(due.elapsed());
                 self.ask_lagging_for_full_frames();
+                self.close_unresponsive_hello_panes();
                 self.close_ungreeted();
             }
             Event::Metrics { reply } => {
@@ -1843,6 +1854,7 @@ impl Supervisor {
                     link,
                     counters: metrics::PaneCounters::default(),
                     full_asked: false,
+                    probe_killed: false,
                 },
             );
         }
@@ -2175,11 +2187,11 @@ impl Supervisor {
         if client
             .hello_pending
             .as_ref()
-            .is_some_and(|(_, waiting)| waiting.is_empty())
+            .is_some_and(|pending| pending.waiting.is_empty())
         {
-            let (ack, _) = client.hello_pending.take().expect("pending hello");
+            let pending = client.hello_pending.take().expect("pending hello");
             client.greeted = true;
-            self.send(client_id, server_message::Msg::HelloAck(ack));
+            self.send(client_id, server_message::Msg::HelloAck(pending.ack));
         }
     }
 
@@ -2198,10 +2210,10 @@ impl Supervisor {
         if ack.probe != 0 {
             if let Some(client) = self.clients.get_mut(&(ack.probe - 1))
                 && client.input_identity == ack.identity
-                && let Some((hello, waiting)) = &mut client.hello_pending
-                && waiting.remove(&pane_id)
+                && let Some(pending) = &mut client.hello_pending
+                && pending.waiting.remove(&pane_id)
             {
-                hello.applied_input.push(applied);
+                pending.ack.applied_input.push(applied);
             }
             self.finish_input_hello(ack.probe - 1);
         } else {
@@ -2377,7 +2389,11 @@ impl Supervisor {
                 self.clients
                     .get_mut(&client_id)
                     .expect("connected")
-                    .hello_pending = Some((ack, waiting));
+                    .hello_pending = Some(PendingHello {
+                    ack,
+                    waiting,
+                    started: Instant::now(),
+                });
                 self.finish_input_hello(client_id);
             }
             Msg::CreatePane(create) => {
@@ -2804,6 +2820,7 @@ impl Supervisor {
             link,
             counters: metrics::PaneCounters::default(),
             full_asked: false,
+            probe_killed: false,
         };
         self.starting.insert(
             pane_id,
@@ -2956,14 +2973,45 @@ impl Supervisor {
         }
     }
 
+    /// A pane that cannot report its applied counters must exit before Hello
+    /// can omit it. Never invent counters for a live, unresponsive pane.
+    fn close_unresponsive_hello_panes(&mut self) {
+        let expired: HashSet<_> = self
+            .clients
+            .values()
+            .filter_map(|client| client.hello_pending.as_ref())
+            .filter(|pending| pending.started.elapsed() >= HELLO_PROBE_TIMEOUT)
+            .flat_map(|pending| pending.waiting.iter().copied())
+            .collect();
+        for pane_id in expired {
+            if let Some(pane) = self.panes.get_mut(&pane_id)
+                && !pane.probe_killed
+            {
+                pane.probe_killed = true;
+                tracing::error!(pane = %pane_id, "pane process did not answer Hello probe, closing it");
+                // The reader reaps it and reports PaneLinkClosed, which releases
+                // all waiting Hellos only after the pane is actually gone.
+                // SAFETY: kill has no memory-safety preconditions.
+                unsafe {
+                    libc::kill(pane.pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
     /// Every tick: a connection that has not said `Hello` within
     /// [`HELLO_TIMEOUT`] of its WebSocket opening is closed, whatever the
-    /// client timeout, so an un-greeted one is held 20 s at most.
+    /// client timeout, so a connection without Hello is held at most that
+    /// long plus one tick.
     fn close_ungreeted(&mut self) {
         let late: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, client)| !client.greeted && client.connected.elapsed() >= HELLO_TIMEOUT)
+            .filter(|(_, client)| {
+                !client.greeted
+                    && client.hello_pending.is_none()
+                    && client.connected.elapsed() >= HELLO_TIMEOUT
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in late {
@@ -3019,7 +3067,7 @@ impl Supervisor {
                 client
                     .hello_pending
                     .as_mut()
-                    .and_then(|(_, pending)| pending.remove(&pane_id).then_some(id))
+                    .and_then(|pending| pending.waiting.remove(&pane_id).then_some(id))
             })
             .collect();
         for id in waiting {
@@ -3612,6 +3660,7 @@ mod tests {
                 },
                 counters: metrics::PaneCounters::default(),
                 full_asked: false,
+                probe_killed: false,
             },
         );
         let mut viewers = Vec::new();

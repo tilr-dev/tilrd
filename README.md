@@ -892,6 +892,10 @@ terminal rejection: the client reclaims that pane's queued input through that se
 and a lost acknowledgement is returned again on replay. It does not change any pane's
 applied counter or add a missing pane to `HelloAck.applied_input`. Unnumbered requests
 receive only the error.
+Hello probes each pane for applied counters. A pane that does not answer within
+five seconds (checked on each supervisor tick) is killed and closed; HelloAck
+waits for its link to close and retains counters from responsive panes. Pending
+probes are governed by this bound rather than the timeout for missing Hello.
 `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
