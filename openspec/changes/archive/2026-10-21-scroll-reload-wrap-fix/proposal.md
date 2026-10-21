@@ -2,7 +2,7 @@
 
 ## Why
 
-TILR-200 reports an intermittent missing `line-2` after resizing and scrolling a
+The reload scroll test intermittently misses `line-2` after resizing and scrolling a
 reloaded pane. The test waits for reflowed text, which may already be visible in
 the resize frame before the scroll has been applied.
 

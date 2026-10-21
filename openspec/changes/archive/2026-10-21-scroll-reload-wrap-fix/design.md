@@ -14,11 +14,10 @@ joined line after sending Scroll can therefore stop at the resize frame.
 Force that ordering by receiving the joined line before sending Scroll; retain
 the original assertion to establish the failure, then wait for viewport_top 0.
 
-On 2026-10-20, the unmodified test passed on dev 4a0231f. With only the
-resize-frame barrier inserted, the same narrow command exited 101 at
-`assert!(client.screen.has_row("line-2"))` (task log
-`logs/scroll-controlled-before.log`). This creates the offending frame ordering
-without load, sleeps, retries or a new hook.
+With only the resize-frame barrier inserted, the original assertion
+`assert!(client.screen.has_row("line-2"))` fails on that resize frame.
+This creates the offending frame ordering without load, sleeps, retries or a
+new hook.
 
 The fixed test asserts that the resize frame is still scrolled past history's
 start and does not show `line-2`, then requests Scroll and receives a frame
@@ -27,16 +26,3 @@ No new timing hook is necessary: receiving the resize frame is the barrier.
 
 Recheck with:
 `cargo test -p tilrd --test scroll a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload --features tilrd/failpoints --locked`.
-
-## Final validation
-
-On 2026-10-21, after rebasing on dev f9ed429 with the TILR-244 dependency fix,
-the narrow regression and fresh-context self-review passed. `bin/finish`
-reported READY for Review with all eight checks green: OpenSpec, fmt, both
-clippy variants, Rust tests, Linux tests, cargo deny and gitleaks. The successful
-receipt is recorded in the task's Review handoff comment dated 2026-10-21.
-This task changes no dependencies.
-
-On 2026-10-21, the Rust and Linux checks required a rerun outside the sandbox:
-the client test starts `ps` and Docker buildx writes its activity under ~/.docker.
-Both reruns passed.

@@ -8,5 +8,5 @@
 ## 2. Validate
 
 - [x] 2.1 Run the narrow regression test.
-- [x] 2.2 Fresh-context self-review and all eight checks green after rebasing on dev f9ed429 (see design.md).
+- [x] 2.2 Fresh-context self-review and full check set.
 - [x] 2.3 Prepare the completed change for archive and Review submission via bin/finish.
