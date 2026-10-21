@@ -154,41 +154,42 @@ async fn the_clipboard_can_be_turned_off() {
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "||\n");
 }
 
+// Expiry is read on the test clock by the server (which stamps it) and by
+// the pane's clipboard tool (which compares it), so no real time passes in
+// this test: a slow check cannot make it miss the content or see it late.
+#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn pasted_content_expires() {
-    const TTL: Duration = Duration::from_secs(1);
-    let ttl = TTL.as_secs().to_string();
-    let server = Server::start(&["--clipboard-ttl", &ttl]);
+    const START_US: u64 = 1_700_000_000_000_000;
+    const TTL_US: u64 = 1_000_000;
+    const MS_US: u64 = 1_000;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    set_test_time(&clock, START_US);
+    let server = Server::start_with_env(
+        dir,
+        &["--clipboard-ttl", "1"],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     let check = script(&server, "check.sh", CLAUDE_CHECK_IMAGE);
     client.put_clipboard(1, "image/png", &image(100)).await;
     assert!(client.clipboard_ack().await.ok);
-    let ack = tokio::time::Instant::now();
-    // Asked every 20 ms until it is gone; `last_present` is the start of
-    // the last check that still found it.
-    let deadline = ack + TIMEOUT;
-    let mut last_present = None;
-    loop {
-        let asked = tokio::time::Instant::now();
-        if client.run(pane_id, &check).await != 0 {
-            break;
-        }
-        last_present = Some(asked);
-        assert!(asked < deadline, "still there after {TIMEOUT:?}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let last_present = last_present.expect("not there right after the ack");
-    // The server stamps the expiry before it acks, so the stamp is at most
-    // `ack + TTL`; it and the reader's clock are whole milliseconds, rounded
-    // down. A check that found the content read the store before the stamp
-    // plus 1 ms, and it read it after it started: so it started before
-    // `ack + TTL + 1 ms`, however long the check runs. No bound on when the
-    // content is found gone: that depends on how long the checks take.
-    assert!(
-        last_present < ack + TTL + Duration::from_millis(1),
-        "still there {:?} after the ack",
-        last_present - ack
+    assert_eq!(
+        client.run(pane_id, &check).await,
+        0,
+        "not there after the ack"
+    );
+
+    // The last millisecond of the TTL still has it; at the TTL it is gone.
+    set_test_time(&clock, START_US + TTL_US - MS_US);
+    assert_eq!(client.run(pane_id, &check).await, 0, "gone before the TTL");
+    set_test_time(&clock, START_US + TTL_US);
+    assert_ne!(
+        client.run(pane_id, &check).await,
+        0,
+        "still there at the TTL"
     );
 }
 

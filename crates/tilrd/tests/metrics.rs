@@ -284,15 +284,6 @@ async fn a_scroll_is_credited_while_key_input_waits_for_the_pty() {
     frame_with_seq(&mut client, base + 2, |seq| seq == 0).await;
 }
 
-/// Publish `us` as the servers' measurement clock (`TILR_TEST_TIME_FILE`):
-/// a rename, so a reader sees one whole value.
-#[cfg(feature = "failpoints")]
-fn set_test_time(path: &std::path::Path, us: u64) {
-    let next = path.with_extension("next");
-    std::fs::write(&next, us.to_string()).unwrap();
-    std::fs::rename(next, path).unwrap();
-}
-
 // The wait of an input is measured on the test's clock: the pane's own
 // time across a reload (a check run of the successor and an exec) is not
 // counted, so a real clock gives no bound the reload itself cannot break.
