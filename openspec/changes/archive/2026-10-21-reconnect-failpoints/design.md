@@ -5,5 +5,5 @@
   `reconnect-client-lagging:<pane id>`. The full-frame hook precedes enqueueing
   for each viewer; it does not claim the peer has received the frame.
 - Pane hooks hold supervisor event processing while socket tasks keep running.
-- The read-pause handle's disappearance is checked by its channel error path;
-  it has no separate integration scenario.
+- The read-pause handle's disappearance is checked by its channel error path
+  and the integration scenario `a_dropped_read_pause_fails_the_next_read`.
