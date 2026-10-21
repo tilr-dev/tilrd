@@ -1,7 +1,8 @@
 # reconnect-testing Specification
 
 ## Purpose
-TBD - created by archiving change reconnect-failpoints. Update Purpose after archive.
+Provide deterministic control of reconnect stages and test-client socket reads so
+integration tests can reproduce reconnect ordering and lag recovery explicitly.
 
 ## Requirements
 
