@@ -229,6 +229,12 @@ Cloud repository.
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
 
+## Version baked at build time — `tests/build_script.rs`, `crates/tilr/tests/build_script.rs`
+
+| Use case | Test |
+|---|---|
+| The build script watches only files that exist, and `HEAD` and `logs/HEAD` of the real git directory when git names them: a repeated build in a git worktree compiles nothing, a checkout still rebuilds with the new commit | `build_script::every_watched_file_exists_and_the_git_head_is_watched` (tilrd and tilr) |
+
 ## Updating from the CDN — `tests/update.rs`
 
 | Use case | Test |
