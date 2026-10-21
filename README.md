@@ -1272,7 +1272,8 @@ releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
 `linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
 hand, from a clean checkout: `scripts/release.sh --publish linux-aarch64 linux-x86_64`
-builds in the Linux container and uploads with `wrangler` (see the script); export
+builds in the Linux container and uploads with AWS CLI using bucket-scoped `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` (see the script); export
 `CLOUDFLARE_ACCOUNT_ID` first, e.g. via `infisical run --path /cloudflare`. Versions and
 CHANGELOG.md are not edited by hand.
 
