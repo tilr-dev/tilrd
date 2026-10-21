@@ -6,7 +6,7 @@ in `crates/tilrd/tests/`, the shared harness in `tests/common/mod.rs`; the tests
 of the client `tilr` live in `crates/tilr/tests/` (they run `tilr`, which starts
 the `tilrd` built next to it).
 
-Run: `cargo test --workspace --features tilrd/failpoints --locked`; on Linux from
+Run: `cargo nextest run --workspace --features tilrd/failpoints --locked`; on Linux from
 another OS, `scripts/linux.sh`. Use cases with a failure halfway through
 (marked †) make something go wrong at a given place in the code through
 failpoints (`src/fail.rs`) and are compiled only with that feature.
@@ -231,9 +231,10 @@ Cloud repository.
 | Upload-only checks each requested platform and leaves other platforms alone | `upload_only_checks_what_was_built_and_leaves_other_platforms_alone` |
 | The installer (`scripts/install.sh`) is uploaded after every platform's `latest`, and not at all after a failed upload | `the_installer_is_uploaded_after_latest` |
 | The updater finds and installs the archive built by `release.sh` through a local CDN | `the_layout_release_sh_writes_is_what_tilrd_update_reads` |
-| Linux builds use the pinned Debian 12 image; build tools are checksum pinned and used in CI and release builds | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
+| Linux builds use the pinned Debian 12 image; build tools (Zig, protoc, cargo-nextest) are checksum pinned and used in CI, release builds and the container | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
 | The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
+| AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |

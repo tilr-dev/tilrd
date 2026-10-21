@@ -66,14 +66,14 @@ context: |
 
   CI gates (.github/workflows/ci.yml): cargo fmt --all --check; cargo clippy
   --workspace --all-targets --locked -- -D warnings, with and without
-  --features tilrd/failpoints; cargo test --workspace --features tilrd/failpoints --locked
+  --features tilrd/failpoints; cargo nextest run --workspace --features tilrd/failpoints --locked
   on ubuntu-latest and macos-15; a smoke test of `tilrd --version` and `tilr --version`
   (`<name> X.Y.Z-<sha> (<platform>)`) and `--help`; MSRV 1.90 (`rust-version` in Cargo.toml, cargo check with the failpoints
   feature); cargo-deny (deny.toml); gitleaks over the whole history.
   Cargo.lock is committed and every cargo command runs with --locked. Clippy findings are
   fixed, not silenced; an #[allow] names the lint and says why. No --no-verify.
-  Build needs Zig 0.15.2 and protoc (scripts/install-tools.sh) and network on the
-  first source build (libghostty-vt-sys clones Ghostty at a pinned commit).
+  Build needs Zig 0.15.2 and protoc, the tests cargo-nextest (scripts/install-tools.sh),
+  and network on the first source build (libghostty-vt-sys clones Ghostty at a pinned commit).
   scripts/build-ghostty-vt.sh builds a reusable static package; PKG_CONFIG_PATH
   pointing to its share/pkgconfig directory lets clean Cargo targets reuse it.
 
@@ -114,7 +114,7 @@ rules:
   tasks:
     - Each task names how it is verified (test name, itests UC id, command or observable output).
     - Each task group lands its own tests, USE_CASES.md entries and README updates; no trailing "write tests" group.
-    - "Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`."
+    - "Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`."
 
 operations:
   apply:
