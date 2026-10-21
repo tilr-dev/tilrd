@@ -1,6 +1,6 @@
 # Design
 
-## D1. The files fixture raced startup root lookup (TILR-151)
+## D1. The files fixture raced startup root lookup
 
 `files::nothing_outside_the_shared_directories_is_served` originally started the server
 before creating `~/shared` (fixed in `417a7b9`, PR #5). The harness returns at `listening on`,
