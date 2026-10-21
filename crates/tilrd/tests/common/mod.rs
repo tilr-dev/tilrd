@@ -207,6 +207,44 @@ pub fn spawn_copied(command: &mut Command) -> Child {
     }
 }
 
+/// Two warmed inodes shared by this integration-test binary. Keep both source
+/// paths alive: private installations may be renamed or removed by their tests.
+fn warm_executables() -> &'static [PathBuf; 2] {
+    static EXECUTABLES: std::sync::OnceLock<[PathBuf; 2]> = std::sync::OnceLock::new();
+    EXECUTABLES.get_or_init(|| {
+        let original = PathBuf::from(env!("CARGO_BIN_EXE_tilrd"));
+        let alternate = Server::scratch_dir().join("tilrd-warm");
+        std::fs::copy(&original, &alternate).unwrap();
+        for exe in [&original, &alternate] {
+            let status = spawn_copied(Command::new(exe).arg("--version"))
+                .wait()
+                .unwrap();
+            assert!(status.success(), "warm {}: {status}", exe.display());
+        }
+        [original, alternate]
+    })
+}
+
+/// Install a private path without triggering assessment of a fresh executable.
+/// Callers must replace/unlink this path rather than modify its shared inode.
+pub fn link_executable(destination: &Path) {
+    std::fs::hard_link(&warm_executables()[0], destination).unwrap();
+}
+
+/// Stage a different warmed inode, including when replacing the same path again.
+pub fn link_replacement(current: &Path, staged: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let sources = warm_executables();
+    let current = std::fs::metadata(current).unwrap();
+    let first = std::fs::metadata(&sources[0]).unwrap();
+    let source = if (current.dev(), current.ino()) == (first.dev(), first.ino()) {
+        &sources[1]
+    } else {
+        &sources[0]
+    };
+    std::fs::hard_link(source, staged).unwrap();
+}
+
 impl Server {
     pub fn start(args: &[&str]) -> Self {
         Self::start_exe(Path::new(env!("CARGO_BIN_EXE_tilrd")), args)

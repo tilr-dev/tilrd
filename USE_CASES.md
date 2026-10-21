@@ -98,6 +98,7 @@ real Linux containers with the same FIFO barrier.
 | A server on its socket alone (`--no-listen`) does not reload into an executable that cannot take the socket (`state-formats` without `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
 | Nor does a server with a TCP port and its socket: the socket would be left with nobody serving it | `a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` |
 | † A reload refused by the check of the successor: the same connection, new connections through the socket, the lock still held | `a_refused_reload_keeps_the_socket_and_its_lock` |
+| Private test installations share warmed inodes; repeated replacements alternate them and consume the staged path | `warm_executable_links_reuse_inodes_and_replace_repeatedly` |
 
 ## Acknowledged input — `tests/input_delivery.rs`
 
