@@ -5,7 +5,8 @@ mod common;
 use common::*;
 
 /// Walk each reconnect boundary under explicit controller release. The FIFO
-/// makes output happen only after Unsubscribe has been acknowledged.
+/// makes output happen only after Unsubscribe has been acknowledged. The ready
+/// marker has no trailing bytes that could produce another frame after it is seen.
 #[cfg(feature = "failpoints")]
 async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
     let server = Server::start(&["--client-timeout", "0"]);
@@ -17,7 +18,7 @@ async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
         &server,
         "wait-for-output.sh",
         &format!(
-            "printf 'ready for release\\n'; read -r release < '{}'; printf 'printed while unwatched\\n'\n",
+            "printf 'ready for release'; read -r release < '{}'; printf '\\nprinted while unwatched\\n'\n",
             fifo.display()
         ),
     );
