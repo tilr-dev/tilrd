@@ -27,9 +27,21 @@ if [[ -f "$prefix/.complete" ]]; then
 fi
 mkdir -p "$(dirname "$prefix")"
 lock=${prefix}.lock
-mkdir "$lock" 2>/dev/null || { echo "Build already in progress: $lock; rerun after it finishes." >&2; exit 1; }
+if ! mkdir "$lock" 2>/dev/null; then
+    owner=
+    [[ ! -f "$lock/pid" ]] || read -r owner < "$lock/pid" || true
+    # A missing/invalid PID may be a new owner still publishing its PID.
+    if [[ ! "$owner" =~ ^[1-9][0-9]*$ ]] || kill -0 "$owner" 2>/dev/null; then
+        echo "Build already in progress: $lock; rerun after it finishes." >&2
+        exit 1
+    fi
+    rm -rf "$lock"
+    mkdir "$lock" 2>/dev/null || { echo "Build already in progress: $lock; rerun after it finishes." >&2; exit 1; }
+fi
 work=
-trap 'rm -rf "$work"; rmdir "$lock"' EXIT
+trap 'rm -rf "$work" "$lock"' EXIT
+printf '%s\n' "$$" > "$lock/pid"
+rm -rf "${prefix}".tmp.*
 if [[ -f "$prefix/.complete" ]]; then
     printf '%s\n' "$prefix"
     exit 0
@@ -50,6 +62,7 @@ work=$(mktemp -d "${prefix}.tmp.XXXXXX")
     sed 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$pc" > "$pc.new"
     mv "$pc.new" "$pc"
     touch "$work/install/.complete"
+    rm -rf "$prefix"
     mv "$work/install" "$prefix"
 } >&2
 printf '%s\n' "$prefix"

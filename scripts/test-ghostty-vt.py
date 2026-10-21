@@ -2,6 +2,7 @@
 """Exercise the shared build script with deterministic external tool fixtures."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -56,6 +57,36 @@ printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescript
     again = run()
     assert again.returncode == 0 and again.stdout == first.stdout
     assert events.read_text() == log, "cached invocation cloned or built again"
+    # An exited child supplies a known dead PID without timing or PID guesses.
+    child = subprocess.Popen(["/bin/sh", "-c", "exit 0"])
+    child.wait()
+    shutil.rmtree(prefix)
+    prefix.mkdir()
+    (prefix / "unfinished").touch()
+    lock = Path(f"{prefix}.lock")
+    lock.mkdir()
+    (lock / "pid").write_text(f"{child.pid}\n")
+    leftover = Path(f"{prefix}.tmp.abandoned")
+    leftover.mkdir()
+    (leftover / "checkout").touch()
+    recovered_stale = run()
+    assert recovered_stale.returncode == 0, recovered_stale.stderr
+    assert recovered_stale.stdout == first.stdout
+    assert pc.is_file() and (prefix / "lib/libghostty-vt.a").is_file()
+    assert not (prefix / "unfinished").exists()
+    assert not lock.exists() and not leftover.exists()
+    shutil.rmtree(prefix)
+    lock.mkdir()
+    (lock / "pid").write_text(f"{os.getpid()}\n")
+    leftover.mkdir()
+    log = events.read_text()
+    active = run()
+    assert active.returncode != 0 and "Build already in progress" in active.stderr
+    assert events.read_text() == log
+    assert (lock / "pid").read_text() == f"{os.getpid()}\n"
+    assert leftover.is_dir()
+    shutil.rmtree(lock)
+    shutil.rmtree(leftover)
     changed = run(MOCK_ZIG="0.16.0")
     assert changed.returncode == 0 and changed.stdout != first.stdout
     other_sdk = base / "other.sdk"

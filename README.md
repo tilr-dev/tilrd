@@ -1163,8 +1163,10 @@ version, OS/architecture, SDK/developer paths and ReleaseFast/baseline settings.
 It selects the same default macOS SDK as Cargo, respecting `SDKROOT` and
 `DEVELOPER_DIR`. Completed prefixes are reused; failed builds are removed.
 Concurrent invocations for the same prefix report the active build; rerun after
-it finishes. If a process was killed without cleanup, remove its reported `.lock`
-directory after confirming that build has stopped.
+it finishes. The lock records the owner's PID. If that process has exited, the
+next invocation removes the abandoned lock and temporary build directories and
+builds again automatically. Incomplete destination prefixes are replaced before
+the completed installation is published.
 
 `tilr-screen` enables `libghostty-vt-sys`'s pkg-config feature directly. With this
 package discoverable, clean targets link the shared static library without cloning
