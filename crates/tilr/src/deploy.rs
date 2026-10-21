@@ -163,6 +163,44 @@ while [ ! -e "$dir" ]; do made=$dir; dir=$(dirname "$dir"); done
 tmp=
 swapped=
 committed=
+service_path=
+service_parent=
+service_made=
+service_started=
+service_kind=
+service_enabled=
+linger_before=
+cron_before=
+cron_saved=
+restore_service() {
+  if [ -n "$service_path" ]; then
+    if [ -e "$tmp/service.old" ] || [ -L "$tmp/service.old" ]; then
+      mv -f "$tmp/service.old" "$service_path"
+    else
+      rm -f "$service_path"
+    fi
+  fi
+  if [ -n "$cron_saved" ]; then
+    LC_ALL=C crontab -l > "$tmp/crontab.now" 2>/dev/null || :
+    if ! cmp -s "$tmp/crontab.old" "$tmp/crontab.now"; then
+      if [ -n "$cron_before" ]; then crontab "$tmp/crontab.old" >&2 || :; else crontab -r >&2 || :; fi
+    fi
+  fi
+  case "$service_kind" in
+    systemd)
+      if [ -z "$service_enabled" ]; then systemctl --user disable tilr.service >&2 || :; fi
+      systemctl --user daemon-reload >&2 || :
+      if [ "$linger_before" = no ]; then loginctl disable-linger "$(id -un)" >&2 || :; fi
+      ;;
+  esac
+  if [ -n "$service_made" ]; then
+    dir=$service_parent
+    while rmdir "$dir" 2>/dev/null; do
+      [ "$dir" != "$service_made" ] || break
+      dir=$(dirname "$dir")
+    done
+  fi
+}
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
@@ -171,6 +209,7 @@ cleanup() {
       if [ -e "$tmp/$name.old" ] || [ -L "$tmp/$name.old" ]; then mv -f "$tmp/$name.old" "$bin/$name"; else rm -f "$bin/$name"; fi
     done
   fi
+  if [ -n "$service_started" ] && [ -z "$committed" ]; then restore_service; fi
   [ -z "$tmp" ] || rm -rf "$tmp"
   if [ -z "$committed" ] && [ -n "$made" ]; then rm -rf "$made"; fi
   exit "$result"
@@ -195,12 +234,49 @@ done
 version=$("$tmp/release/tilr" --version)
 version=${version#* }
 version=${version%% *}
+token=
+# The installed client speaks the running server's protocol. The persistent
+# token survives reload, so no new-client handshake races the executable watcher.
+if [ -x "$bin/tilr" ]; then token=$("$bin/tilr" token); [ -n "$token" ]; fi
 swapped=1
 mv -f "$tmp/release/tilr" "$bin/tilr"
 mv -f "$tmp/release/tilrd" "$bin/tilrd"
-if [ -n '@SERVICE@' ]; then "$bin/tilr" service install >&2; fi
-token=$("$bin/tilr" token)
+if [ -z "$token" ]; then token=$("$bin/tilr" token); fi
 [ -n "$token" ]
+if [ -n '@SERVICE@' ]; then
+  case "$(uname -s)" in
+    Darwin)
+      service_path="$HOME/Library/LaunchAgents/sh.tilr.tilrd.plist"
+      ;;
+    *)
+      service_path="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/tilr.service"
+      if systemctl --user show-environment >/dev/null 2>&1; then
+        service_kind=systemd
+        if systemctl --user is-enabled tilr.service >/dev/null 2>&1; then service_enabled=1; fi
+        linger_before=$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null) || :
+      else
+        service_kind=cron
+      fi
+      # systemd may fall back to cron when lingering is unavailable.
+      if { [ "$service_kind" != systemd ] || [ "$linger_before" != yes ]; } && command -v crontab >/dev/null 2>&1; then
+        if LC_ALL=C crontab -l > "$tmp/crontab.old" 2> "$tmp/crontab.err"; then
+          cron_before=1
+        else
+          # Refuse to mutate a crontab we could not snapshot.
+          grep -E 'no crontab for|No such file or directory' "$tmp/crontab.err" >/dev/null
+          : > "$tmp/crontab.old"
+        fi
+        cron_saved=1
+      fi
+      ;;
+  esac
+  service_parent=$(dirname "$service_path")
+  dir=$service_parent
+  while [ ! -e "$dir" ]; do service_made=$dir; dir=$(dirname "$dir"); done
+  if [ -e "$service_path" ] || [ -L "$service_path" ]; then cp -pP "$service_path" "$tmp/service.old"; fi
+  service_started=1
+  "$bin/tilr" service install >&2
+fi
 committed=1
 echo "installed tilr $version in ~/.local/bin" >&2
 case ":$PATH:" in

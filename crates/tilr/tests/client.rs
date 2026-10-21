@@ -1425,3 +1425,140 @@ fn deploy_rolls_back_both_programs_when_remote_start_or_service_fails() {
         assert!(output.stdout.is_empty());
     }
 }
+
+#[test]
+fn deploy_gets_the_token_before_replacing_an_old_protocol_client() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let installed = machine.dir.join(".local/bin");
+    std::fs::create_dir_all(&installed).unwrap();
+    executable_script(
+        &installed.join("tilr"),
+        "#!/bin/sh\n[ \"$1\" = token ] || exit 1\necho persistent-token\n",
+    );
+    std::fs::write(installed.join("tilrd"), b"old server").unwrap();
+    let archive = deploy_archive(&machine,
+        b"#!/bin/sh\ncase \"$1\" in --version) echo 'tilr 9.9.9';; *) echo 'old server protocol' >&2; exit 1;; esac\n",
+        b"#!/bin/sh\necho 'tilrd 9.9.9'\n");
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).ends_with("persistent-token\n"));
+}
+
+#[test]
+fn deploy_restores_service_configuration_when_the_manager_refuses_it() {
+    for existed in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        for name in ["systemctl", "launchctl", "loginctl"] {
+            executable_script(&bin.join(name), "#!/bin/sh\nexit 1\n");
+        }
+        executable_script(
+            &bin.join("crontab"),
+            "#!/bin/sh\necho 'no crontab for test' >&2\nexit 1\n",
+        );
+        let relative = if cfg!(target_os = "macos") {
+            "Library/LaunchAgents/sh.tilr.tilrd.plist"
+        } else {
+            ".config/systemd/user/tilr.service"
+        };
+        let config = machine.dir.join(relative);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        if existed {
+            std::fs::write(&config, b"previous service configuration").unwrap();
+        }
+        let client = format!(
+            "#!/bin/sh\ncase \"$1\" in\n--version) echo 'tilr 9.9.9';;\ntoken) echo token;;\nservice) echo changed >\"$HOME/{relative}\"; echo 'manager refused' >&2; exit 1;;\nesac\n"
+        );
+        let archive = deploy_archive(
+            &machine,
+            client.as_bytes(),
+            b"#!/bin/sh\necho 'tilrd 9.9.9'\n",
+        );
+        let output = machine
+            .command(&[
+                "deploy",
+                "--service",
+                "--archive",
+                archive.to_str().unwrap(),
+                "user@host",
+            ])
+            .env("XDG_CONFIG_HOME", machine.dir.join(".config"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("manager refused"));
+        if existed {
+            assert_eq!(
+                std::fs::read(&config).unwrap(),
+                b"previous service configuration"
+            );
+        } else {
+            assert!(!config.exists(), "failed install left a new service file");
+        }
+        assert!(!machine.dir.join(".local/bin").exists());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn deploy_restores_the_crontab_after_a_service_failure() {
+    for existed in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        // Exercise the remote Linux fallback even when the local test is on macOS.
+        executable_script(&bin.join("uname"), "#!/bin/sh\necho Linux\n");
+        executable_script(&bin.join("systemctl"), "#!/bin/sh\nexit 1\n");
+        executable_script(
+            &bin.join("crontab"),
+            r#"#!/bin/sh
+case "$1" in
+  -l) if [ -e "$HOME/cron" ]; then cat "$HOME/cron"; else echo 'no crontab for test' >&2; exit 1; fi;;
+  -) cat > "$HOME/cron";;
+  -r) rm -f "$HOME/cron";;
+  *) cp "$1" "$HOME/cron";;
+esac
+"#,
+        );
+        let old = b"0 1 * * * existing-job\n";
+        if existed {
+            std::fs::write(machine.dir.join("cron"), old).unwrap();
+        }
+        let client = b"#!/bin/sh\ncase \"$1\" in\n--version) echo 'tilr 9.9.9';;\ntoken) echo token;;\nservice) echo '@reboot changed' | crontab -; echo 'service failed' >&2; exit 1;;\nesac\n";
+        let archive = deploy_archive(&machine, client, b"#!/bin/sh\necho 'tilrd 9.9.9'\n");
+        let output = machine
+            .command(&[
+                "deploy",
+                "--service",
+                "--archive",
+                archive.to_str().unwrap(),
+                "user@host",
+            ])
+            .env("XDG_CONFIG_HOME", machine.dir.join(".config"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("service failed"));
+        if existed {
+            assert_eq!(std::fs::read(machine.dir.join("cron")).unwrap(), old);
+        } else {
+            assert!(!machine.dir.join("cron").exists());
+        }
+        assert!(output.stdout.is_empty());
+    }
+}

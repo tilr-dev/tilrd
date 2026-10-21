@@ -15,7 +15,9 @@
 The archive goes over stdin of `ssh <dest> sh -c '<script>'`; the script (embedded in `tilr`) follows the `installation` spec: `mktemp -d`, unpack, both `--version`, then `mv` `tilr` and then `tilrd` into `~/.local/bin` (made if missing), removing the temp dir on any exit. It prints `installed tilr <version> in ~/.local/bin` or the installer's failure message and exits non-zero leaving the old files.
 
 ### D5. Start and hand over
-With `--service`, `~/.local/bin/tilr service install` runs there and its output is shown. Then `~/.local/bin/tilr token` runs there (starting tilrd as the `tilr-cli` spec says) and `tilr deploy` prints the two lines of the Decision (proposal.md). If `~/.local/bin` is not on the remote's login `PATH`, it says what to add, as the installer does.
+When an executable client is already installed, it obtains the persistent token before either program is replaced. This starts an absent server with the old binaries and avoids a new client's protocol handshake with an old server while the executable watcher waits to reload. On a fresh host the new installed client obtains the token and starts the server after replacement.
+
+With `--service`, `~/.local/bin/tilr service install` then runs there and its output is shown. Before invoking it, deploy snapshots the service configuration, the crontab where available, and the enabled/lingering state. A failed install restores the previous configuration together with the binaries. Only after token acquisition and optional service installation succeed does `tilr deploy` print the connection commands and token. If `~/.local/bin` is not on the remote's login `PATH`, it says what to add, as the installer does.
 
 ## Reload and reconnect
 
