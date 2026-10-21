@@ -38,8 +38,8 @@ real Linux containers with the same FIFO barrier.
 | BEL ending an OSC title sequence is not reported as activity | `a_bel_ending_an_osc_is_not_reported` |
 | A foreground job returning control to its shell reports command completion | `a_finished_foreground_command_is_reported` |
 | Typing at the prompt reports no activity | `typing_at_the_prompt_reports_nothing` |
-| The client says hello, the server reports its protocol version (3), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
-| A client with another protocol version (newer, older, none) gets an error naming both versions ("this server speaks 3"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
+| The client says hello, the server reports its protocol version (1), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
+| A client with another protocol version (newer: 2, none: 0) gets an error naming both versions ("this server speaks 1"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
 | The first thing a client gets is the answer to its `Hello`: pane lists are not sent to it before, and after that it gets them like everyone else | `the_first_thing_a_client_hears_is_the_answer_to_its_hello` |
 | A client that does not start with `Hello` gets an error and is disconnected; its input never reaches the shell | `a_client_that_skips_hello_is_turned_away` |
 | A browser page connects only from an allowed origin; programs without `Origin` get through | `a_browser_page_connects_only_from_an_allowed_origin` |
