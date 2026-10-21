@@ -581,9 +581,13 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
     )
     .await;
     // Input of both while `slow` lags: its own comes first, so the frames
-    // that echo it are among those it misses.
+    // that echo it are among those it misses. A frame carries only the
+    // latest input credited, so `fast` sends once it has seen a frame that
+    // echoes `slow`'s: the server has passed that frame by `slow` (skipped,
+    // its seq kept for the full frame that ends the lag) before `fast`'s
+    // input can be credited in one with it.
     send_with_seq(&mut slow, raw(pane_id, ""), slow_base + 1).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    while next_frame(&mut fast).await.last_input_seq != slow_base + 1 {}
     send_with_seq(&mut fast, raw(pane_id, ""), fast_base + 1).await;
     // `fast` keeps reading meanwhile, up to the echo of its input: the pane
     // has taken `slow`'s input before it, and nothing is credited after it.

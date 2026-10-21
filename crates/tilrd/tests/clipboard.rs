@@ -168,19 +168,21 @@ async fn pasted_content_expires() {
     assert_eq!(client.run(pane_id, &check).await, 0);
     // Gone once its TTL is over: asked again every 20 ms until then.
     let deadline = stored + TIMEOUT;
-    while client.run(pane_id, &check).await == 0 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "still there after {TIMEOUT:?}"
-        );
+    let gone = loop {
+        let asked = tokio::time::Instant::now();
+        if client.run(pane_id, &check).await != 0 {
+            break asked - stored;
+        }
+        assert!(asked < deadline, "still there after {TIMEOUT:?}");
         tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    };
     // Only an upper bound: the server stamps the expiry with its own wall
     // clock in whole milliseconds, after `stored`, so a lower bound of TTL
-    // would be off by up to a millisecond. The first failed check comes at
-    // most one poll (20 ms and a run) after the expiry; a second over TTL
-    // covers that and still fails a TTL read wrong (2 s or more).
-    let gone = stored.elapsed();
+    // would be off by up to a millisecond. Counted to the start of the first
+    // check that finds it gone, the time leaves out that check's own run
+    // (long under load): it is at most one poll (20 ms and the run before
+    // it) past the expiry. A second over TTL covers that and still fails a
+    // TTL read wrong (2 s or more).
     assert!(gone <= TTL + Duration::from_secs(1), "gone after {gone:?}");
 }
 

@@ -95,17 +95,8 @@ impl Daemon {
     /// the way: its socket takes connections before that (and before its
     /// token is written), and they are served only once it has.
     fn wait_ready(&mut self) {
-        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
-        notify
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .unwrap();
         let deadline = std::time::Instant::now() + TIMEOUT;
-        let mut message = [0; 64];
-        loop {
-            if let Ok(n) = notify.recv(&mut message) {
-                assert_eq!(&message[..n], b"READY=1");
-                return;
-            }
+        while !self.said_ready() {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!("tilrd exited {status}: {}", self.log_text());
             }
@@ -114,6 +105,22 @@ impl Daemon {
                 "tilrd not ready within {TIMEOUT:?}: {}",
                 self.log_text()
             );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Whether `READY=1` has come since the last look, without waiting.
+    fn said_ready(&self) -> bool {
+        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
+        notify.set_nonblocking(true).unwrap();
+        let mut message = [0; 64];
+        match notify.recv(&mut message) {
+            Ok(n) => {
+                assert_eq!(&message[..n], b"READY=1");
+                true
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(err) => panic!("NOTIFY_SOCKET: {err}"),
         }
     }
 
@@ -555,13 +562,7 @@ fn of_servers_started_at_once_one_serves_the_socket() {
     loop {
         let mut settled = 0;
         for (daemon, ready) in daemons.iter_mut().zip(&mut ready) {
-            let notify = daemon.notify.as_ref().unwrap();
-            notify.set_nonblocking(true).unwrap();
-            let mut message = [0; 64];
-            if !*ready && let Ok(n) = notify.recv(&mut message) {
-                assert_eq!(&message[..n], b"READY=1");
-                *ready = true;
-            }
+            *ready = *ready || daemon.said_ready();
             if *ready || !daemon.running() {
                 settled += 1;
             }

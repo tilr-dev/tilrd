@@ -1277,35 +1277,58 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
         unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Let the last reloads finish: every reload begun has resumed, and the
-    // last server to resume took no SIGUSR1 while it started (it logs that
-    // before it resumes, then reloads again).
-    let settled = || {
+    // Let the last reloads finish. Each SIGUSR1 leaves a "SIGUSR1 came"
+    // line: logged by the handler as it comes (a line the server writes for
+    // this test to wait on), or, held across an exec, by the successor as it
+    // starts. A sentinel signal sent after the storm is delivered after
+    // every storm signal (or merged with one still pending), so once a
+    // receipt line shows after it, no storm signal is left to come.
+    let index = server.log.lock().unwrap().len();
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let poll = |what: &str, done: &dyn Fn(&[String]) -> bool| {
         let log = server.log.lock().unwrap();
-        let Some(last) = log.iter().rposition(|line| line.contains("reloading exe=")) else {
-            return false;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: {:#?}",
+            *log
+        );
+        done(&log)
+    };
+    while !poll("no receipt of the sentinel", &|log| {
+        log[index..]
+            .iter()
+            .any(|line| line.contains("SIGUSR1 came"))
+    }) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The reload of the last receipt ends with a resume. A handler's receipt
+    // is followed by its reload, or comes during one already under way,
+    // whose exec drops it; either way the next resume ends it. A held one is
+    // logged before its own server resumes and reloads after that, so it
+    // takes a reload logged after it, then a resume.
+    while !poll("the last reload did not finish", &|log| {
+        let last = log
+            .iter()
+            .rposition(|line| line.contains("SIGUSR1 came"))
+            .unwrap();
+        let after = &log[last + 1..];
+        let after = if log[last].contains("SIGUSR1 came: reloading") {
+            after
+        } else {
+            match after
+                .iter()
+                .position(|line| line.contains("reloading exe="))
+            {
+                Some(at) => &after[at + 1..],
+                None => return false,
+            }
         };
-        let since = &log[last + 1..];
-        since
+        after
             .iter()
             .any(|line| line.contains("resumed after reload with"))
-            && !since.iter().any(|line| line.contains("SIGUSR1 came"))
-    };
-    // A signal the last server took once its handlers were in place starts
-    // a reload that logs nothing until the check runs of the executable are
-    // done ("reloading exe=" came 17 ms after "resumed" here, on macOS,
-    // 2026-10-21). Half a second of the state above holding rules that out.
-    let window = Duration::from_millis(500);
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    let mut since = tokio::time::Instant::now();
-    loop {
-        let now = tokio::time::Instant::now();
-        if !settled() {
-            since = now;
-        } else if now - since >= window {
-            break;
-        }
-        assert!(now < deadline, "the reloads did not settle");
+    }) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let seen = count_logged(&server, "resumed after reload with");
