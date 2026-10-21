@@ -18,7 +18,7 @@ No retries: a test that fails once and passes on a rerun is a flake, filed with 
 ## Capabilities
 
 ### Modified Capabilities
-- `release-process`: see `specs/release-process/spec.md` (the CI gate runs the tests with cargo-nextest).
+- `release-process`: see `specs/release-process/spec.md` (the CI gate runs the tests with cargo-nextest; the pinned build tools include cargo-nextest).
 
 ## Non-goals
 
