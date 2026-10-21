@@ -18,7 +18,7 @@ stand-owned process group and reaps the test process on every path, including
 failure before READY. When the server PID is known, it waits for its exit
 event after cleanup. The fixture is ignored by the full test suite.
 
-The stand is a diagnostic for TILR-153: it fails when interrupted test
+The stand is a lifecycle diagnostic: it fails when interrupted test
 servers survive and passes once that lifecycle bug is fixed. Synthetic
 integration checks use both a surviving child and one that exits when its
 test process dies; they prove red and green outcomes independently of that
@@ -36,7 +36,7 @@ it never delays a successful verdict once the event arrives. Cleanup uses
 the same event watcher after killing the owned group.
 
 The ready PID must currently belong to the fixture process group. If
-TILR-153 moves servers to separate groups, it must extend ownership and
+the lifecycle fix moves servers to separate groups, it must extend ownership and
 cleanup together rather than bypass this check. Build the fixture with
 `tilrd/failpoints`, matching the documented suite's server binary.
 

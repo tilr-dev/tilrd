@@ -1,12 +1,12 @@
-# Test-server cleanup stand (TILR-162)
+# Test-server cleanup stand
 
 ## Why
 
-TILR-162 records Dan's decision to split the deterministic signal/timeout
-stand from TILR-153. The latter needs a way to confirm a test-owned tilrd is
-running, interrupt its test process, and show whether that exact server
-survives. The earlier suite runs did not reproduce or explain the leak;
-TILR-153 now tracks that investigation in `test-server-leftovers`.
+Investigating test-server leaks requires a deterministic signal/timeout
+stand to confirm a test-owned tilrd is running, interrupt its test process,
+and show whether that exact server survives. Earlier suite runs did not
+reproduce or explain the leak; the lifecycle investigation is described
+in `test-server-leftovers`.
 
 ## What Changes
 
@@ -19,7 +19,7 @@ TILR-153 now tracks that investigation in `test-server-leftovers`.
 
 ## Non-goals
 
-- Fixing the test-server lifecycle leak is TILR-153.
+- Fixing the test-server lifecycle leak.
 - Changing production daemon behavior or the full-suite test runner.
 
 ## Compatibility and impact
