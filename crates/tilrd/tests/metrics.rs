@@ -323,11 +323,10 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     )
     .await;
 
-    let mut client = reload(&server, client).await;
-    // The pane process held the input when it went for its successor.
-    server.wait_logged("reloading pane=").await;
+    // The pane process holds the input across the reload: it has waited at
+    // least from here, before the reload began, to its release below.
     let held = std::time::Instant::now();
-    server.wait_logged("resumed after reload pane=").await;
+    let mut client = reload(&server, client).await;
     let (mut other, other_base) = connect_with_base(&server).await;
     assert!(other_base > base, "ids go on after a reload");
     let _ = other.ws.close(None).await;
@@ -338,8 +337,8 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     release_activity_fifo(&mut release);
     let held = held.elapsed();
     let through = frame_with_seq(&mut client, base + 2, |seq| seq == base + 1).await;
-    // Counted from when the pane process before the reload got it, which was
-    // before it logged its reload.
+    // Counted from when the server got it, before `held` started; a clock
+    // that restarted with the successor would count less than `held`.
     let waited = through.timing.unwrap().input_us;
     assert!(
         u128::from(waited) >= held.as_micros(),

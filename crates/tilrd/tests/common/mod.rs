@@ -356,13 +356,40 @@ impl Server {
 
     /// Wait up to `within` for the server to log a line with `needle`.
     pub async fn wait_logged_within(&self, needle: &str, within: Duration) {
+        let what = format!("not logged within {within:?}: {needle}");
+        self.wait_log_within(&what, within, |log| {
+            log.iter().any(|line| line.contains(needle))
+        })
+        .await;
+    }
+
+    /// Wait up to [`TIMEOUT`] for the server's log so far to satisfy `done`;
+    /// fails with `what` and the log if it does not.
+    pub async fn wait_log(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+        self.wait_log_within(what, TIMEOUT, done).await;
+    }
+
+    /// [`Server::wait_log`] with a caller-provided deadline: the log is
+    /// looked at every 20 ms.
+    pub async fn wait_log_within(
+        &self,
+        what: &str,
+        within: Duration,
+        done: impl Fn(&[String]) -> bool,
+    ) {
         let deadline = tokio::time::Instant::now() + within;
-        while !self.logged(needle) {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "not logged within {within:?}: {needle}\n{}",
-                log_text(&self.log)
-            );
+        loop {
+            {
+                let log = self.log.lock().unwrap_or_else(|err| err.into_inner());
+                if done(&log) {
+                    return;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{what}\n{}",
+                    log.join("\n")
+                );
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }

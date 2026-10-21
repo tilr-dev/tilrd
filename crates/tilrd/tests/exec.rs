@@ -394,7 +394,10 @@ async fn a_large_output_arrives_whole_in_order_and_holds_up_a_slow_client() {
         done.display()
     );
     let (exec_id, _) = start(&mut client, argv(&["sh", "-c", &script])).await;
-    // The client reads nothing for a while: the program waits for it.
+    // The client reads nothing for a while: the program waits for it. The
+    // window rules out output buffered without bound: `cat` of a file
+    // writes 32 MiB in milliseconds when nothing holds it up, so it would
+    // be done well within a second.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
         !done.exists(),
@@ -579,7 +582,10 @@ async fn an_exec_given_up_at_a_reload_ends_with_its_exec_exit() {
     // Output that does not compress, so that it fills the lane.
     let (exec_id, _) = start(&mut client, argv(&["cat", "/dev/urandom"])).await;
     // The client reads nothing: its bulk lane fills, and the exec's readers
-    // wait for room.
+    // wait for room. The second only sets the scene: /dev/urandom fills the
+    // lane in milliseconds, and were it not full yet, the exec would still
+    // be running at the reload and end the same way; nothing below passes
+    // because of the window.
     tokio::time::sleep(Duration::from_secs(1)).await;
     server.signal("-USR1");
     // The reload gives up waiting for the exec after a second, and waits a
