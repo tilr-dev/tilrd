@@ -103,6 +103,7 @@ real Linux containers with the same FIFO barrier.
 
 | Use case | Test |
 | --- | --- |
+| A numbered Resize publishes its applied dimensions while earlier PTY input is blocked; cumulative delivery stays pending until the program reads | `input_delivery::a_numbered_resize_updates_the_pane_list_while_pty_input_waits` |
 | Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
 | Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
 

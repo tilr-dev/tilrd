@@ -282,6 +282,72 @@ async fn partially_written_input_keeps_its_boundary_through_exec() {
     assert_eq!(std::fs::read(tail).unwrap(), b"END\n");
 }
 
+// @spec panes/applied-resize-dimensions-precede-delayed-input-acknowledgement
+#[tokio::test]
+async fn a_numbered_resize_updates_the_pane_list_while_pty_input_waits() {
+    let server = server();
+    let (fifo, mut release) = activity_fifo(&server);
+    let (mut client, hello) = identify(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &format!(
+        "stty -echo -icanon min 1 time 0; printf 'reader-%s\\n' ready; read -r _ < '{}'; head -c 1048576 > /dev/null; printf 'reader-%s\\n' finished",
+        fifo.display()
+    )).await;
+    client.wait_screen("reader-ready").await;
+    let mut queue = Outbox::default();
+    send(&mut client, &queued(&mut queue, pane, &vec![b'a'; 1048576])).await;
+    let mut resize: ClientMessage = Msg::Resize(Resize {
+        pane_id: pane.to_string(),
+        cols: 120,
+        rows: 40,
+        ..Default::default()
+    })
+    .into();
+    resize.seq = hello.seq_base + 1;
+    let resize = queue.push(resize).unwrap();
+    send(&mut client, &resize).await;
+    // The frame proves Resize was applied. Size notifications are flushed
+    // before frames on the same pane-to-supervisor stream.
+    let mut pushed_size = None;
+    client
+        .wait_for(|msg| {
+            match msg {
+                server_message::Msg::InputAck(ack) => assert_eq!(ack.seq, 0),
+                server_message::Msg::PaneList(list) => {
+                    let info = list
+                        .panes
+                        .iter()
+                        .find(|info| info.pane_id == pane.to_string())
+                        .unwrap();
+                    pushed_size = Some((info.cols, info.rows));
+                }
+                server_message::Msg::Frame(frame) if frame.last_input_seq == hello.seq_base + 1 => {
+                    assert_eq!((frame.cols, frame.rows), (120, 40));
+                    return Some(());
+                }
+                _ => {}
+            }
+            None
+        })
+        .await;
+    assert_eq!(pushed_size, Some((120, 40)));
+    let info = client.list_panes().await;
+    assert_eq!((info[0].cols, info[0].rows), (120, 40));
+    drop(client);
+    let (mut client, hello) = identify(&server).await;
+    assert_eq!(
+        hello
+            .applied_input
+            .iter()
+            .find(|ack| ack.pane_id == pane.to_string())
+            .unwrap()
+            .seq,
+        0
+    );
+    release_activity_fifo(&mut release);
+    ack(&mut client, pane, 2).await;
+}
+
 #[tokio::test]
 async fn an_old_input_ack_cannot_leave_a_later_unnumbered_resize_stale() {
     let server = server();
