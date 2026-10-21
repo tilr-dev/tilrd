@@ -1,13 +1,9 @@
 """UC-063: a client stays attached while the server updates: it reconnects on its own and
 what the user types meanwhile is neither lost nor doubled.
 
-The client (auto reconnect) types numbered lines into `cat >>typed` in a pane, one every
-20 ms, through the whole update (from the CDN container); a line whose send fails (no
-connection) is typed again once the client is back, as a client queues what the user
-types while it reconnects. Afterwards every line typed must be in the file once, in
-order. A line the driver handed to its socket before the server exec'd, but that the
-server never read, is what "lost" means here: the update closes client connections (the
-sockets are not carried over), so whatever sat unread in them goes with them.
+The client retains admitted input until the PTY acknowledges it and replays it
+on reconnect. Every numbered line, including lines admitted while disconnected,
+must arrive exactly once and in order; socket-write success alone is no receipt.
 """
 
 import threading
@@ -31,25 +27,21 @@ def a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_do
     d.cmd("keepalive", interval_ms=500, timeout_ms=3000, auto_reconnect=True, reconnect_timeout_ms=30_000)
     pane = d.shell_pane()
     typed = t.scratch("typed") / "lines"
-    d.line(pane, f"stty -echo; cat >>{typed}")
-    time.sleep(0.5)
+    d.line(pane, f"stty -echo; printf 'input-%s\\n' ready; cat >>{typed}")
+    d.wait_for(pane, "input-ready")
 
     update = {}
 
     def run_update():
         update["r"] = server.cmd("update", "--cdn", t.service("cdn"), timeout=180)
     since = d.mark()
-    n, retried, sent, back_at = 0, 0, [], None
+    n, sent, back_at = 0, [], None
     worker = threading.Thread(target=run_update)
     worker.start()
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         n_next = n + 1
-        answer = d.cmd("input", pane=pane, text=f"line {n_next}\r", ok=False, quiet=True)
-        if answer.get("ev") == "error":
-            retried += 1
-            time.sleep(0.02)
-            continue
+        d.cmd("input", pane=pane, text=f"line {n_next}\r", quiet=True)
         n = n_next
         sent.append(n)
         if back_at is None and any(e.get("ev") == "reconnected" for e in d.events[since:]):
@@ -63,7 +55,6 @@ def a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_do
     t.metric("reconnect_ms", back["ms"])
     t.metric("reload_ms", (reload_times(server) or [0])[-1])
     t.metric("lines_typed", len(sent))
-    t.metric("sends_refused_while_away", retried)
     t.eq(back["server_version"], manifest["next_version"], "the client is back on the new version")
 
     d.key(pane, "ctrl-d")

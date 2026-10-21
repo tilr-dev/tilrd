@@ -99,6 +99,13 @@ real Linux containers with the same FIFO barrier.
 | Nor does a server with a TCP port and its socket: the socket would be left with nobody serving it | `a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` |
 | † A reload refused by the check of the successor: the same connection, new connections through the socket, the lock still held | `a_refused_reload_keeps_the_socket_and_its_lock` |
 
+## Acknowledged input — `tests/input_delivery.rs`
+
+| Use case | Test |
+| --- | --- |
+| Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
+| Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
+
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
 | Use case | Test |
@@ -116,6 +123,7 @@ real Linux containers with the same FIFO barrier.
 | `tilr update --cdn` runs in the local server against a loopback release feed, updates an isolated installation, and waits for a connection after reload | `tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
+| On initial attach and reconnect, a terminal sends its current size before Subscribe, restoring a pane resized by another client | `reconnect_restores_terminal_size_before_subscribing` |
 | An attached `tilr` uses the same client id in `PaneInfo.viewed_by` before and after a server reload | `reconnects_say_the_same_client_id` |
 | `tilr kill` closes a pane by id or via `$TILR_PANE`, waits for each to disappear, and reports `no panes` when none remain | `kill_closes_the_named_pane_and_the_current_one` |
 | A second connection says `Hello` with an attached `tilr`'s client id (read from `PaneInfo.viewed_by`) on the same socket: `tilr` is closed as superseded (4000), prints `[superseded by another connection of this client]`, restores the terminal and exits 0 without reconnecting; the pane stays | `an_attach_superseded_by_its_own_client_id_ends` |

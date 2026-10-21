@@ -169,8 +169,10 @@ latest `PaneInfo.used_at_ms` (a subscribe, or input).
 **Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as it runs. A
 connection that drops (a reload of the server, the network) is made again with it 0.1 s
 after the loss, then after waits from 0.1 s doubling to 2 s; the bottom row says
-`disconnected …, reconnecting…` meanwhile, and what is typed then is dropped, not sent
-later. An attempt that connects but loses the connection (or gets no answer) before the pane
+`disconnected …, reconnecting…` meanwhile. Input stays queued until the pane acknowledges
+application to its PTY and is replayed after reconnect without applying duplicates. The
+queue holds at most 4 MiB or 4096 messages; a full queue rejects new input with a visible
+`input buffer full` error. An attempt that connects but loses the connection (or gets no answer) before the pane
 is listed and subscribed is a failed attempt like a refused one, and Ctrl+] d detaches at
 once also while an attempt waits. It pings every 5 s, on the Unix socket as over TCP, and
 takes 15 s of silence as a dropped connection. A pane gone after the reconnect, or a local
@@ -875,12 +877,16 @@ access token and on the same transport (the Unix socket, or TCP: neither speaks 
 other), the server closes that older connection at once with close code 4000
 (`superseded`): it is the same client come back (from another network, after a reload of
 its page), and the old connection is what the network it left still holds, a ghost viewer
-otherwise until the client timeout. The new connection starts afresh and subscribes itself;
-nothing is carried over and no input is replayed (input sent into the old connection may be
-lost, never doubled). A client does not reconnect a connection closed as superseded
+otherwise until the client timeout. The new connection subscribes again and receives a
+full screen. Its stable identity keeps the input delivery sequence: after Hello reports applied counters, the client replays
+unacknowledged input in order, and the pane deduplicates it. Admitted input reaches the
+pane exactly once even if the old connection revives. A client does not reconnect a
+connection closed as superseded
 (`tilr` ends its attach). Another token, or the other transport, with the same id
 supersedes nobody; an empty `client_id` neither supersedes
-nor is superseded. `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
+nor is superseded. Numbered input without a stable `client_id` returns
+`Error "numbered input requires a stable client_id"` and is not applied.
+`PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
 The server does not hoard frames for a client that cannot keep up. Unsent data the kernel

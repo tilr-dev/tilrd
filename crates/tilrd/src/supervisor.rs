@@ -162,6 +162,10 @@ enum Event {
         pane_id: PaneId,
         copy: ClipboardWrite,
     },
+    PaneInputAck {
+        pane_id: PaneId,
+        ack: tilr_proto::PaneInputAck,
+    },
     PaneActivity {
         pane_id: PaneId,
         activity: tilr_proto::PaneActivity,
@@ -230,6 +234,8 @@ struct Client {
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
     greeted: bool,
+    input_identity: String,
+    hello_pending: Option<(HelloAck, HashSet<PaneId>)>,
     /// Announced "host-events" in `Hello.features`: it is sent `HostEvent`s.
     host_events: bool,
     /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
@@ -1687,6 +1693,8 @@ impl Supervisor {
                         subscriptions: HashSet::new(),
                         connected: Instant::now(),
                         greeted: false,
+                        input_identity: String::new(),
+                        hello_pending: None,
                         host_events: false,
                         agent: false,
                         clipboard_write: false,
@@ -1722,6 +1730,7 @@ impl Supervisor {
                     self.broadcast_pane_list();
                 }
             }
+            Event::PaneInputAck { pane_id, ack } => self.on_input_ack(pane_id, ack),
             Event::PaneActivity {
                 pane_id,
                 mut activity,
@@ -2158,12 +2167,75 @@ impl Supervisor {
         err
     }
 
+    fn finish_input_hello(&mut self, client_id: ClientId) {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return;
+        };
+        if client
+            .hello_pending
+            .as_ref()
+            .is_some_and(|(_, waiting)| waiting.is_empty())
+        {
+            let (ack, _) = client.hello_pending.take().expect("pending hello");
+            client.greeted = true;
+            self.send(client_id, server_message::Msg::HelloAck(ack));
+        }
+    }
+
+    fn on_input_ack(&mut self, pane_id: PaneId, ack: tilr_proto::PaneInputAck) {
+        if let Some(pane) = self.panes.get_mut(&pane_id)
+            && (pane.cols != ack.cols as u16 || pane.rows != ack.rows as u16)
+        {
+            pane.cols = ack.cols as u16;
+            pane.rows = ack.rows as u16;
+            self.broadcast_pane_list();
+        }
+        let applied = tilr_proto::InputAck {
+            pane_id: pane_id.to_string(),
+            seq: ack.seq,
+        };
+        if ack.probe != 0 {
+            if let Some(client) = self.clients.get_mut(&(ack.probe - 1))
+                && client.input_identity == ack.identity
+                && let Some((hello, waiting)) = &mut client.hello_pending
+                && waiting.remove(&pane_id)
+            {
+                hello.applied_input.push(applied);
+            }
+            self.finish_input_hello(ack.probe - 1);
+        } else {
+            let clients: Vec<_> = self
+                .clients
+                .iter()
+                .filter_map(|(&id, client)| {
+                    (client.greeted && client.input_identity == ack.identity).then_some(id)
+                })
+                .collect();
+            for id in clients {
+                self.send(id, server_message::Msg::InputAck(applied.clone()));
+            }
+        }
+    }
+
     async fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
         // A client the supervisor has dropped may still have packets on the
         // way. Acting on them would subscribe a client nobody will ever
         // remove again.
         let Some(greeted) = self.clients.get(&client_id).map(|client| client.greeted) else {
             return;
+        };
+        let (packet, numbered) = match tilr_proto::decode::<ClientMessage>(&packet) {
+            Ok(mut envelope) => {
+                let numbered = envelope.input_seq != 0;
+                envelope.input_probe = 0;
+                envelope.input_identity = self
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.input_identity.clone())
+                    .unwrap_or_default();
+                (tilr_proto::encode(&envelope), numbered)
+            }
+            Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
         };
         let msg = match tilr_proto::decode::<ClientMessage>(&packet) {
             Ok(ClientMessage { msg: Some(msg), .. }) => msg,
@@ -2201,11 +2273,35 @@ impl Supervisor {
             _ if !greeted => return self.refuse(client_id, "expected Hello first"),
             _ => {}
         }
+        if numbered
+            && self
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.input_identity.is_empty())
+        {
+            return self.send_error(client_id, "numbered input requires a stable client_id");
+        }
         match msg {
             Msg::Hello(hello) => {
                 self.supersede(client_id, &hello.client_id, &hello.token);
                 if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.greeted = true;
+                    client.greeted = false;
+                    // Length-prefix each identity component before hashing: neither
+                    // the token nor another transport's identity reaches a pane.
+                    use sha2::{Digest, Sha256};
+                    client.input_identity.clear();
+                    if !hello.client_id.is_empty() {
+                        let mut digest = Sha256::new();
+                        digest.update([u8::from(client.local)]);
+                        digest.update((hello.token.len() as u64).to_le_bytes());
+                        digest.update(hello.token.as_bytes());
+                        digest.update(hello.client_id.as_bytes());
+                        client.input_identity = digest
+                            .finalize()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                    }
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                     client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
                     client.clipboard_write =
@@ -2231,22 +2327,41 @@ impl Supervisor {
                     (FEATURE_AGENT, self.agent.is_some()),
                     (FEATURE_EXEC, self.exec),
                 ];
-                self.send(
-                    client_id,
-                    server_message::Msg::HelloAck(HelloAck {
-                        protocol_version: PROTOCOL_VERSION,
-                        server_version: crate::VERSION.into(),
-                        features: features
-                            .into_iter()
-                            .filter(|(_, on)| *on)
-                            .map(|(name, _)| name.to_owned())
-                            .collect(),
-                        clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
-                        server_id: self.server_id.to_string(),
-                        fs_max_bytes: fs_max_bytes.unwrap_or(0),
-                        seq_base: seq_base(client_id),
-                    }),
-                );
+                let ack = HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    server_version: crate::VERSION.into(),
+                    features: features
+                        .into_iter()
+                        .filter(|(_, on)| *on)
+                        .map(|(name, _)| name.to_owned())
+                        .collect(),
+                    clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
+                    server_id: self.server_id.to_string(),
+                    fs_max_bytes: fs_max_bytes.unwrap_or(0),
+                    seq_base: seq_base(client_id),
+                    applied_input: Vec::new(),
+                };
+                let identity = self.clients[&client_id].input_identity.clone();
+                let waiting: HashSet<_> = if identity.is_empty() {
+                    HashSet::new()
+                } else {
+                    self.panes.keys().copied().collect()
+                };
+                for pane_id in &waiting {
+                    let query = ClientMessage {
+                        input_identity: identity.clone(),
+                        input_probe: client_id + 1,
+                        ..Default::default()
+                    };
+                    let _ = self.panes[pane_id]
+                        .to_pane
+                        .send((tilr_proto::encode(&query), None));
+                }
+                self.clients
+                    .get_mut(&client_id)
+                    .expect("connected")
+                    .hello_pending = Some((ack, waiting));
+                self.finish_input_hello(client_id);
             }
             Msg::CreatePane(create) => {
                 if let Err(err) = self.create_pane(client_id, &create) {
@@ -2304,8 +2419,10 @@ impl Supervisor {
                 let Some((_, pane)) = self.pane_mut(&resize.pane_id) else {
                     return self.send_no_pane(client_id, &resize.pane_id);
                 };
-                pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
-                pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
+                if !numbered {
+                    pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
+                    pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
+                }
                 let _ = pane.to_pane.send((packet, None));
                 self.broadcast_pane_list();
             }
@@ -2878,6 +2995,19 @@ impl Supervisor {
         });
 
         self.panes.remove(&pane_id);
+        let waiting: Vec<_> = self
+            .clients
+            .iter_mut()
+            .filter_map(|(&id, client)| {
+                client
+                    .hello_pending
+                    .as_mut()
+                    .and_then(|(_, pending)| pending.remove(&pane_id).then_some(id))
+            })
+            .collect();
+        for id in waiting {
+            self.finish_input_hello(id);
+        }
         tracing::info!(pane = %pane_id, exit_code, "pane exited");
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneExited(
             PaneExited {
@@ -3009,7 +3139,7 @@ impl Supervisor {
             .iter()
             .filter(|&(&id, client)| {
                 id != new
-                    && client.greeted
+                    && (client.greeted || client.hello_pending.is_some())
                     && client.local == local
                     && client.client_id == client_id
                     && auth::matches(&client.token, token)
@@ -3361,6 +3491,12 @@ async fn read_pane(
                 link::kind::ACTIVITY => {
                     match tilr_proto::decode::<tilr_proto::PaneActivity>(&packet) {
                         Ok(activity) => Event::PaneActivity { pane_id, activity },
+                        Err(_) => continue,
+                    }
+                }
+                link::kind::INPUT_ACK => {
+                    match tilr_proto::decode::<tilr_proto::PaneInputAck>(&packet) {
+                        Ok(ack) => Event::PaneInputAck { pane_id, ack },
                         Err(_) => continue,
                     }
                 }

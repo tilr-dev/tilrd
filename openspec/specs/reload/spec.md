@@ -147,22 +147,26 @@ If the successor does not print `unix-socket 1`, a server that serves its unix s
 - **THEN** it does not reload, and `tilrd ps` works through the socket
 
 ### Requirement: Client connections end and clients reconnect
-A reload SHALL end every client connection (sockets are not carried over); a client that reconnects SHALL find its panes as they were. Input the server had not read from a client socket when it exec'd is lost with it, but nothing sent SHALL be doubled.
+A reload SHALL end every client connection (sockets are not carried over); a client that reconnects SHALL find its panes as they were. Input admitted to the client's delivery queue SHALL reach the pane exactly once after reconnection, including input the supervisor had not read before exec.
 
-**Verified by**: itests `UC-063` (`uc_063.py::a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled`).
+**Verified by**: `input_delivery::unread_input_is_replayed_after_reload_in_the_middle_of_a_batch`; itests `UC-063` (`uc_063.py::a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled`).
 
 #### Scenario: Typing through an update
-- **WHEN** a client types numbered lines into `cat >>typed` every 20 ms through an update, re-sending lines whose send failed
-- **THEN** after it reconnects every line is in the file once, in order
+- **WHEN** a client types numbered lines into `cat >>typed` through an update
+- **THEN** after reconnection every admitted line is in the file once, in order
 
 ### Requirement: Pane input and output are not lost across a reload
-Output a pane prints during a reload SHALL reach the client after it reconnects, and input the server took before the reload SHALL reach the shell exactly once, with the input latency marks kept.
+Output a pane prints during a reload SHALL reach the client after it reconnects. Input SHALL reach the shell exactly once with its latency marks kept. Applied counters, accepted counters and pending byte boundaries SHALL survive exec so replay neither loses nor duplicates partially written input.
 
-**Verified by**: `reload::output_printed_during_a_reload_is_not_lost`, `reload::input_typed_just_before_a_reload_reaches_the_shell`, `metrics::the_last_input_and_input_still_waiting_survive_a_reload`.
+**Verified by**: `reload::output_printed_during_a_reload_is_not_lost`, `reload::input_typed_just_before_a_reload_reaches_the_shell`, `metrics::the_last_input_and_input_still_waiting_survive_a_reload`, `input_delivery::partially_written_input_keeps_its_boundary_through_exec`.
 
 #### Scenario: Input just before
 - **WHEN** a client types a command and the server reloads at once
 - **THEN** the shell runs the command once
+
+#### Scenario: Reload during a batch
+- **WHEN** a pane reloads with part of an input frame still waiting for the PTY and the client replays it
+- **THEN** the restored pending suffix is written exactly once and the applied sequence advances only after its final byte
 
 ### Requirement: A stuck pane process is closed, not carried over
 A pane process that does not take the input already queued for it within 5 seconds SHALL be killed (log `pane process is stuck, closing it`) and its pane closed; the others SHALL be carried over. A reload asked for while a pane is starting SHALL be retried every 200 ms.
