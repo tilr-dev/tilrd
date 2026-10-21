@@ -386,6 +386,10 @@ async fn serve(
     let mut foreground_tick = tokio::time::interval(Duration::from_secs(1));
     let mut buf = vec![0u8; READ_BUF];
 
+    // Keep the frame wait alive across other events: a test can hold frame
+    // delivery while the pane continues to read output and credit input.
+    let frame_ready = wait_for_frame(pane.last_frame + FRAME_INTERVAL);
+    tokio::pin!(frame_ready);
     loop {
         tokio::select! {
             guard = pane.pty.readable() => {
@@ -398,6 +402,8 @@ async fn serve(
                     Ok(Ok(n)) => {
                         pane.on_output(&buf[..n]).await?;
                         pane.send_copies().await?;
+                        #[cfg(feature = "failpoints")]
+                        crate::fail::point_async("pane-output-applied".into()).await;
                     }
                     Ok(Err(err)) => return Err(err).context("read pty"),
                     Err(_would_block) => {}
@@ -416,7 +422,11 @@ async fn serve(
             packet = packets.recv() => match packet {
                 Some(FromSupervisor::Packet(packet)) => {
                     match tilr_proto::decode::<ClientMessage>(&packet) {
-                        Ok(msg) => pane.on_message(msg)?,
+                        Ok(msg) => {
+                            pane.on_message(msg)?;
+                            #[cfg(feature = "failpoints")]
+                            crate::fail::point_async("pane-input-applied".into()).await;
+                        }
                         Err(err) => tracing::warn!(pane = pane.id, "bad packet from supervisor: {err}"),
                     }
                 }
@@ -441,8 +451,9 @@ async fn serve(
                     return Ok(());
                 }
             },
-            () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
+            () = &mut frame_ready, if pane.dirty => {
                 pane.send_frame().await?;
+                frame_ready.set(wait_for_frame(pane.last_frame + FRAME_INTERVAL));
             }
             _ = foreground_tick.tick() => {
                 // A leader can exec without changing its process group. Keep
@@ -477,6 +488,12 @@ async fn serve(
     link::write_tagged(&mut pane.to_supervisor, link::kind::EXITED, &packet)
         .await
         .context("report exit to supervisor")
+}
+
+async fn wait_for_frame(deadline: Instant) {
+    tokio::time::sleep_until(deadline).await;
+    #[cfg(feature = "failpoints")]
+    crate::fail::point_async("pane-frame-ready".into()).await;
 }
 
 impl Pane {

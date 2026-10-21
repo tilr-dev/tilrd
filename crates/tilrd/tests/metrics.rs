@@ -117,7 +117,7 @@ async fn a_frame_names_the_input_it_shows_and_how_it_was_made() {
     // This client numbers from 1, ignoring its seq_base: alone on the
     // pane, that works.
     client.type_line(pane_id, "echo two").await;
-    client.wait_screen("two\n").await;
+    client.wait_screen("two\n$").await;
     assert_eq!(client.frame.as_ref().unwrap().last_input_seq, 7);
     send_with_seq(
         &mut client,
@@ -135,6 +135,74 @@ async fn a_frame_names_the_input_it_shows_and_how_it_was_made() {
     frame_with_seq(&mut client, 9, |seq| seq == 8).await;
     client.wait_screen("three\n").await;
     assert_eq!(client.frame.as_ref().unwrap().last_input_seq, 9);
+}
+
+// Hold frame delivery independently of PTY reads and input processing so
+// accumulated output cannot escape in a frame before the no-op scroll.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_no_op_scroll_frame_includes_accumulated_output() {
+    let server = Server::start(&[]);
+    let controller = PauseController::bind(&server.dir);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    client.wait_screen("$").await;
+    assert_eq!(
+        client
+            .run(pane_id, "stty -echo; PS1='ready-''prompt>'")
+            .await,
+        0
+    );
+    client.wait_screen("\nready-prompt>").await;
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, "pane-frame-ready=pause").unwrap();
+    send_with_seq(
+        &mut client,
+        Msg::Scroll(Scroll {
+            pane_id: pane_id.to_string(),
+            delta: 0,
+            to_bottom: true,
+        }),
+        6,
+    )
+    .await;
+    let frame_ready = controller.wait("pane-frame-ready").await;
+    std::fs::write(&points, "pane-output-applied=pause").unwrap();
+    send_with_seq(&mut client, raw(pane_id, "printf 'pending-output\\n'"), 7).await;
+    let output_applied = controller.wait("pane-output-applied").await;
+    std::fs::write(&points, "pane-input-applied=pause").unwrap();
+    output_applied.release().await;
+    send_with_seq(
+        &mut client,
+        Msg::Scroll(Scroll {
+            pane_id: pane_id.to_string(),
+            delta: 0,
+            to_bottom: true,
+        }),
+        8,
+    )
+    .await;
+    let scroll_applied = controller.wait("pane-input-applied").await;
+    std::fs::write(&points, "").unwrap();
+    scroll_applied.release().await;
+    frame_ready.release().await;
+    let frame = frame_with_seq(&mut client, 8, |seq| seq == 7).await;
+    assert!(!frame.changed.is_empty(), "{frame:?}");
+    let timing = frame.timing.unwrap();
+    assert!(timing.output_bytes > 0 && timing.reads > 0, "{timing:?}");
+    client.wait_screen("pending-output\nready-prompt>").await;
+    send_with_seq(
+        &mut client,
+        Msg::Scroll(Scroll {
+            pane_id: pane_id.to_string(),
+            delta: 0,
+            to_bottom: true,
+        }),
+        9,
+    )
+    .await;
+    let empty = frame_with_seq(&mut client, 9, |seq| seq == 8).await;
+    assert!(empty.changed.is_empty(), "{empty:?}");
 }
 
 #[tokio::test]
