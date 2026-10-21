@@ -1147,6 +1147,43 @@ downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
 cargo build --release --locked -p tilrd -p tilr
 ```
 
+**Shared Ghostty VT development build.** Install `pkg-config` and Python 3, then build once per
+machine and export the printed prefix's package directory:
+
+```sh
+prefix=$(scripts/build-ghostty-vt.sh)
+export PKG_CONFIG_PATH="$prefix/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+cargo build --tests --locked
+```
+
+The script prints only the prefix to stdout. Its default cache is
+`~/.cache/tilr/ghostty-vt/<ghostty-commit>/<identity-hash>/`; override the cache root
+with `TILR_GHOSTTY_VT_CACHE`. The identity includes the Ghostty commit, actual Zig
+version, OS/architecture, SDK/developer paths and ReleaseFast/baseline settings.
+It selects the same default macOS SDK as Cargo, respecting `SDKROOT` and
+`DEVELOPER_DIR`. Completed prefixes are reused; failed builds are removed.
+Concurrent invocations for the same prefix report the active build; rerun after
+it finishes. The lock records the owner's PID. If that process has exited, the
+next invocation removes the abandoned lock and temporary build directories and
+builds again automatically, including when no PID was written. An advisory lock
+serializes recovery; its empty `.guard` file remains in the cache and must not be
+removed while a build is running. Incomplete destination prefixes are replaced before
+the completed installation is published.
+
+`tilr-screen` enables `libghostty-vt-sys`'s pkg-config feature directly. With this
+package discoverable, clean targets link the shared static library without cloning
+or building Ghostty. Without a discoverable package, the existing Zig source build
+remains available. `GHOSTTY_SOURCE_DIR` bypasses pkg-config, so unset it when using
+the shared library. Linux containers retain their source-build path because
+`scripts/linux.sh` does not forward the host package path.
+
+When upgrading `libghostty-vt`, keep the direct sys dependency at the matching exact
+version. Read that version's `build.rs`, update this script's Ghostty revision and
+build flags, and rerun the script. A Zig or SDK change also selects a new prefix;
+export its package path again. To rebuild identical inputs, unset `PKG_CONFIG_PATH`,
+remove only the previously printed prefix, and rerun the script. Old prefixes may
+be removed when no builds use them.
+
 **macOS (checked 2026-10-19).** On this Mac, Zig 0.15.2 and the default macOS
 27.0 SDK make `libghostty-vt-sys` 0.2.2 fail while building libc++ (`INFINITY`
 undeclared). A clean build succeeds with the Command Line Tools MacOSX15.4.sdk.

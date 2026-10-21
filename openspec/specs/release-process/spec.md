@@ -246,6 +246,64 @@ tilrd, tilr and tilr-driver SHALL verify outgoing secure WebSocket certificates 
 - **WHEN** the stub `wrangler` fails on `releases/linux-x86_64/latest`
 - **THEN** the script exits non-zero and `install.sh` is not uploaded
 
+### Requirement: Shared Ghostty VT development build
+
+The repository SHALL provide a script that builds the static Ghostty VT library pinned by libghostty-vt-sys, using its ReleaseFast, baseline CPU and no application runtime settings. The script SHALL select the same default macOS SDK as Cargo, and SHALL identify the shared prefix by Ghostty revision, Zig version, platform and SDK. It SHALL publish a libghostty-vt-static pkg-config file only with a completed build and SHALL reuse an already completed prefix without cloning or building again.
+
+#### Scenario: Build and reuse a shared prefix
+- **WHEN** a developer runs the shared build script with a supported Zig installation
+- **THEN** it prints a prefix containing the static library and share/pkgconfig/libghostty-vt-static.pc
+- **AND** a subsequent invocation with the same inputs reuses that prefix without cloning Ghostty or invoking zig build
+
+#### Scenario: Toolchain identity changes
+- **WHEN** the Ghostty revision, Zig version, platform or selected SDK changes
+- **THEN** the script selects a distinct prefix
+
+#### Scenario: Failed build is retried explicitly
+- **WHEN** a shared build fails before completing
+- **THEN** no completed prefix is published and a later invocation can build it again
+
+### Requirement: Cargo discovers the shared Ghostty VT library
+
+The tilr-screen dependency graph SHALL enable libghostty-vt-sys pkg-config discovery. A matching library supplied through PKG_CONFIG_PATH SHALL replace the per-target source build; when no package is discoverable, the existing source build SHALL remain available. Developer documentation SHALL explain setting PKG_CONFIG_PATH and rebuilding after a dependency or toolchain upgrade.
+
+#### Scenario: Clean Cargo build with shared library
+- **WHEN** a clean cargo build --tests runs with PKG_CONFIG_PATH pointing to the shared package
+- **THEN** libghostty-vt-sys links that static library without cloning Ghostty or invoking zig build
+
+#### Scenario: Cargo source fallback
+- **WHEN** cargo build --tests runs without a discoverable shared package
+- **THEN** libghostty-vt-sys builds the pinned Ghostty source as before
+
+### Requirement: Interrupted shared Ghostty build recovery
+
+The shared build script SHALL record its owner PID and serialize recovery with an advisory lock released on process exit. It SHALL preserve live owners, recover abandoned locks (including missing PIDs), remove abandoned temporary directories, replace incomplete prefixes before publication, and clean leftovers beside completed prefixes without rebuilding.
+
+#### Scenario: Recover an abandoned build
+- **WHEN** a lock records the PID of an exited process and temporary build directories remain
+- **THEN** the next invocation builds and publishes the completed prefix
+- **AND** no lock or temporary build directories remain
+
+#### Scenario: Preserve an active build
+- **WHEN** the lock records a live process PID
+- **THEN** the invocation reports that a build is in progress without removing its lock or temporary directories
+
+#### Scenario: Replace an incomplete prefix
+- **WHEN** the destination exists without a completion marker
+- **THEN** a successful build replaces it with the library and pkg-config file at the expected paths
+
+#### Scenario: Interrupted owner initialization
+- **WHEN** a previous build left a lock directory without a PID and no process holds the advisory lock
+- **THEN** the next invocation recovers the directory and publishes a completed prefix
+
+#### Scenario: Concurrent recovery
+- **WHEN** one invocation holds the advisory lock while recovering an abandoned build
+- **THEN** another invocation reports a build in progress without removing the first invocation's lock or working directory, even if the owner metadata is stale
+
+#### Scenario: Interrupted cleanup after publication
+- **WHEN** a completed prefix exists alongside an abandoned lock or temporary build directory
+- **THEN** the next invocation removes the abandoned state under the advisory lock and reuses the prefix without fetching or building again
+
 ## Notes
 
 - Release scripts and workflow contracts are covered by `crates/tilrd/tests/release.rs`; workflow checks inspect source text and do not execute GitHub Actions.

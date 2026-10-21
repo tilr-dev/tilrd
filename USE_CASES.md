@@ -534,3 +534,7 @@ pane process. The server's counters are at `GET /metrics`.
 - SSH agent: pane sockets left behind after the server crashed (SIGKILL) are
   not cleaned up by anyone. A real `ssh` with a real agent through the client
   has not been tested: the tests play both the program and the client.
+
+Shared Ghostty build tooling: `ghostty_script::shared_ghostty_build_reuses_complete_toolchain_prefixes`
+checks pinned build flags, package relocation, reuse, Zig/SDK identity changes, Linux
+SDK independence and explicit recovery after failure through deterministic tool fixtures.
