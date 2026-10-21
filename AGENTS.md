@@ -91,4 +91,7 @@ the line.
   without it.
 - The protocol schema is `crates/tilr-proto/proto/tilr.proto`; clients copy it from here
   (the `server` plugin's `npm run proto`, the test client), so a change there is a protocol
-  change: bump `PROTOCOL_VERSION` or add a feature flag as the README's "Protocol" says.
+  change. Before the first public release, keep `PROTOCOL_VERSION` at 1 for all changes.
+  Afterward, bump only for incompatibility with a client or server of the previous public
+  release, once per release as a separate step in its release milestone. Feature flags
+  name only capabilities a server can be run without; see README "Protocol".

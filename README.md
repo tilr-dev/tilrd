@@ -820,15 +820,17 @@ packet is one binary WebSocket message: a flag byte (0 = plain, 1 = zstd) follow
 protobuf `ClientMessage` or `ServerMessage`.
 
 Both sides ignore message types and fields they do not know. The protocol version
-(`PROTOCOL_VERSION`, now 3) is the contract: a client and a server of a version implement
+(`PROTOCOL_VERSION`, now 1) is the contract: a client and a server of a version implement
 every message and field of it, and a server refuses every other version, older or newer.
-A change a peer cannot ignore (a request a client relies on, a changed meaning, a new close
-code) bumps the version, with no compatibility for older clients or servers. A change a peer
-may ignore (a new push, a new field with a harmless default) needs neither a new version nor
-a feature. `Hello.client_id`, `KeyInput.code`, the `bytes` twins of file paths, `Ping`, the
-bulk window paced by pongs, `PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002
-are all part of version 3. The Tilr app's `server` plugin and tilr-mac need version 3 to
-talk to this server; `tilr` and `tilr-driver` are built with it.
+Before the first public release, all protocol changes use version 1 without a bump.
+Afterward, bump the version only for a change incompatible with a client or server of the
+previous public release. The bump is a separate release step, once per release, in its
+release milestone. A change a peer may ignore (a new push, a new field with a harmless
+default) needs neither a new version nor a feature. `Hello.client_id`, `KeyInput.code`,
+the `bytes` twins of file paths, `Ping`, the bulk window paced by pongs,
+`PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002 are all part of version 1.
+The Tilr app's `server` plugin and tilr-mac need version 1 to talk to this server;
+`tilr` and `tilr-driver` are built with it.
 
 `HelloAck.features` lists only what a server can be run without, so a client checks it
 before sending that capability's requests, in this order:
