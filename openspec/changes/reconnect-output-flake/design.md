@@ -1,35 +1,46 @@
 # Design
 
-What is known about the flake (task 1.1, TILR-111). Moved from the design of the former
-shared change `test-coverage-gaps` ("Not fixed here").
+## Cause
 
-## Context
+The missing exact row is a shell-startup race in the test, not lost pane output.
+`open_pane` returns after creation and subscription, before the interactive shell
+has necessarily printed its first prompt. The PTY can echo queued input before
+that prompt. `wait_screen("sleep 1")` therefore proved only that the PTY echoed
+the command. It did not prove the shell had started reading commands.
 
-The harness (`crates/tilrd/tests/common/mod.rs`) starts the real `tilrd` and reads its
-stderr on a thread into `Server::log`; `Server::start` returns at `listening on`, which the
-server logs before it has finished starting (its host socket, the pane tools, the event
-loop come after, `crates/tilrd/src/supervisor.rs` `run`). `local.rs` has its own `Daemon`
-for a server started the way `tilr` starts one.
+If the shell starts after the echoed command's newline, its first prompt is
+printed immediately before the command's output. The screen then contains a row
+such as `startup> printed later`, rather than the exact row `printed later`.
+Neither waiting 1500 ms nor waiting for more frames can remove that prefix.
+A reconnect correctly restores this screen, but `wait_row("printed later")`
+never matches it. A line editor may redraw the queued command after the prompt,
+which explains why the ordering is not equally visible with every shell.
 
-How the flakes were reproduced on macOS: the test alone in a loop next to two to four
-loops of the other prebuilt test executables (`target/debug/deps/*`, run directly), not
-next to another `cargo` command. Every `cargo test`/`cargo build` re-links
-`target/debug/tilrd` (a new inode even when nothing was rebuilt, and another build with
-`--workspace` than with `-p tilrd`), and every running test server watches that file and
-reloads: a load made with `cargo` beside the tests breaks them in ways CI never sees
-(`auth::a_connection_that_never_says_hello_is_closed_after_10_s` failed 11 of 12 that way,
-`executable changed on disk` in its log). Linux: the same inside `scripts/linux.sh`.
+## Deterministic reproduction and regression
 
-## Not reproduced yet (1.1; TILR-111)
+`reconnect_output_when_input_precedes_the_shell_prompt` starts a wrapper blocked
+on a FIFO before it execs the interactive shell. The test sends input, observes
+its PTY echo, acknowledges Unsubscribe with zero viewers and disconnects before
+releasing shell startup. The shell's startup file disables line editing so the
+queued line is consumed without a redraw, and sets an explicit prompt.
 
-Not reproduced: 60 runs on macOS beside two loops of the other test executables, 40 runs
-in `scripts/linux.sh` beside three such loops, and 30 runs of the whole reconnect
-executable there (its tests run in parallel, as in the failing full run). Read in the
-code: a `Subscribe` adds the client to the pane's subscribers and asks the pane process
-for a full frame; a diff that reaches the new client before that full frame is dropped by
-the test's `Screen` (no rows yet) and is in the full frame anyway; frames skipped for a
-lagging client are followed by a full frame (on `ClientDrained` and on every tick). Either
-order of the test's `sleep 1` and the reconnect brings the row, in the full frame or in a
-diff after it. No cause found and nothing changed; the task stays open. If it recurs, the
-panic prints the screen, and the server log at debug shows `client lags, skipping frames`.
+With the old `echo "printed la""ter"` command, this produces
+`startup> printed later` and fails the exact-row assertion. With
+`printf '\nprinted la''ter\n'`, the leading newline isolates the expected output
+from the prompt, and the same assertion passes. The split literal prevents the
+input echo itself from satisfying the output wait. No sleeps or retries control
+this ordering.
 
+## Reconnect coverage
+
+`output_printed_while_nobody_watched_is_there_on_reconnect` now uses the existing
+`controlled_reconnect` fixture with the failpoints feature. Its shell script
+acknowledges readiness before waiting on a FIFO. After an acknowledged
+Unsubscribe, the fixture releases output, pauses unwatched output, client
+acceptance, subscription and full-frame delivery in order, then checks that the
+first full frame already contains the output. It no longer waits for a later
+frame to repair a stale first snapshot. The lag/read-pause scenario also uses
+this fixture and still checks recovery with a full frame.
+
+The daemon and protocol require no changes. The startup regression also runs
+without the failpoints feature; the full reconnect-stage scenario requires it.

@@ -180,6 +180,7 @@ Cloud repository.
 |---|---|
 | A client came back: the pane is there, the first frame is the whole screen, the shell is the same | `a_client_that_reconnects_finds_its_pane_as_it_left_it` |
 | What was printed while nobody watched is visible after coming back | `output_printed_while_nobody_watched_is_there_on_reconnect` |
+| Input echoed before the shell starts does not attach the expected output to its initial prompt | `reconnect_output_when_input_precedes_the_shell_prompt` |
 | Explicit pauses order unwatched output, accepted reconnect, subscription and full-frame enqueue | `a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect` (`failpoints`) |
 | A reconnected client's reads stay paused while it can send; continuous output reaches the lag decision, then explicit resume receives full-frame recovery | `a_test_pauses_socket_reads_until_reconnected_client_lags` (`failpoints`) |
 | Subscribing again sends the whole screen again | `subscribing_again_sends_the_whole_screen_again` |
