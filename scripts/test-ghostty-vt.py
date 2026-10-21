@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Exercise the shared build script with deterministic external tool fixtures."""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+with tempfile.TemporaryDirectory(prefix="ghostty fixture ") as directory:
+    base = Path(directory)
+    tools = base / "bin"
+    tools.mkdir()
+    sdk = base / "MacOSX15.4.sdk"
+    sdk.mkdir()
+    events = base / "events"
+    fixtures = {
+        "uname": 'case "$1" in -s) echo "${MOCK_HOST:-Darwin}" ;; -m) echo arm64 ;; esac\n',
+        "git": '''if [ "$1" = hash-object ]; then exec python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; fi
+printf 'git %s\\n' "$*" >> "$EVENTS"
+if [ "$1" = init ]; then mkdir -p "$3"; fi
+''',
+        "zig": '''if [ "$1" = version ]; then echo "${MOCK_ZIG:-0.15.2}"; exit; fi
+printf 'zig %s SDK=%s DEVELOPER=%s\\n' "$*" "${SDKROOT:-}" "${DEVELOPER_DIR:-}" >> "$EVENTS"
+[ "${MOCK_FAIL:-0}" = 0 ] || exit 23
+while [ "$1" != --prefix ]; do shift; done
+shift
+mkdir -p "$1/lib" "$1/share/pkgconfig"
+touch "$1/lib/libghostty-vt.a"
+printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescription: fixture\\nVersion: 0.1.0\\nLibs: ${libdir}/libghostty-vt.a\\n' "$1" > "$1/share/pkgconfig/libghostty-vt-static.pc"
+''',
+    }
+    for name, body in fixtures.items():
+        path = tools / name
+        path.write_text("#!/bin/sh\nset -eu\n" + body)
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+               TILR_GHOSTTY_VT_CACHE=str(base / "cache"), EVENTS=str(events),
+               SDKROOT=str(sdk), DEVELOPER_DIR="/fixture/developer")
+
+    def run(**overrides):
+        return subprocess.run([str(ROOT / "scripts/build-ghostty-vt.sh")],
+                              env=dict(env, **overrides), text=True, capture_output=True)
+
+    first = run()
+    assert first.returncode == 0, first.stderr
+    prefix = Path(first.stdout.strip())
+    assert (prefix / ".complete").is_file()
+    pc = prefix / "share/pkgconfig/libghostty-vt-static.pc"
+    assert pc.read_text().startswith("prefix=${pcfiledir}/../..\n")
+    log = events.read_text()
+    assert "fetch --depth 1 origin a887df42c56f6de86c0fe6da9c4eeca37931e083" in log
+    for flag in ("-Demit-lib-vt=true", "-Doptimize=ReleaseFast", "-Dcpu=baseline",
+                 "-Demit-xcframework=false", "-Dapp-runtime=none"):
+        assert flag in log
+    assert f"SDK={sdk} DEVELOPER=/fixture/developer" in log
+    again = run()
+    assert again.returncode == 0 and again.stdout == first.stdout
+    assert events.read_text() == log, "cached invocation cloned or built again"
+    changed = run(MOCK_ZIG="0.16.0")
+    assert changed.returncode == 0 and changed.stdout != first.stdout
+    other_sdk = base / "other.sdk"
+    other_sdk.mkdir()
+    changed_sdk = run(SDKROOT=str(other_sdk))
+    assert changed_sdk.returncode == 0 and changed_sdk.stdout != first.stdout
+    failed = run(MOCK_ZIG="failure", MOCK_FAIL="1")
+    assert failed.returncode != 0
+    assert not list((base / "cache").rglob("*.lock"))
+    assert not list((base / "cache").rglob("*.tmp.*"))
+    recovered = run(MOCK_ZIG="failure")
+    assert recovered.returncode == 0, recovered.stderr
+    linux = run(MOCK_HOST="Linux", SDKROOT="/absent")
+    assert linux.returncode == 0 and linux.stdout != first.stdout
+    missing = run(SDKROOT="/absent")
+    assert missing.returncode != 0 and "Missing SDK" in missing.stderr
+print("shared Ghostty build fixture passed")

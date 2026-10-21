@@ -73,7 +73,9 @@ context: |
   Cargo.lock is committed and every cargo command runs with --locked. Clippy findings are
   fixed, not silenced; an #[allow] names the lint and says why. No --no-verify.
   Build needs Zig 0.15.2 and protoc (scripts/install-tools.sh) and network on the
-  first build (libghostty-vt-sys clones Ghostty at a pinned commit).
+  first source build (libghostty-vt-sys clones Ghostty at a pinned commit).
+  scripts/build-ghostty-vt.sh builds a reusable static package; PKG_CONFIG_PATH
+  pointing to its share/pkgconfig directory lets clean Cargo targets reuse it.
 
   Release (.github/workflows/release.yml, release-please-config.json):
   release-please on `main` (simple strategy, release PR opened by the GitHub App
