@@ -70,6 +70,7 @@ real Linux containers with the same FIFO barrier.
 | The Tilr app's health check `tilrd ps --url <url> --server-version` against a stopped server: exits non-zero within 5 s and prints no version | `ps_server_version_fails_when_nothing_listens` |
 | A server has its own id, the same after a restart; another server has another one | `a_server_keeps_its_id_when_it_restarts` |
 | A server started by a service manager (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` set) still says `READY=1`, but its panes do not get those variables | `a_pane_does_not_get_the_service_managers_variables` |
+| A test holds the outer login shell in its SIGHUP trap after terminal hang-up, checks the server while held, releases it and awaits its exit before reconnecting | `a_test_holds_the_login_shell_after_hangup_and_releases_its_exit` (`failpoints`) |
 
 ## Unix socket for local clients — `tests/local.rs`
 
