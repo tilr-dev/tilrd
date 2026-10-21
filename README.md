@@ -1078,6 +1078,18 @@ cover — connecting, the Unix socket, the client, reconnecting, scrolling, relo
 updating, the clipboard, files, the SOCKS proxy, the SSH agent, exec, metrics — and what is
 not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
 
+Integration test servers use an internal ownership connection
+(`TILR_TEST_OWNER_SOCKET`) independent of their command socket. The harness registers
+a process exit watcher before acknowledging startup. Closing ownership, including
+when the test process receives SIGTERM or SIGKILL, requests normal shutdown of the
+server and its panes. Executable reloads reconnect to the same owner.
+
+The normal `cleanup_stand` integration test runs panic, startup panic, signal and
+controlled timeout cases against both original and copied executables. To select
+cases manually, use `python3 scripts/test_server_cleanup_stand.py --cases panic
+panic-startup signal timeout`; add `--copied` to exercise a private executable copy.
+The stand checks pane and shell exit events as well as the supervisor.
+
 The cleanup stand owns a temporary directory for each case and removes it, including
 notification and runtime sockets, after cleaning its processes. It runs an ignored
 test fixture outside the normal suite. It waits for

@@ -245,6 +245,8 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
         .arg("\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait")
         .arg(env!("CARGO_BIN_EXE_tilrd"));
     Server::environment(&mut shell, &dir, "");
+    let owner = Owner::new(&dir);
+    owner.configure(&mut shell);
     let mut login = Login::start(shell);
     let addr = login.wait_output(|output| {
         output
@@ -261,6 +263,7 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
             .and_then(|pid| pid.parse().ok())
     });
     let mut server = Server {
+        owner,
         child: login.shell.take().unwrap(),
         addr,
         dir,
