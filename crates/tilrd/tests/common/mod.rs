@@ -207,13 +207,49 @@ pub fn spawn_copied(command: &mut Command) -> Child {
     }
 }
 
+/// Reclaim pairs left by exited test processes, including aborted runs. A live
+/// process still needs its source paths for subsequent hardlink installations.
+fn warm_executable_dir() -> PathBuf {
+    let root = std::env::temp_dir();
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("tilr-warm-"))
+            .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+            .filter(|pid| *pid > 0)
+        else {
+            continue;
+        };
+        // SAFETY: signal zero only checks existence; it sends no signal.
+        let exited = unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if exited {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                // Another test binary may have reclaimed the same dead pair.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => panic!("remove {}: {err}", entry.path().display()),
+            }
+        }
+    }
+    let dir = root.join(format!("tilr-warm-{}", std::process::id()));
+    // A reused PID can have left a directory in an earlier run.
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
 /// Two warmed inodes shared by this integration-test binary. Keep both source
 /// paths alive: private installations may be renamed or removed by their tests.
 fn warm_executables() -> &'static [PathBuf; 2] {
     static EXECUTABLES: std::sync::OnceLock<[PathBuf; 2]> = std::sync::OnceLock::new();
     EXECUTABLES.get_or_init(|| {
         let original = PathBuf::from(env!("CARGO_BIN_EXE_tilrd"));
-        let dir = Server::scratch_dir();
+        let dir = warm_executable_dir();
         let first = dir.join("tilrd-warm-a");
         let alternate = dir.join("tilrd-warm-b");
         let warm = |exe: &Path| {

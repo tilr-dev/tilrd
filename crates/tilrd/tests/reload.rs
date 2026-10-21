@@ -5,6 +5,52 @@ mod common;
 use common::*;
 
 #[test]
+fn warm_executable_process_fixture() {
+    if std::env::var_os("TILR_WARM_PROCESS_FIXTURE").is_none() {
+        return;
+    }
+    let exe = std::env::temp_dir().join("installed");
+    link_executable(&exe);
+    std::fs::remove_file(exe).unwrap();
+}
+
+#[test]
+fn warm_executables_do_not_accumulate_between_processes() {
+    let root = Server::scratch_dir();
+    let live = root.join(format!("tilr-warm-{}", std::process::id()));
+    std::fs::create_dir(&live).unwrap();
+    let sentinel = live.join("tilrd-warm-b");
+    std::fs::write(&sentinel, b"live process's pair").unwrap();
+    let run = || {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "warm_executable_process_fixture", "--nocapture"])
+            .env("TILR_WARM_PROCESS_FIXTURE", "1")
+            .env("TMPDIR", &root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &live)
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(first.len(), 1);
+    assert!(first[0].join("tilrd-warm-b").is_file());
+    let second = run();
+    assert_eq!(
+        second.len(),
+        1,
+        "a second process must reclaim the dead pair"
+    );
+    assert!(!first[0].exists(), "the exited process's pair was removed");
+    assert!(second[0].join("tilrd-warm-b").is_file());
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"live process's pair");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn warm_executable_links_reuse_inodes_and_replace_repeatedly() {
     use std::os::unix::fs::MetadataExt;
     fn identity(path: &Path) -> (u64, u64) {
