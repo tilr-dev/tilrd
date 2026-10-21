@@ -213,15 +213,29 @@ fn warm_executables() -> &'static [PathBuf; 2] {
     static EXECUTABLES: std::sync::OnceLock<[PathBuf; 2]> = std::sync::OnceLock::new();
     EXECUTABLES.get_or_init(|| {
         let original = PathBuf::from(env!("CARGO_BIN_EXE_tilrd"));
-        let alternate = Server::scratch_dir().join("tilrd-warm");
-        std::fs::copy(&original, &alternate).unwrap();
-        for exe in [&original, &alternate] {
+        let dir = Server::scratch_dir();
+        let first = dir.join("tilrd-warm-a");
+        let alternate = dir.join("tilrd-warm-b");
+        let warm = |exe: &Path| {
             let status = spawn_copied(Command::new(exe).arg("--version"))
                 .wait()
                 .unwrap();
             assert!(status.success(), "warm {}: {status}", exe.display());
+        };
+        warm(&original);
+        match std::fs::hard_link(&original, &first) {
+            Ok(()) => {}
+            // Linux containers put Cargo's target directory on a separate
+            // volume. Copy once into the tests' filesystem, never per test.
+            Err(err) if err.raw_os_error() == Some(libc::EXDEV) => {
+                std::fs::copy(&original, &first).unwrap();
+                warm(&first);
+            }
+            Err(err) => panic!("link {} to {}: {err}", original.display(), first.display()),
         }
-        [original, alternate]
+        std::fs::copy(&original, &alternate).unwrap();
+        warm(&alternate);
+        [first, alternate]
     })
 }
 

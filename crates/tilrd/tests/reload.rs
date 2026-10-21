@@ -20,7 +20,10 @@ fn warm_executable_links_reuse_inodes_and_replace_repeatedly() {
     link_executable(&peer);
     let original = identity(&exe);
     assert_eq!(identity(&peer), original);
-    assert_eq!(identity(Path::new(env!("CARGO_BIN_EXE_tilrd"))), original);
+    let built = identity(Path::new(env!("CARGO_BIN_EXE_tilrd")));
+    if built.0 == original.0 {
+        assert_eq!(built, original, "reuse the original on the same filesystem");
+    }
 
     let mut identities = Vec::new();
     for _ in 0..3 {
@@ -232,6 +235,9 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     link_executable(&exe);
+    // Retain the running inode after a rejected script replaces its pathname.
+    let running_exe = dir.join("tilrd-running");
+    std::fs::hard_link(&exe, &running_exe).unwrap();
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
@@ -272,7 +278,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     // A version that reads this server's state is then reloaded into.
     // Differ from the running original, not just the rejected script on disk.
     let staged = dir.join("tilrd.new");
-    link_replacement(Path::new(env!("CARGO_BIN_EXE_tilrd")), &staged);
+    link_replacement(&running_exe, &staged);
     std::fs::rename(&staged, &exe).unwrap();
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
