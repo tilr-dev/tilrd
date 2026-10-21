@@ -14,4 +14,4 @@
 
 ## 4. Container check
 
-- [ ] 4.1 After a `scripts/linux.sh cargo build -p tilrd`, `target/debug/tilrd` in the container is close to the host's size, and `scripts/linux.sh cargo test -p tilrd --test update --locked` takes about as long as on macOS
+- [x] 4.1 After a `scripts/linux.sh cargo build -p tilrd`, `target/debug/tilrd` in the container is close to the host's size, and `scripts/linux.sh cargo test -p tilrd --test update --locked` takes about as long as on macOS
