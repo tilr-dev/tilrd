@@ -1219,6 +1219,9 @@ each non-lowercase-alphanumeric character with `-` (e.g. `linux-amd64`). Separat
 worktrees can build concurrently, even with identical directory names. Serialize
 runs within one worktree. The cargo registry remains shared per platform.
 `linux-build.sh` builds and copies from the same worktree's target.
+The container builds the dev profile with line-tables-only debuginfo, since the
+host's `~/.cargo/config.toml` is not visible there; export `CARGO_PROFILE_DEV_DEBUG`
+to override it (e.g. `CARGO_PROFILE_DEV_DEBUG=full scripts/linux.sh ...` for gdb with locals).
 
 To clear a worktree's target, stop its containers, then run from its root:
 
