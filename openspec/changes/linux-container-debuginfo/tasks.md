@@ -6,7 +6,7 @@
 
 ## 2. Script
 
-- [x] 2.1 `scripts/linux.sh` passes `-e CARGO_PROFILE_DEV_DEBUG=line-tables-only` to `docker run`; verify with `release::the_linux_dev_container_builds_with_line_tables_only_debuginfo`
+- [x] 2.1 `scripts/linux.sh` passes `CARGO_PROFILE_DEV_DEBUG` to `docker run`, `line-tables-only` unless the host exports it; verify with `release::the_linux_dev_container_builds_with_line_tables_only_debuginfo`
 
 ## 3. Test
 
