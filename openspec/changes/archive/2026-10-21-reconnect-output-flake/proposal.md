@@ -2,7 +2,7 @@
 
 ## Why
 
-`reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` (Linux container, under full-suite load) timed out waiting for `printed later` on the screen after the reconnect (`tests/common/mod.rs:324`); green alone. Not reproduced so far (design.md). A flake is closed only with its cause established.
+`reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` (Linux container, under full-suite load) timed out waiting for `printed later` on the screen after the reconnect (`tests/common/mod.rs:324`); green alone. A flake is closed only with its cause established.
 
 ## What Changes
 
