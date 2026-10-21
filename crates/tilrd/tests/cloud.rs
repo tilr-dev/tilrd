@@ -812,6 +812,9 @@ async fn a_cloudflared_left_by_a_killed_server_is_stopped() {
     // this one is still there, as it ignores SIGTERM.
     killed.child.kill().unwrap();
     killed.child.wait().unwrap();
+    // Rules out the stand-in ending with the server (its parent-death
+    // signal, SIGTERM on Linux, comes as the server dies): a signal that
+    // ended it would have done so before it runs again, well within 300 ms.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(alive(&pid), "left behind");
 

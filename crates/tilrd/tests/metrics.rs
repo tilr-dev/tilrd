@@ -352,23 +352,40 @@ async fn a_scroll_is_credited_while_key_input_waits_for_the_pty() {
     frame_with_seq(&mut client, base + 2, |seq| seq == 0).await;
 }
 
+// The wait of an input is measured on the test's clock: the pane's own
+// time across a reload (a check run of the successor and an exec) is not
+// counted, so a real clock gives no bound the reload itself cannot break.
+#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn the_last_input_and_input_still_waiting_survive_a_reload() {
-    let server = Server::start(&[]);
+    const START: u64 = 1_700_000_000_000_000;
+    const SECOND: u64 = 1_000_000;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    set_test_time(&clock, START);
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
     let (mut client, base) = connect_with_base(&server).await;
     let pane_id = client.open_pane().await;
+    let (fifo, mut release) = activity_fifo(&server);
     send_with_seq(
         &mut client,
         raw(
             pane_id,
-            "stty raw -echo; echo \"rea\"\"dy\"; sleep 6; cat > /dev/null",
+            &format!(
+                "stty raw -echo; echo \"rea\"\"dy\"; read _ < '{}'; cat > /dev/null",
+                fifo.display()
+            ),
         ),
         base + 1,
     )
     .await;
     client.wait_screen("ready").await;
     assert_eq!(client.frame.as_ref().unwrap().last_input_seq, base + 1);
-    // Waits for the pty until the sleep is over, the reload in between.
+    // Waits for the pty until the shell is let go, the reload in between.
     send_with_seq(
         &mut client,
         Msg::Raw(RawInput {
@@ -378,8 +395,31 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
         base + 2,
     )
     .await;
+    // Passed to the pane process before the reload: the reload lets it take
+    // what is queued for it before it goes.
+    wait_sample_above(
+        &server,
+        &format!("tilrd_pane_input_total{{pane=\"{pane_id}\"}}"),
+        1.0,
+    )
+    .await;
 
+    // The input's clock starts as the pane process takes the message, which
+    // the counter above does not show. A full frame asked for after it, on
+    // the same way to the pane, does: the pane takes messages in order, so
+    // once `witness` has its frame the clock is running.
+    let mut witness = Client::connect(&server).await;
+    witness.subscribe(pane_id).await;
+    while !next_frame(&mut witness).await.full {}
+    let _ = witness.ws.close(None).await;
+
+    // A second passes before the reload, and another after it: the clock
+    // is set once the input's has started, then once the successor has
+    // taken over the input (it does before it logs that it resumed).
+    set_test_time(&clock, START + SECOND);
     let mut client = reload(&server, client).await;
+    server.wait_logged("resumed after reload pane=").await;
+    set_test_time(&clock, START + 2 * SECOND);
     let (mut other, other_base) = connect_with_base(&server).await;
     assert!(other_base > base, "ids go on after a reload");
     let _ = other.ws.close(None).await;
@@ -387,10 +427,16 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     let redraw = next_frame(&mut client).await;
     assert!(redraw.full);
     assert_eq!(redraw.last_input_seq, base + 1);
+    release_activity_fifo(&mut release);
     let through = frame_with_seq(&mut client, base + 2, |seq| seq == base + 1).await;
-    // Counted from when the pane process before the reload got it.
-    let waited = through.timing.unwrap().input_us;
-    assert!(waited > 1_000_000, "{waited} µs");
+    // A clock that survives the reload counts both seconds; one restarted
+    // with the successor, only the second. Each reading also moves the
+    // clock on by a microsecond, which half a second leaves room for.
+    let waited = u64::from(through.timing.unwrap().input_us);
+    assert!(
+        (2 * SECOND - SECOND / 2..2 * SECOND + SECOND / 2).contains(&waited),
+        "{waited} µs of the two seconds held"
+    );
 }
 
 #[tokio::test]
@@ -619,19 +665,25 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
         "head -c 30000000 /dev/urandom | base64; sleep 1; echo \"<do\"\"ne>\"",
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(4000)).await;
+    // `slow` lags once the server skips frames for it.
+    wait_sample_above(
+        &server,
+        &format!("tilrd_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
+        0.0,
+    )
+    .await;
     // Input of both while `slow` lags: its own comes first, so the frames
-    // that echo it are among those it misses.
+    // that echo it are among those it misses. A frame carries only the
+    // latest input credited, so `fast` sends once it has seen a frame that
+    // echoes `slow`'s: the server has passed that frame by `slow` (skipped,
+    // its seq kept for the full frame that ends the lag) before `fast`'s
+    // input can be credited in one with it.
     send_with_seq(&mut slow, raw(pane_id, ""), slow_base + 1).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    while next_frame(&mut fast).await.last_input_seq != slow_base + 1 {}
     send_with_seq(&mut fast, raw(pane_id, ""), fast_base + 1).await;
-    // `fast` keeps reading meanwhile.
-    let read = async {
-        loop {
-            fast.next().await.expect("connection closed");
-        }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs(3), read).await;
+    // `fast` keeps reading meanwhile, up to the echo of its input: the pane
+    // has taken `slow`'s input before it, and nothing is credited after it.
+    while next_frame(&mut fast).await.last_input_seq != fast_base + 1 {}
 
     // `slow` reads again: frames it was behind on, then a whole screen, the
     // echo of its input, and the end of the output like everyone.
