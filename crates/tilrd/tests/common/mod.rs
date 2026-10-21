@@ -360,6 +360,16 @@ impl Screen {
     }
 }
 
+/// An explicit release for socket reads. Dropping it without resuming fails
+/// the next read; it never silently resumes a paused client.
+pub struct ReadPause(tokio::sync::oneshot::Sender<()>);
+
+impl ReadPause {
+    pub fn resume(self) {
+        self.0.send(()).expect("paused client disappeared");
+    }
+}
+
 pub struct Client {
     pub ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     pub screen: Screen,
@@ -377,6 +387,7 @@ pub struct Client {
     pub token: String,
     /// What `hello` says as `Hello.client_id`; empty: none.
     pub client_id: String,
+    reads_paused: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Client {
@@ -397,7 +408,11 @@ impl Client {
 
     async fn try_connect_silent(server: &Server) -> Option<Self> {
         let (ws, _) = tokio_tungstenite::connect_async(&server.addr).await.ok()?;
-        Some(Self {
+        Some(Self::from_socket(server, ws))
+    }
+
+    pub fn from_socket(server: &Server, ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+        Self {
             ws,
             screen: Screen::default(),
             frame: None,
@@ -407,7 +422,18 @@ impl Client {
             activities: VecDeque::new(),
             token: server.token(),
             client_id: String::new(),
-        })
+            reads_paused: None,
+        }
+    }
+
+    /// Acknowledged on return: this client has no background reader, and
+    /// every subsequent `next` waits for the returned handle's `resume`.
+    /// Sending messages remains available while reads are paused.
+    pub fn pause_reads(&mut self) -> ReadPause {
+        assert!(self.reads_paused.is_none(), "reads already paused");
+        let (release, paused) = tokio::sync::oneshot::channel();
+        self.reads_paused = Some(paused);
+        ReadPause(release)
     }
 
     pub async fn send(&mut self, msg: Msg) {
@@ -419,6 +445,10 @@ impl Client {
     /// Fails if none comes within [`TIMEOUT`]: the server's pings, which come
     /// all the time, do not count.
     pub async fn next(&mut self) -> Option<server_message::Msg> {
+        if let Some(paused) = &mut self.reads_paused {
+            paused.await.expect("read pause dropped without resume");
+            self.reads_paused = None;
+        }
         let deadline = tokio::time::Instant::now() + TIMEOUT;
         loop {
             let message = tokio::time::timeout_at(deadline, self.ws.next())
@@ -867,6 +897,7 @@ impl Client {
                 activities: VecDeque::new(),
                 token: server.token(),
                 client_id: String::new(),
+                reads_paused: None,
             }),
             Err(err) => Err(err.to_string()),
         }
