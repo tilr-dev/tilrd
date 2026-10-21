@@ -73,6 +73,27 @@ docker run --rm --network none -v "$PWD":/src:ro -w /src python:3.12-slim \
   python3 -m unittest discover -s itests/tests -v
 ```
 
+## Controlled UC-043 echo delay
+
+Run the fixed-delay threshold check once:
+
+```sh
+./dt --only scenarios --filter uc_043:fixed_network_delay_moves_echo_p90_across_five_seconds
+```
+
+The case uses its own existing TCP proxy. It sets
+`proxy.set(dir="both", delay_ms=3000, jitter_ms=0, loss_pct=0)` after setup:
+3000 ms per direction gives at least 6000 ms input-to-frame echo latency, above
+the 5000 ms p90 threshold. Baseline and recovery use the same setting with
+`delay_ms=0` and assert p90 below 5000 ms. Each phase collects ten sequential
+inputs, waits for each distinct echo on the screen and checks that all inputs
+were measured. The report records each phase's count, pending, unanswered and
+p90 metrics. There are no sleeps, repeats or increased timeouts.
+
+This case asserts the expected threshold crossing and therefore passes with the
+delay enabled. It leaves the existing random-loss proxy and netem cases unchanged;
+their metrics describe a different network condition.
+
 ## What a run does
 
 `src/tilr_itests/main.py`:
