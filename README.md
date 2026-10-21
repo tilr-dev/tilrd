@@ -1147,7 +1147,7 @@ downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
 cargo build --release --locked -p tilrd -p tilr
 ```
 
-**Shared Ghostty VT development build.** Install `pkg-config`, then build once per
+**Shared Ghostty VT development build.** Install `pkg-config` and Python 3, then build once per
 machine and export the printed prefix's package directory:
 
 ```sh
@@ -1165,7 +1165,9 @@ It selects the same default macOS SDK as Cargo, respecting `SDKROOT` and
 Concurrent invocations for the same prefix report the active build; rerun after
 it finishes. The lock records the owner's PID. If that process has exited, the
 next invocation removes the abandoned lock and temporary build directories and
-builds again automatically. Incomplete destination prefixes are replaced before
+builds again automatically, including when no PID was written. An advisory lock
+serializes recovery; its empty `.guard` file remains in the cache and must not be
+removed while a build is running. Incomplete destination prefixes are replaced before
 the completed installation is published.
 
 `tilr-screen` enables `libghostty-vt-sys`'s pkg-config feature directly. With this

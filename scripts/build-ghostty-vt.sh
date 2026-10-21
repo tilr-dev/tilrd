@@ -26,18 +26,22 @@ if [[ -f "$prefix/.complete" ]]; then
     exit 0
 fi
 mkdir -p "$(dirname "$prefix")"
+if [[ "${TILR_GHOSTTY_VT_LOCKED_PREFIX:-}" != "$prefix" ]]; then
+    script_dir=$(cd "$(dirname "$0")" && pwd -P)
+    exec python3 "$script_dir/ghostty-vt-lock.py" "$prefix" "$script_dir/build-ghostty-vt.sh"
+fi
 lock=${prefix}.lock
-if ! mkdir "$lock" 2>/dev/null; then
+if [[ -d "$lock" ]]; then
     owner=
     [[ ! -f "$lock/pid" ]] || read -r owner < "$lock/pid" || true
-    # A missing/invalid PID may be a new owner still publishing its PID.
-    if [[ ! "$owner" =~ ^[1-9][0-9]*$ ]] || kill -0 "$owner" 2>/dev/null; then
+    if [[ "$owner" =~ ^[1-9][0-9]*$ ]] && kill -0 "$owner" 2>/dev/null; then
         echo "Build already in progress: $lock; rerun after it finishes." >&2
         exit 1
     fi
-    rm -rf "$lock"
-    mkdir "$lock" 2>/dev/null || { echo "Build already in progress: $lock; rerun after it finishes." >&2; exit 1; }
 fi
+# The advisory guard serializes reclamation, including locks without a PID.
+rm -rf "$lock"
+mkdir "$lock"
 work=
 trap 'rm -rf "$work" "$lock"' EXIT
 printf '%s\n' "$$" > "$lock/pid"

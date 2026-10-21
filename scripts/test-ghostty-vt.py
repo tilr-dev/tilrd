@@ -23,6 +23,10 @@ if [ "$1" = init ]; then mkdir -p "$3"; fi
         "zig": '''if [ "$1" = version ]; then echo "${MOCK_ZIG:-0.15.2}"; exit; fi
 printf 'zig %s SDK=%s DEVELOPER=%s\\n' "$*" "${SDKROOT:-}" "${DEVELOPER_DIR:-}" >> "$EVENTS"
 [ "${MOCK_FAIL:-0}" = 0 ] || exit 23
+if [ -n "${READY_FIFO:-}" ]; then
+    printf 'ready\\n' > "$READY_FIFO"
+    read -r release < "$RELEASE_FIFO"
+fi
 while [ "$1" != --prefix ]; do shift; done
 shift
 mkdir -p "$1/lib" "$1/share/pkgconfig"
@@ -87,6 +91,46 @@ printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescript
     assert leftover.is_dir()
     shutil.rmtree(lock)
     shutil.rmtree(leftover)
+    # Recovery also handles death before the owner PID was written.
+    lock.mkdir()
+    recovered_empty = run()
+    assert recovered_empty.returncode == 0, recovered_empty.stderr
+    assert not lock.exists()
+    shutil.rmtree(prefix)
+    lock.mkdir()
+    (lock / "pid").write_text(f"{child.pid}\n")
+    leftover.mkdir()
+    ready, release = base / "ready", base / "release"
+    os.mkfifo(ready)
+    os.mkfifo(release)
+    builder = subprocess.Popen([str(ROOT / "scripts/build-ghostty-vt.sh")],
+                               env=dict(env, READY_FIFO=str(ready), RELEASE_FIFO=str(release)),
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        with ready.open() as handshake:
+            assert handshake.readline() == "ready\n"
+        owner = (lock / "pid").read_text()
+        active_work = list(prefix.parent.glob(f"{prefix.name}.tmp.*"))
+        assert active_work and not leftover.exists()
+        log = events.read_text()
+        contender = run()
+        assert contender.returncode != 0 and "Build already in progress" in contender.stderr
+        assert events.read_text() == log and (lock / "pid").read_text() == owner
+        assert all(path.is_dir() for path in active_work)
+        # The guard must protect recovery even with stale owner metadata.
+        (lock / "pid").write_text(f"{child.pid}\n")
+        stale_contender = run()
+        assert stale_contender.returncode != 0, stale_contender.stderr
+        assert events.read_text() == log
+        assert all(path.is_dir() for path in active_work)
+        (lock / "pid").write_text(owner)
+    finally:
+        with release.open("w") as handshake:
+            handshake.write("continue\n")
+        stdout, stderr = builder.communicate()
+    assert builder.returncode == 0, stderr
+    assert stdout == first.stdout and pc.is_file()
+    assert not lock.exists() and not list(prefix.parent.glob(f"{prefix.name}.tmp.*"))
     changed = run(MOCK_ZIG="0.16.0")
     assert changed.returncode == 0 and changed.stdout != first.stdout
     other_sdk = base / "other.sdk"
