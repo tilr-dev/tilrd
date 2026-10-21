@@ -25,4 +25,3 @@ When there are no accumulated screen changes or accumulated PTY output, such a f
 #### Scenario: A click without mouse tracking
 - **WHEN** a client sends a `MouseInput` with seq `seq_base + 1` to a shell that does not track the mouse, with no accumulated screen changes or accumulated PTY output
 - **THEN** it gets a frame with `last_input_seq` `seq_base + 1`, no rows, `seq` one more than the last frame's, and that frame's cursor, size and `viewport_top`
-
