@@ -188,11 +188,6 @@ impl Attach<'_> {
         let mut conn = Some(conn);
         if let Some(conn) = &mut conn {
             subscribe(conn, self.pane_id).await?;
-            let (cols, rows) = crate::size();
-            let message = delivery
-                .push(resize(self.pane_id, cols, rows).into())
-                .map_err(anyhow::Error::msg)?;
-            conn.send_message(message).await?;
         }
         let mut ping = tokio::time::interval(PING_EVERY);
         let mut retry = RETRY_FIRST;
@@ -237,6 +232,11 @@ impl Attach<'_> {
                             }
                         }
                         if failed {
+                            next_attempt = Instant::now() + retry;
+                            continue;
+                        }
+                        if let Err(err) = subscribe(&mut fresh, self.pane_id).await {
+                            status(&format!("tilr: disconnected ({err}), reconnecting…"))?;
                             next_attempt = Instant::now() + retry;
                             continue;
                         }
@@ -367,7 +367,7 @@ enum Attempt {
     Failed(String),
 }
 
-/// Connect again, check the pane is still there and subscribe to it. A
+/// Connect again and check the pane is still there. A
 /// connection lost or a request unanswered on the way is a failed attempt,
 /// as a refused connect is.
 async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
@@ -386,10 +386,7 @@ async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
         Err(err) if superseded(&err) => return Attempt::Superseded,
         Err(err) => return Attempt::Failed(format!("{err:#}")),
     }
-    match subscribe(&mut fresh, pane_id).await {
-        Ok(()) => Attempt::Connected(fresh),
-        Err(err) => Attempt::Failed(format!("{err:#}")),
-    }
+    Attempt::Connected(fresh)
 }
 
 /// The connection was closed as superseded (4000).
@@ -400,6 +397,10 @@ fn superseded(err: &anyhow::Error) -> bool {
 /// Size the pane to this terminal and watch it; the server answers with
 /// a full frame.
 async fn subscribe(conn: &mut Conn, pane_id: &str) -> Result<()> {
+    // Refresh after replay so an older queued Resize cannot override this size.
+    // Each connection repeats this refresh, even if its previous one was lost.
+    let (cols, rows) = crate::size();
+    conn.send(resize(pane_id, cols, rows)).await?;
     conn.send(Msg::Subscribe(Subscribe {
         pane_id: pane_id.to_owned(),
     }))

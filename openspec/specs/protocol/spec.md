@@ -150,7 +150,7 @@ A server speaking version 1 SHALL implement, without a feature flag, `Ping`, `He
 ### Requirement: Input is acknowledged after application
 Clients SHALL number input per stable identity and pane, retain it until acknowledged, and replay it after reconnecting. The server SHALL acknowledge completed PTY writes independently of output, discard accepted duplicates, and report applied counters during Hello. Delivery and latency numbering SHALL be independent. Outboxes SHALL reject overflow before sending or advancing delivery counters.
 
-**Verified by**: `input_delivery::disconnect_before_application_replays_one_copy`, `input_delivery::applied_input_with_a_lost_ack_is_not_applied_twice`, `input_delivery::partially_written_input_keeps_its_boundary_through_exec`, `input::tests::overflow_is_atomic_and_ack_reclaims_capacity`, `client::attach_replays_a_key_when_the_connection_ends_without_an_ack`, `session::input_delivery_tests::reconnect_replays_only_unacknowledged_input_in_order`.
+**Verified by**: `input_delivery::numbered_input_requires_a_stable_client_id`, `input_delivery::disconnect_before_application_replays_one_copy`, `input_delivery::applied_input_with_a_lost_ack_is_not_applied_twice`, `input_delivery::partially_written_input_keeps_its_boundary_through_exec`, `input::tests::overflow_is_atomic_and_ack_reclaims_capacity`, `client::attach_replays_a_key_when_the_connection_ends_without_an_ack`, `session::input_delivery_tests::reconnect_replays_only_unacknowledged_input_in_order`.
 
 #### Scenario: Application without screen output
 - **WHEN** input is written to a PTY whose program emits no output
@@ -163,6 +163,10 @@ Clients SHALL number input per stable identity and pane, retain it until acknowl
 #### Scenario: Pending duplicate
 - **WHEN** a frame is replayed while some of its bytes are still pending
 - **THEN** only the original pending bytes are written and the frame is acknowledged after their final byte
+
+#### Scenario: Numbered input without a stable identity
+- **WHEN** a greeted client without `Hello.client_id` sends input with a nonzero `input_seq`
+- **THEN** the server returns `Error "numbered input requires a stable client_id"` and does not apply that input
 
 #### Scenario: Full outbox
 - **WHEN** another input would exceed 4 MiB or 4096 queued frames

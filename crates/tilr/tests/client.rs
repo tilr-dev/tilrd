@@ -998,6 +998,7 @@ struct FakeServer {
     accepted: std::sync::Arc<AtomicU32>,
     /// The text of the keys it was sent.
     keys: std::sync::mpsc::Receiver<String>,
+    subscriptions: std::sync::mpsc::Receiver<(usize, u32, u32)>,
 }
 
 impl FakeServer {
@@ -1006,6 +1007,7 @@ impl FakeServer {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let accepted = std::sync::Arc::new(AtomicU32::new(0));
         let (key_tx, keys) = std::sync::mpsc::channel();
+        let (size_tx, subscriptions) = std::sync::mpsc::channel();
         let counter = accepted.clone();
         std::thread::spawn(move || {
             for (n, stream) in listener.incoming().enumerate() {
@@ -1013,13 +1015,15 @@ impl FakeServer {
                 let serve = script[n.min(script.len() - 1)];
                 counter.fetch_add(1, Ordering::SeqCst);
                 let keys = key_tx.clone();
-                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys));
+                let sizes = size_tx.clone();
+                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys, &sizes));
             }
         });
         Self {
             url,
             accepted,
             keys,
+            subscriptions,
         }
     }
 
@@ -1033,6 +1037,7 @@ fn fake_connection(
     serve: Serve,
     number: usize,
     keys: &std::sync::mpsc::Sender<String>,
+    sizes: &std::sync::mpsc::Sender<(usize, u32, u32)>,
 ) {
     use tilr_proto::{
         ClientMessage, Frame, HelloAck, PaneInfo, PaneList, Row, Run, ServerMessage,
@@ -1050,6 +1055,8 @@ fn fake_connection(
             msg,
         ))))
     };
+    // Model a pane resized by another client before each connection.
+    let (mut cols, mut rows) = (132, 43);
     while let Ok(message) = ws.read() {
         let Message::Binary(packet) = message else {
             continue;
@@ -1086,7 +1093,12 @@ fn fake_connection(
                     request_id: list.request_id,
                 }),
             ),
+            client_message::Msg::Resize(size) => {
+                (cols, rows) = (size.cols, size.rows);
+                Ok(())
+            }
             client_message::Msg::Subscribe(_) => {
+                let _ = sizes.send((number, cols, rows));
                 let frame = send(
                     &mut ws,
                     server_message::Msg::Frame(Frame {
@@ -1263,4 +1275,35 @@ fn attach_replays_a_key_when_the_connection_ends_without_an_ack() {
         server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
         "y"
     );
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn reconnect_restores_terminal_size_before_subscribing() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    let first = server
+        .subscriptions
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    let second = server
+        .subscriptions
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(
+        second,
+        (2, 80, 24),
+        "reconnect must reclaim the terminal size before Subscribe"
+    );
+    assert_eq!(first, (1, 80, 24));
 }

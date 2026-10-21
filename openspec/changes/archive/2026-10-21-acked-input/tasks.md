@@ -5,3 +5,5 @@
 - [x] Retain and replay input in terminal client and driver.
 - [x] Add deterministic delivery/reload/overflow coverage and align the typing case.
 - [x] Complete self-review and required checks.
+- [x] Refresh the current terminal size after replay and before Subscribe on every connection.
+- [x] Specify and test the error for numbered input without a stable client identity.

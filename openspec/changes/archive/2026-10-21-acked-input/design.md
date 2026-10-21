@@ -1,10 +1,12 @@
 ## Delivery contract
 
-`ClientMessage.input_seq` counts from one independently for each pane within a stable `Hello.client_id`. It is separate from the connection-specific latency `seq`. Every terminal input (key, mouse, paste, raw, scroll and resize) is queued before sending. The authenticated identity includes the transport trust domain and access token; clients cannot supply another identity to a pane.
+`ClientMessage.input_seq` counts from one independently for each pane within a stable `Hello.client_id`. It is separate from the connection-specific latency `seq`. Every terminal input event (key, mouse, paste, raw, scroll and resize) is queued before sending. After replay, each connection refreshes the pane with an unnumbered Resize using the current terminal size, then Subscribe. This connection setup is repeated on every reconnect; keeping it out of the outbox avoids stale setup sizes overriding the current size or consuming input capacity. The authenticated identity includes the transport trust domain and access token; clients cannot supply another identity to a pane.
 
 `InputAck` names a pane and its cumulative applied sequence. A pane acknowledges byte-producing input only after the last encoded byte is written to the PTY. Empty encodings and state changes still receive acknowledgements. An accepted sequence is recorded before encoding: replay of partially written input cannot append its bytes again. Completed duplicates reissue the acknowledgement. The ordered pending boundaries, accepted counters and applied counters survive exec with the pending bytes. The pane handover format changes in place under `STATE_FORMAT = 3`; `PROTOCOL_VERSION` remains at the current version 1. Both peers implement this delivery contract without a compatibility flag.
 
 During Hello the supervisor queries each live pane in its existing input pipe. HelloAck includes that identity's applied counters after these ordered queries complete. Clients remove acknowledged entries and replay the remainder in order, retaining their delivery counters across connections. Screen frames and subscriptions do not acknowledge delivery. Anonymous, unnumbered diagnostic requests retain their existing behavior; bundled interactive clients use stable identities and numbered input.
+
+Numbered input requires a stable `Hello.client_id`; anonymous numbered input returns `Error "numbered input requires a stable client_id"` before it can reach the pane.
 
 ## Client memory and overflow
 

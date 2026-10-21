@@ -884,7 +884,9 @@ pane exactly once even if the old connection revives. A client does not reconnec
 connection closed as superseded
 (`tilr` ends its attach). Another token, or the other transport, with the same id
 supersedes nobody; an empty `client_id` neither supersedes
-nor is superseded. `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
+nor is superseded. Numbered input without a stable `client_id` returns
+`Error "numbered input requires a stable client_id"` and is not applied.
+`PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
 The server does not hoard frames for a client that cannot keep up. Unsent data the kernel

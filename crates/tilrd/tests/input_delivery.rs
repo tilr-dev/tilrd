@@ -313,3 +313,22 @@ async fn an_old_input_ack_cannot_leave_a_later_unnumbered_resize_stale() {
     let info = client.list_panes().await;
     assert_eq!((info[0].cols, info[0].rows), (120, 40));
 }
+
+// @spec protocol/input-is-acknowledged-after-application
+#[tokio::test]
+async fn numbered_input_requires_a_stable_client_id() {
+    let server = server();
+    let mut client = Client::connect(&server).await;
+    assert!(client.client_id.is_empty());
+    let pane = client.open_pane().await;
+    let mut queue = Outbox::default();
+    send(
+        &mut client,
+        &queued(&mut queue, pane, b"must not be applied\n"),
+    )
+    .await;
+    assert_eq!(
+        client.error().await,
+        "numbered input requires a stable client_id"
+    );
+}
