@@ -22,7 +22,7 @@ itests/                   black-box tests: real installs and servers in containe
 scripts/release.sh        the Linux release archive in the CDN layout; --publish uploads it
 scripts/package.sh        GitHub release archive of built binaries (release.yml)
 scripts/linux.sh          a command (the test suite by default) in the Linux build container
-scripts/install-tools.sh  the pinned Zig and protoc the build needs (CI, the container)
+scripts/install-tools.sh  the pinned Zig, protoc and cargo-nextest (CI, the container)
 scripts/update-test.sh    live check of `tilrd update` on a real machine
 ```
 
@@ -1073,7 +1073,7 @@ Prometheus queries and alerts; the server emits only the new names.
 ## Tests
 
 ```sh
-cargo test --workspace --features tilrd/failpoints --locked
+cargo nextest run --workspace --features tilrd/failpoints --locked
 scripts/linux.sh                  # the same suite in the Linux build container
 python3 scripts/test_server_cleanup_stand_selftest.py  # check the stand itself
 python3 scripts/test_server_cleanup_stand.py           # signal/timeout cleanup diagnostic
@@ -1147,7 +1147,8 @@ CDN: it installs an older release there, opens panes and updates them to the lat
 
 Needs Rust 1.90+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network access on the
 first build (libghostty-vt fetches the Ghostty source). `scripts/install-tools.sh DIR`
-downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
+downloads the pinned Zig, protoc and cargo-nextest (the tests run with it) into `DIR` and
+checks their SHA-256 sums.
 
 ```sh
 cargo build --release --locked -p tilrd -p tilr

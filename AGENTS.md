@@ -16,7 +16,7 @@ the line.
   cargo fmt --all --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings
-  cargo test --workspace --features tilrd/failpoints --locked
+  cargo nextest run --workspace --features tilrd/failpoints --locked
   cargo deny check
   gitleaks git --redact --no-banner --exit-code 1 .
   ```
@@ -37,7 +37,7 @@ the line.
 
 - Rust (stable; MSRV in `rust-version`), [Zig](https://ziglang.org) 0.15.2 (libghostty-vt-sys
   builds Ghostty with it) and `protoc` (tilr-proto's build.rs). `scripts/install-tools.sh DIR`
-  installs the pinned Zig and protoc, as CI does.
+  installs the pinned Zig, protoc and cargo-nextest (which runs the tests), as CI does.
 - Without a shared package, the first build needs network access: libghostty-vt-sys clones
   Ghostty at a pinned commit. `scripts/build-ghostty-vt.sh` builds a shared package once;
   set PKG_CONFIG_PATH to its share/pkgconfig directory (README, "Build").
