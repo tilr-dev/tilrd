@@ -156,15 +156,32 @@ async fn the_clipboard_can_be_turned_off() {
 
 #[tokio::test]
 async fn pasted_content_expires() {
-    let server = Server::start(&["--clipboard-ttl", "1"]);
+    const TTL: Duration = Duration::from_secs(1);
+    let ttl = TTL.as_secs().to_string();
+    let server = Server::start(&["--clipboard-ttl", &ttl]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     let check = script(&server, "check.sh", CLAUDE_CHECK_IMAGE);
+    let stored = tokio::time::Instant::now();
     client.put_clipboard(1, "image/png", &image(100)).await;
     assert!(client.clipboard_ack().await.ok);
     assert_eq!(client.run(pane_id, &check).await, 0);
-    tokio::time::sleep(Duration::from_millis(2100)).await;
-    assert_ne!(client.run(pane_id, &check).await, 0);
+    // Gone once its TTL is over: asked again every 20 ms until then.
+    let deadline = stored + TIMEOUT;
+    while client.run(pane_id, &check).await == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "still there after {TIMEOUT:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Only an upper bound: the server stamps the expiry with its own wall
+    // clock in whole milliseconds, after `stored`, so a lower bound of TTL
+    // would be off by up to a millisecond. The first failed check comes at
+    // most one poll (20 ms and a run) after the expiry; a second over TTL
+    // covers that and still fails a TTL read wrong (2 s or more).
+    let gone = stored.elapsed();
+    assert!(gone <= TTL + Duration::from_secs(1), "gone after {gone:?}");
 }
 
 /// `printf` of an OSC 52 copy of `base64` to the clipboard.

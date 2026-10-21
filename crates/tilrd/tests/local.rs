@@ -548,7 +548,33 @@ fn of_servers_started_at_once_one_serves_the_socket() {
     let mut daemons: Vec<Daemon> = (0..8)
         .map(|_| Daemon::spawn(&scratch.0, &["--no-listen"]))
         .collect();
-    std::thread::sleep(Duration::from_millis(1500));
+    // Each one either says it is ready, having the socket, or exits; looked
+    // at every 20 ms.
+    let mut ready = vec![false; daemons.len()];
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let mut settled = 0;
+        for (daemon, ready) in daemons.iter_mut().zip(&mut ready) {
+            let notify = daemon.notify.as_ref().unwrap();
+            notify.set_nonblocking(true).unwrap();
+            let mut message = [0; 64];
+            if !*ready && let Ok(n) = notify.recv(&mut message) {
+                assert_eq!(&message[..n], b"READY=1");
+                *ready = true;
+            }
+            if *ready || !daemon.running() {
+                settled += 1;
+            }
+        }
+        if settled == daemons.len() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not all settled within {TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let running: Vec<usize> = (0..daemons.len())
         .filter(|&i| daemons[i].running())
         .collect();

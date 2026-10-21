@@ -165,14 +165,25 @@ async fn output_printed_while_nobody_watched_is_there_on_reconnect() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
+    let (fifo, mut release) = activity_fifo(&server);
+    let printed = server.dir.join("printed");
     client
-        .type_line(pane_id, "sleep 1; echo \"printed la\"\"ter\"")
+        .type_line(
+            pane_id,
+            &format!(
+                "read _ < '{}'; echo \"printed la\"\"ter\"; touch '{}'",
+                fifo.display(),
+                printed.display()
+            ),
+        )
         .await;
     // Make sure the shell has the line before leaving.
-    client.wait_screen("sleep 1").await;
+    client.wait_screen("read _").await;
     drop(client);
+    server.wait_logged("client disconnected").await;
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    release_activity_fifo(&mut release);
+    eventually("the shell printed", || printed.exists()).await;
     let mut client = Client::connect(&server).await;
     client.subscribe(pane_id).await;
     client.wait_row("printed later").await;
@@ -377,15 +388,17 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
         !server.is_running()
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(process_alive(pid), "the server is still running");
-    assert!(process_alive(pane_pid), "the pane process is still running");
-    assert!(process_alive(shell_pid), "the shell is still running");
-
+    // The SIGHUPs of the hang-up were sent by the time the login shell is
+    // gone. A process that a signal ends takes it before it runs again, so
+    // the server, the pane process and the shell each answering below shows
+    // that none of them was ended by it.
     let mut client = Client::connect(&server).await;
     client.subscribe(pane_id).await;
     client.type_line(pane_id, "echo \"kept=$KEPT\"").await;
     client.wait_row("kept=yes").await;
+    assert!(process_alive(pid), "the server is still running");
+    assert!(process_alive(pane_pid), "the pane process is still running");
+    assert!(process_alive(shell_pid), "the shell is still running");
 
     // Stopping it still ends the shells.
     // SAFETY: kill has no memory-safety preconditions.
@@ -760,15 +773,15 @@ async fn a_lagging_client_gets_the_last_screen_without_new_output() {
     while !next_frame(&mut slow).await.full {}
 
     // Heavy output `slow` does not read, then the pane goes quiet.
+    // `read` keeps the shell from printing its prompt after `<done>`: the
+    // screen with `<done>` is the pane's last.
     fast.type_line(
         pane_id,
-        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"",
+        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"; read _",
     )
     .await;
     fast.wait_screen("<done>").await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    // The pane's last screen, whole: what `fast` has read so far can stop
-    // short of it (the prompt after `<done>` comes in a frame of its own).
+    // The pane's last screen, whole.
     fast.subscribe(pane_id).await;
     while !next_frame(&mut fast).await.full {}
     let last = fast.screen.text();

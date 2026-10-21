@@ -18,7 +18,7 @@ pub mod server_owner;
 pub use server_owner::Owner;
 
 pub mod scrape;
-pub use scrape::{http_get, http_request, sample};
+pub use scrape::{http_get, http_request, sample, wait_sample_above};
 
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};

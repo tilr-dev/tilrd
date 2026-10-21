@@ -727,27 +727,27 @@ async fn a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn an_executable_replaced_again_during_a_reload_costs_no_shell() {
-    // The reload takes a second and a half, so the second replacement lands
-    // in the middle of it.
-    let (mut server, exe) = failing_server("reload-before-exec=sleep:1500");
+    // The reload is held just before its exec, so the second replacement
+    // lands in the middle of it.
+    let (mut server, exe) = failing_server("reload-before-exec=pause");
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     replace(&exe);
-    // The server first runs the new file to ask what it reads, which takes
-    // macOS seconds for a file it has not seen before.
-    let started = tokio::time::Instant::now();
-    while !server.logged("reloading") {
-        assert!(started.elapsed() < TIMEOUT, "the reload did not start");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let paused = pauses.wait("reload-before-exec").await;
     replace(&exe);
+    paused.release().await;
 
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
     // Whatever the server makes of the second file, it stays up with its
-    // panes.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // panes. The successor runs the second file and watches it from its
+    // start, so the file does not change under it: no reload comes after
+    // this one (one would stop at the pause above, unreleased, and the
+    // requests below would time out). What is left of this one is the pane
+    // process taking over in turn.
+    server.wait_logged("resumed after reload pane=").await;
     let mut client = Client::connect(&server).await;
     assert_eq!(client.list_panes().await.len(), 2);
     assert!(!server.logged("pane process died"));
@@ -1277,16 +1277,38 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
         unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Let the last reloads finish.
-    let mut seen = count_logged(&server, "resumed after reload with");
+    // Let the last reloads finish: every reload begun has resumed, and the
+    // last server to resume took no SIGUSR1 while it started (it logs that
+    // before it resumes, then reloads again).
+    let settled = || {
+        let log = server.log.lock().unwrap();
+        let Some(last) = log.iter().rposition(|line| line.contains("reloading exe=")) else {
+            return false;
+        };
+        let since = &log[last + 1..];
+        since
+            .iter()
+            .any(|line| line.contains("resumed after reload with"))
+            && !since.iter().any(|line| line.contains("SIGUSR1 came"))
+    };
+    // A signal the last server took once its handlers were in place starts
+    // a reload that logs nothing until the check runs of the executable are
+    // done ("reloading exe=" came 17 ms after "resumed" here, on macOS,
+    // 2026-10-21). Half a second of the state above holding rules that out.
+    let window = Duration::from_millis(500);
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let mut since = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let now = count_logged(&server, "resumed after reload with");
-        if now == seen {
+        let now = tokio::time::Instant::now();
+        if !settled() {
+            since = now;
+        } else if now - since >= window {
             break;
         }
-        seen = now;
+        assert!(now < deadline, "the reloads did not settle");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    let seen = count_logged(&server, "resumed after reload with");
     assert!(server.is_running());
     assert_eq!(server.child.id(), server_pid);
     assert!(seen >= 2, "reloads: {seen}");

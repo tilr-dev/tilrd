@@ -584,7 +584,7 @@ async fn an_exec_given_up_at_a_reload_ends_with_its_exec_exit() {
     server.signal("-USR1");
     // The reload gives up waiting for the exec after a second, and waits a
     // second more for the clients to read what they were sent.
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    server.wait_logged("exec ended without its status").await;
     let mut last = None;
     while let Some(msg) = client.next().await {
         match msg {
