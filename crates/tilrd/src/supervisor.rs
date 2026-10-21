@@ -2233,10 +2233,6 @@ impl Supervisor {
                     .get(&client_id)
                     .map(|client| client.input_identity.clone())
                     .unwrap_or_default();
-                if envelope.input_seq != 0 && envelope.input_identity.is_empty() {
-                    return self
-                        .send_error(client_id, "numbered input requires a stable client_id");
-                }
                 (tilr_proto::encode(&envelope), numbered)
             }
             Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
@@ -2276,6 +2272,14 @@ impl Supervisor {
             },
             _ if !greeted => return self.refuse(client_id, "expected Hello first"),
             _ => {}
+        }
+        if numbered
+            && self
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.input_identity.is_empty())
+        {
+            return self.send_error(client_id, "numbered input requires a stable client_id");
         }
         match msg {
             Msg::Hello(hello) => {

@@ -332,3 +332,24 @@ async fn numbered_input_requires_a_stable_client_id() {
         "numbered input requires a stable client_id"
     );
 }
+
+// @spec protocol/hello-comes-first
+#[tokio::test]
+async fn numbered_input_before_hello_is_refused_and_closed() {
+    let server = server();
+    let mut client = Client::connect_silent(&server).await;
+    let mut queue = Outbox::default();
+    send(
+        &mut client,
+        &queued(&mut queue, uuid::Uuid::new_v4(), b"ignored"),
+    )
+    .await;
+    assert_eq!(client.error().await, "expected Hello first");
+    let closed = tokio::time::timeout(TIMEOUT, client.ws.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(closed, Some(Ok(Message::Close(_))) | None),
+        "{closed:?}"
+    );
+}

@@ -103,6 +103,7 @@ real Linux containers with the same FIFO barrier.
 
 | Use case | Test |
 | --- | --- |
+| Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
 | Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
