@@ -113,6 +113,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 
 | change | commit |
 |---|---|
+| test-server-cleanup-stand | [PR #13](https://github.com/tilr-dev/tilrd/pull/13) |
 | test-controlled-time | 7e63724 |
 | manual-install-itest | - |
 | openspec-setup | 27be1ea, 40d6057, 552dcd9 |
