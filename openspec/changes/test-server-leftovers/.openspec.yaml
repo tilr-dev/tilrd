@@ -1,4 +1,2 @@
 schema: spec-driven
 created: 2026-10-18
-# Tests only: no requirement text or Verified by line changes.
-skip_specs: true

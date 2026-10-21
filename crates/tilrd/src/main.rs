@@ -21,6 +21,7 @@ mod reload;
 mod shell;
 mod socks;
 mod supervisor;
+mod test_owner;
 mod time;
 mod title;
 mod update;
@@ -301,6 +302,7 @@ fn main() -> anyhow::Result<ExitCode> {
             // From here on they are blocked on every thread but the one
             // their handlers run on, so that a reload can hold them all.
             reload::serve_signals()?;
+            test_owner::watch()?;
             let options = server_options(cli)?;
             tracing::info!(origins = ?options.allow_origins, "browser origins allowed");
             supervisor::run(options)?

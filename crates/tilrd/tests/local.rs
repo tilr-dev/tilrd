@@ -12,6 +12,7 @@ use tokio::net::UnixStream;
 /// A server started as `tilr` starts one: the Unix socket, with or without
 /// a TCP port.
 struct Daemon {
+    owner: Owner,
     child: Child,
     dir: PathBuf,
     socket: PathBuf,
@@ -54,6 +55,8 @@ impl Daemon {
         command.env("TILR_LISTEN", "127.0.0.1:0");
         command.stdin(Stdio::null()).stderr(Stdio::piped());
         // The executable may be a copy the test just made.
+        let owner = Owner::new(dir);
+        owner.configure(&mut command);
         let mut child = spawn_copied(&mut command);
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -71,6 +74,7 @@ impl Daemon {
             None => dir.join("runtime/tilrd.sock"),
         };
         Self {
+            owner,
             child,
             dir: dir.to_owned(),
             socket,
@@ -187,16 +191,7 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if self.running() {
-            self.signal(libc::SIGTERM);
-            for _ in 0..100 {
-                if !self.running() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        let _ = self.child.kill();
+        self.owner.close();
         let _ = self.child.wait();
         if std::thread::panicking() {
             eprintln!("--- server log ---\n{}", self.log_text());
@@ -739,6 +734,7 @@ async fn server_commands_run_for_local_clients_only() {
         .find_map(|line| line.split("listening on ").nth(1).map(str::to_owned))
         .unwrap();
     let mut client = Client::try_connect(&Server {
+        owner: Owner::new(&scratch.0),
         child: Command::new("true").spawn().unwrap(),
         addr: addr.trim().to_owned(),
         dir: scratch.0.clone(),

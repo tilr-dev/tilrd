@@ -1227,8 +1227,8 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
     command.args(["--listen", "127.0.0.1:0"]);
     Server::environment(&mut command, &dir, "reload-exec-missing=error");
     command.stdin(Stdio::null()).stderr(Stdio::piped());
-    let mut child = spawn_copied(&mut command);
-    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut server = Server::spawn_owned(command, dir);
+    let mut lines = BufReader::new(server.child.stderr.take().unwrap()).lines();
     let log = Arc::new(Mutex::new(Vec::new()));
     let addr = loop {
         let line = lines.next().expect("the server did not start").unwrap();
@@ -1252,13 +1252,8 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
             }
         }
     });
-    let mut server = Server {
-        child,
-        addr,
-        dir,
-        log,
-        log_changed: Arc::default(),
-    };
+    server.addr = addr;
+    server.log = log;
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     let pid = shell_pid(&server, &mut client, pane_id).await;

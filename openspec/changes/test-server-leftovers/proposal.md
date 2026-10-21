@@ -2,16 +2,24 @@
 
 ## Why
 
-Test servers from `target/debug` were left running on the Mac after local cargo tests (Basic Memory `main/projects/tilr/tilrd-tests-integratsionnye-testy-tilrd-na-dagger-use-cases-resheniia`). They get in the way of the next runs and hide flakes.
+A test process can disappear without running destructors. Its test servers and
+copied executables then outlive it. Startup also has an unguarded interval before
+readiness, and client cleanup depends on a command socket that tests can remove.
 
 ## What Changes
 
-- Find which test or harness path leaves them (a panicking test, `cargo test` interrupted by a signal, a test that times out) and fix it; each case is created deterministically by the test (the stand of TILR-162), not caught by repeated runs.
+- Give every harness-owned server an independent ownership connection. Closing
+  the connection, including process death, requests normal server shutdown.
+- Establish ownership before readiness and retain it across daemon startup and
+  executable reloads. Wait for owned process exit before removing test files.
+- Exercise panic, signal and controlled timeout with confirmed readiness and OS
+  exit events, including copied executables and unavailable command sockets.
 
 ## Capabilities
 
-None: tests only, no requirement changes.
+- Add test-server-lifetime requirements for harness-owned processes.
 
 ## Impact
 
-The harness in `crates/tilrd/tests/common` and `crates/tilrd/tests/local.rs`. No behavior, protocol, reload or update impact. Tracker: TILR-153 (epic TILR-76). Split from the former shared change `test-coverage-gaps` (2026-10-20: one task, one change).
+The shared integration harness, client test machines and cleanup stand. The
+ownership socket is an internal test hook; ordinary server startup is unchanged.

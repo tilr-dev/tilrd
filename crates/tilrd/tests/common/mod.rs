@@ -13,6 +13,10 @@ pub use std::sync::atomic::{AtomicU32, Ordering};
 pub use std::sync::{Arc, Mutex};
 pub use std::time::Duration;
 
+#[path = "../../../../tests/support/server_owner.rs"]
+pub mod server_owner;
+pub use server_owner::Owner;
+
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
 pub use tilr_proto::{
@@ -75,6 +79,7 @@ impl PausedPoint {
 
 /// A running server with a scratch directory of its own.
 pub struct Server {
+    pub owner: Owner,
     pub child: Child,
     pub addr: String,
     /// Scratch directory: the server's runtime directory lives in it, and
@@ -145,7 +150,7 @@ impl Server {
         Self::start_full(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), args, "", env)
     }
 
-    fn start_full(
+    pub fn start_full(
         dir: PathBuf,
         exe: &Path,
         args: &[&str],
@@ -157,11 +162,10 @@ impl Server {
         Self::environment(&mut command, &dir, failpoints);
         command.envs(env.iter().copied());
         command.stdin(Stdio::null()).stderr(Stdio::piped());
-        let mut child = spawn_copied(&mut command);
-
-        let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let log_changed = Arc::new(tokio::sync::Notify::new());
+        let mut server = Self::spawn_owned(command, dir);
+        let mut lines = BufReader::new(server.child.stderr.take().unwrap()).lines();
+        let log = Arc::clone(&server.log);
+        let log_changed = Arc::clone(&server.log_changed);
         let mut addr = None;
         for line in lines.by_ref() {
             let line = line.unwrap();
@@ -187,12 +191,22 @@ impl Server {
                 changed.notify_waiters();
             }
         });
+        server.addr = addr;
+        server
+    }
+
+    /// Own the process before reading any startup output that may panic.
+    pub fn spawn_owned(mut command: Command, dir: PathBuf) -> Self {
+        let owner = Owner::new(&dir);
+        owner.configure(&mut command);
+        let child = spawn_copied(&mut command);
         Self {
+            owner,
             child,
-            addr,
+            addr: String::new(),
             dir,
-            log,
-            log_changed,
+            log: Arc::default(),
+            log_changed: Arc::default(),
         }
     }
 
@@ -300,22 +314,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // Asked to stop, a server removes its sockets: the panes' agent
-        // sockets, under /tmp where the scratch directory's path is too long
-        // for a socket (macOS), are not found otherwise.
-        if self.is_running() {
-            // SAFETY: kill has no memory-safety preconditions.
-            unsafe {
-                libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
-            }
-            for _ in 0..100 {
-                if !self.is_running() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        let _ = self.child.kill();
+        self.owner.close();
         let _ = self.child.wait();
         // A server killed outright leaves its host socket behind. Where the
         // scratch directory's path is too long for a socket (macOS), that

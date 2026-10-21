@@ -2,8 +2,9 @@
 
 ## 1. Leftover servers
 
-- [ ] 1.1 Find what leaves `target/debug` test servers running; verify `pgrep -f target/debug/tilrd` is empty after `cargo test --workspace --features tilrd/failpoints --locked`
+- [x] 1.1 Identify the leak: test-process signals bypassed destructor-only ownership; startup parsed readiness before constructing its guard; client cleanup depended on a removable command socket. Introduce independent ownership connections and process exit observation for direct and daemonized servers.
+- [x] 1.2 Add deterministic panic, startup panic, signal and controlled timeout cases for original and copied executables, including pane/shell exit and a missing daemon command socket.
 
 ## 2. Checks
 
-- [ ] 2.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
+- [x] 2.1 Run the repository checks and archive this change.

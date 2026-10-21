@@ -17,11 +17,15 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
+#[path = "../../../tests/support/server_owner.rs"]
+mod server_owner;
+
 const TILR: &str = env!("CARGO_BIN_EXE_tilr");
 
 /// A machine of the test's own: the runtime, state and config directories
 /// of a user who runs nothing yet.
 struct Machine {
+    owner: server_owner::Owner,
     dir: PathBuf,
     tilr: PathBuf,
 }
@@ -42,6 +46,7 @@ impl Machine {
             "tilrd is not built next to tilr: run the tests of the workspace"
         );
         Self {
+            owner: server_owner::Owner::new(&dir),
             dir,
             tilr: PathBuf::from(TILR),
         }
@@ -95,6 +100,7 @@ impl Machine {
             // The tilrd it starts logs at its default level.
             .env_remove("RUST_LOG")
             .stdin(Stdio::null());
+        self.owner.configure(&mut command);
         command
     }
 
@@ -132,9 +138,7 @@ impl Machine {
 
 impl Drop for Machine {
     fn drop(&mut self) {
-        if self.socket().exists() {
-            let _ = self.tilr(&["kill-server"]);
-        }
+        self.owner.close();
         if std::thread::panicking() {
             eprintln!("--- tilrd.log ---\n{}", self.log());
         }
@@ -1193,4 +1197,31 @@ fn cloud_login_help_names_the_default_of_tilrd() {
     let tilr = default(Path::new(TILR));
     assert_eq!(tilr, "https://wss.tilr.dev");
     assert_eq!(tilr, default(&Path::new(TILR).with_file_name("tilrd")));
+}
+
+#[test]
+fn a_panicking_test_stops_its_copied_daemon_without_a_command_socket() {
+    let mut machine = Machine::new();
+    machine.install_copy();
+    machine.ok(&["new", "-d"]);
+    let pid = machine.server_pid();
+    let watcher = server_owner::watch(pid as u32).expect("running daemon");
+    std::fs::remove_file(machine.socket()).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _machine = machine;
+        panic!("controlled client test panic");
+    }));
+    let exited = server_owner::wait(&watcher);
+    if !exited {
+        // SAFETY: the test started this exact daemon and registered its exit.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        assert!(server_owner::wait(&watcher), "failed regression cleanup");
+    }
+    assert!(panic.is_err());
+    assert!(
+        exited,
+        "the copied daemon survived its test without a command socket"
+    );
 }
