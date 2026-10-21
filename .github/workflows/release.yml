@@ -29,8 +29,9 @@
 # cdn: uploads what the Linux builds laid out in dist/cdn to the R2 bucket tilr-cdn with
 # `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
 # releases/<platform>/latest, releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]
-# holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment (restricted to main), which holds
-# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (R2 S3 object access scoped to tilr-cdn), plus the required
+# holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment
+# (restricted to main), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+# (R2 S3 object access scoped to tilr-cdn), plus the required
 # CLOUDFLARE_ACCOUNT_ID variable (the bucket's account; the job fails without it). It runs
 # last, after the GitHub release has its assets: from its last upload on, `tilr update` and
 # the installer get the new version.
@@ -220,6 +221,7 @@ jobs:
           for platform in $PLATFORMS; do
             test "$(cat "dist/cdn/releases/$platform/latest")" = "$want"
           done
+      # AWS CLI comes from the runner image; log its version for release diagnostics.
       - name: Check AWS CLI
         run: aws --version
       - name: Upload to the CDN

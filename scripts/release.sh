@@ -38,6 +38,10 @@
 # from the R2 token scoped to object read/write in tilr-cdn. --publish and
 # --upload-only also need CLOUDFLARE_ACCOUNT_ID exported (the bucket's account;
 # in CI, the CLOUDFLARE_ACCOUNT_ID variable of the cdn environment).
+# By hand, Infisical /cloudflare (prod) supplies CF_ACCOUNT_ID and R2_CDN_TOKEN.
+# Set CLOUDFLARE_ACCOUNT_ID from CF_ACCOUNT_ID, AWS_ACCESS_KEY_ID to the token ID,
+# and AWS_SECRET_ACCESS_KEY to the lowercase hex SHA-256 of R2_CDN_TOKEN (no newline).
+# See README's Releases section for the Infisical command and key derivation example.
 set -eu
 cd "$(dirname "$0")/.."
 

@@ -13,8 +13,7 @@ updates:
           - '*'
   # Actions are pinned by commit SHA; Dependabot moves the SHA and its version comment.
   # Tools downloaded by URL + SHA-256 (gitleaks and cargo-deny in the workflows, Zig and
-  # protoc in scripts/install-tools.sh) are
-  # bumped by hand.
+  # protoc in scripts/install-tools.sh) are bumped by hand.
   - package-ecosystem: github-actions
     directory: /
     schedule:

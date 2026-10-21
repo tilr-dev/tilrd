@@ -1271,11 +1271,32 @@ releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
 `linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
-hand, from a clean checkout: `scripts/release.sh --publish linux-aarch64 linux-x86_64`
-builds in the Linux container and uploads with AWS CLI using bucket-scoped `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY` (see the script); export
-`CLOUDFLARE_ACCOUNT_ID` first, e.g. via `infisical run --path /cloudflare`. Versions and
-CHANGELOG.md are not edited by hand.
+hand, from a clean checkout, `scripts/release.sh --publish linux-aarch64 linux-x86_64`
+builds in the Linux container and uploads with AWS CLI. Install AWS CLI and OpenSSL
+first. Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
+`R2_CDN_TOKEN`; it does not hold the derived AWS keys. `AWS_ACCESS_KEY_ID` is that
+API token's **ID** (the `id` returned when creating the Cloudflare Account API token),
+and `AWS_SECRET_ACCESS_KEY` is the lowercase hexadecimal SHA-256 of the token value,
+with no trailing newline included in the hash. See [Cloudflare's credential derivation](https://developers.cloudflare.com/r2/api/tokens/#get-s3-api-credentials-from-an-api-token).
+
+Replace `YOUR_R2_CDN_TOKEN_ID` below with the ID belonging to `R2_CDN_TOKEN` (after
+rotation, use the new token's ID). Run from the checkout with your Infisical project
+selected and access to `prod`:
+
+```sh
+infisical run --env prod --path /cloudflare -- sh -eu <<'SH'
+export CLOUDFLARE_ACCOUNT_ID="$CF_ACCOUNT_ID"
+export AWS_ACCESS_KEY_ID='YOUR_R2_CDN_TOKEN_ID'
+AWS_SECRET_ACCESS_KEY=$(printf '%s' "$R2_CDN_TOKEN" | openssl dgst -sha256 -r | cut -d ' ' -f 1)
+export AWS_SECRET_ACCESS_KEY
+scripts/release.sh --publish linux-aarch64 linux-x86_64
+SH
+```
+
+The keys are passed through the process environment; keep shell tracing off and do
+not save their values in the checkout. `--upload-only` uses the same credentials.
+In CI, the `cdn` environment supplies both AWS secrets and the
+`CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
 
 ## License
 
