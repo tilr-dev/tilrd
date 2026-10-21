@@ -246,6 +246,7 @@ fn publishing_without_the_account_id_does_nothing() {
     let output = f.run(&["--publish", "linux-aarch64"], false);
     assert_exit(&output, 2);
     assert!(String::from_utf8_lossy(&output.stderr).contains("CLOUDFLARE_ACCOUNT_ID"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("README"));
     assert!(!f.dir.join("build.log").exists());
     assert!(f.log().is_empty());
 }

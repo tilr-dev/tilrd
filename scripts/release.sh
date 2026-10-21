@@ -54,7 +54,7 @@ esac
 [ "$#" -gt 0 ] || set -- linux-aarch64
 if [ -n "$publish" ] && [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
     echo "CLOUDFLARE_ACCOUNT_ID is not set: export the account id of the tilr-cdn bucket" \
-        "(e.g. via \`infisical run --path /cloudflare\`)" >&2
+        "(see README Releases for Infisical setup and derived AWS keys)" >&2
     exit 2
 fi
 
