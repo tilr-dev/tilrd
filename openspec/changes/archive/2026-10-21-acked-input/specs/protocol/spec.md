@@ -23,11 +23,11 @@ Clients SHALL number input per stable identity and pane, retain it until acknowl
 
 ## MODIFIED Requirements
 
-### Requirement: Version 3 is one contract
-A server speaking version 3 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, `PaneInfo.viewed_by` / `used_at_ms`, and acknowledged input with replay; none of them SHALL appear in `HelloAck.features`.
+### Requirement: Version 1 is one contract
+A server speaking version 1 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, `PaneInfo.viewed_by` / `used_at_ms`, and acknowledged input with replay; none of them SHALL appear in `HelloAck.features`.
 
 **Verified by**: `panes::hello_announces_the_clipboard_and_its_limit`; each part is verified by the requirement that specifies it.
 
-#### Scenario: A v3 client relies on the twins
-- **WHEN** a client greeted with `protocol_version` 3 names a file by `path_bytes`
+#### Scenario: A v1 client relies on the twins
+- **WHEN** a client greeted with `protocol_version` 1 names a file by `path_bytes`
 - **THEN** the server goes by the bytes, and `HelloAck.features` never lists `path-bytes`, `client-id`, `key-code`, `ping` or input delivery
