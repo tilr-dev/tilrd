@@ -38,8 +38,8 @@ real Linux containers with the same FIFO barrier.
 | BEL ending an OSC title sequence is not reported as activity | `a_bel_ending_an_osc_is_not_reported` |
 | A foreground job returning control to its shell reports command completion | `a_finished_foreground_command_is_reported` |
 | Typing at the prompt reports no activity | `typing_at_the_prompt_reports_nothing` |
-| The client says hello, the server reports its protocol version (3), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
-| A client with another protocol version (newer, older, none) gets an error naming both versions ("this server speaks 3"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
+| The client says hello, the server reports its protocol version (1), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
+| A client with another protocol version (newer: 2, none: 0) gets an error naming both versions ("this server speaks 1"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
 | The first thing a client gets is the answer to its `Hello`: pane lists are not sent to it before, and after that it gets them like everyone else | `the_first_thing_a_client_hears_is_the_answer_to_its_hello` |
 | A client that does not start with `Hello` gets an error and is disconnected; its input never reaches the shell | `a_client_that_skips_hello_is_turned_away` |
 | A browser page connects only from an allowed origin; programs without `Origin` get through | `a_browser_page_connects_only_from_an_allowed_origin` |
@@ -70,6 +70,7 @@ real Linux containers with the same FIFO barrier.
 | The Tilr app's health check `tilrd ps --url <url> --server-version` against a stopped server: exits non-zero within 5 s and prints no version | `ps_server_version_fails_when_nothing_listens` |
 | A server has its own id, the same after a restart; another server has another one | `a_server_keeps_its_id_when_it_restarts` |
 | A server started by a service manager (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` set) still says `READY=1`, but its panes do not get those variables | `a_pane_does_not_get_the_service_managers_variables` |
+| A test holds the outer login shell in its SIGHUP trap after terminal hang-up, checks the server while held, releases it and awaits its exit before reconnecting | `a_test_holds_the_login_shell_after_hangup_and_releases_its_exit` (`failpoints`) |
 
 ## Unix socket for local clients — `tests/local.rs`
 
@@ -132,7 +133,7 @@ real Linux containers with the same FIFO barrier.
 | The token is kept in a file readable by the user only (the state directory is 0700) and survives a restart; `tilrd token` prints the same one | `the_token_is_kept_for_the_user_only_and_across_restarts` |
 | A state directory left 0755 with an id and a token in it is set to 0700 at start; the server keeps that id and token | `an_existing_state_directory_is_made_private` |
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
-| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
+| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays; only `tilrd_client_drops_total{reason="no_hello"}` goes up | `a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_no_hello` |
 
 ## Outgoing WebSocket TLS — shared by Cloud control, tilrd ps, tilr --connect and tilr-driver
 
@@ -223,10 +224,17 @@ Cloud repository.
 | The installer (`scripts/install.sh`) is uploaded after every platform's `latest`, and not at all after a failed upload | `the_installer_is_uploaded_after_latest` |
 | The updater finds and installs the archive built by `release.sh` through a local CDN | `the_layout_release_sh_writes_is_what_tilrd_update_reads` |
 | Linux builds use the pinned Debian 12 image; build tools are checksum pinned and used in CI and release builds | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
+| The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
+
+## Version baked at build time — `tests/build_script.rs`, `crates/tilr/tests/build_script.rs`
+
+| Use case | Test |
+|---|---|
+| The build script watches only files that exist, and `HEAD` and `logs/HEAD` of the real git directory when git names them: a repeated build in a git worktree compiles nothing, a checkout still rebuilds with the new commit | `build_script::every_watched_file_exists_and_the_git_head_is_watched` (tilrd and tilr) |
 
 ## Updating from the CDN — `tests/update.rs`
 
@@ -279,7 +287,8 @@ state format; platforms other than `linux-aarch64`.
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
 | With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
-| The new executable reads another state format (supervisor's or pane's), or cannot show it can resume (no `reload-check 1`): no reload, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| `state-formats` prints this build's formats; a new executable that reads another pane state format is not reloaded into, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| Unit: a successor that reads another supervisor or pane state format, cannot show it can resume (no `reload-check 1`), names no format or an unparseable one is refused with that reason; one with the same formats is accepted (`src/reload.rs`) | `reload::tests::check_formats_rejects_every_format_mismatch`, `reload::tests::an_executable_reading_the_same_formats_can_take_over` |
 | After a reload the server and pane processes look the same in `ps` as before; the files with the handed-over state are read and removed | `a_reload_shows_in_no_command_line_and_leaves_no_file_behind` |
 | A reload with no panes | `a_reload_with_no_panes_open_works` |
 | A second server of the same user (on `<server_id>-<pid>.sock`) keeps its host socket across a reload: `tilr edit` in a pane from before reaches its clients | `a_second_server_keeps_its_host_socket_across_a_reload` |
@@ -445,7 +454,7 @@ pane process. The server's counters are at `GET /metrics`.
 | A request that arrives in pieces (the request line and the empty line split) | `a_metrics_request_may_come_in_pieces` |
 | After input and frames: the pane's frame, byte and input counters, the routing and loop-lag histograms, CPU and memory of the supervisor and the pane process | `metrics_count_frames_input_and_routing` |
 | An old connection superseded by the same client is counted in `tilrd_client_drops_total{reason="superseded"}` | `metrics_count_the_clients_let_go_and_why` |
-| A wrong-token Hello is refused without a drop; a connection that never says Hello is closed with 4002 and increments only `tilrd_client_drops_total{reason="no_hello"}` | `metrics_count_the_clients_let_go_and_why`, `a_connection_that_never_says_hello_is_counted_as_no_hello` |
+| A wrong-token Hello is refused without a drop | `metrics_count_the_clients_let_go_and_why` |
 | A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilrd_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
 
 ## Test infrastructure — `tests/cleanup_stand.rs`
@@ -534,3 +543,7 @@ pane process. The server's counters are at `GET /metrics`.
 - SSH agent: pane sockets left behind after the server crashed (SIGKILL) are
   not cleaned up by anyone. A real `ssh` with a real agent through the client
   has not been tested: the tests play both the program and the client.
+
+Shared Ghostty build tooling: `ghostty_script::shared_ghostty_build_reuses_complete_toolchain_prefixes`
+checks pinned build flags, package relocation, reuse, Zig/SDK identity changes, Linux
+SDK independence and explicit recovery after failure through deterministic tool fixtures.

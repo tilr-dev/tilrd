@@ -8,7 +8,6 @@ mod common;
 
 use common::*;
 use tilr_proto::MouseInput;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The seqs of one connection: `seq_base` to `seq_base + 2^32`.
 fn own(seq_base: u64, seq: u64) -> bool {
@@ -73,62 +72,6 @@ async fn next_frame(client: &mut Client) -> Frame {
             _ => None,
         })
         .await
-}
-
-/// A plain HTTP request for `target` on the server's port, with `headers`:
-/// the status and the body.
-/// `Host` is the server's address unless `headers` name one.
-async fn http_get(server: &Server, target: &str, headers: &[(&str, &str)]) -> (u16, String) {
-    let addr = server.addr.trim_start_matches("ws://");
-    let mut request = format!("GET {target} HTTP/1.1\r\n");
-    if !headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("host"))
-    {
-        request.push_str(&format!("Host: {addr}\r\n"));
-    }
-    for (name, value) in headers {
-        request.push_str(&format!("{name}: {value}\r\n"));
-    }
-    request.push_str("\r\n");
-    http_request(server, &[&request]).await
-}
-
-/// Send a request in `pieces`, a moment apart, and read the answer: the
-/// status and the body.
-async fn http_request(server: &Server, pieces: &[&str]) -> (u16, String) {
-    let addr = server.addr.trim_start_matches("ws://");
-    let mut stream = TcpStream::connect(addr).await.unwrap();
-    for (i, piece) in pieces.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        stream.write_all(piece.as_bytes()).await.unwrap();
-    }
-    let mut response = Vec::new();
-    tokio::time::timeout(TIMEOUT, stream.read_to_end(&mut response))
-        .await
-        .expect("server answered in time")
-        .unwrap();
-    let response = String::from_utf8(response).unwrap();
-    let (head, body) = response.split_once("\r\n\r\n").expect("a whole response");
-    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
-    if status == 200 {
-        assert!(
-            head.to_ascii_lowercase()
-                .contains("content-type: text/plain; version=0.0.4"),
-            "{head}"
-        );
-    }
-    (status, body.to_owned())
-}
-
-/// The value of the sample `series` (name and labels, as written), if the
-/// scrape has it.
-fn sample(text: &str, series: &str) -> Option<f64> {
-    text.lines()
-        .find_map(|line| line.strip_prefix(series)?.strip_prefix(' '))
-        .map(|value| value.parse().unwrap())
 }
 
 /// Each FIFO release produces one isolated read. Invisible output is kept
@@ -686,53 +629,6 @@ async fn metrics_count_the_clients_let_go_and_why() {
     let (_, text) = http_get(&server, &url, &[]).await;
     assert_eq!(drops(&text, "superseded"), Some(1.0), "{text}");
     assert_eq!(drops(&text, "too_slow"), Some(0.0), "{text}");
-}
-
-#[tokio::test]
-async fn a_connection_that_never_says_hello_is_counted_as_no_hello() {
-    let server = Server::start(&["--client-timeout", "0"]);
-    let url = format!("/metrics?token={}", server.token());
-    let (_, text) = http_get(&server, &url, &[]).await;
-    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
-        assert_eq!(
-            sample(
-                &text,
-                &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}")
-            ),
-            Some(0.0),
-            "{text}"
-        );
-    }
-    let mut silent = Client::connect_silent(&server).await;
-
-    let close = loop {
-        match tokio::time::timeout(TIMEOUT, silent.ws.next()).await {
-            Ok(Some(Ok(Message::Close(frame)))) => break frame,
-            Ok(Some(Ok(_))) => {}
-            other => panic!("connection ended without a close frame: {other:?}"),
-        }
-    };
-    let frame = close.expect("a close frame with a code");
-    assert_eq!(u16::from(frame.code), 4002);
-    server.wait_logged("client sent no Hello in 10s").await;
-
-    let (status, text) = http_get(&server, &url, &[]).await;
-    assert_eq!(status, 200);
-    assert_eq!(
-        sample(&text, "tilrd_client_drops_total{reason=\"no_hello\"}"),
-        Some(1.0),
-        "{text}"
-    );
-    for reason in ["superseded", "too_slow", "silent", "no_pong"] {
-        assert_eq!(
-            sample(
-                &text,
-                &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}")
-            ),
-            Some(0.0),
-            "{text}"
-        );
-    }
 }
 
 #[tokio::test]

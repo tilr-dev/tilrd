@@ -355,40 +355,7 @@ async fn a_client_can_tell_that_the_server_vanished_without_closing() {
 
 #[tokio::test]
 async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
-    // `tilrd &` typed into an SSH login; the dir goes to `Server`,
-    // which removes it.
-    let dir = Server::scratch_dir();
-    let mut shell = Command::new("/bin/sh");
-    shell
-        .arg("-c")
-        .arg("\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait")
-        .arg(env!("CARGO_BIN_EXE_tilrd"));
-    Server::environment(&mut shell, &dir, "");
-    let owner = Owner::new(&dir);
-    owner.configure(&mut shell);
-    let mut login = Login::start(shell);
-    let addr = login.wait_output(|output| {
-        output
-            .split("listening on ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .map(str::to_owned)
-    });
-    let pid: u32 = login.wait_output(|output| {
-        output
-            .split("server pid ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .and_then(|pid| pid.parse().ok())
-    });
-    let mut server = Server {
-        owner,
-        child: login.shell.take().unwrap(),
-        addr,
-        dir,
-        log: Arc::default(),
-        log_changed: Arc::default(),
-    };
+    let (mut server, mut login, pid) = login_server("");
     let _stop = StopOnDrop(pid);
 
     let mut client = Client::connect(&server).await;
@@ -429,6 +396,76 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
     eventually("the server exits", || !process_alive(pid)).await;
 }
 
+/// Start the same terminal/session topology for both hang-up tests.
+fn login_server(before_start: &str) -> (Server, Login, u32) {
+    // `tilrd &` typed into an SSH login; the dir goes to `Server`,
+    // which removes it.
+    let dir = Server::scratch_dir();
+    let mut shell = Command::new("/bin/sh");
+    shell
+        .arg("-c")
+        .arg(format!(
+            "{before_start}\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait"
+        ))
+        .arg(env!("CARGO_BIN_EXE_tilrd"));
+    Server::environment(&mut shell, &dir, "");
+    let owner = Owner::new(&dir);
+    owner.configure(&mut shell);
+    let mut login = Login::start(shell);
+    let addr = login.wait_output(|output| {
+        output
+            .split("listening on ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(str::to_owned)
+    });
+    let pid: u32 = login.wait_output(|output| {
+        output
+            .split("server pid ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|pid| pid.parse().ok())
+    });
+    let server = Server {
+        owner,
+        child: login.shell.take().unwrap(),
+        addr,
+        dir,
+        log: Arc::default(),
+        log_changed: Arc::default(),
+    };
+    (server, login, pid)
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_test_holds_the_login_shell_after_hangup_and_releases_its_exit() {
+    let (mut server, mut login, pid) = login_server(HangupExitPause::TRAP);
+    let _stop = StopOnDrop(pid);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, "KEPT=controlled").await;
+    assert_eq!(client.run(pane, "true").await, 0);
+    drop(client);
+
+    let mut held = HangupExitPause::new(server.child.id());
+    login.hang_up();
+    held.wait_stopped().await;
+    assert!(server.is_running(), "login shell is held after SIGHUP");
+    let mut client = Client::connect(&server).await;
+    assert_eq!(client.list_panes().await[0].pane_id, pane.to_string());
+    client.subscribe(pane).await;
+    assert_eq!(client.run(pane, "true").await, 0);
+    drop(client);
+
+    let status = held.release_and_wait(&mut server.child).await;
+    assert_eq!(status.code(), Some(129));
+    let mut client = Client::connect(&server).await;
+    client.subscribe(pane).await;
+    client.type_line(pane, "echo kept=$KEPT").await;
+    client.wait_row("kept=controlled").await;
+}
+
 /// An SSH login: a shell leading a session of its own, with a pty as its
 /// controlling terminal. What the terminal shows is collected until it hangs
 /// up.
@@ -436,8 +473,8 @@ struct Login {
     shell: Option<Child>,
     /// The login shell's pid, which names its session and process group.
     pgid: u32,
-    output: Arc<Mutex<String>>,
-    hang_up: Arc<std::sync::atomic::AtomicBool>,
+    output: Arc<(Mutex<String>, std::sync::Condvar)>,
+    hang_up: std::os::unix::net::UnixStream,
     reader: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -485,21 +522,48 @@ impl Login {
         let child = shell.spawn().expect("start the login shell");
         drop(shell);
 
-        let output = Arc::new(Mutex::new(String::new()));
-        let hang_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let output = Arc::new((Mutex::new(String::new()), std::sync::Condvar::new()));
+        let (hang_up, wake) = std::os::unix::net::UnixStream::pair().unwrap();
         let reader = std::thread::spawn({
             let output = Arc::clone(&output);
-            let hang_up = Arc::clone(&hang_up);
             let mut master = std::fs::File::from(master);
             move || {
                 let mut buf = [0; 4096];
-                while !hang_up.load(Ordering::Relaxed) {
+                loop {
+                    let mut fds = [
+                        libc::pollfd {
+                            fd: master.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: wake.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    // SAFETY: both descriptors and the pollfd array remain valid.
+                    let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+                    if ready < 0 {
+                        assert_eq!(
+                            std::io::Error::last_os_error().kind(),
+                            std::io::ErrorKind::Interrupted
+                        );
+                        continue;
+                    }
+                    if fds[1].revents != 0 {
+                        break;
+                    }
                     match master.read(&mut buf) {
-                        Ok(n) if n > 0 => output
-                            .lock()
-                            .unwrap()
-                            .push_str(&String::from_utf8_lossy(&buf[..n])),
-                        _ => std::thread::sleep(Duration::from_millis(20)),
+                        Ok(n) if n > 0 => {
+                            output
+                                .0
+                                .lock()
+                                .unwrap()
+                                .push_str(&String::from_utf8_lossy(&buf[..n]));
+                            output.1.notify_all();
+                        }
+                        _ => break,
                     }
                 }
                 // Closing the last descriptor of the master hangs up.
@@ -516,13 +580,16 @@ impl Login {
 
     /// Wait for the terminal to show what `pick` finds.
     fn wait_output<T>(&self, mut pick: impl FnMut(&str) -> Option<T>) -> T {
-        for _ in 0..200 {
-            if let Some(found) = pick(&self.output.lock().unwrap()) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut output = self.output.0.lock().unwrap();
+        loop {
+            if let Some(found) = pick(&output) {
                 return found;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "not on the terminal: {output}");
+            output = self.output.1.wait_timeout(output, remaining).unwrap().0;
         }
-        panic!("not on the terminal: {}", self.output.lock().unwrap());
     }
 
     /// Close the terminal, then SIGHUP the login's process group, as sshd
@@ -531,7 +598,8 @@ impl Login {
         let Some(reader) = self.reader.take() else {
             return;
         };
-        self.hang_up.store(true, Ordering::Relaxed);
+        use std::io::Write;
+        self.hang_up.write_all(b"h").unwrap();
         reader.join().unwrap();
         // SAFETY: killpg has no memory-safety preconditions.
         unsafe { libc::killpg(self.pgid as libc::pid_t, libc::SIGHUP) };

@@ -62,22 +62,19 @@ Both sides SHALL ignore a message whose type they do not know (a `ClientMessage`
 - **AND** the input never reaches the pane's shell
 
 ### Requirement: Protocol version check
-`Hello.protocol_version` SHALL be the `PROTOCOL_VERSION` the client was built against (currently `3`). A server receiving any other value (older, newer, or 0 for none) MUST answer `Error { message: "unsupported protocol version <N>: this server speaks <PROTOCOL_VERSION>" }` and close the connection, and MUST go on serving clients of its own version.
+`Hello.protocol_version` SHALL be the `PROTOCOL_VERSION` the client was built against (currently `1`). A server receiving any other value (older, newer, or 0 for none) MUST answer `Error { message: "unsupported protocol version <N>: this server speaks <PROTOCOL_VERSION>" }` and close the connection, and MUST go on serving clients of its own version.
 
 **Verified by**: `panes::a_client_built_for_another_protocol_version_is_turned_away`.
 
-#### Scenario: Older client
-- **WHEN** a client sends `Hello` with `protocol_version` 2 to a server speaking 3
-- **THEN** the first message it receives is `Error` "unsupported protocol version 2: this server speaks 3"
-- **AND** nothing else follows: the connection is closed
-
 #### Scenario: Newer client
-- **WHEN** a client sends `Hello` with `protocol_version` 4 to a server speaking 3
-- **THEN** it is refused the same way, naming version 4
+- **WHEN** a client sends `Hello` with `protocol_version` 2 to a server speaking 1
+- **THEN** the first message it receives is `Error` "unsupported protocol version 2: this server speaks 1"
+- **AND** nothing else follows: the connection is closed
 
 #### Scenario: No version
 - **WHEN** a client sends `Hello` without `protocol_version` (0)
-- **THEN** it is refused the same way, naming version 0
+- **THEN** the first message it receives is `Error` "unsupported protocol version 0: this server speaks 1"
+- **AND** nothing else follows: the connection is closed
 
 ### Requirement: HelloAck is the first thing a client hears
 The server SHALL send nothing to a connection before its `HelloAck`: `PaneList` pushes and other broadcasts MUST skip a connection that has not said `Hello`. After `HelloAck` the connection receives pushes like every other client.
@@ -141,13 +138,13 @@ The server SHALL echo a client-chosen `request_id`: `CreatePane`'s in `PaneCreat
 - **WHEN** a pane appears, goes away or changes
 - **THEN** every greeted client receives `PaneList` with `request_id` 0
 
-### Requirement: Version 3 is one contract
-A server speaking version 3 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, and `PaneInfo.viewed_by` / `used_at_ms`; none of them SHALL appear in `HelloAck.features`.
+### Requirement: Version 1 is one contract
+A server speaking version 1 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, and `PaneInfo.viewed_by` / `used_at_ms`; none of them SHALL appear in `HelloAck.features`.
 
 **Verified by**: `panes::hello_announces_the_clipboard_and_its_limit` (no `ping` in the list); each part is verified by the requirement that specifies it (`client-liveness`, `files`, `screen-frames`, `panes`).
 
-#### Scenario: A v3 client relies on the twins
-- **WHEN** a client greeted with `protocol_version` 3 names a file by `path_bytes`
+#### Scenario: A v1 client relies on the twins
+- **WHEN** a client greeted with `protocol_version` 1 names a file by `path_bytes`
 - **THEN** the server goes by the bytes, and `HelloAck.features` never lists `path-bytes`, `client-id`, `key-code` or `ping`
 
 ## Notes
@@ -155,6 +152,6 @@ A server speaking version 3 SHALL implement, without a feature flag, `Ping`, `He
 - Requirements without a test: none. Partly untested: the 64 MiB decompression cap of "Compression of large bodies".
 - Unit tests in crates/tilr-proto/src/lib.rs are cited by bare name (they are not in a `tests/` file).
 - `"agent"` in `HelloAck.features` is listed whenever forwarding is on, whatever the client's `Hello.features`; what the client's `"agent"` gates is `StreamOpen` (see `ssh-agent-forwarding`).
-- The rule for later changes (README "Protocol", the tilr.proto header, openspec/config.yaml): a change a peer cannot ignore bumps `PROTOCOL_VERSION`; a feature names only a capability a server can be run without; a change a peer may ignore needs neither. A process rule, not an observable behavior.
+- The rule for later changes (README "Protocol", the tilr.proto header, openspec/config.yaml): before the first public release, all protocol changes use version 1 without a bump. Afterward, bump `PROTOCOL_VERSION` only for a change incompatible with a client or server of the previous public release, once per release as a separate step in its release milestone. A feature names only a capability a server can be run without; a change a peer may ignore needs neither a bump nor a feature. A process rule, not an observable behavior.
 - File names that are not UTF-8 (`*_bytes` twins) are a rule of the files protocol only: see the `files` spec.
 - The supervisor-to-pane-process framing (u32 LE length, kind byte; crates/tilrd/src/link.rs) is internal and not part of the client protocol.

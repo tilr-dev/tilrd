@@ -14,4 +14,4 @@ None: tests only, no requirement changes.
 
 ## Impact
 
-`crates/tilrd/tests/files.rs` and the harness in `crates/tilrd/tests/common`. No behavior, protocol, reload or update impact. Tracker: TILR-151 (epic TILR-76). Split from the former shared change `test-coverage-gaps` (2026-10-20: one task, one change).
+`crates/tilrd/tests/files.rs` and the harness in `crates/tilrd/tests/common`. No behavior, protocol, reload or update impact. Split from the former shared change `test-coverage-gaps` (2026-10-20: one task, one change).

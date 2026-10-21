@@ -4,16 +4,17 @@ package tilr.v1;
 
 // Both sides ignore message types and fields they do not know.
 //
-// PROTOCOL_VERSION (Hello / HelloAck `protocol_version`, now 3) is the
+// PROTOCOL_VERSION (Hello / HelloAck `protocol_version`, now 1) is the
 // mandatory contract: a peer of a version implements every message and field
-// of it, and a server refuses every other version. A change a peer cannot
-// ignore (a request a client relies on, a changed meaning, a new close code)
-// bumps the version. A change a peer may ignore (a new push, a new field with
-// a harmless default) needs neither a bump nor a feature. HelloAck `features`
-// names only capabilities a server can be run without (switched off by its
-// operator or missing in its environment), so a client checks one before
-// sending that capability's requests; Hello `features` says what the client
-// can serve.
+// of it, and a server refuses every other version. Before the first public
+// release, all protocol changes use version 1 without a bump. Afterward, bump
+// only for a change incompatible with a client or server of the previous
+// public release, once per release as a separate step in its release milestone.
+// A change a peer may ignore (a new push, a new field with a harmless default)
+// needs neither a bump nor a feature. HelloAck `features` names only capabilities
+// a server can be run without (switched off by its operator or missing in its
+// environment), so a client checks one before sending that capability's requests;
+// Hello `features` says what the client can serve.
 
 // ---------------------------------------------------------------------------
 // Client -> server

@@ -1,0 +1,3 @@
+- [x] Specify interrupted-build recovery.
+- [x] Recover abandoned locks and temporary directories; replace incomplete prefixes.
+- [x] Cover recovery and active-owner refusal with deterministic fixtures; update documentation.

@@ -795,30 +795,76 @@ mod tests {
 
     #[test]
     fn an_executable_reading_the_same_formats_can_take_over() {
-        assert!(check_formats(&formats()).is_ok());
+        assert!(
+            check_formats(&formats()).unwrap(),
+            "it takes over the Unix socket"
+        );
     }
 
     #[test]
-    fn an_executable_reading_another_format_cannot_take_over() {
-        let pane = crate::pane::STATE_FORMAT;
-        let newer = format!("supervisor-state {}\npane-state {pane}\n", STATE_FORMAT + 1);
-        let err = check_formats(&newer).unwrap_err().to_string();
-        assert!(err.contains("reads supervisor-state format"), "{err}");
-
-        let newer = format!("supervisor-state {STATE_FORMAT}\npane-state {}\n", pane + 1);
-        let err = check_formats(&newer).unwrap_err().to_string();
-        assert!(err.contains("reads pane-state format"), "{err}");
-    }
-
-    #[test]
-    fn an_executable_that_cannot_run_the_check_cannot_take_over() {
-        let without: String = formats()
-            .lines()
-            .filter(|line| !line.starts_with(RELOAD_CHECK))
-            .map(|line| format!("{line}\n"))
-            .collect();
-        let err = check_formats(&without).unwrap_err().to_string();
-        assert!(err.contains("no `reload-check 1`"), "{err}");
+    fn check_formats_rejects_every_format_mismatch() {
+        // What a successor prints for `state-formats`: this server's own
+        // formats with one thing changed, or nothing usable at all.
+        let with = |from: &str, to: &str| {
+            let printed = formats().replace(from, to);
+            assert_ne!(printed, formats(), "`{from}` is not in the formats");
+            printed
+        };
+        let supervisor = format!("{SUPERVISOR_STATE} {STATE_FORMAT}");
+        let (pane_written, pane_read) = (crate::pane::STATE_FORMAT, crate::pane::STATE_FORMAT + 1);
+        let supervisor_read = STATE_FORMAT + 1;
+        let cases = [
+            (
+                "another supervisor state",
+                with(
+                    &supervisor,
+                    &format!("{SUPERVISOR_STATE} {supervisor_read}"),
+                ),
+                format!(
+                    "reads supervisor-state format {supervisor_read}, this server writes {STATE_FORMAT}"
+                ),
+            ),
+            (
+                "another pane state",
+                with(
+                    &format!("{PANE_STATE} {pane_written}"),
+                    &format!("{PANE_STATE} {pane_read}"),
+                ),
+                format!("reads pane-state format {pane_read}, this server writes {pane_written}"),
+            ),
+            (
+                "a release before the reload check",
+                with("reload-check 1\n", ""),
+                "cannot show that it can resume (no `reload-check 1`)".to_string(),
+            ),
+            (
+                "no formats at all",
+                String::new(),
+                "does not say which supervisor-state format it reads".to_string(),
+            ),
+            (
+                "something else than formats",
+                "tilrd 0.1.0\n".to_string(),
+                "does not say which supervisor-state format it reads".to_string(),
+            ),
+            (
+                "no pane state",
+                with(&format!("{PANE_STATE} {pane_written}\n"), ""),
+                "does not say which pane-state format it reads".to_string(),
+            ),
+            (
+                "a format that is not a number",
+                with(&supervisor, &format!("{SUPERVISOR_STATE} one")),
+                "supervisor-state format: invalid digit".to_string(),
+            ),
+        ];
+        for (case, printed, refusal) in cases {
+            let err = match check_formats(&printed) {
+                Ok(_) => panic!("{case}: taken over from {printed:?}"),
+                Err(err) => format!("{err:#}"),
+            };
+            assert!(err.contains(&refusal), "{case}: {err}");
+        }
     }
 
     fn output(code: i32, stdout: &str, stderr: &str) -> Output {
@@ -850,14 +896,6 @@ mod tests {
         assert!(!err.contains("zero"), "only the last lines: {err}");
         let err = verdict(&output(2, "", "")).unwrap_err().to_string();
         assert!(err.ends_with("without answering"), "{err}");
-    }
-
-    #[test]
-    fn an_executable_that_names_no_formats_cannot_take_over() {
-        assert!(check_formats("").is_err());
-        assert!(check_formats("tilrd 0.1.0\n").is_err());
-        assert!(check_formats("supervisor-state 1\n").is_err());
-        assert!(check_formats("supervisor-state one\npane-state 1\n").is_err());
     }
 
     fn state(format: u32) -> Vec<u8> {

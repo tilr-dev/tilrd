@@ -16,3 +16,9 @@ In a `failpoints` build with `TILR_TEST_TIME_FILE`, the pane SHALL support `TILR
 - **WHEN** the test atomically replaces the stage file after receiving a frame and requests another frame from a pane with no pending output
 - **THEN** the next frame reports the new build duration and the old encode duration
 - **AND** the following frame reports the new encode duration
+
+#### Scenario: Invisible output accumulates across separate reads
+- **GIVEN** a `failpoints` build with `frame-stage-no-frame=pause`
+- **WHEN** a frame build emits no frame after reading invisible output
+- **THEN** the pane hits `frame-stage-no-frame` before returning from the build
+- **AND** pausing there lets the test release invisible output across separate reads and verify accumulated parse duration on the next visible frame

@@ -38,7 +38,9 @@ the line.
 - Rust (stable; MSRV in `rust-version`), [Zig](https://ziglang.org) 0.15.2 (libghostty-vt-sys
   builds Ghostty with it) and `protoc` (tilr-proto's build.rs). `scripts/install-tools.sh DIR`
   installs the pinned Zig and protoc, as CI does.
-- The first build needs network access: libghostty-vt-sys clones Ghostty at a pinned commit.
+- Without a shared package, the first build needs network access: libghostty-vt-sys clones
+  Ghostty at a pinned commit. `scripts/build-ghostty-vt.sh` builds a shared package once;
+  set PKG_CONFIG_PATH to its share/pkgconfig directory (README, "Build").
 - macOS (checked 2026-10-19): Zig 0.15.2 fails with the macOS 27.0 SDK on this
   Mac; the tracked `.cargo/config.toml` selects CLT MacOSX15.4.sdk. Check it with
   `DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --sdk macosx15.4 --show-sdk-path`.
@@ -91,4 +93,7 @@ the line.
   without it.
 - The protocol schema is `crates/tilr-proto/proto/tilr.proto`; clients copy it from here
   (the `server` plugin's `npm run proto`, the test client), so a change there is a protocol
-  change: bump `PROTOCOL_VERSION` or add a feature flag as the README's "Protocol" says.
+  change. Before the first public release, keep `PROTOCOL_VERSION` at 1 for all changes.
+  Afterward, bump only for incompatibility with a client or server of the previous public
+  release, once per release as a separate step in its release milestone. Feature flags
+  name only capabilities a server can be run without; see README "Protocol".

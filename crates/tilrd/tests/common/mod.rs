@@ -17,6 +17,9 @@ pub use std::time::Duration;
 pub mod server_owner;
 pub use server_owner::Owner;
 
+pub mod scrape;
+pub use scrape::{http_get, http_request, sample};
+
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
 pub use tilr_proto::{
@@ -35,6 +38,97 @@ pub type PaneId = uuid::Uuid;
 
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 pub const CHUNK: usize = 256 * 1024;
+
+/// Hold the outer login shell's exit after terminal hang-up, rather than
+/// pausing tilrd's unrelated pane shutdown path. Install TRAP before starting
+/// tilrd. Stopping inside the HUP trap matters: terminal hang-up can itself
+/// send SIGCONT, so stopping the shell before closing the pty is insufficient.
+/// Only the test helper is feature-gated; production signal handling is untouched.
+#[cfg(feature = "failpoints")]
+pub struct HangupExitPause {
+    pid: libc::pid_t,
+    armed: bool,
+}
+
+#[cfg(feature = "failpoints")]
+impl HangupExitPause {
+    // Ignore duplicate HUPs from the pty close and the explicit sshd-style send.
+    pub const TRAP: &'static str = "trap 'trap \"\" HUP; kill -STOP $$; exit 129' HUP; ";
+
+    pub fn new(pid: u32) -> Self {
+        Self {
+            pid: pid as libc::pid_t,
+            armed: true,
+        }
+    }
+
+    /// The kernel's child-stop event proves the HUP trap reached its hold.
+    /// The caller must own this child and must not wait on it concurrently.
+    pub async fn wait_stopped(&mut self) {
+        use tokio::signal::unix::{SignalKind, signal};
+        // Register before checking state so a child transition cannot be lost.
+        let mut changed = signal(SignalKind::child()).unwrap();
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let mut status = 0;
+                // SAFETY: status is valid and pid names the owned child.
+                let result = unsafe {
+                    libc::waitpid(self.pid, &mut status, libc::WUNTRACED | libc::WNOHANG)
+                };
+                if result == -1
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                {
+                    continue;
+                }
+                assert!(result >= 0, "waitpid: {}", std::io::Error::last_os_error());
+                if result == self.pid {
+                    if !libc::WIFSTOPPED(status) {
+                        // waitpid already reaped the unexpected exit.
+                        self.armed = false;
+                        panic!("login shell exited before the hold: {status}");
+                    }
+                    assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+                    break;
+                }
+                changed.recv().await.expect("SIGCHLD stream closed");
+            }
+        })
+        .await
+        .expect("login shell did not stop after SIGHUP");
+    }
+
+    pub async fn release_and_wait(mut self, child: &mut Child) -> std::process::ExitStatus {
+        use tokio::signal::unix::{SignalKind, signal};
+        assert_eq!(child.id() as libc::pid_t, self.pid);
+        let mut changed = signal(SignalKind::child()).unwrap();
+        // SAFETY: kill has no memory-safety preconditions.
+        assert_eq!(unsafe { libc::kill(self.pid, libc::SIGCONT) }, 0);
+        let status = tokio::time::timeout(TIMEOUT, async {
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    return status;
+                }
+                changed.recv().await.expect("SIGCHLD stream closed");
+            }
+        })
+        .await
+        .expect("login shell did not exit after release");
+        self.armed = false;
+        status
+    }
+}
+
+#[cfg(feature = "failpoints")]
+impl Drop for HangupExitPause {
+    fn drop(&mut self) {
+        if self.armed {
+            // An assertion or timeout must not strand a stopped child.
+            // The owner still reaps the child.
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        }
+    }
+}
 
 /// Event-driven control of `pause` failpoints. Bind before triggering the
 /// operation; keep each returned hit until it is time for that hit to proceed.

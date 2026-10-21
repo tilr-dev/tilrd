@@ -906,12 +906,9 @@ async fn resizing_a_pane_resizes_the_terminal_the_shell_sees() {
 #[tokio::test]
 async fn a_client_built_for_another_protocol_version_is_turned_away() {
     let server = Server::start(&[]);
-    assert_eq!(PROTOCOL_VERSION, 3);
-    // Newer than the server, older than it, and one that sent no version.
-    for version in [PROTOCOL_VERSION + 1, PROTOCOL_VERSION - 1, 0] {
-        if version == PROTOCOL_VERSION {
-            continue;
-        }
+    assert_eq!(PROTOCOL_VERSION, 1);
+    // A newer client and one that sent no version.
+    for version in [2, 0] {
         let mut client = Client::connect_silent(&server).await;
         client.hello_as(version).await;
         // The first thing it hears is why, with both versions; then nothing.

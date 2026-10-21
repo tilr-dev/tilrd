@@ -51,6 +51,14 @@ fn archive(members: &[(&str, &[u8])]) -> Vec<u8> {
 /// What stands in for the client in a release: it runs.
 const CLIENT: &[u8] = b"#!/bin/sh\necho tilr\n";
 
+/// What stands in for the server in a release no test reloads into: the
+/// update only checks that `--version` exits 0, so a stub spares packing
+/// the real binary.
+const STUB: &[u8] = b"#!/bin/sh\nexit 0\n";
+
+/// A program that runs but fails.
+const BROKEN: &[u8] = b"#!/bin/sh\nexit 1\n";
+
 /// A release of the server `server` and the stand-in client.
 fn release(server: &[u8]) -> Vec<u8> {
     archive(&[("tilrd", server), ("tilr", CLIENT)])
@@ -184,7 +192,7 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let server = new_version(&exe);
+    let good = release(STUB);
     let cdn = dir.join("cdn");
     let url = serve_files(cdn.clone());
     let fails = |archive: &[u8], checksum_of: &[u8], said: &str| {
@@ -196,30 +204,25 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
     };
 
     // Not the file the checksum was made of.
-    fails(
-        &release(&server),
-        b"released",
-        "does not match its checksum",
-    );
+    fails(&good, b"released", "does not match its checksum");
     // Intact, but not an archive.
     fails(b"not an archive", b"not an archive", "unpack");
     // An archive cut short, its checksum made of what is left.
-    let whole = release(&server);
-    let cut = &whole[..whole.len() / 2];
+    let cut = &good[..good.len() / 2];
     fails(cut, cut, "unpack");
     // Either program missing.
-    let only_server = archive(&[("tilrd", &server)]);
+    let only_server = archive(&[("tilrd", STUB)]);
     fails(&only_server, &only_server, "the archive has no tilr");
     let only_client = archive(&[("tilr", CLIENT)]);
     fails(&only_client, &only_client, "the archive has no tilrd");
-    // Either program not a program.
-    let broken = release(b"not a program");
+    // Either program does not run: one fails, the other is not a program at all.
+    let broken = release(BROKEN);
     fails(
         &broken,
         &broken,
         "tilrd 9.9.9-test does not run on this system",
     );
-    let broken = archive(&[("tilrd", &server), ("tilr", b"not a program")]);
+    let broken = archive(&[("tilrd", STUB), ("tilr", b"not a program")]);
     fails(
         &broken,
         &broken,
@@ -240,7 +243,7 @@ async fn update_installs_nothing_when_the_cdn_misbehaves() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let archive = release(&new_version(&exe));
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     let url = serve_files(cdn.clone());
     let latest = cdn.join("releases").join(&platform).join("latest");
@@ -289,7 +292,7 @@ async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let archive = release(&new_version(&exe));
+    let archive = release(STUB);
     let cdn = scratch.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -310,8 +313,7 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let server = new_version(&exe);
-    let archive = release(&server);
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -330,7 +332,7 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
 
     let output = update(&exe, &url);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
     assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
 }
 
@@ -342,7 +344,7 @@ async fn a_server_that_cannot_be_put_in_place_puts_the_old_client_back() {
     let original = std::fs::read(&exe).unwrap();
     let old_client = b"#!/bin/sh\necho old tilr\n";
     std::fs::write(dir.join("tilr"), old_client).unwrap();
-    let archive = release(&new_version(&exe));
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -371,8 +373,7 @@ async fn a_server_that_cannot_be_put_in_place_puts_the_old_client_back() {
 async fn two_updates_at_once_install_the_release_once() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
-    let server = new_version(&exe);
-    let archive = release(&server);
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -395,6 +396,6 @@ async fn two_updates_at_once_install_the_release_once() {
     );
     assert_eq!(said("-> 9.9.9-test"), 1, "{outputs:?}");
     assert_eq!(said("is already installed"), 1, "{outputs:?}");
-    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
     assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
 }

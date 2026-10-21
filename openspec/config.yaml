@@ -31,10 +31,12 @@ context: |
   Protocol: the schema is crates/tilr-proto/proto/tilr.proto; clients copy it from here (the
   Tilr app's `server` plugin via `npm run proto`, crates/tilr-driver, the test client), so any
   change there is a protocol change. Both sides ignore message types and fields they do not
-  know. Rule (owner, 2026-10-18, change protocol-v3): PROTOCOL_VERSION
-  (crates/tilr-proto/src/lib.rs; 3 in code) is the mandatory
-  wire contract: a change a peer cannot ignore bumps it, with no compatibility for older
-  clients or servers; HelloAck.features lists only capabilities a server can be run without
+  know. Rule (owner, 2026-10-21): PROTOCOL_VERSION
+  (crates/tilr-proto/src/lib.rs; 1 in code) is the mandatory wire contract.
+  Before the first public release, all protocol changes use version 1 without a bump.
+  Afterward, bump only for a change incompatible with a client or server of the previous
+  public release, once per release as a separate step in its release milestone.
+  HelloAck.features lists only capabilities a server can be run without
   (clipboard, files, host-events, agent, exec), never a flag for a mandatory part. A server
   answers a Hello with another version with an Error and closes. A packet is one binary WebSocket message: flag byte (0 plain, 1 zstd)
   plus a protobuf ClientMessage / ServerMessage. Close codes 4000/4001/4002 are part of the
@@ -71,7 +73,9 @@ context: |
   Cargo.lock is committed and every cargo command runs with --locked. Clippy findings are
   fixed, not silenced; an #[allow] names the lint and says why. No --no-verify.
   Build needs Zig 0.15.2 and protoc (scripts/install-tools.sh) and network on the
-  first build (libghostty-vt-sys clones Ghostty at a pinned commit).
+  first source build (libghostty-vt-sys clones Ghostty at a pinned commit).
+  scripts/build-ghostty-vt.sh builds a reusable static package; PKG_CONFIG_PATH
+  pointing to its share/pkgconfig directory lets clean Cargo targets reuse it.
 
   Release (.github/workflows/release.yml, release-please-config.json):
   release-please on `main` (simple strategy, release PR opened by the GitHub App
@@ -95,7 +99,7 @@ context: |
 rules:
   proposal:
     - State what is out of scope (a "Non-goals" or "Out of scope" bullet list).
-    - Mark every breaking change with **BREAKING** and name the migration; a change to tilr.proto that old clients or servers cannot ignore, to close codes, to the reload state files or to the CDN layout is breaking. Say whether it bumps PROTOCOL_VERSION or adds a feature flag.
+    - Mark every breaking change with **BREAKING** and name the migration; a change to tilr.proto that old clients or servers cannot ignore, to close codes, to the reload state files or to the CDN layout is breaking. State how the protocol version policy above applies and whether it adds a feature flag.
     - Say whether the change has to survive a reload (state handed to the successor) and an update from the previous release.
     - In Why, cite only recorded facts (commit, PR, issue, note, session); write "Rationale not recorded" when unknown.
   specs:
@@ -118,7 +122,7 @@ operations:
       - Take the next change from openspec/ROADMAP.md whose dependencies are archived and that has no Блокер; when its status, scope or dependencies change, update its row there in the same change.
       - Work on the dev branch; do not commit, push or open PRs without explicit permission.
       - Update README.md (the user-facing contract) and USE_CASES.md in the same change as the behavior.
-      - A tilr.proto change also updates the README "Protocol" section and, when incompatible, PROTOCOL_VERSION.
+      - A tilr.proto change also updates the README "Protocol" section and follows the protocol version policy above; an incompatible change does not bump the version during pre-release development.
   archive:
     guidance:
       - Move the change's row in openspec/ROADMAP.md to "Done" with its commit, and drop it from the `Зависит от:` lines of the changes that waited for it.
