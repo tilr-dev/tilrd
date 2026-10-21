@@ -15,8 +15,8 @@ A local forward is "connect from the server's machine to HOST:PORT", which `/soc
 ### D3. Where and who
 The listener binds `127.0.0.1:<port>` only. Any local user can connect to a loopback port (unlike the agent's 0600 socket); hence the switch, off by default like SOCKS (prepared plan, proposal Decision). The forward belongs to the client that asked: it ends when that connection ends (disconnect, 4000 superseded, 4001, 4002, reload). At most 16 forwards per client (`too many forwards`); the 64-stream limit counts agent and forward streams together; a connection beyond it is closed at once.
 
-### D4. Feature naming under the protocol-v3 rule
-`"forward"` in `HelloAck.features` when the server takes `ForwardListen` (it can be run without). `ForwardListen` to a server without it gets `ForwardListening.error` `forwarding is turned off on this server`. Client side, `"forward"` in `Hello.features` says the client takes `tcp-forward` streams; a client that asks for a forward must list it.
+### D4. Feature naming under the protocol version policy
+Per the protocol version policy in `openspec/config.yaml`, version 1 remains unchanged before the first public release. `"forward"` is in `HelloAck.features` when the server takes `ForwardListen` (it can be run without). `ForwardListen` to a server without it gets `ForwardListening.error` `forwarding is turned off on this server`. Client side, `"forward"` in `Hello.features` says the client takes `tcp-forward` streams; a client that asks for a forward must list it.
 
 ### D5. tilr forward
 `tilr forward -L [ADDR:]LPORT:HOST:HPORT` (ADDR defaults to 127.0.0.1) and `-R PORT:HOST:HPORT`, repeatable, connecting as `tilr attach` does (`--connect` / `TILR_CONNECT`, token rules of `tilr-cli`); -L needs a TCP target (the SOCKS path is not on the Unix socket) and says so otherwise. It prints `forwarding 127.0.0.1:<port> on the server to HOST:HPORT` per -R, reconnects with backoff after a loss and asks for its forwards again; Ctrl+C stops it.

@@ -33,4 +33,4 @@ itests group S (rsync-like directory sync) was deferred by Dan on 2026-10-16 ("Ð
 
 ## Impact
 
-New crate and dependencies (`cargo deny` review of quinn/iroh), `crates/tilrd` (endpoint, config, pairing), `tilr.proto` (additive messages; per `protocol-v3` no version bump while clients may ignore them, and `sync` is a feature because it can be off), supervisor state (the UDP socket's descriptor: supervisor-state format bump). The index and paired keys live in the state directory, so they survive reloads and restarts. Not breaking.
+New crate and dependencies (`cargo deny` review of quinn/iroh), `crates/tilrd` (endpoint, config, pairing), `tilr.proto` (additive messages; per the protocol version policy in `openspec/config.yaml`, version 1 without a bump before the first public release; `sync` is a feature because it can be off), supervisor state (the UDP socket's descriptor: supervisor-state format bump). The index and paired keys live in the state directory, so they survive reloads and restarts. Not breaking.

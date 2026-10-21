@@ -2,7 +2,7 @@
 
 ## Context
 
-At 1163abd the server reads one token (`crates/tilrd/src/auth.rs`) and checks it in `Hello` on TCP (`crates/tilrd/src/supervisor.rs:2010-2030`); the Unix socket asks none. Every message a greeted client sends is handled. `HelloAck.features` lists `clipboard`, `ping`, `files`, `host-events`, `agent`, `exec` (protocol-v3 drops `ping`).
+At 1163abd the server reads one token (`crates/tilrd/src/auth.rs`) and checks it in `Hello` on TCP (`crates/tilrd/src/supervisor.rs:2010-2030`); the Unix socket asks none. Every message a greeted client sends is handled. `HelloAck.features` lists `clipboard`, `ping`, `files`, `host-events`, `agent`, `exec` (the protocol version policy in `openspec/config.yaml` excludes `ping` because it is mandatory).
 
 ## Decisions
 
