@@ -1294,8 +1294,12 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
     // line: logged by the handler as it comes (a line the server writes for
     // this test to wait on), or, held across an exec, by the successor as it
     // starts. A sentinel signal sent after the storm is delivered after
-    // every storm signal (or merged with one still pending), so once a
-    // receipt line shows after it, no storm signal is left to come.
+    // every storm signal (or merged with one still pending). `index` counts
+    // the lines read from the server's stderr so far, not the lines it has
+    // written: the receipt waited for here is the first one read after the
+    // storm receipts already read, the sentinel's or a storm one still in
+    // the pipe. The wait for "resumed after reload" below, after whichever
+    // receipt was read last, covers the latter.
     let index = server.log.lock().unwrap().len();
     // SAFETY: kill has no memory-safety preconditions.
     unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
@@ -1318,7 +1322,7 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
                 .rposition(|line| line.contains("SIGUSR1 came"))
                 .unwrap();
             let after = &log[last + 1..];
-            let after = if log[last].contains("SIGUSR1 came: reloading") {
+            let after = if log[last].contains("SIGUSR1 came: reload requested") {
                 after
             } else {
                 match after

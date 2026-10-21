@@ -873,7 +873,7 @@ async fn reload_signal(
     events: mpsc::UnboundedSender<Event>,
 ) {
     while usr1.recv().await.is_some() {
-        tracing::info!("SIGUSR1 came: reloading");
+        tracing::info!("SIGUSR1 came: reload requested");
         if events.send(Event::Reload).is_err() {
             break;
         }

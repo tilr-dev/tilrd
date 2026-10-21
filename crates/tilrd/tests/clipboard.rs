@@ -162,28 +162,34 @@ async fn pasted_content_expires() {
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     let check = script(&server, "check.sh", CLAUDE_CHECK_IMAGE);
-    let stored = tokio::time::Instant::now();
     client.put_clipboard(1, "image/png", &image(100)).await;
     assert!(client.clipboard_ack().await.ok);
-    assert_eq!(client.run(pane_id, &check).await, 0);
-    // Gone once its TTL is over: asked again every 20 ms until then.
-    let deadline = stored + TIMEOUT;
-    let gone = loop {
+    let ack = tokio::time::Instant::now();
+    // Asked every 20 ms until it is gone; `last_present` is the start of
+    // the last check that still found it.
+    let deadline = ack + TIMEOUT;
+    let mut last_present = None;
+    loop {
         let asked = tokio::time::Instant::now();
         if client.run(pane_id, &check).await != 0 {
-            break asked - stored;
+            break;
         }
+        last_present = Some(asked);
         assert!(asked < deadline, "still there after {TIMEOUT:?}");
         tokio::time::sleep(Duration::from_millis(20)).await;
-    };
-    // Only an upper bound: the server stamps the expiry with its own wall
-    // clock in whole milliseconds, after `stored`, so a lower bound of TTL
-    // would be off by up to a millisecond. Counted to the start of the first
-    // check that finds it gone, the time leaves out that check's own run
-    // (long under load): it is at most one poll (20 ms and the run before
-    // it) past the expiry. A second over TTL covers that and still fails a
-    // TTL read wrong (2 s or more).
-    assert!(gone <= TTL + Duration::from_secs(1), "gone after {gone:?}");
+    }
+    let last_present = last_present.expect("not there right after the ack");
+    // The server stamps the expiry before it acks, so the stamp is at most
+    // `ack + TTL`; it and the reader's clock are whole milliseconds, rounded
+    // down. A check that found the content read the store before the stamp
+    // plus 1 ms, and it read it after it started: so it started before
+    // `ack + TTL + 1 ms`, however long the check runs. No bound on when the
+    // content is found gone: that depends on how long the checks take.
+    assert!(
+        last_present < ack + TTL + Duration::from_millis(1),
+        "still there {:?} after the ack",
+        last_present - ack
+    );
 }
 
 /// `printf` of an OSC 52 copy of `base64` to the clipboard.
