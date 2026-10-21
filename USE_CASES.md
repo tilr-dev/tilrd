@@ -120,6 +120,7 @@ real Linux containers with the same FIFO barrier.
 | A runtime directory open to group or others (0755, 0770) or a symbolic link to a private one: `new`, `ls`, `kill-server` refuse naming it and what is wrong, no server is started, nothing is made there; private again, it works (another user's directory: itests UC-03A) | `a_runtime_directory_open_to_others_or_a_link_is_refused_and_nothing_started` |
 | The lock file or `tilrd.log` is a symbolic link: `tilr new` refuses, the link is not followed and its target is intact | `a_symlinked_lock_file_is_refused` |
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
+| Copying a private installation keeps destination writers out of unrelated forked children (FIFO-controlled Linux regression) | `copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork` |
 | `tilr update --cdn` runs in the local server against a loopback release feed, updates an isolated installation, and waits for a connection after reload | `tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
