@@ -886,6 +886,12 @@ connection closed as superseded
 supersedes nobody; an empty `client_id` neither supersedes
 nor is superseded. Numbered input without a stable `client_id` returns
 `Error "numbered input requires a stable client_id"` and is not applied.
+Numbered input naming no running pane receives `Error "no such pane: <name as sent>"`
+followed by `InputAck` for that exact pane string and delivery sequence. This is a
+terminal rejection: the client reclaims that pane's queued input through that sequence,
+and a lost acknowledgement is returned again on replay. It does not change any pane's
+applied counter or add a missing pane to `HelloAck.applied_input`. Unnumbered requests
+receive only the error.
 `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
