@@ -1225,3 +1225,203 @@ fn a_panicking_test_stops_its_copied_daemon_without_a_command_socket() {
         "the copied daemon survived its test without a command socket"
     );
 }
+
+/// A deterministic SSH stand-in: record every invocation and run its remote
+/// shell command locally, with this Machine's private home and server owner.
+fn deploy_ssh(machine: &Machine, uname: &str) -> PathBuf {
+    let bin = machine.dir.join("ssh-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/ssh.calls"
+case "$*" in *'-O exit'*) exit 0;; esac
+while [ "$1" != '--' ]; do shift; done
+shift
+[ "$1" = 'user@host' ] || exit 92
+shift
+if [ "$1" = 'uname -sm' ]; then echo '{uname}'; exit; fi
+exec /bin/sh -c "$1"
+"#
+    );
+    executable_script(&bin.join("ssh"), &script);
+    bin
+}
+
+fn executable_script(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn deploy_archive(machine: &Machine, client: &[u8], server: &[u8]) -> PathBuf {
+    let output = Command::new(TILR).arg("--version").output().unwrap();
+    let version = String::from_utf8(output.stdout).unwrap();
+    let platform = version
+        .split_whitespace()
+        .last()
+        .unwrap()
+        .trim_matches(['(', ')']);
+    let path = machine.dir.join(format!("tilr-9.9.9-{platform}.tar.gz"));
+    let bytes = release_archive(server, client);
+    let sum = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::write(
+        path.with_file_name(format!(
+            "{}.sha256",
+            path.file_name().unwrap().to_str().unwrap()
+        )),
+        sum,
+    )
+    .unwrap();
+    path
+}
+
+fn deploy_uname() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Darwin arm64"
+    } else if cfg!(target_arch = "aarch64") {
+        "Linux aarch64"
+    } else {
+        "Linux x86_64"
+    }
+}
+
+#[test]
+fn deploy_names_a_platform_without_a_release() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, "SunOS i86pc");
+    let output = machine
+        .command(&["deploy", "user@host"])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("user@host runs SunOS i86pc, for which there is no release"),
+        "{err}"
+    );
+    let calls = std::fs::read_to_string(machine.dir.join("ssh.calls")).unwrap();
+    assert!(!calls.contains("sh -c"));
+    assert!(!machine.socket().exists());
+}
+
+#[test]
+fn deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let client = std::fs::read(TILR).unwrap();
+    let server = std::fs::read(Path::new(TILR).with_file_name("tilrd")).unwrap();
+    let archive = deploy_archive(&machine, &client, &server);
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(machine.dir.join(".local/bin/tilr")).unwrap(),
+        client
+    );
+    assert_eq!(
+        std::fs::read(machine.dir.join(".local/bin/tilrd")).unwrap(),
+        server
+    );
+    let token = std::fs::read_to_string(machine.dir.join("state/token")).unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        format!(
+            "ssh -t user@host ~/.local/bin/tilr\nssh -N -L 7890:127.0.0.1:7890 user@host\n{}\n",
+            token.trim()
+        )
+    );
+    let calls = std::fs::read_to_string(machine.dir.join("ssh.calls")).unwrap();
+    assert!(calls.contains("ControlMaster=auto"));
+    assert!(calls.contains("ControlPersist=60"));
+    let control = calls
+        .split_whitespace()
+        .find(|s| s.starts_with("ControlPath="))
+        .unwrap();
+    let dir = control
+        .trim_start_matches("ControlPath=")
+        .trim_end_matches("/%C");
+    assert!(
+        !Path::new(dir).exists(),
+        "private SSH directory removed after deploy"
+    );
+}
+
+#[test]
+fn deploy_refuses_a_damaged_archive_before_sending_it() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let archive = deploy_archive(&machine, b"client", b"server");
+    std::fs::write(&archive, b"damaged").unwrap();
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
+    assert!(!machine.dir.join(".local/bin").exists());
+    assert!(
+        !std::fs::read_to_string(machine.dir.join("ssh.calls"))
+            .unwrap()
+            .contains("sh -c")
+    );
+}
+
+#[test]
+fn deploy_rolls_back_both_programs_when_remote_start_or_service_fails() {
+    for service in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        let installed = machine.dir.join(".local/bin");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("tilr"), b"old client").unwrap();
+        std::fs::write(installed.join("tilrd"), b"old server").unwrap();
+        let client = b"#!/bin/sh\ncase \"$1\" in --version) echo 'tilr 9.9.9';; *) echo 'remote failure' >&2; exit 1;; esac\n";
+        let archive = deploy_archive(&machine, client, b"#!/bin/sh\necho 'tilrd 9.9.9'\n");
+        let mut args = vec!["deploy", "--archive", archive.to_str().unwrap()];
+        if service {
+            args.push("--service");
+        }
+        args.push("user@host");
+        let output = machine
+            .command(&args)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("remote failure"));
+        assert_eq!(
+            std::fs::read(installed.join("tilr")).unwrap(),
+            b"old client"
+        );
+        assert_eq!(
+            std::fs::read(installed.join("tilrd")).unwrap(),
+            b"old server"
+        );
+        assert_eq!(std::fs::read_dir(installed).unwrap().count(), 2);
+        assert!(output.stdout.is_empty());
+    }
+}
