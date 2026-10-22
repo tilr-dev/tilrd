@@ -76,3 +76,8 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 #### Scenario: A new requirement takes an existing scenario
 - **WHEN** an inserted requirement heading moves existing scenario lines out of a requirement that remains in the specification
 - **THEN** the check requires modify authorization for that existing requirement
+
+#### Scenario: Reusing a renamed requirement's former name
+- **WHEN** an own delta renames an existing requirement and another requirement takes its former name
+- **THEN** each rename remains authorized against its own original requirement in dev
+- **AND** modifying or removing the first requirement under its new name requires permission for that original requirement
