@@ -97,6 +97,10 @@ docker run --rm --network none -v "$PWD":/src:ro -w /src python:3.12-slim \
    `docker run --rm ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y --no-install-recommends git >/dev/null && dpkg -S /usr/bin/shasum'`).
    Those fixtures use substitutes for Docker and upload tools and need no release
    credentials.
+   Cargo's `build-script-executed` messages also select the saved build-script
+   stdout files exported in `rust-target/`. Rust runtimes restore these files at
+   their compiled `/target/.../output` paths, so both `build_script` suites can
+   inspect the actual test build's output without access to the shared Cargo cache.
 3. **fixtures** — each fixture is a Dagger layer: parents' `/fx` merged, then
    `python3 -m tt fixture MODULE:NAME` (build, then its mandatory check). *Source tier*
    fixtures have no binaries in the container and survive any code change; *tilr tier*

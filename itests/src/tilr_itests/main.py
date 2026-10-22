@@ -150,7 +150,7 @@ for d in sorted(dirs):
 BUILD = r'''#!/usr/bin/env python3
 import json, os, shutil, subprocess
 out = "/out"
-for d in ("tests", "bin"):
+for d in ("tests", "bin", "rust-target"):
     os.makedirs(f"{out}/{d}")
 # build.rs watches .git/logs/HEAD; without it the build script reruns on every cargo call.
 os.makedirs(".git/logs", exist_ok=True)
@@ -176,6 +176,15 @@ for line in p.stdout.splitlines():
     if not line.startswith("{"):
         continue
     m = json.loads(line)
+    if m.get("reason") == "build-script-executed":
+        # Tests bake OUT_DIR into their executable and read Cargo's saved stdout
+        # beside it. Snapshot only this test build's results, including cached ones,
+        # before the next build can change the shared target cache.
+        output = os.path.join(os.path.dirname(m["out_dir"]), "output")
+        dest = f"{out}/rust-target/{os.path.relpath(output, '/target')}"
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(output, dest)
+        continue
     if m.get("reason") != "compiler-artifact" or not m.get("executable") or not m["profile"]["test"]:
         continue
     package = os.path.basename(os.path.dirname(m["manifest_path"]))
@@ -312,7 +321,7 @@ class TilrItests:
     @function
     def build(self) -> dagger.Directory:
         """bin/ (tilrd, tilr, tilrd-failpoints, tilr-tests, tilrd-next, tilr-next, tilr-driver), tests/ and
-        manifest.json (test suites, versions, platform)."""
+        rust-target/ (build-script stdout) and manifest.json (test suites, versions, platform)."""
         return (
             self._rust("tt-target")
             .with_mounted_cache("/target-next", dag.cache_volume("tt-target-next"))
@@ -364,6 +373,7 @@ class TilrItests:
             self.runtime()
             .with_directory(SRC, self.source)
             .with_directory("/out/tests", out.directory("tests"))
+            .with_directory(TARGET, out.directory("rust-target"))
             .with_file(f"{TARGET}/debug/tilrd", out.file("bin/tilrd-failpoints"))
             .with_file(f"{TARGET}/debug/tilr", out.file("bin/tilr-tests"))
         )
