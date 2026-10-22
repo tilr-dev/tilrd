@@ -111,6 +111,8 @@ When the supervisor's state fits but a pane's does not, that pane process SHALL 
 ### Requirement: Stale state files are swept at start
 A supervisor that starts or has just reloaded SHALL remove `server-*.state` in the runtime directory and `*.state` in `panes/`, and their `.*.state.tmp` temporaries, that are older than one hour.
 
+**Verified by**: `reload::stale_state_files_are_swept_at_start`.
+
 #### Scenario: Leftover from a crashed reload
 - **WHEN** a `server-1234.state` file two hours old is in the runtime directory and the server starts
 - **THEN** the file is removed
@@ -459,7 +461,6 @@ With `failpoints`, each `name=pause` hit configured by `TILR_FAILPOINTS` or `TIL
 
 ## Notes
 
-- Requirements without a test: Stale state files are swept at start.
 - Write-whole state files and the write sweep have no cargo integration test; they are covered by itests UC-064 / UC-065 and by unit tests in `crates/tilrd/src/reload.rs` (`a_state_file_is_replaced_whole_and_nothing_else_is_left`, `a_state_file_that_cannot_be_written_leaves_nothing_behind`).
 - Also covered: `reload::stopping_the_server_ends_the_shells` (SIGTERM without a reload); `uc_061.py::htop_keeps_its_modes_across_a_reload_and_answers_keys_and_the_mouse`, `uc_062.py::ctrl_c_after_a_reload_interrupts_a_foreground_sleep`, `uc_062.py::a_sleep_running_through_a_reload_is_interrupted_by_ctrl_c`.
 - UC-064 and UC-065 were red until 2026-10-17 per itests/USE_CASES.md:136-137 and are green at HEAD; no known red reload case.
