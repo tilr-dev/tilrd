@@ -47,3 +47,4 @@ A client ending normally SHALL stop admitting input, wait until all admitted inp
 #### Scenario: Client cannot request another identity's cleanup
 - **WHEN** a client supplies internal cleanup fields
 - **THEN** ingress clears them and no other identity is removed
+
