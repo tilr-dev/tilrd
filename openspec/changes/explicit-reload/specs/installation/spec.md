@@ -8,3 +8,4 @@ Run with a new release, the installer SHALL rename the new `tilr` into place fir
 #### Scenario: New release over a running server
 - **WHEN** a newer release is published and the installer runs
 - **THEN** stderr says `downloading tilr <new version>` and `the running tilrd reloads itself and keeps its shells`, both executables report the new version, and the server pid, panes, `$KEPT`, `$$` and background job are the same
+

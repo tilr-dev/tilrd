@@ -61,13 +61,13 @@ Each unpacked program SHALL be run as `<staged program> --version` and the relea
 - **THEN** stderr says `tilr <version> does not run on this system` and neither program is installed
 
 ### Requirement: The release is put in place by two renames, the server last
-The update SHALL rename the unpacked `tilr` over `tilr` in the executable's directory first and then the unpacked `tilrd` over the executable (under whatever file name it has), then SHALL explicitly request reload from a running server started from it (see the `reload` spec); the update SHALL NOT start a server if none is running. On success it SHALL print `updated <old> -> <new>: <directory>` and `a running server reloads itself and keeps its shells` and exit 0, leaving only `tilrd` and `tilr` of the release.
+The update SHALL rename the unpacked `tilr` over `tilr` in the executable's directory first and then the unpacked `tilrd` over the executable (under whatever file name it has), so a server started from it notices and reloads (see the `reload` spec); the update restarts nothing. On success it SHALL print `updated <old> -> <new>: <directory>` and `a running server reloads itself and keeps its shells` and exit 0, leaving only `tilrd` and `tilr` of the release.
 
 **Verified by**: `update::update_installs_the_latest_release_and_the_running_server_keeps_its_shells`.
 
 #### Scenario: Update with a pane open
 - **WHEN** a server with a pane holding `KEPT=yes` runs `tilrd update` against a CDN with a newer release
-- **THEN** stdout says `-> 9.9.9-test`, the executable and the `tilr` next to it are the release's, the server logs an explicit reload request, and after reconnecting `test "$KEPT" = yes` exits 0
+- **THEN** stdout says `-> 9.9.9-test`, the executable and the `tilr` next to it are the release's, the server logs `executable changed on disk`, and after reconnecting `test "$KEPT" = yes` exits 0
 
 ### Requirement: The installed release is on disk before success
 Both unpacked programs SHALL be synced to disk before the first rename and the executable's directory after the second, before the update prints `updated`.
