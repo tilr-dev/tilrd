@@ -4,15 +4,58 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
+#[cfg(feature = "failpoints")]
+static LAST_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "failpoints")]
+#[derive(Clone, Copy)]
+pub enum FrameStage {
+    Parse,
+    Build,
+    Encode,
+}
+
+/// Advance only the measurement clock, after the named operation and before
+/// its ending reading. The ending reading supplies the remaining one tick.
+#[cfg(feature = "failpoints")]
+pub fn advance_frame_stage(stage: FrameStage) {
+    let Some(path) = std::env::var_os("TILR_TEST_FRAME_STAGE_TIME_FILE") else {
+        return;
+    };
+    assert!(
+        test_time_file().is_some(),
+        "frame stage timing requires TILR_TEST_TIME_FILE"
+    );
+    let text = std::fs::read_to_string(path).expect("read TILR_TEST_FRAME_STAGE_TIME_FILE");
+    let durations: Vec<u64> = text
+        .split_whitespace()
+        .map(|value| {
+            value
+                .parse()
+                .expect("frame stage durations must be unsigned decimal microseconds")
+        })
+        .collect();
+    assert!(
+        durations.len() == 3 && durations.iter().all(|us| *us > 0),
+        "frame stage timing requires three positive durations: parse build encode"
+    );
+    LAST_US
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |us| us.checked_add(durations[stage as usize] - 1),
+        )
+        .expect("frame stage measurement clock overflow");
+}
+
 /// Monotonic reading used only for pane timing measurements. Scheduling and
 /// operational deadlines continue to use the real `Instant` clock.
 pub fn measurement_instant() -> Instant {
     #[cfg(feature = "failpoints")]
     if let Some(us) = test_time_us() {
         use std::sync::OnceLock;
-        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::atomic::Ordering;
         static BASE: OnceLock<Instant> = OnceLock::new();
-        static LAST_US: AtomicU64 = AtomicU64::new(0);
         // A frame build and its encode must take at least one clock tick even
         // while the shared file is unchanged. The file still sets the next
         // larger value, and readings never go backwards.
