@@ -439,3 +439,29 @@ async fn socks_sessions_run_side_by_side_with_the_terminal() {
     echoes(&mut second, b"second").await;
     echoes(&mut first, b"first").await;
 }
+
+#[tokio::test]
+async fn the_socks_path_is_not_served_on_the_unix_socket() {
+    for enabled in [false, true] {
+        let dir = Server::scratch_dir();
+        let socket = std::env::temp_dir().join(format!("tilr-socks-{}.sock", PaneId::new_v4()));
+        let mut args = vec!["--socket", socket.to_str().unwrap()];
+        if enabled {
+            args.push("--socks");
+        }
+        let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &args);
+        // A main-protocol connection establishes that startup has completed.
+        let mut client = Client::connect(&server).await;
+        client.hello().await;
+        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        match tokio_tungstenite::client_async("ws://localhost/socks", stream).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 404)
+            }
+            other => panic!("expected HTTP 404, got {other:?}"),
+        }
+        if enabled {
+            let _wire = open_with_token(&server).await;
+        }
+    }
+}

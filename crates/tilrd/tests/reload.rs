@@ -1471,3 +1471,64 @@ async fn a_second_server_keeps_its_host_socket_across_a_reload() {
     assert!(sock.exists());
     second.wait_logged("reload").await;
 }
+
+fn age(path: &Path) {
+    assert!(
+        Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[tokio::test]
+async fn stale_state_files_are_swept_at_start() {
+    let dir = Server::scratch_dir();
+    let runtime = dir.join("runtime");
+    std::fs::create_dir_all(runtime.join("panes")).unwrap();
+    let old = [
+        "server-1234.state",
+        ".server-1234.state.tmp",
+        "panes/old.state",
+        "panes/.old.state.tmp",
+    ];
+    let fresh = [
+        "server-5678.state",
+        ".server-5678.state.tmp",
+        "panes/new.state",
+        "panes/.new.state.tmp",
+    ];
+    let unrelated = ["unrelated.state", ".unrelated.state.tmp", "panes/keep.txt"];
+    for name in old.iter().chain(&fresh).chain(&unrelated) {
+        std::fs::write(runtime.join(name), "fixture").unwrap();
+    }
+    for name in old.iter().chain(&unrelated) {
+        age(&runtime.join(name));
+    }
+    let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+    let mut client = Client::connect(&server).await;
+    client.hello().await;
+    for name in old {
+        assert!(!runtime.join(name).exists(), "not swept: {name}");
+    }
+    for name in fresh.iter().chain(&unrelated) {
+        assert!(runtime.join(name).exists(), "removed: {name}");
+    }
+    // The same sweep runs when a supervisor has just reloaded.
+    for name in old {
+        std::fs::write(runtime.join(name), "fixture").unwrap();
+        age(&runtime.join(name));
+    }
+    let _client = reload(&server, client).await;
+    for name in old {
+        assert!(
+            !runtime.join(name).exists(),
+            "not swept after reload: {name}"
+        );
+    }
+    for name in fresh.iter().chain(&unrelated) {
+        assert!(runtime.join(name).exists(), "removed after reload: {name}");
+    }
+}

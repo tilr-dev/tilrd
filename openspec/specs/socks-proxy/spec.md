@@ -23,6 +23,8 @@ The server SHALL serve the proxy only with `--socks` or `socks = true` in its co
 ### Requirement: The SOCKS WebSocket is on the TCP port only
 `GET /socks` SHALL be served only on the TCP port; on the Unix socket a handshake for `/socks` MUST be refused with 404 whether the proxy is on or off. Any other path is the main protocol.
 
+**Verified by**: `socks::the_socks_path_is_not_served_on_the_unix_socket`.
+
 #### Scenario: Over the Unix socket
 - **WHEN** a client opens a WebSocket for `/socks` on the server's Unix socket of a server run with `--socks`
 - **THEN** the handshake is refused with 404
@@ -133,6 +135,8 @@ A domain name in a CONNECT SHALL be resolved on the server ("remote DNS"). `loca
 ### Requirement: The client must say where it goes within 10 s
 A SOCKS session SHALL be given 10 s from its first byte to finish the negotiation and the request; one that has not MUST be closed. (The time to the first byte is the port's handshake timeout, see the `daemon-lifecycle` spec.)
 
+**Verified by**: `socks::a_session_that_does_not_say_where_it_goes_is_closed`.
+
 #### Scenario: A client that stalls
 - **WHEN** a raw SOCKS client sends its greeting and then nothing for 10 s
 - **THEN** the server closes the connection
@@ -166,7 +170,7 @@ A SOCKS session SHALL end, and the target see its connection end, when the clien
 
 ## Notes
 
-- Requirements without a test: "The SOCKS WebSocket is on the TCP port only", "The client must say where it goes within 10 s". Parts without a test: replies `03`, `04`, `08` and `01`; the 10 s connect timeout.
+- Parts without a test: replies `03`, `04`, `08` and `01`; the 10 s connect timeout.
 - No itests case cited here is currently red per itests/USE_CASES.md.
 - The proxy does not use the protocol's `StreamOpen` / `StreamData` / `StreamClose`: each SOCKS session is a WebSocket (`/socks`) or TCP connection of its own. "Through the client" (UC-074) means the client on the user's machine opening a local SOCKS port and carrying each connection to `/socks` (tilr-driver's `socks_listen`); the `tilr` client at HEAD has no such command.
 - UC-085 (foreign Origin / DNS rebinding on `/socks`) is listed in itests/USE_CASES.md without a scenario.
