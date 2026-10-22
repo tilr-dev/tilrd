@@ -464,6 +464,38 @@ impl Server {
             .any(|line| line.contains(needle))
     }
 
+    /// Count accepted startup events so a second replacement cannot reuse
+    /// the first probe's event.
+    pub fn formats_started(&self) -> usize {
+        self.log
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .iter()
+            .filter(|line| line.contains("state-formats successor started"))
+            .count()
+    }
+
+    /// Startup gets the ordinary harness bound. Verdict/client waits begin
+    /// only after this event, separately from launch admission.
+    pub async fn wait_formats_started(&self, after: usize) {
+        #[cfg(feature = "failpoints")]
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let changed = self.log_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.formats_started() > after {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("successor did not start\n{}", log_text(&self.log)));
+        #[cfg(not(feature = "failpoints"))]
+        let _ = after;
+    }
+
     /// Wait up to [`TIMEOUT`] for the server to log a line with `needle`.
     pub async fn wait_logged(&self, needle: &str) {
         self.wait_logged_within(needle, TIMEOUT).await;

@@ -847,6 +847,8 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    #[cfg(feature = "failpoints")]
+    wait_logged(&daemon, "state-formats successor started");
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",
@@ -871,6 +873,8 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    #[cfg(feature = "failpoints")]
+    wait_logged(&daemon, "state-formats successor started");
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",

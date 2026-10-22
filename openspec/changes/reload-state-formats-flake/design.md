@@ -80,7 +80,14 @@ time past ten seconds, and verifies that only the opted-in probe survives. It
 then releases startup and waits for a second FIFO event after acknowledgment,
 which proves the execution timer is active. One branch releases execution and
 checks formats; another advances virtual time and proves execution still times
-out. Actual FIFO I/O runs with the real clock so Tokio cannot auto-advance a
-pending execution timer while a blocking filesystem worker completes an event.
+out. FIFO events use nonblocking descriptors with cancelable readiness waits; no
+blocking filesystem worker can be stranded if the probe fails first. Actual I/O
+runs with the real clock so virtual time advances only at controlled holds.
 No host delay, retry, or enlarged limit is used. The existing outer harness
 bounds still report missing startup events as test failures.
+
+The parent logs each accepted startup marker. Scoped tests wait for a new
+startup event under the standard harness bound before starting their existing
+verdict/client waits. Repeated replacements count events so they cannot reuse
+an earlier probe's readiness. This isolates launch admission from both the
+internal execution deadline and the outer verdict window.

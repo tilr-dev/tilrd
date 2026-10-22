@@ -202,6 +202,7 @@ async fn check_started_executable(
     if marker != "tilrd-state-formats-started\n" {
         bail!("{} state-formats did not signal startup", exe.display());
     }
+    tracing::info!("state-formats successor started");
     let execution = async {
         // This acknowledgment is inside the execution deadline. A child can
         // start its work only after the parent has installed that deadline.
@@ -887,6 +888,32 @@ mod tests {
         }
     }
 
+    /// Nonblocking FIFO reads can be canceled by select without leaving a
+    /// filesystem worker stranded when a probe unexpectedly fails.
+    async fn read_fifo_event(path: &Path, expected: &[u8]) {
+        use std::io::Read;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap();
+        // SAFETY: this owned nonblocking FIFO stays open and registered
+        // until AsyncFd is dropped; no other code closes its descriptor.
+        let file = unsafe { tokio::io::unix::AsyncFd::register(file) }.unwrap();
+        let mut bytes = vec![0; expected.len()];
+        let mut at = 0;
+        while at < bytes.len() {
+            let mut ready = file.readable().await.unwrap();
+            if let Ok(result) = ready.try_io(|fd| fd.get_ref().read(&mut bytes[at..])) {
+                let count = result.unwrap();
+                assert_ne!(count, 0, "FIFO closed before its event");
+                at += count;
+            }
+        }
+        assert_eq!(bytes, expected);
+    }
+
     #[tokio::test]
     async fn delayed_formats_fixture() {
         use std::future::Future;
@@ -947,7 +974,7 @@ mod tests {
                 .is_pending()
         );
         // Hold before the readiness event to reproduce launch admission.
-        assert_eq!(tokio::fs::read(&arrived).await.unwrap(), b"arrived");
+        read_fifo_event(&arrived, b"arrived").await;
         tokio::time::pause();
         tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
         let verdict = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
@@ -971,7 +998,7 @@ mod tests {
         // the child announces this second controlled hold.
         tokio::select! {
             result = &mut probe => panic!("probe finished before execution release: {result:?}"),
-            event = tokio::fs::read(&executing) => assert_eq!(event.unwrap(), b"executing"),
+            () = read_fifo_event(&executing, b"executing") => {},
         }
         if policy == "complete" {
             finish_writer.write_all(b"finish\n").unwrap();
