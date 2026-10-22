@@ -289,7 +289,7 @@ An attached client SHALL detect lost connections and reconnect with the same `cl
 
 #### Scenario: Reload of the server
 - **WHEN** the server reloads while `tilr` is attached
-- **THEN** `tilr` reconnects, checks `ListPanes` for its pane, subscribes again, and admitted input typed before, during and after the disconnection reaches the pane exactly once, in order
+- **THEN** `tilr` reconnects, checks `ListPanes` for its pane, subscribes again, and admitted input typed before, during and after the disconnection reaches the pane without loss and in order; replay may duplicate input applied but not acknowledged before reload
 
 #### Scenario: SIGKILLed server
 - **WHEN** the local tilrd is killed with SIGKILL, so its socket refuses and its lock is free
