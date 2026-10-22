@@ -207,7 +207,7 @@ async fn a_session_that_does_not_say_where_it_goes_is_closed() {
     let dir = Server::scratch_dir();
     let clock = dir.join("clock");
     const START_US: u64 = 1_700_000_000_000_000;
-    std::fs::write(&clock, START_US.to_string()).unwrap();
+    set_test_time(&clock, START_US);
     let server = Server::start_with_env(
         dir,
         &["--socks"],

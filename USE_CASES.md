@@ -6,7 +6,7 @@ in `crates/tilrd/tests/`, the shared harness in `tests/common/mod.rs`; the tests
 of the client `tilr` live in `crates/tilr/tests/` (they run `tilr`, which starts
 the `tilrd` built next to it).
 
-Run: `cargo test --workspace --features tilrd/failpoints --locked`; on Linux from
+Run: `cargo nextest run --workspace --features tilrd/failpoints --locked`; on Linux from
 another OS, `scripts/linux.sh`. Use cases with a failure halfway through
 (marked †) make something go wrong at a given place in the code through
 failpoints (`src/fail.rs`) and are compiled only with that feature.
@@ -98,11 +98,31 @@ real Linux containers with the same FIFO barrier.
 | A server on its socket alone (`--no-listen`) does not reload into an executable that cannot take the socket (`state-formats` without `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
 | Nor does a server with a TCP port and its socket: the socket would be left with nobody serving it | `a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` |
 | † A reload refused by the check of the successor: the same connection, new connections through the socket, the lock still held | `a_refused_reload_keeps_the_socket_and_its_lock` |
+| Private test installations share warmed inodes; repeated replacements alternate them and consume the staged path | `warm_executable_links_reuse_inodes_and_replace_repeatedly` |
+
+## Acknowledged input — `tests/input_delivery.rs`
+
+| Use case | Test |
+| --- | --- |
+| A numbered Resize publishes its applied dimensions while earlier PTY input is blocked; cumulative delivery stays pending until the program reads | `input_delivery::a_numbered_resize_updates_the_pane_list_while_pty_input_waits` |
+| Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
+| Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
+| All six numbered input variants naming an absent UUID or malformed pane name receive an error and terminal acknowledgement; lost acknowledgements are repeated after reconnect, reclaiming entries without discarding another pane's pending input, while unnumbered input and controls receive only errors | `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect` |
+| A pane held before its Hello probe is killed; concurrent handshakes retain healthy counters and input applies once | `input_delivery::a_stuck_pane_does_not_block_other_panes_hello` |
+| Completed identities finalize and lose their counters, refusing further numbered input on the old connection | `finalized_sessions_do_not_accumulate_delivery_history` |
+| Expired disconnected sessions lose counters; active sessions retain them | `expired_sessions_are_removed_but_active_sessions_are_retained` |
+| Internal cleanup fields cannot be forged at client ingress | `clients_cannot_forge_internal_delivery_cleanup` |
+| Exec resets delivery history but preserves queued PTY bytes | `exec_resets_delivery_history_and_preserves_pending_bytes` |
+| The driver drains pending input before normal disconnect finalizes its session | `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing` |
+| Expiry removes delivery markers without discarding pending PTY bytes | `expiry_preserves_pending_bytes_without_stale_ack_markers` |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
 | Use case | Test |
 |---|---|
+| Normal detach finalizes acknowledged input | `normal_detach_finalizes_its_acknowledged_input` |
+| Detach with pending input while disconnected exits promptly without finalizing | `detach_with_unacknowledged_input_while_disconnected` |
+| Detach while a connected server withholds input ACKs exits promptly without finalizing | `detach_with_unacknowledged_input_while_connected` |
 | The first `tilr` starts a detached server (a session of its own, not its child, with TCP on loopback), the next one connects to the same; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
 | The TCP port is taken (the Tilr app, another user): a server started by `tilr` starts anyway, with a warning in the log, on the socket only | `a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken` |
 | Six `tilr` at once on an empty machine: one server, a second is not even started | `tilr_started_many_times_at_once_starts_one_server` |
@@ -116,9 +136,12 @@ real Linux containers with the same FIFO barrier.
 | Deploy validates a release, installs both programs over SSH and prints connection commands and the remote token; unsupported platforms and damaged archives change nothing | `deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `deploy_names_a_platform_without_a_release`, `deploy_refuses_a_damaged_archive_before_sending_it` |
 | Deploy obtains the persistent token before replacing an installed client whose protocol differs from the new release; a failed service install restores its previous configuration | `deploy_gets_the_token_before_replacing_an_old_protocol_client`, `deploy_restores_service_configuration_when_the_manager_refuses_it`, `deploy_restores_the_crontab_after_a_service_failure` |
 | Fetch-release checks a foreign-platform archive and rejects a bad checksum without executing its programs | `fetch_release_writes_a_checked_archive`, `fetch_release_refuses_a_bad_checksum` |
+| Copying a private installation keeps destination writers out of unrelated forked children (FIFO-controlled Linux regression) | `copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork` |
 | `tilr update --cdn` runs in the local server against a loopback release feed, updates an isolated installation, and waits for a connection after reload | `tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` |
+| The client requests no update execution timeout and keeps waiting through a day of virtual time until the command exits successfully | `conn::update_wait_tests::update_waits_for_command_exit_after_a_long_launch_delay` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
+| On initial attach and reconnect, a terminal sends its current size before Subscribe, restoring a pane resized by another client | `reconnect_restores_terminal_size_before_subscribing` |
 | An attached `tilr` uses the same client id in `PaneInfo.viewed_by` before and after a server reload | `reconnects_say_the_same_client_id` |
 | `tilr kill` closes a pane by id or via `$TILR_PANE`, waits for each to disappear, and reports `no panes` when none remain | `kill_closes_the_named_pane_and_the_current_one` |
 | A second connection says `Hello` with an attached `tilr`'s client id (read from `PaneInfo.viewed_by`) on the same socket: `tilr` is closed as superseded (4000), prints `[superseded by another connection of this client]`, restores the terminal and exits 0 without reconnecting; the pane stays | `an_attach_superseded_by_its_own_client_id_ends` |
@@ -226,9 +249,11 @@ Cloud repository.
 | Upload-only checks each requested platform and leaves other platforms alone | `upload_only_checks_what_was_built_and_leaves_other_platforms_alone` |
 | The installer (`scripts/install.sh`) is uploaded after every platform's `latest`, and not at all after a failed upload | `the_installer_is_uploaded_after_latest` |
 | The updater finds and installs the archive built by `release.sh` through a local CDN | `the_layout_release_sh_writes_is_what_tilrd_update_reads` |
-| Linux builds use the pinned Debian 12 image; build tools are checksum pinned and used in CI and release builds | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
+| Linux builds use the pinned Debian 12 image; build tools (Zig, protoc, cargo-nextest) are checksum pinned and used in CI, release builds and the container | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
 | The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
+| AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
+| Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
@@ -285,6 +310,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
@@ -445,7 +471,8 @@ pane process. The server's counters are at `GET /metrics`.
 | Use case | Test |
 |---|---|
 | Before any input `last_input_seq` = 0; frames after input with `seq` carry it, `timing` is always there, `build_us` > 0, a frame with output has `output_bytes` and `reads`; input without `seq` does not disturb the number; a `Scroll` with `seq` that moved nothing gets its own frame; a client numbering from 1 without `seq_base` works | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
-| Input that changed nothing on screen (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
+| A no-op scroll while output is accumulated: one frame carries the scroll seq and the changed output; after the final prompt, another no-op scroll gets an empty frame | `a_no_op_scroll_frame_includes_accumulated_output` |
+| Input that changed nothing on screen with no pending output (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
 | Reconnecting (a page reload): the new `seq_base` is greater than the old one; the full frame carries the old connection's number, not its own; input of the new one carries its number | `a_client_that_reconnects_tells_its_input_from_before` |
 | Two clients on one pane: each has its own `seq_base`, both see the numbers of both, in order | `two_clients_on_one_pane_each_see_their_own_input` |
 | `Scroll` is credited at once, although keyboard input is still waiting for the pty (1 MiB in a pty with no reader) | `a_scroll_is_credited_while_key_input_waits_for_the_pty` |

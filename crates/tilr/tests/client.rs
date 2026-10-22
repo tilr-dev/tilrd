@@ -22,6 +22,111 @@ mod server_owner;
 
 const TILR: &str = env!("CARGO_BIN_EXE_tilr");
 
+/// Keep destination writers out of this multithreaded test process. A
+/// concurrent fork (e.g. a terminal test's pre_exec) otherwise inherits the
+/// writer until exec, making a freshly copied executable ETXTBSY on Linux.
+fn copy_program(source: &Path, destination: &Path) {
+    let output = Command::new("/bin/cp")
+        .arg(source)
+        .arg(destination)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "copy {} to {}: {}",
+        source.display(),
+        destination.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork() {
+    use std::ffi::CString;
+    use std::os::unix::net::UnixStream;
+
+    let machine = Machine::new();
+    let fifo = machine.dir.join("copy.fifo");
+    let name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: name is a NUL-terminated path, and mkfifo retains no pointers.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let source = machine.dir.join("source");
+    // Larger than a Linux pipe's capacity; copying cannot finish after the
+    // first byte is read. The FIFO exposes the exact open-writer window.
+    let length = 4 * 1024 * 1024;
+    std::fs::write(&source, vec![b'x'; length]).unwrap();
+    let destination = fifo.clone();
+    let copier = std::thread::spawn(move || copy_program(&source, &destination));
+    let mut reader = std::fs::File::open(&fifo).unwrap();
+    // SAFETY: fcntl queries an owned FIFO descriptor.
+    let capacity = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETPIPE_SZ) };
+    assert!(capacity > 0 && (capacity as usize) < length - 1);
+    reader.read_exact(&mut [0]).unwrap();
+
+    // Positive control for the reported errno: the same inherited-writer
+    // mechanism makes a regular executable busy even after its parent closes it.
+    let executable = machine.dir.join("busy-program");
+    copy_program(Path::new("/bin/true"), &executable);
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&executable)
+        .unwrap();
+    let (release, held) = UnixStream::pair().unwrap();
+    let held_fd = held.as_raw_fd();
+    // SAFETY: the child only calls async-signal-safe read and _exit. In
+    // particular it never runs Rust destructors or touches allocator locks.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        unsafe {
+            let mut byte = 0u8;
+            libc::read(held_fd, (&raw mut byte).cast(), 1);
+            libc::_exit(0);
+        }
+    }
+    struct HeldFork(i32, UnixStream);
+    impl Drop for HeldFork {
+        fn drop(&mut self) {
+            let _ = self.1.write_all(b"r");
+            // SAFETY: this is our own child, which exits on release.
+            unsafe { libc::waitpid(self.0, std::ptr::null_mut(), 0) };
+        }
+    }
+    let _child = HeldFork(pid, release);
+    drop(held);
+    let drained = std::io::copy(
+        &mut (&mut reader).take((length - 1) as u64),
+        &mut std::io::sink(),
+    )
+    .unwrap();
+    assert_eq!(drained, (length - 1) as u64);
+    copier.join().unwrap();
+    drop(writer);
+    assert_eq!(
+        Command::new(&executable)
+            .status()
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ETXTBSY)
+    );
+    // SAFETY: set nonblocking on our reader so a leaked writer reports
+    // WouldBlock immediately instead of hanging the test waiting for EOF.
+    unsafe {
+        let flags = libc::fcntl(reader.as_raw_fd(), libc::F_GETFL);
+        assert_eq!(
+            libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
+            0
+        );
+    }
+    assert_eq!(
+        reader
+            .read(&mut [0])
+            .expect("copier left an inherited writer open"),
+        0
+    );
+}
+
 /// A machine of the test's own: the runtime, state and config directories
 /// of a user who runs nothing yet.
 struct Machine {
@@ -58,9 +163,9 @@ impl Machine {
         let bin = self.dir.join("bin");
         std::fs::create_dir(&bin).unwrap();
         self.tilr = bin.join("tilr");
-        std::fs::copy(TILR, &self.tilr).unwrap();
+        copy_program(Path::new(TILR), &self.tilr);
         let server = bin.join("tilrd");
-        std::fs::copy(Path::new(TILR).with_file_name("tilrd"), &server).unwrap();
+        copy_program(&Path::new(TILR).with_file_name("tilrd"), &server);
         server
     }
 
@@ -534,6 +639,65 @@ fn server_commands_run_in_the_server() {
     assert!(!remote.status.success());
 }
 
+/// A fresh staged path can wait for macOS launch assessment before main.
+/// The updater's existing confirmation follows both staged --version checks
+/// and installation. Wait for that event without a launch deadline, then
+/// start the bounded reload observation. Preserve all stdout, including any
+/// bytes the reader buffered beyond the confirmation.
+fn observe_reload_after_install(stdout: &mut impl BufRead, observe: impl FnOnce()) -> Vec<u8> {
+    let mut captured = Vec::new();
+    loop {
+        let start = captured.len();
+        let read = stdout.read_until(b'\n', &mut captured).unwrap();
+        assert_ne!(
+            read,
+            0,
+            "updater closed stdout before installation: {}",
+            String::from_utf8_lossy(&captured)
+        );
+        if captured[start..].starts_with(b"updated ") {
+            break;
+        }
+    }
+    observe();
+    captured
+}
+
+#[test]
+fn reload_observation_waits_for_install_confirmation() {
+    use std::cell::Cell;
+
+    // Each read is a controlled updater event. No elapsed time can substitute
+    // for the second event: until it arrives the staged launch is unfinished.
+    struct UpdateOutput<'a>(&'a Cell<usize>);
+    impl Read for UpdateOutput<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let event: &[u8] = match self.0.get() {
+                0 => b"downloading tilr 9.9.9-test\n",
+                1 => b"updated old -> new: /bin\na running server reloads itself\n",
+                _ => return Ok(0),
+            };
+            assert!(buf.len() >= event.len());
+            buf[..event.len()].copy_from_slice(event);
+            self.0.set(self.0.get() + 1);
+            Ok(event.len())
+        }
+    }
+    let events = Cell::new(0);
+    let observed = Cell::new(false);
+    let mut stdout = BufReader::new(UpdateOutput(&events));
+    let mut captured = observe_reload_after_install(&mut stdout, || {
+        assert_eq!(events.get(), 2, "both staged launches must finish first");
+        observed.set(true);
+    });
+    assert!(observed.get());
+    stdout.read_to_end(&mut captured).unwrap();
+    assert_eq!(
+        captured,
+        b"downloading tilr 9.9.9-test\nupdated old -> new: /bin\na running server reloads itself\n"
+    );
+}
+
 #[test]
 fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     let mut machine = Machine::new();
@@ -594,15 +758,20 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
         .expect("the local server requests the release archive");
     let mut hidden = HiddenSocket::hide(machine.socket());
     send_archive.send(()).unwrap();
-    eventually("the updated server resumes after reload", || {
-        machine.log().contains("resumed after reload with")
+    let mut stdout = BufReader::new(update.stdout.take().unwrap());
+    let mut captured_stdout = observe_reload_after_install(&mut stdout, || {
+        eventually("the updated server resumes after reload", || {
+            machine.log().contains("resumed after reload with")
+        });
     });
     assert!(
         update.try_wait().unwrap().is_none(),
         "tilr update waits for a connection to the reloaded server"
     );
     hidden.restore();
-    let output = update.wait_with_output().unwrap();
+    stdout.read_to_end(&mut captured_stdout).unwrap();
+    let mut output = update.wait_with_output().unwrap();
+    output.stdout = captured_stdout;
     assert!(
         output.status.success(),
         "tilr update: {output:?}\n--- server log ---\n{}",
@@ -981,10 +1150,14 @@ const FAKE_PANE: &str = "fake-pane-0123456789";
 enum Serve {
     /// Hello, the pane list, a frame on Subscribe; then it closes.
     ThenClose,
+    /// Close after receiving a key, before acknowledging it.
+    CloseOnKey,
     /// Hello, then it closes on `ListPanes` without answering.
     CloseOnListPanes,
     /// Accepts and says nothing, not even the WebSocket handshake.
     Silent,
+    /// Keep the connection open but never acknowledge keys.
+    WithoutKeyAck,
     /// Everything, for as long as the client stays.
     Fully,
 }
@@ -996,6 +1169,8 @@ struct FakeServer {
     accepted: std::sync::Arc<AtomicU32>,
     /// The text of the keys it was sent.
     keys: std::sync::mpsc::Receiver<String>,
+    subscriptions: std::sync::mpsc::Receiver<(usize, u32, u32)>,
+    finalized: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeServer {
@@ -1004,6 +1179,8 @@ impl FakeServer {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let accepted = std::sync::Arc::new(AtomicU32::new(0));
         let (key_tx, keys) = std::sync::mpsc::channel();
+        let (size_tx, subscriptions) = std::sync::mpsc::channel();
+        let (finalize_tx, finalized) = std::sync::mpsc::channel();
         let counter = accepted.clone();
         std::thread::spawn(move || {
             for (n, stream) in listener.incoming().enumerate() {
@@ -1011,13 +1188,19 @@ impl FakeServer {
                 let serve = script[n.min(script.len() - 1)];
                 counter.fetch_add(1, Ordering::SeqCst);
                 let keys = key_tx.clone();
-                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys));
+                let sizes = size_tx.clone();
+                let finalized = finalize_tx.clone();
+                std::thread::spawn(move || {
+                    fake_connection(stream, serve, n + 1, &keys, &sizes, &finalized)
+                });
             }
         });
         Self {
             url,
             accepted,
             keys,
+            subscriptions,
+            finalized,
         }
     }
 
@@ -1031,6 +1214,8 @@ fn fake_connection(
     serve: Serve,
     number: usize,
     keys: &std::sync::mpsc::Sender<String>,
+    sizes: &std::sync::mpsc::Sender<(usize, u32, u32)>,
+    finalized: &std::sync::mpsc::Sender<()>,
 ) {
     use tilr_proto::{
         ClientMessage, Frame, HelloAck, PaneInfo, PaneList, Row, Run, ServerMessage,
@@ -1048,11 +1233,18 @@ fn fake_connection(
             msg,
         ))))
     };
+    // Model a pane resized by another client before each connection.
+    let (mut cols, mut rows) = (132, 43);
     while let Ok(message) = ws.read() {
         let Message::Binary(packet) = message else {
             continue;
         };
-        let Ok(ClientMessage { msg: Some(msg), .. }) = tilr_proto::decode(&packet) else {
+        let Ok(ClientMessage {
+            msg: Some(msg),
+            input_seq,
+            ..
+        }) = tilr_proto::decode(&packet)
+        else {
             continue;
         };
         let sent = match msg {
@@ -1079,7 +1271,26 @@ fn fake_connection(
                     request_id: list.request_id,
                 }),
             ),
+            client_message::Msg::FinalizeInput(_) => {
+                let _ = finalized.send(());
+                Ok(())
+            }
+            client_message::Msg::Resize(size) => {
+                (cols, rows) = (size.cols, size.rows);
+                if input_seq != 0 {
+                    send(
+                        &mut ws,
+                        server_message::Msg::InputAck(tilr_proto::InputAck {
+                            pane_id: size.pane_id,
+                            seq: input_seq,
+                        }),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
             client_message::Msg::Subscribe(_) => {
+                let _ = sizes.send((number, cols, rows));
                 let frame = send(
                     &mut ws,
                     server_message::Msg::Frame(Frame {
@@ -1107,7 +1318,19 @@ fn fake_connection(
             }
             client_message::Msg::Key(key) => {
                 let _ = keys.send(key.text);
-                Ok(())
+                if matches!(serve, Serve::CloseOnKey) {
+                    return;
+                }
+                if matches!(serve, Serve::WithoutKeyAck) {
+                    continue;
+                }
+                send(
+                    &mut ws,
+                    server_message::Msg::InputAck(tilr_proto::InputAck {
+                        pane_id: key.pane_id,
+                        seq: input_seq,
+                    }),
+                )
             }
             _ => Ok(()),
         };
@@ -1131,6 +1354,25 @@ fn attach_to_fake(machine: &Machine, server: &FakeServer) -> Terminal {
     let mut terminal = Terminal::spawn(command);
     terminal.expect("fake screen 1");
     terminal
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[test]
+fn normal_detach_finalizes_its_acknowledged_input() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x\x1dd");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    server
+        .finalized
+        .recv_timeout(Duration::from_secs(15))
+        .expect("detach did not finalize its input session");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 #[test]
@@ -1175,6 +1417,47 @@ fn detach_works_while_a_reconnect_attempt_hangs() {
     let took = start.elapsed();
     assert!(took < Duration::from_secs(1), "detached after {took:?}");
     assert!(terminal.child.wait().unwrap().success());
+}
+
+// @spec tilr-cli/reconnect-attempts
+#[test]
+fn detach_with_unacknowledged_input_while_disconnected() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Silent]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    terminal.expect("tilr: disconnected (");
+    // Both events are read while reconnecting: y enters the delivery queue first.
+    let start = Instant::now();
+    terminal.write("y\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn detach_with_unacknowledged_input_while_connected() {
+    let machine = Machine::new();
+    // Model a full PTY: the server receives the key but cannot acknowledge it.
+    let server = FakeServer::start(vec![Serve::WithoutKeyAck]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    let start = Instant::now();
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
 }
 
 #[test]
@@ -1561,4 +1844,58 @@ esac
         }
         assert!(output.stdout.is_empty());
     }
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+#[test]
+fn attach_replays_a_key_when_the_connection_ends_without_an_ack() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    terminal.expect("fake screen 2");
+    terminal.write("y");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "y"
+    );
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn reconnect_restores_terminal_size_before_subscribing() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    let first = server
+        .subscriptions
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    let second = server
+        .subscriptions
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(
+        second,
+        (2, 80, 24),
+        "reconnect must reclaim the terminal size before Subscribe"
+    );
+    assert_eq!(first, (1, 80, 24));
 }

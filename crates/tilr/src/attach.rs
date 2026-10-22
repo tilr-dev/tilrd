@@ -8,7 +8,7 @@
 //!
 //! A connection that drops (the network, the server reloading) is made
 //! again with the same client id; meanwhile the bottom row says so, and
-//! what is typed is dropped, not sent later, and Ctrl+] d still detaches. A
+//! input is buffered until acknowledged, and Ctrl+] d still detaches. A
 //! local server that is gone for good (its socket nobody's) ends the attach,
 //! as does a close as superseded (4000): another connection says `Hello`
 //! with this client's id, and reconnecting would take the pane back from it
@@ -58,6 +58,8 @@ const SILENT_FOR: Duration = Duration::from_secs(15);
 /// Waits between reconnect attempts: from the first to the last, doubling.
 const RETRY_FIRST: Duration = Duration::from_millis(100);
 const RETRY_LAST: Duration = Duration::from_secs(2);
+/// Give already sent input a brief chance to finish without delaying detach.
+const DETACH_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// How an attach ended.
 pub enum Exit {
@@ -162,9 +164,50 @@ enum Keyed {
     Nothing,
 }
 
+/// Finalize only after all ACKs, within the same short budget as draining them.
+/// Otherwise the disconnected identity expires on the server.
+async fn finish_input(
+    conn: Option<&mut Conn>,
+    delivery: &mut tilr_proto::input::Outbox,
+) -> Result<Exit> {
+    if let Some(live) = conn {
+        let _ = tokio::time::timeout(DETACH_TIMEOUT, async {
+            while delivery.pending().next().is_some() {
+                if let server_message::Msg::InputAck(ack) = live.recv().await? {
+                    delivery.acknowledge(&ack);
+                }
+            }
+            live.send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+                .await
+        })
+        .await;
+    }
+    Ok(Exit::Detached)
+}
+
 impl Attach<'_> {
+    fn input_event(&mut self, event: Event) -> Keyed {
+        let message = match event {
+            Event::Key(key) => return self.key(&key),
+            Event::Mouse(mouse) => mouse_message(self.pane_id, &mouse, self.mouse_captured),
+            Event::Paste(text) => Some(Msg::Paste(Paste {
+                pane_id: self.pane_id.to_owned(),
+                text,
+            })),
+            Event::Resize(cols, rows) if cols > 0 && rows > 0 => {
+                Some(resize(self.pane_id, cols, rows))
+            }
+            _ => None,
+        };
+        message.map_or(Keyed::Nothing, Keyed::Send)
+    }
+
     async fn event_loop(&mut self, conn: Conn) -> Result<Exit> {
         let mut input = EventStream::new();
+        let mut delivery = tilr_proto::input::Outbox::default();
+        for ack in &conn.applied_input {
+            delivery.acknowledge(ack);
+        }
         let mut conn = Some(conn);
         if let Some(conn) = &mut conn {
             subscribe(conn, self.pane_id).await?;
@@ -175,9 +218,7 @@ impl Attach<'_> {
         let mut next_attempt = Instant::now();
         loop {
             let Some(live) = &mut conn else {
-                // Disconnected: keys other than the prefix's are dropped,
-                // and they are read while an attempt runs, so Ctrl+] d
-                // drops the attempt.
+                // Retain input while connecting; the detach prefix remains available.
                 let (target, client_id, pane_id) = (self.target, self.client_id, self.pane_id);
                 let wait = next_attempt;
                 let mut pending = std::pin::pin!(async move {
@@ -188,18 +229,40 @@ impl Attach<'_> {
                     tokio::select! {
                         outcome = &mut pending => break outcome,
                         event = input.next() => {
-                            let Some(event) = event else { return Ok(Exit::Detached) };
-                            if let Event::Key(key) = event?
-                                && let Keyed::Detach = self.key(&key)
-                            {
-                                return Ok(Exit::Detached);
+                            let Some(event) = event else { return finish_input(None, &mut delivery).await };
+                            match self.input_event(event?) {
+                                Keyed::Detach => return finish_input(None, &mut delivery).await,
+                                Keyed::Send(msg) => {
+                                    if let Err(err) = delivery.push(msg.into()) { status(err)?; }
+                                }
+                                Keyed::Nothing => {}
                             }
                         }
                     }
                 };
                 attempts += 1;
                 match outcome {
-                    Attempt::Connected(fresh) => {
+                    Attempt::Connected(mut fresh) => {
+                        for ack in &fresh.applied_input {
+                            delivery.acknowledge(ack);
+                        }
+                        let mut failed = false;
+                        for message in delivery.pending() {
+                            if let Err(err) = fresh.send_message(message.clone()).await {
+                                status(&format!("tilr: replay interrupted: {err}"))?;
+                                failed = true;
+                                break;
+                            }
+                        }
+                        if failed {
+                            next_attempt = Instant::now() + retry;
+                            continue;
+                        }
+                        if let Err(err) = subscribe(&mut fresh, self.pane_id).await {
+                            status(&format!("tilr: disconnected ({err}), reconnecting…"))?;
+                            next_attempt = Instant::now() + retry;
+                            continue;
+                        }
                         conn = Some(fresh);
                         // A new connection numbers its transfers afresh.
                         self.copy = Incoming::default();
@@ -222,6 +285,10 @@ impl Attach<'_> {
             };
             let lost = tokio::select! {
                 msg = live.recv() => match msg {
+                    Ok(server_message::Msg::InputAck(ack)) => {
+                        delivery.acknowledge(&ack);
+                        None
+                    }
                     Ok(server_message::Msg::Frame(frame)) if frame.pane_id == self.pane_id => {
                         self.capture_mouse(frame.mouse_tracking)?;
                         draw(&frame)?;
@@ -248,28 +315,17 @@ impl Attach<'_> {
                     Err(err) => Some(err.to_string()),
                 },
                 event = input.next() => {
-                    let Some(event) = event else { return Ok(Exit::Detached) };
-                    let msg = match event? {
-                        Event::Key(key) => match self.key(&key) {
-                            Keyed::Send(msg) => Some(msg),
-                            Keyed::Detach => return Ok(Exit::Detached),
-                            Keyed::Nothing => None,
+                    let Some(event) = event else { return finish_input(Some(live), &mut delivery).await };
+                    match self.input_event(event?) {
+                        Keyed::Detach => return finish_input(Some(live), &mut delivery).await,
+                        Keyed::Send(msg) => match delivery.push(msg.into()) {
+                            Ok(message) => live.send_message(message).await.err().map(|err| err.to_string()),
+                            Err(err) => { status(err)?; None }
                         },
-                        Event::Mouse(mouse) => mouse_message(self.pane_id, &mouse, self.mouse_captured),
-                        Event::Paste(text) => Some(Msg::Paste(Paste {
-                            pane_id: self.pane_id.to_owned(),
-                            text,
-                        })),
-                        Event::Resize(cols, rows) if cols > 0 && rows > 0 => {
-                            Some(resize(self.pane_id, cols, rows))
-                        }
-                        _ => None,
-                    };
-                    match msg {
-                        Some(msg) => live.send(msg).await.err().map(|err| err.to_string()),
-                        None => None,
+                        Keyed::Nothing => None,
                     }
                 }
+
                 _ = ping.tick() => {
                     if live.heard.elapsed() > SILENT_FOR {
                         Some(format!("nothing heard for {}s", SILENT_FOR.as_secs()))
@@ -334,7 +390,7 @@ enum Attempt {
     Failed(String),
 }
 
-/// Connect again, check the pane is still there and subscribe to it. A
+/// Connect again and check the pane is still there. A
 /// connection lost or a request unanswered on the way is a failed attempt,
 /// as a refused connect is.
 async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
@@ -353,10 +409,7 @@ async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
         Err(err) if superseded(&err) => return Attempt::Superseded,
         Err(err) => return Attempt::Failed(format!("{err:#}")),
     }
-    match subscribe(&mut fresh, pane_id).await {
-        Ok(()) => Attempt::Connected(fresh),
-        Err(err) => Attempt::Failed(format!("{err:#}")),
-    }
+    Attempt::Connected(fresh)
 }
 
 /// The connection was closed as superseded (4000).
@@ -367,6 +420,8 @@ fn superseded(err: &anyhow::Error) -> bool {
 /// Size the pane to this terminal and watch it; the server answers with
 /// a full frame.
 async fn subscribe(conn: &mut Conn, pane_id: &str) -> Result<()> {
+    // Refresh after replay so an older queued Resize cannot override this size.
+    // Each connection repeats this refresh, even if its previous one was lost.
     let (cols, rows) = crate::size();
     conn.send(resize(pane_id, cols, rows)).await?;
     conn.send(Msg::Subscribe(Subscribe {

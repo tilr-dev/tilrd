@@ -92,7 +92,7 @@ fn publish(cdn: &Path, platform: &str, version: &str, archive: &[u8], checksum_o
 fn installed() -> (PathBuf, PathBuf) {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     (dir, exe)
 }
 
@@ -289,7 +289,7 @@ async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
     let dir = scratch.join("bin");
     std::fs::create_dir(&dir).unwrap();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
     let archive = release(STUB);

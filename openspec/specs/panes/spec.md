@@ -408,6 +408,19 @@ When the pty's foreground process group of a pane goes from another group back t
 - **WHEN** `sleep 3` runs in the foreground, the server reloads, and the client reconnects
 - **THEN** the client receives `COMMAND_FINISHED` for that pane when `sleep` ends
 
+### Requirement: Applied resize dimensions precede delayed input acknowledgement
+When a numbered Resize is applied while earlier numbered input is still waiting to be fully written to the PTY, the server SHALL update the pane's listed dimensions and push a PaneList without waiting for the cumulative input acknowledgement. It SHALL keep that acknowledgement behind the earlier PTY input.
+
+**Verified by**: `input_delivery::a_numbered_resize_updates_the_pane_list_while_pty_input_waits`.
+
+#### Scenario: Earlier PTY input is blocked
+- **GIVEN** a pane program waiting on an external gate without reading its PTY
+- **AND** numbered raw input larger than the PTY's capacity is pending
+- **WHEN** a later numbered Resize is applied to 120 columns and 40 rows
+- **THEN** a pushed PaneList and ListPanes report 120 columns and 40 rows before the gate opens
+- **AND** reconnecting reports that neither the raw input nor the Resize has been cumulatively acknowledged
+- **AND** after the program reads the pending bytes, the Resize is cumulatively acknowledged
+
 ## Notes
 
 - Requirements without a test: "A pane that cannot start is reported to its creator", "When a pane was used last" (`used_at_ms` is read by `tilr`'s choice of pane, see `tilr-cli`, but no test asserts it). Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.

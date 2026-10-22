@@ -11,10 +11,12 @@ RUN apt-get update \
 # clippy, so the lint CI runs on Linux can run here too.
 RUN rustup component add clippy
 
-# libghostty-vt is built with Zig: the pinned version, checked against its SHA-256.
+# libghostty-vt is built with Zig and the tests run with cargo-nextest: the pinned
+# versions, checked against their SHA-256 sums.
 COPY install-tools.sh /usr/local/lib/tilr/install-tools.sh
-RUN /usr/local/lib/tilr/install-tools.sh /opt/tilr-tools zig \
-    && ln -s /opt/tilr-tools/zig /usr/local/bin/zig
+RUN /usr/local/lib/tilr/install-tools.sh /opt/tilr-tools zig nextest \
+    && ln -s /opt/tilr-tools/zig /usr/local/bin/zig \
+    && ln -s /opt/tilr-tools/cargo-nextest /usr/local/bin/cargo-nextest
 
 # Commands run as a non-root user with a passwd entry, as on the GitHub runner.
 COPY linux-entrypoint.sh /usr/local/lib/tilr/linux-entrypoint.sh

@@ -188,15 +188,6 @@ async fn typing_at_the_prompt_reports_nothing() {
 }
 
 #[cfg(feature = "failpoints")]
-fn set_test_time(path: &std::path::Path, us: u64) {
-    // The server and pane may read concurrently. Rename publishes one complete
-    // value and the following protocol response is the test's ordering barrier.
-    let next = path.with_extension("next");
-    std::fs::write(&next, us.to_string()).unwrap();
-    std::fs::rename(next, path).unwrap();
-}
-
-#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn used_at_ms_follows_subscribe_and_input() {
     let dir = Server::scratch_dir();

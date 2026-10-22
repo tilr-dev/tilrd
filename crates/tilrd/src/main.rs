@@ -246,6 +246,8 @@ pub fn exe() -> &'static Path {
 }
 
 fn main() -> anyhow::Result<ExitCode> {
+    #[cfg(feature = "failpoints")]
+    fail::state_formats_started()?;
     let exe = exe();
     let mut args = std::env::args_os();
     // Started as `xclip` or `wl-paste` through the links the server puts on

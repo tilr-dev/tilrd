@@ -120,6 +120,7 @@ pub struct Session {
     pub subscribed: BTreeSet<String>,
     seq_base: u64,
     seq_n: u64,
+    delivery: tilr_proto::input::Outbox,
     last_rx: Instant,
     last_pong: Instant,
     keepalive: Option<Keepalive>,
@@ -179,6 +180,7 @@ impl Session {
             subscribed: BTreeSet::new(),
             seq_base: 0,
             seq_n: 0,
+            delivery: tilr_proto::input::Outbox::default(),
             last_rx: Instant::now(),
             last_pong: Instant::now(),
             keepalive: None,
@@ -271,9 +273,15 @@ impl Session {
     pub async fn connect(&mut self, target: Target) -> Result<Value> {
         self.ws = None;
         self.lost_at = None;
+        if self.target.as_ref().is_some_and(|old| {
+            old.client_id != target.client_id || old.url != target.url || old.token != target.token
+        }) {
+            self.delivery = tilr_proto::input::Outbox::default();
+        }
         let started = Instant::now();
         let (ws, ack) = open(&target).await?;
         self.install(ws, &ack);
+        self.resubscribe().await?;
         let client_id = target.client_id.clone();
         self.target = Some(target);
         Ok(json!({
@@ -291,6 +299,9 @@ impl Session {
 
     fn install(&mut self, ws: Ws, ack: &tilr_proto::HelloAck) {
         self.ws = Some(ws);
+        for applied in &ack.applied_input {
+            self.delivery.acknowledge(applied);
+        }
         self.features.clone_from(&ack.features);
         self.seq_base = ack.seq_base;
         self.seq_n = 0;
@@ -348,6 +359,23 @@ impl Session {
     /// Close the connection properly, with a WebSocket close.
     pub async fn disconnect(&mut self) {
         self.lost_at = None;
+        let deadline = Instant::now() + SEND_TIMEOUT;
+        while self.delivery.pending().next().is_some()
+            && self.ws.is_some()
+            && Instant::now() < deadline
+        {
+            self.read(deadline).await;
+        }
+        if self.ws.is_some()
+            && self.delivery.pending().next().is_none()
+            && self
+                .send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+                .await
+                .is_ok()
+        {
+            self.delivery = tilr_proto::input::Outbox::default();
+        }
+        self.lost_at = None;
         if let Some(mut ws) = self.ws.take() {
             let _ = tokio::time::timeout(SEND_TIMEOUT, ws.close(None)).await;
         }
@@ -400,15 +428,28 @@ impl Session {
     }
 
     pub async fn send(&mut self, msg: Msg) -> Result<()> {
-        self.send_message(ClientMessage::from(msg)).await
+        if tilr_proto::input::pane(&msg).is_some() {
+            self.send_input(msg).await.map(|_| ())
+        } else {
+            self.send_message(ClientMessage::from(msg)).await
+        }
     }
 
-    /// Send an input message named by the next seq of this connection.
+    /// Admit input for delivery, retaining it until the pane acknowledges it.
     pub async fn send_input(&mut self, msg: Msg) -> Result<u64> {
+        anyhow::ensure!(self.target.is_some(), "never connected");
         self.seq_n += 1;
         let seq = self.seq_base + self.seq_n;
+        let message = self
+            .delivery
+            .push(ClientMessage::with_seq(msg, seq))
+            .map_err(anyhow::Error::msg)?;
         self.trace.input_sent(seq);
-        self.send_message(ClientMessage::with_seq(msg, seq)).await?;
+        // Once admitted, the outbox owns retries, including an ambiguous send.
+        // Reporting it as rejected would make callers enqueue the logical input twice.
+        if self.ws.is_some() {
+            let _ = self.send_message(message).await;
+        }
         Ok(seq)
     }
 
@@ -438,6 +479,10 @@ impl Session {
     }
 
     async fn resubscribe(&mut self) -> Result<()> {
+        let pending: Vec<_> = self.delivery.pending().cloned().collect();
+        for message in pending {
+            self.send_message(message).await?;
+        }
         for pane in self.subscribed.clone() {
             self.subscribe(&pane).await?;
         }
@@ -630,6 +675,7 @@ impl Session {
             }
         };
         match &msg {
+            server_message::Msg::InputAck(ack) => self.delivery.acknowledge(ack),
             server_message::Msg::Frame(frame) => {
                 self.trace.frame(frame, packet.len());
                 if self.subscribed.contains(&frame.pane_id) {
@@ -923,5 +969,158 @@ mod bundled_tls_tests {
         let error = super::dial(&url, None).await.unwrap_err();
         server.await.unwrap();
         super::tls_test_peer::assert_bundled_root_was_used(error);
+    }
+}
+
+#[cfg(test)]
+mod input_delivery_tests {
+    use super::*;
+    use tilr_proto::{HelloAck, InputAck, RawInput};
+
+    // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+    #[tokio::test]
+    async fn normal_disconnect_drains_input_before_finalizing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = Target {
+            url: format!("ws://{}", listener.local_addr().unwrap()),
+            token: String::new(),
+            origin: None,
+            features: vec![],
+            timeout: Duration::from_secs(5),
+            client_id: "finalize-test".into(),
+        };
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let Message::Binary(_) = ws.next().await.unwrap().unwrap() else {
+                panic!("hello")
+            };
+            ws.send(Message::Binary(tilr_proto::encode(
+                &tilr_proto::ServerMessage::from(server_message::Msg::HelloAck(HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    ..Default::default()
+                })),
+            )))
+            .await
+            .unwrap();
+            let Message::Binary(packet) = ws.next().await.unwrap().unwrap() else {
+                panic!("input")
+            };
+            let input: ClientMessage = tilr_proto::decode(&packet).unwrap();
+            assert_eq!(input.input_seq, 1);
+            ready.send(()).unwrap();
+            released.await.unwrap();
+            ws.send(Message::Binary(tilr_proto::encode(
+                &tilr_proto::ServerMessage::from(server_message::Msg::InputAck(InputAck {
+                    pane_id: "pane".into(),
+                    seq: 1,
+                })),
+            )))
+            .await
+            .unwrap();
+            let Message::Binary(packet) = ws.next().await.unwrap().unwrap() else {
+                panic!("closed before finalizing")
+            };
+            let message: ClientMessage = tilr_proto::decode(&packet).unwrap();
+            assert!(matches!(message.msg, Some(Msg::FinalizeInput(_))));
+            let _ = ws.next().await;
+        });
+        let mut session = Session::new();
+        session.connect(target).await.unwrap();
+        session
+            .send_input(Msg::Raw(RawInput {
+                pane_id: "pane".into(),
+                data: Bytes::from_static(b"x"),
+            }))
+            .await
+            .unwrap();
+        let mut ending = std::pin::pin!(session.disconnect());
+        tokio::select! {
+            _ = &mut ending => panic!("normal disconnect ended before the pending ACK"),
+            result = received => result.unwrap(),
+        }
+        release.send(()).unwrap();
+        ending.await;
+        peer.await.unwrap();
+    }
+
+    // @spec protocol/input-is-acknowledged-after-application
+    #[tokio::test]
+    async fn reconnect_replays_only_unacknowledged_input_in_order() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = Target {
+            url: format!("ws://{}", listener.local_addr().unwrap()),
+            token: String::new(),
+            origin: None,
+            features: vec![],
+            timeout: Duration::from_secs(5),
+            client_id: "delivery-test".into(),
+        };
+        let peer = tokio::spawn(async move {
+            for (applied, expected) in [(0, vec![1, 2]), (1, vec![2, 3])] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let Message::Binary(hello) = ws.next().await.unwrap().unwrap() else {
+                    panic!("hello")
+                };
+                let hello: ClientMessage = tilr_proto::decode(&hello).unwrap();
+                assert!(matches!(hello.msg, Some(Msg::Hello(_))));
+                ws.send(Message::Binary(tilr_proto::encode(
+                    &tilr_proto::ServerMessage::from(server_message::Msg::HelloAck(HelloAck {
+                        protocol_version: PROTOCOL_VERSION,
+                        applied_input: vec![InputAck {
+                            pane_id: "pane".into(),
+                            seq: applied,
+                        }],
+                        ..Default::default()
+                    })),
+                )))
+                .await
+                .unwrap();
+                for seq in expected {
+                    let Message::Binary(packet) = ws.next().await.unwrap().unwrap() else {
+                        panic!("input")
+                    };
+                    let message: ClientMessage = tilr_proto::decode(&packet).unwrap();
+                    assert_eq!(message.input_seq, seq);
+                    let Some(Msg::Raw(raw)) = message.msg else {
+                        panic!("raw input")
+                    };
+                    assert_eq!(raw.data.as_ref(), &[seq as u8]);
+                }
+            }
+        });
+        let mut session = Session::new();
+        session.connect(target.clone()).await.unwrap();
+        for n in 1..=2 {
+            session
+                .send_input(Msg::Raw(RawInput {
+                    pane_id: "pane".into(),
+                    data: Bytes::from(vec![n]),
+                }))
+                .await
+                .unwrap();
+        }
+        session.lose("test disconnect");
+        // Admission while disconnected retains the original ordering.
+        session
+            .send_input(Msg::Raw(RawInput {
+                pane_id: "pane".into(),
+                data: Bytes::from_static(&[3]),
+            }))
+            .await
+            .unwrap();
+        session.connect(target).await.unwrap();
+        peer.await.unwrap();
+        assert_eq!(
+            session
+                .delivery
+                .pending()
+                .map(|m| m.input_seq)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
     }
 }

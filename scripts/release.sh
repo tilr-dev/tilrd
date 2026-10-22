@@ -34,12 +34,14 @@
 # platforms given are checked and uploaded; the `latest` of any other platform
 # on the CDN is left as it is.
 #
-# Uploading uses wrangler, which needs Cloudflare credentials: `wrangler login`
-# by hand, or CLOUDFLARE_API_TOKEN (an API token with R2 write access to the
-# bucket's account) in CI. --publish and --upload-only also need
-# CLOUDFLARE_ACCOUNT_ID, the account the tilr-cdn bucket is in, exported in the
-# environment (e.g. via `infisical run --path /cloudflare -- scripts/release.sh ...`;
-# in CI, the CLOUDFLARE_ACCOUNT_ID variable of the `cdn` environment).
+# Uploading uses AWS CLI with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY derived
+# from the R2 token scoped to object read/write in tilr-cdn. --publish and
+# --upload-only also need CLOUDFLARE_ACCOUNT_ID exported (the bucket's account;
+# in CI, the CLOUDFLARE_ACCOUNT_ID variable of the cdn environment).
+# By hand, Infisical /cloudflare (prod) supplies CF_ACCOUNT_ID and R2_CDN_TOKEN.
+# Set CLOUDFLARE_ACCOUNT_ID from CF_ACCOUNT_ID, AWS_ACCESS_KEY_ID to the token ID,
+# and AWS_SECRET_ACCESS_KEY to the lowercase hex SHA-256 of R2_CDN_TOKEN (no newline).
+# See README's Releases section for the Infisical command and key derivation example.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -52,7 +54,7 @@ esac
 [ "$#" -gt 0 ] || set -- linux-aarch64
 if [ -n "$publish" ] && [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
     echo "CLOUDFLARE_ACCOUNT_ID is not set: export the account id of the tilr-cdn bucket" \
-        "(e.g. via \`infisical run --path /cloudflare\`)" >&2
+        "(see README Releases for Infisical setup and derived AWS keys)" >&2
     exit 2
 fi
 
@@ -111,21 +113,20 @@ else
 fi
 [ -n "$publish" ] || exit 0
 
-# The account the tilr-cdn bucket is in, checked above.
-export CLOUDFLARE_ACCOUNT_ID
+# S3 object access works with bucket-scoped credentials.
 put() {
-    wrangler r2 object put "tilr-cdn/$1" --file "dist/cdn/$1" \
-        --content-type "$2" --cache-control "$3" --remote
+    aws s3 cp "$4" "s3://tilr-cdn/$1" \
+        --endpoint-url "https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+        --region auto --content-type "$2" --cache-control "$3"
 }
 for platform in "$@"; do
     name="releases/$version/tilr-$version-$platform.tar.gz"
-    put "$name" application/gzip "public, max-age=31536000, immutable"
-    put "$name.sha256" "text/plain; charset=utf-8" "public, max-age=31536000, immutable"
+    put "$name" application/gzip "public, max-age=31536000, immutable" "dist/cdn/$name"
+    put "$name.sha256" "text/plain; charset=utf-8" "public, max-age=31536000, immutable" "dist/cdn/$name.sha256"
     # Last: from here on the platform is offered this version.
-    put "releases/$platform/latest" "text/plain; charset=utf-8" "no-cache"
+    put "releases/$platform/latest" "text/plain; charset=utf-8" "no-cache" "dist/cdn/releases/$platform/latest"
 done
 # After every latest, so the installer never offers what the CDN does not have
 # yet; never after a failed upload (set -e).
-wrangler r2 object put tilr-cdn/install.sh --file scripts/install.sh \
-    --content-type "text/x-shellscript; charset=utf-8" --cache-control "public, max-age=300" --remote
+put install.sh "text/x-shellscript; charset=utf-8" "public, max-age=300" scripts/install.sh
 echo "published $version for: $*"
