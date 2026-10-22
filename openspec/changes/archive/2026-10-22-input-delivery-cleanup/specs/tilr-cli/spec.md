@@ -26,4 +26,3 @@ An attached client SHALL detect lost connections and reconnect with the same `cl
 #### Scenario: Failed attempt
 - **WHEN** a reconnect attempt fails for another reason
 - **THEN** the status line shows the error and the attempt number, and the next attempt waits twice as long, at most 2 s
-

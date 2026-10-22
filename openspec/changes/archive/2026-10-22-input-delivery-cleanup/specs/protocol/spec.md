@@ -47,4 +47,3 @@ Clients SHALL finalize only after all admitted input is acknowledged. The server
 #### Scenario: Client cannot request another identity's cleanup
 - **WHEN** a client supplies internal cleanup fields
 - **THEN** ingress SHALL clear them and SHALL NOT remove any other identity
-
