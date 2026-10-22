@@ -613,6 +613,18 @@ fn the_test_command_is_the_same_everywhere() {
     }
 }
 
+/// Release documentation must be present in both the build and runtime snapshots.
+#[test]
+fn repository_documentation_matches_the_build_snapshot() {
+    for (file, compiled) in [
+        ("AGENTS.md", include_str!("../../../AGENTS.md")),
+        ("README.md", include_str!("../../../README.md")),
+        ("USE_CASES.md", include_str!("../../../USE_CASES.md")),
+    ] {
+        assert_eq!(text_file(file), compiled, "{file}");
+    }
+}
+
 fn assert_ci_gates(ci: &str) {
     let ci = active(ci);
     let lint = job(&ci, "lint");

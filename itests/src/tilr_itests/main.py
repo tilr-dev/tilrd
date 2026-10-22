@@ -43,7 +43,7 @@ NEXT_PACKAGE_VERSION = "0.1.1"
 SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crates/*/target/", "!rustfmt.toml",
                  "!.rustfmt.toml", "!clippy.toml", "!scripts/", "!.github/workflows/ci.yml",
                  "!.github/workflows/release.yml", "!.cargo/config.toml", "!.gitignore",
-                 "!release-please-config.json"]
+                 "!release-please-config.json", "!AGENTS.md", "!README.md", "!USE_CASES.md"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
 # Runs one test command and writes a single JSON result, so the module reads one file
