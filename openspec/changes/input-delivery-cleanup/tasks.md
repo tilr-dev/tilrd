@@ -4,4 +4,4 @@
 - [x] Implement server lifecycle cleanup and reset history across exec.
 - [x] Finalize normal client exits only after draining acknowledged input.
 - [x] Add deterministic regressions for finalized/expired identities, reconnect and exec reset.
-- [ ] Run focused checks, self-review and required completion checks.
+- [x] Run focused checks and review the implementation before completion checks.
