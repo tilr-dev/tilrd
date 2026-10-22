@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Specification change authorization on dev
-After the trusted workflow is released to main and the dev ruleset is activated, pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. Other tests SHALL remain local for dev.
+After the trusted workflow is added to main and the dev ruleset is activated, pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -38,8 +38,9 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 
 #### Scenario: Candidate code cannot replace the checker
 - **WHEN** a pull request changes checker scripts or workflow definitions
-- **THEN** the trusted workflow reads candidate Git objects without checking out or executing candidate files
-- **AND** the shared checker content is verified against a digest fixed in the trusted workflow before execution
+- **THEN** the check still runs the workflow from main, not a workflow file from the pull request or dev
+- **AND** the trusted workflow reads candidate Git objects without checking out or executing candidate files
+- **AND** the shared checker content is verified against a digest pinned in main's workflow before execution, and a new digest takes effect only through a pull request into main
 - **AND** only the checker process receives the read-only task credential
 
 #### Scenario: Malformed scope declaration
@@ -81,3 +82,20 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 - **WHEN** an own delta renames an existing requirement and another requirement takes its former name
 - **THEN** each rename remains authorized against its own original requirement in dev
 - **AND** modifying or removing the first requirement under its new name requires permission for that original requirement
+
+#### Scenario: Only a requirement heading is removed
+- **WHEN** a pull request deletes only the heading of an existing requirement so that its text and scenarios fall under the preceding existing requirement
+- **THEN** authorization to remove the deleted requirement does not cover the change
+- **AND** modify authorization for the requirement that absorbs the text is required
+
+#### Scenario: Scope declaration names its own change ambiguously
+- **WHEN** the latest intake-ready Spec scope line names no change or more than one change inside its own(...) part, or names a change outside it
+- **THEN** the check fails with an error instead of treating any other word as the own change
+
+#### Scenario: An existing archive shares the own change name
+- **WHEN** a pull request edits an archive that already exists in dev under the same change name as the task's own change
+- **THEN** the archive is treated as a foreign change and edit authorization is required
+
+#### Scenario: A new capability differs from an existing one only by letter case or Unicode form
+- **WHEN** a pull request adds a capability directory whose name equals an existing or another added capability after case folding and Unicode normalization
+- **THEN** the check fails with an error instead of treating it as a new capability
