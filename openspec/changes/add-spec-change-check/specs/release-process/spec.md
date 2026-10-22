@@ -63,3 +63,7 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 #### Scenario: An active foreign change is edited while copied to archive
 - **WHEN** a foreign change is copied unchanged to archive while its active source is modified
 - **THEN** both archive and edit authorization are required for that change
+
+#### Scenario: A previous foreign archive is changed while another is created
+- **WHEN** a pull request edits or removes an existing foreign archive and creates a new archive copy of the same change
+- **THEN** archive authorization for the new copy does not authorize editing the previous archive
