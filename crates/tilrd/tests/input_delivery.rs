@@ -451,7 +451,7 @@ async fn expiry_preserves_pending_bytes_without_stale_ack_markers() {
 async fn cleanup_preserves_pending_bytes(reload: bool) {
     let server = server();
     let pauses = PauseController::bind(&server.dir);
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let (mut client, _) = identify(&server).await;
     let pane = client.open_pane().await;
     let file = server.dir.join("large-input");
@@ -521,7 +521,7 @@ async fn cleanup_preserves_pending_bytes(reload: bool) {
 #[tokio::test]
 async fn a_numbered_resize_updates_the_pane_list_while_pty_input_waits() {
     let server = server();
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let (mut client, hello) = identify(&server).await;
     let pane = client.open_pane().await;
     client.type_line(pane, &format!(

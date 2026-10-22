@@ -4,49 +4,6 @@ mod common;
 
 use common::*;
 
-/// Return a subscribed pane whose first shell prompt is held behind a FIFO.
-async fn pane_before_shell_prompt(
-    server: &Server,
-    client: &mut Client,
-    cols: u32,
-    rows: u32,
-) -> (PaneId, std::fs::File) {
-    // PTY echo can precede the shell's first prompt. Disable line editing so
-    // the shell consumes that queued line without redrawing it after the prompt.
-    let (fifo, release) = activity_fifo(server);
-    let startup_fifo = server.dir.join("shell-startup-release");
-    std::fs::rename(&fifo, &startup_fifo).unwrap();
-    let startup = server.dir.join("shell-startup");
-    std::fs::write(&startup, "set +o emacs; set +o vi\n").unwrap();
-    client
-        .send(Msg::CreatePane(CreatePane {
-            cols,
-            rows,
-            command: vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                format!(
-                    "read -r release < '{}'; PS1='startup> ' ENV='{}' exec /bin/sh",
-                    startup_fifo.display(),
-                    startup.display()
-                ),
-            ],
-            request_id: 83,
-            ..Default::default()
-        }))
-        .await;
-    let pane = client
-        .wait_for(|msg| match msg {
-            server_message::Msg::PaneCreated(p) if p.request_id == 83 => {
-                Some(p.pane.as_ref().unwrap().pane_id.parse().unwrap())
-            }
-            _ => None,
-        })
-        .await;
-    client.subscribe(pane).await;
-    (pane, release)
-}
-
 /// Walk each reconnect boundary under explicit controller release. The FIFO
 /// makes output happen only after Unsubscribe has been acknowledged. The ready
 /// marker has no trailing bytes that could produce another frame after it is seen.
@@ -56,7 +13,7 @@ async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
     let controller = PauseController::bind(&server.dir);
     let mut first = Client::connect(&server).await;
     let (pane, mut startup) = pane_before_shell_prompt(&server, &mut first, 300, 100).await;
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let command = script(
         &server,
         "wait-for-output.sh",
@@ -114,6 +71,106 @@ async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
         client.screen.text()
     );
     (server, client, pane, controller)
+}
+
+/// The startup file stops the real /bin/sh before its initial prompt. An
+/// observer watches that boundary while the normal opening helper is polled.
+#[tokio::test]
+async fn opening_a_fresh_pane_waits_for_the_first_shell_prompt() {
+    let dir = Server::scratch_dir();
+    let startup = dir.join("held-shell-startup");
+    let server = Server::start_with_env(dir, &[], &[("ENV", startup.to_str().unwrap())]);
+    let (fifo, mut release) = activity_fifo(&server, "shell-startup-release");
+    std::fs::write(
+        &startup,
+        format!(
+            "set +o emacs; set +o vi\nprintf 'shell startup held\\n'\nread -r release < '{}'\n",
+            fifo.display()
+        ),
+    )
+    .unwrap();
+    let mut observer = Client::connect(&server).await;
+    let mut client = Client::connect(&server).await;
+    let pane = {
+        let opening = client.open_pane();
+        tokio::pin!(opening);
+        let held = async {
+            let pane: PaneId = observer.pushed_pane_list().await[0]
+                .pane_id
+                .parse()
+                .unwrap();
+            observer.subscribe(pane).await;
+            let mut subscribed = false;
+            let mut startup_held = false;
+            while !subscribed || !startup_held {
+                if let Some(server_message::Msg::PaneList(list)) = observer.next().await {
+                    subscribed |= list
+                        .panes
+                        .iter()
+                        .any(|info| info.pane_id == pane.to_string() && info.viewers == 2);
+                }
+                startup_held |= observer.screen.text().contains("shell startup held");
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = &mut opening => panic!("opening returned before the first shell prompt"),
+            _ = held => {}
+        }
+        // Two viewers prove that opening passed PaneCreated and sent Subscribe.
+        // Pending now means waiting for the prompt, not for pane creation.
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(opening.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        release_activity_fifo(&mut release);
+        opening.await
+    };
+    // Split the literal so PTY echo cannot satisfy the output wait. No leading
+    // newline hides a prompt prefix: the opening helper must prevent that race.
+    client.type_line(pane, "echo first out''put").await;
+    client.wait_row("first output").await;
+}
+
+/// Ordered frames make an old pane's prompt arrive before the wanted one.
+#[tokio::test]
+async fn shell_readiness_ignores_prompts_from_other_panes() {
+    let server = Server::start(&[]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let wanted: PaneId = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+    let other: PaneId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+    let frames = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        for pane in [other, wanted] {
+            let msg = ServerMessage::from(server_message::Msg::Frame(Frame {
+                pane_id: pane.to_string(),
+                full: true,
+                cols: 100,
+                rows: 30,
+                changed: vec![tilr_proto::Row {
+                    y: 0,
+                    runs: vec![tilr_proto::Run {
+                        text: "$ ".into(),
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            }));
+            ws.send(Message::Binary(tilr_proto::encode(&msg)))
+                .await
+                .unwrap();
+        }
+    });
+    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        .await
+        .unwrap();
+    let mut client = Client::from_socket(&server, ws);
+    client.wait_shell_prompt(wanted).await;
+    assert_eq!(client.frame.as_ref().unwrap().pane_id, wanted.to_string());
+    frames.await.unwrap();
 }
 
 #[cfg(feature = "failpoints")]

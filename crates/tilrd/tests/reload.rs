@@ -90,7 +90,7 @@ fn warm_executable_links_reuse_inodes_and_replace_repeatedly() {
 #[tokio::test]
 async fn a_command_running_across_a_reload_is_reported_when_it_ends() {
     let server = Server::start(&[]);
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let command = script(
         &server,
         "foreground.sh",

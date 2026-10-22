@@ -37,6 +37,8 @@ real Linux containers with the same FIFO barrier.
 | A bell reaches greeted clients that do not watch the pane | `a_bell_in_an_unwatched_pane_is_reported` |
 | Bells within a second are dropped, and the next second permits a bell | `bells_are_reported_once_a_second` (`failpoints`) |
 | BEL ending an OSC title sequence is not reported as activity | `a_bel_ending_an_osc_is_not_reported` |
+| Shell readiness ignores a prompt frame from another subscribed pane and waits for the intended pane | `reconnect::shell_readiness_ignores_prompts_from_other_panes` |
+| Opening a fresh test pane waits for the first shell prompt, even when startup is explicitly held; the first command produces an exact output row | `reconnect::opening_a_fresh_pane_waits_for_the_first_shell_prompt` |
 | A foreground job returning control to its shell reports command completion | `a_finished_foreground_command_is_reported` |
 | Typing at the prompt reports no activity | `typing_at_the_prompt_reports_nothing` |
 | The client says hello, the server reports its protocol version (1), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
