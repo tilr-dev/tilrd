@@ -4,7 +4,7 @@ Existing specification requirements need explicit authorization before a pull re
 
 ## What Changes
 
-- Add a required spec-change check for pull requests into dev.
+- Prepare the spec-change workflow for pull requests into dev; activate the required check after the trusted workflow is released to main.
 - Share one checker across repositories, also usable by local merge automation.
 - Read task comments with the dedicated read-only CI credential.
 - Keep other tests local for dev; preserve main checks.
