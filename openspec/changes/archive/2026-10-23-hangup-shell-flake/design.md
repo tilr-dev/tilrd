@@ -1,6 +1,6 @@
 # Design
 
-What was found about the flake (task 1.1, TILR-117). Moved from the design of the former
+What was found about the flake (task 1.1). Moved from the design of the former
 shared change `test-coverage-gaps` (D8 there); the reproduction method of its Context applies.
 
 ## Context
@@ -20,7 +20,7 @@ reloads: a load made with `cargo` beside the tests breaks them in ways CI never 
 (`auth::a_connection_that_never_says_hello_is_closed_after_10_s` failed 11 of 12 that way,
 `executable changed on disk` in its log). Linux: the same inside `scripts/linux.sh`.
 
-## The login shell outliving the hang-up (1.1; TILR-117; formerly D8)
+## The login shell outliving the hang-up (1.1; formerly D8)
 
 `reconnect::a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` waited 5 s
 for the login shell (`sh -c 'tilrd & ...; wait'`, session leader of a pty) to exit after
