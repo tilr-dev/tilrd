@@ -121,6 +121,8 @@ real Linux containers with the same FIFO barrier.
 | Use case | Test |
 |---|---|
 | Normal detach finalizes acknowledged input | `normal_detach_finalizes_its_acknowledged_input` |
+| Detach with pending input while disconnected exits promptly without finalizing | `detach_with_unacknowledged_input_while_disconnected` |
+| Detach while a connected server withholds input ACKs exits promptly without finalizing | `detach_with_unacknowledged_input_while_connected` |
 | The first `tilr` starts a detached server (a session of its own, not its child, with TCP on loopback), the next one connects to the same; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
 | The TCP port is taken (the Tilr app, another user): a server started by `tilr` starts anyway, with a warning in the log, on the socket only | `a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken` |
 | Six `tilr` at once on an empty machine: one server, a second is not even started | `tilr_started_many_times_at_once_starts_one_server` |

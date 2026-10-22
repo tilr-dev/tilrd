@@ -1156,6 +1156,8 @@ enum Serve {
     CloseOnListPanes,
     /// Accepts and says nothing, not even the WebSocket handshake.
     Silent,
+    /// Keep the connection open but never acknowledge keys.
+    WithoutKeyAck,
     /// Everything, for as long as the client stays.
     Fully,
 }
@@ -1319,6 +1321,9 @@ fn fake_connection(
                 if matches!(serve, Serve::CloseOnKey) {
                     return;
                 }
+                if matches!(serve, Serve::WithoutKeyAck) {
+                    continue;
+                }
                 send(
                     &mut ws,
                     server_message::Msg::InputAck(tilr_proto::InputAck {
@@ -1412,6 +1417,47 @@ fn detach_works_while_a_reconnect_attempt_hangs() {
     let took = start.elapsed();
     assert!(took < Duration::from_secs(1), "detached after {took:?}");
     assert!(terminal.child.wait().unwrap().success());
+}
+
+// @spec tilr-cli/reconnect-attempts
+#[test]
+fn detach_with_unacknowledged_input_while_disconnected() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Silent]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    terminal.expect("tilr: disconnected (");
+    // Both events are read while reconnecting: y enters the delivery queue first.
+    let start = Instant::now();
+    terminal.write("y\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn detach_with_unacknowledged_input_while_connected() {
+    let machine = Machine::new();
+    // Model a full PTY: the server receives the key but cannot acknowledge it.
+    let server = FakeServer::start(vec![Serve::WithoutKeyAck]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    let start = Instant::now();
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
 }
 
 #[test]
