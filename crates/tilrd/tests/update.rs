@@ -399,3 +399,69 @@ async fn two_updates_at_once_install_the_release_once() {
     assert_eq!(std::fs::read(&exe).unwrap(), STUB);
     assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
 }
+
+#[test]
+fn fetch_release_writes_a_checked_archive() {
+    let dir = Server::scratch_dir();
+    // Foreign platform programs must be validated as archive members, never run.
+    let bytes = archive(&[("tilr", b"foreign client"), ("tilrd", b"foreign server")]);
+    publish(&dir.join("cdn"), "linux-aarch64", "9.9.9", &bytes, &bytes);
+    let cdn = serve_files(dir.join("cdn"));
+    let out = dir.join("out");
+    let result = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args([
+            "fetch-release",
+            "--platform",
+            "linux-aarch64",
+            "--cdn",
+            &cdn,
+            "--out",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read(out.join("tilr-9.9.9-linux-aarch64.tar.gz")).unwrap(),
+        bytes
+    );
+    assert_eq!(std::fs::read_dir(out).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn fetch_release_refuses_a_bad_checksum() {
+    let dir = Server::scratch_dir();
+    publish(
+        &dir.join("cdn"),
+        "linux-aarch64",
+        "9.9.9",
+        &release(b"foreign"),
+        b"wrong",
+    );
+    let cdn = serve_files(dir.join("cdn"));
+    let out = dir.join("out");
+    let result = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args([
+            "fetch-release",
+            "--platform",
+            "linux-aarch64",
+            "--cdn",
+            &cdn,
+            "--out",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(err.contains("checksum"), "{err}");
+    assert!(!err.contains("no release"), "{err}");
+    assert!(!err.contains("--archive"), "{err}");
+    assert!(!out.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
