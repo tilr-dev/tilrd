@@ -1,4 +1,6 @@
-- [x] Reproduce delayed successor completion with a FIFO and virtual time.
-- [x] Add the feature-only completion policy and opt in the affected tests.
-- [x] Verify the controlled regression fails before the policy change.
-- [x] Verify reload and local compatibility verdicts and unchanged production timeout.
+- [x] Measure a real failing parallel reload run from spawn through launch admission and stdout.
+- [x] Correlate the failed successors with the launch-policy scan queue and record the cause.
+- [ ] Replace the unbounded opt-in with synchronization that isolates the established startup delay.
+- [ ] Add a controlled startup-delay regression, red before the fix and green after it.
+- [ ] Verify that a child held after startup still observes the execution deadline.
+- [ ] Verify the scoped compatibility tests and unchanged production ten-second limit.
