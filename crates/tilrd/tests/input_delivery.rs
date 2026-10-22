@@ -210,6 +210,65 @@ async fn a_pending_hello_is_superseded_before_the_pane_answers() {
     assert_eq!(new.list_panes().await.len(), 1);
 }
 
+// @spec protocol/hello-input-probes-are-bounded
+#[tokio::test]
+async fn a_stuck_pane_does_not_block_other_panes_hello() {
+    let server = server();
+    let pauses = PauseController::bind(&server.dir);
+    let (mut client, _) = identify(&server).await;
+    let healthy = client.open_pane().await;
+    let file = collector(&server, &mut client, healthy).await;
+    let stuck = client.open_pane().await;
+    let mut queue = Outbox::default();
+    let first = queued(&mut queue, healthy, b"first\n");
+    send(&mut client, &first).await;
+    ack(&mut client, healthy, 1).await;
+    drop(client); // Keep the applied input in the outbox as if its ack was lost.
+
+    let point = format!("input-before-probe:{stuck}");
+    pause(&server, &point);
+    let mut returning = Client::connect_silent(&server).await;
+    returning.client_id = "input-session".into();
+    returning.hello_as(PROTOCOL_VERSION).await;
+    let held = pauses.wait(&point).await;
+    let mut other = Client::connect_silent(&server).await;
+    other.client_id = "another-input-session".into();
+    other.hello_as(PROTOCOL_VERSION).await;
+    let hello = returning
+        .wait_for(|msg| match msg {
+            server_message::Msg::HelloAck(hello) => Some(hello.clone()),
+            _ => None,
+        })
+        .await;
+    let other_hello = other
+        .wait_for(|msg| match msg {
+            server_message::Msg::HelloAck(hello) => Some(hello.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(hello.applied_input.len(), 1);
+    assert_eq!(hello.applied_input[0].pane_id, healthy.to_string());
+    assert_eq!(hello.applied_input[0].seq, 1);
+    assert_eq!(other_hello.applied_input.len(), 1);
+    assert_eq!(other_hello.applied_input[0].pane_id, healthy.to_string());
+    assert_eq!(other_hello.applied_input[0].seq, 0);
+    let panes = returning.list_panes().await;
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0].pane_id, healthy.to_string());
+    clear(&server);
+    drop(held); // Its pane has exited; the controller must not release it.
+
+    returning.subscribe(healthy).await;
+    queue.acknowledge(&hello.applied_input[0]);
+    assert_eq!(queue.pending().count(), 0);
+    send(&mut returning, &first).await; // A stale replay must still be harmless.
+    ack(&mut returning, healthy, 1).await;
+    let second = queued(&mut queue, healthy, b"second\n");
+    send(&mut returning, &second).await;
+    ack(&mut returning, healthy, 2).await;
+    finish(&mut returning, healthy, &file).await;
+}
+
 fn queued(queue: &mut Outbox, pane: PaneId, data: &[u8]) -> ClientMessage {
     queue
         .push(

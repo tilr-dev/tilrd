@@ -823,6 +823,7 @@ impl Pane {
     fn on_message(&mut self, msg: ClientMessage) -> Result<()> {
         if msg.input_probe != 0 {
             crate::fail::point("input-before-probe")?;
+            crate::fail::point(&format!("input-before-probe:{}", self.id))?;
             let seq = self
                 .delivery
                 .get(&msg.input_identity)
