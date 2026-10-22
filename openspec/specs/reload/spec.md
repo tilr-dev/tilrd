@@ -7,7 +7,7 @@ Covers how a running `tilrd` picks up a new executable without ending any shell:
 ## Requirements
 
 ### Requirement: SIGUSR1 reloads the server
-Only on an explicit reload request (`SIGUSR1`), including one sent after `tilr update` or installation, the supervisor SHALL exec the executable it was started from in place and then have every pane process do the same; every pane SHALL keep its shell (same pid) with its variables and jobs, its title, directory and creation time.
+On `SIGUSR1` the supervisor SHALL exec the executable it was started from in place and then have every pane process do the same; every pane SHALL keep its shell (same pid) with its variables and jobs, its title, directory and creation time.
 
 **Verified by**: `reload::panes_survive_a_reload_asked_for_with_a_signal`, `reload::every_pane_keeps_its_own_shell_across_a_reload`, `reload::the_title_and_directory_of_a_pane_are_kept_across_a_reload`.
 
@@ -37,13 +37,31 @@ A pane's screen, terminal modes (alternate screen, mouse, hidden cursor), scroll
 - **WHEN** a `sleep` runs in the foreground through a reload and Ctrl+C is typed
 - **THEN** the sleep is interrupted and the shell prompts again
 
+### Requirement: A replaced executable is reloaded into automatically
+The supervisor SHALL check the file it was started from once a second and SHALL reload, logging `executable changed on disk`, once its inode, size or mtime has changed and looked the same on two checks in a row. The path is the one resolved at start, so repointing a symlink SHALL NOT be noticed.
+
+**Verified by**: `reload::panes_survive_the_executable_being_replaced_on_disk`; itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`).
+
+#### Scenario: New file renamed into place
+- **WHEN** a new executable is written next to the running one and renamed over it
+- **THEN** within a few seconds the server logs `executable changed on disk`, reloads, and the panes survive
+
+### Requirement: --no-auto-reload turns the watch off
+With `--no-auto-reload` the supervisor SHALL NOT reload when its executable is replaced; `SIGUSR1` SHALL still reload it.
+
+**Verified by**: `reload::a_replaced_executable_is_ignored_when_auto_reload_is_off`.
+
+#### Scenario: Auto reload off
+- **WHEN** the server runs with `--no-auto-reload` and its executable is replaced
+- **THEN** after 4 seconds the same connection still works and the log has no `reloading`
+
 ### Requirement: The successor must run and read the state formats
 Before handing over, the supervisor SHALL run the executable on disk as `tilrd state-formats` (10 s limit) and SHALL go on with the reload only if it exits 0, prints `supervisor-state` and `pane-state` versions equal to the ones this server writes (2 and 3 at HEAD; 0 counts as 1) and prints `reload-check 1`. Else it SHALL log `not reloading: ...` and carry on with its code and every connection; so no release before the reload check is reloaded into.
 
 **Verified by**: `reload::a_broken_executable_is_not_reloaded_into`, `reload::an_executable_that_reads_another_state_format_is_not_reloaded_into`, unit test `reload::tests::check_formats_rejects_every_format_mismatch` (crates/tilrd/src/reload.rs); itests `UC-067` (`uc_067.py::a_version_with_another_state_format_is_not_reloaded_into_and_the_shells_live_on`).
 
 #### Scenario: Executable that does not run
-- **WHEN** the executable is replaced by a script that exits 1 and an explicit reload is requested
+- **WHEN** the executable is replaced by a script that exits 1
 - **THEN** the server logs `not reloading`, stays up, and the same client runs a command in its pane
 
 #### Scenario: Another state format
@@ -121,11 +139,11 @@ If the successor does not print `unix-socket 1`, a server that serves its unix s
 **Verified by**: `local::a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it`, `local::a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket`.
 
 #### Scenario: Socket alone, older successor
-- **WHEN** a server started with `--no-listen` has its executable replaced by one whose `state-formats` lacks `unix-socket 1` and an explicit reload is requested
+- **WHEN** a server started with `--no-listen` has its executable replaced by one whose `state-formats` lacks `unix-socket 1`
 - **THEN** the log says `cannot take over the Unix socket this server serves`, the server keeps running and `tilrd ps` works
 
 #### Scenario: Socket and port, older successor
-- **WHEN** a server with a TCP port and its unix socket has its executable replaced by one whose `state-formats` lacks `unix-socket 1` and an explicit reload is requested
+- **WHEN** a server with a TCP port and its unix socket has its executable replaced by one whose `state-formats` lacks `unix-socket 1`
 - **THEN** it does not reload, and `tilrd ps` works through the socket
 
 ### Requirement: Client connections end and clients reconnect
@@ -190,6 +208,15 @@ A successor that passed the reload check and then fails or crashes taking over S
 - **WHEN** the failpoint `supervisor-resume-live=panic` is set and the server reloads
 - **THEN** the server process ends and the pane's shell exits
 
+### Requirement: A second replacement during a reload costs no shell
+When the executable is replaced again while a reload is under way, the server SHALL stay up with all its panes, whatever it makes of the second file.
+
+**Verified by**: `reload::an_executable_replaced_again_during_a_reload_costs_no_shell`.
+
+#### Scenario: Replaced again mid-reload
+- **WHEN** the executable is replaced again while a reload sleeps 1.5 s before its exec
+- **THEN** the panes survive, two panes list afterwards, and the log has no `pane process died`
+
 ### Requirement: Inherited processes are waited without leaks
 Pane processes inherited through a reload SHALL be waited for as children (by a pidfd on Linux 5.3+), so that after any number of reloads the supervisor holds as many descriptors as before the first one and no orphan or zombie is left.
 
@@ -227,7 +254,7 @@ A SOCKS session or an SSH agent stream open at a reload SHALL end for both sides
 **Verified by**: `agent::the_panes_socket_works_after_a_reload`; itests `UC-064` (`uc_064.py::a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_works`, `uc_064.py::an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_works`).
 
 #### Scenario: SOCKS session through an update
-- **WHEN** a SOCKS session to an echo service is open and the executable is replaced and an explicit reload is requested
+- **WHEN** a SOCKS session to an echo service is open and the executable is replaced
 - **THEN** the service sees its connection end, the client's side ends too, and a new session echoes 1 MB
 
 ### Requirement: A file write cut by a reload leaves the file as it was
@@ -236,7 +263,7 @@ An `FsWrite` cut by a reload SHALL fail, leave the target file as it was and lea
 **Verified by**: itests `UC-064` (`uc_064.py::a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_works`).
 
 #### Scenario: File write cut by an update
-- **WHEN** an 8 MiB chunked `FsWrite` is in progress and the executable is replaced and an explicit reload is requested
+- **WHEN** an 8 MiB chunked `FsWrite` is in progress and the executable is replaced
 - **THEN** the target keeps its old content, no `.tilr-write-*` file is left, and the retried write succeeds
 
 ### Requirement: Temporary files of cut writes are swept at start
@@ -335,7 +362,7 @@ When a reload is refused or fails before the handover, the Unix socket file and 
 - **THEN** the socket file and its lock are in place, a local client connects through the socket, and no second `tilrd` runs
 
 #### Scenario: A server started by tilr
-- **WHEN** a server `tilr` started (with `--socket` and `--lock-fd`) has its executable replaced by a release that crashes resuming and an explicit reload is requested
+- **WHEN** a server `tilr` started (with `--socket` and `--lock-fd`) has its executable replaced by a release that crashes resuming
 - **THEN** the reload is refused, `tilr ls` lists the same panes, and a new `tilr` attaches to the same server with the same shell
 
 ### Requirement: Soft wraps carry over
@@ -429,44 +456,6 @@ With `failpoints`, each `name=pause` hit configured by `TILR_FAILPOINTS` or `TIL
 #### Scenario: The async runtime keeps serving
 - **WHEN** an async caller needs the runtime to keep serving while a failpoint is paused
 - **THEN** it SHALL run the blocking point on a blocking thread and await it
-
-### Requirement: Replacing the executable does not request reload
-Replacing the installed executable SHALL NOT trigger a reload. Only an explicit request SHALL initiate the successor checks and reload. The obsolete `--no-auto-reload` option SHALL be rejected as an unknown argument.
-
-**Verified by**: `reload::replacement_waits_for_an_explicit_request_and_keeps_the_shells`, `reload::the_obsolete_auto_reload_option_is_rejected`.
-
-#### Scenario: Replace without a request
-- **WHEN** the installed executable is atomically replaced while a client is connected
-- **THEN** the same connection keeps serving and the server has not initiated a reload
-
-#### Scenario: Explicit request after replacement
-- **WHEN** the executable is replaced and the server receives `SIGUSR1`
-- **THEN** the server checks its successor and reloads with the same shells
-
-#### Scenario: Removed option
-- **WHEN** `tilrd --no-auto-reload` runs
-- **THEN** argument parsing rejects the unknown option
-
-### Requirement: Installation requests reload explicitly
-`tilrd reload` SHALL send `SIGUSR1` only to this user's supervisors running from that installation path, excluding pane and command processes and other installations. It SHALL exit successfully without starting a server when none is running. Update and installation SHALL use this explicit request after the atomic rename.
-
-**Verified by**: `reload::an_explicit_request_selects_only_its_installation_without_a_socket`, `reload::an_explicit_request_with_no_server_starts_nothing`; itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`).
-
-#### Scenario: Select the installed server
-- **WHEN** servers from two installation paths are running and `tilrd reload` runs from one installation
-- **THEN** only that installation's supervisor receives a reload request and keeps its panes
-
-#### Scenario: No running server
-- **WHEN** `tilrd reload` runs with no supervisor from its installation
-- **THEN** it exits 0 and starts no server
-
-### Requirement: Reload checks and executes the installation path
-The supervisor SHALL check the executable at its installation path and exec that same path. Replacement between check and exec is an accepted risk, without locks, pinned descriptors or private copies.
-
-#### Scenario: Replacement between check and exec
-- **WHEN** another atomic replacement occurs after the successor checks and before exec
-- **THEN** the server executes the file now at the installation path, which may differ from the checked file
-- **AND** a successor that fails after exec follows the existing reload failure behavior
 
 ## Notes
 
