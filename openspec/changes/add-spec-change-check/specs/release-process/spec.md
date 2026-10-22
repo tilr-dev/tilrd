@@ -83,9 +83,9 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 - **THEN** each rename remains authorized against its own original requirement in dev
 - **AND** modifying or removing the first requirement under its new name requires permission for that original requirement
 
-#### Scenario: Only a requirement heading is removed
-- **WHEN** a pull request deletes only the heading of an existing requirement so that its text and scenarios fall under the preceding existing requirement
-- **THEN** authorization to remove the deleted requirement does not cover the change
+#### Scenario: A requirement's text moves under another existing requirement
+- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in dev
+- **THEN** authorization to remove or modify the requirement whose heading changed does not cover the change
 - **AND** modify authorization for the requirement that absorbs the text is required
 
 #### Scenario: Scope declaration names its own change ambiguously
