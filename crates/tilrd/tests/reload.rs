@@ -1472,6 +1472,17 @@ async fn a_second_server_keeps_its_host_socket_across_a_reload() {
     second.wait_logged("reload").await;
 }
 
+fn age(path: &Path) {
+    assert!(
+        Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
 #[tokio::test]
 async fn stale_state_files_are_swept_at_start() {
     let dir = Server::scratch_dir();
@@ -1494,14 +1505,7 @@ async fn stale_state_files_are_swept_at_start() {
         std::fs::write(runtime.join(name), "fixture").unwrap();
     }
     for name in old.iter().chain(&unrelated) {
-        assert!(
-            Command::new("touch")
-                .args(["-t", "200001010000"])
-                .arg(runtime.join(name))
-                .status()
-                .unwrap()
-                .success()
-        );
+        age(&runtime.join(name));
     }
     let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
     let mut client = Client::connect(&server).await;
@@ -1515,14 +1519,7 @@ async fn stale_state_files_are_swept_at_start() {
     // The same sweep runs when a supervisor has just reloaded.
     for name in old {
         std::fs::write(runtime.join(name), "fixture").unwrap();
-        assert!(
-            Command::new("touch")
-                .args(["-t", "200001010000"])
-                .arg(runtime.join(name))
-                .status()
-                .unwrap()
-                .success()
-        );
+        age(&runtime.join(name));
     }
     let _client = reload(&server, client).await;
     for name in old {

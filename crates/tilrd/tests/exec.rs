@@ -639,6 +639,19 @@ async fn an_exec_does_not_get_the_service_managers_variables() {
     assert!(ran.stdout().lines().any(|line| line == "NOTIFY_SOCKET=/x"));
 }
 
+async fn nothing_before_pong(client: &mut Client, nonce: u64) {
+    client.ping(nonce).await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Pong(pong) if pong.nonce == nonce => Some(()),
+            server_message::Msg::Error(_)
+            | server_message::Msg::ExecInputAck(_)
+            | server_message::Msg::ExecExit(_) => panic!("unwanted input was not ignored: {msg:?}"),
+            _ => None,
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn input_that_is_not_wanted_is_ignored() {
     let server = Server::start(&[]);
@@ -686,18 +699,7 @@ async fn input_that_is_not_wanted_is_ignored() {
                 ..Default::default()
             }))
             .await;
-        owner.ping(101).await;
-        owner
-            .wait_for(|msg| match msg {
-                server_message::Msg::Pong(pong) if pong.nonce == 101 => Some(()),
-                server_message::Msg::Error(_)
-                | server_message::Msg::ExecInputAck(_)
-                | server_message::Msg::ExecExit(_) => {
-                    panic!("unwanted input was not ignored: {msg:?}")
-                }
-                _ => None,
-            })
-            .await;
+        nothing_before_pong(&mut owner, 101).await;
         release_activity_fifo(&mut release);
         let ran = finish(&mut owner, exec_id).await;
         assert_eq!(ran.stdout(), "done");
@@ -720,16 +722,7 @@ async fn input_that_is_not_wanted_is_ignored() {
             eof: true,
         }))
         .await;
-    stranger.ping(102).await;
-    stranger
-        .wait_for(|msg| match msg {
-            server_message::Msg::Pong(pong) if pong.nonce == 102 => Some(()),
-            server_message::Msg::Error(_)
-            | server_message::Msg::ExecInputAck(_)
-            | server_message::Msg::ExecExit(_) => panic!("stranger input was not ignored: {msg:?}"),
-            _ => None,
-        })
-        .await;
+    nothing_before_pong(&mut stranger, 102).await;
     owner
         .send(Msg::ExecInput(ExecInput {
             exec_id,
