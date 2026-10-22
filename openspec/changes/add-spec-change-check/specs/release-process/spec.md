@@ -45,3 +45,12 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 #### Scenario: Malformed scope declaration
 - **WHEN** the latest intake-ready Spec scope line is empty or does not identify an own change
 - **THEN** the check fails with an error instead of accepting the task as legacy
+
+#### Scenario: A renamed requirement is also modified in a delta
+- **WHEN** an own change renames an existing requirement and modifies it under the new name
+- **THEN** authorization to rename the original requirement does not authorize modifying it
+- **AND** modification authorization is checked against the original requirement name
+
+#### Scenario: A foreign change is rewritten while archived
+- **WHEN** a foreign change is archived with altered file contents
+- **THEN** both archive and edit authorization are required for that change
