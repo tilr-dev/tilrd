@@ -312,8 +312,8 @@ state format; platforms other than `linux-aarch64`.
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | Replacing the executable keeps the connection until an explicit reload request; the shells survive | `replacement_waits_for_an_explicit_request_and_keeps_the_shells` |
-| Explicit reload selects only its installation, including TCP-only servers, renamed binaries and paths with spaces | `an_explicit_request_selects_only_its_installation_without_a_socket` |
-| Explicit reload with no server starts nothing | `an_explicit_request_with_no_server_starts_nothing` |
+| Explicit reload selects only its installation, including TCP-only servers, renamed binaries and paths with spaces; Linux needs no ps | `an_explicit_request_selects_only_its_installation_without_a_socket` |
+| Explicit reload with no server starts nothing, including on Linux without ps | `an_explicit_request_with_no_server_starts_nothing` |
 | The obsolete auto-reload option is rejected | `the_obsolete_auto_reload_option_is_rejected` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
 | `state-formats` prints this build's formats; a new executable that reads another pane state format is not reloaded into, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |

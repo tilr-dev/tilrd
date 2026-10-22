@@ -3,30 +3,20 @@
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
-use anyhow::{Context, Result, ensure};
+#[cfg(target_os = "macos")]
+use anyhow::ensure;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 /// Discover before signalling: check children have the same command line as
 /// their supervisor, but must never receive a reload signal themselves.
 pub fn request(exe: &Path) -> Result<()> {
     let exe = std::fs::canonicalize(exe).context("resolve the installation path for reload")?;
-    // SAFETY: geteuid has no preconditions.
-    let uid = unsafe { libc::geteuid() }.to_string();
-    let output = Command::new("ps")
-        .args(["-u", &uid, "-o", "pid=,ppid="])
-        .output()
-        .context("list this user's processes for reload")?;
-    // ps exits 1 when there are no matching processes (the caller itself
-    // normally matches); other failures must not silently lose the request.
-    ensure!(output.status.success(), "cannot list processes for reload");
-    let candidates: Vec<(i32, i32)> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut words = line.split_whitespace();
-            Some((words.next()?.parse().ok()?, words.next()?.parse().ok()?))
-        })
+    let candidates: Vec<(i32, i32)> = processes()?
+        .into_iter()
         .filter(|(pid, _)| is_supervisor(*pid, &exe))
         .collect();
     for &(pid, parent) in &candidates {
@@ -46,6 +36,53 @@ pub fn request(exe: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn processes() -> Result<Vec<(i32, i32)>> {
+    use std::os::unix::fs::MetadataExt;
+
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let entries = std::fs::read_dir("/proc").context("list processes for reload")?;
+    Ok(entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            if pid <= 0 || entry.metadata().ok()?.uid() != uid {
+                return None;
+            }
+            // A process can exit or become unreadable during discovery.
+            let stat = std::fs::read(entry.path().join("stat")).ok()?;
+            // comm is parenthesized and may itself contain spaces or ')'.
+            let fields = stat.get(stat.iter().rposition(|byte| *byte == b')')? + 1..)?;
+            let parent = std::str::from_utf8(fields)
+                .ok()?
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()?;
+            Some((pid, parent))
+        })
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn processes() -> Result<Vec<(i32, i32)>> {
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() }.to_string();
+    let output = Command::new("ps")
+        .args(["-u", &uid, "-o", "pid=,ppid="])
+        .output()
+        .context("list this user's processes for reload")?;
+    ensure!(output.status.success(), "cannot list processes for reload");
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            Some((words.next()?.parse().ok()?, words.next()?.parse().ok()?))
+        })
+        .collect())
 }
 
 fn is_supervisor(pid: i32, exe: &Path) -> bool {

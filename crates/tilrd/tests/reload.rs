@@ -214,7 +214,12 @@ async fn replacement_waits_for_an_explicit_request_and_keeps_the_shells() {
     assert_eq!(client.run(pane_id, "true").await, 0);
     assert!(!server.logged("reloading"));
 
-    let output = Command::new(&exe).arg("reload").output().unwrap();
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     server.wait_formats_started(startup).await;
     let client = reconnect(&server, client).await;
@@ -239,7 +244,12 @@ async fn an_explicit_request_selects_only_its_installation_without_a_socket() {
     let mut other_client = Client::connect(&other).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let other_pane = other_client.open_pane().await;
-    let output = Command::new(&exe).arg("reload").output().unwrap();
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
@@ -252,7 +262,12 @@ fn an_explicit_request_with_no_server_starts_nothing() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     link_executable(&exe);
-    let output = Command::new(&exe).arg("reload").output().unwrap();
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty());
     assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1);
