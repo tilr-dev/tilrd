@@ -1692,6 +1692,41 @@ fn deploy_refuses_a_damaged_archive_before_sending_it() {
 }
 
 #[test]
+fn deploy_finds_tilrd_on_path_or_in_the_environment() {
+    for on_path in [true, false] {
+        let mut machine = Machine::new();
+        let server = machine.install_copy();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        let named = bin.join(if on_path { "tilrd" } else { "custom-daemon" });
+        std::fs::rename(server, &named).unwrap();
+        let archive = deploy_archive(&machine, b"client", b"server");
+        std::fs::write(&archive, b"damaged").unwrap();
+        let mut command = machine.command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ]);
+        command
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env_remove("TILRD");
+        if !on_path {
+            command.env("TILRD", &named);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            err.contains("checksum mismatch"),
+            "on_path={on_path}: {err}"
+        );
+        assert!(!machine.dir.join(".local/bin").exists());
+        let calls = std::fs::read_to_string(machine.dir.join("ssh.calls")).unwrap();
+        assert!(!calls.contains("sh -c"));
+    }
+}
+
+#[test]
 fn deploy_rolls_back_both_programs_when_remote_start_or_service_fails() {
     for service in [false, true] {
         let machine = Machine::new();

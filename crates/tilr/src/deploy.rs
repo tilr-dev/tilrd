@@ -103,7 +103,7 @@ pub fn run(args: &Args) -> Result<()> {
             uname.trim()
         );
     };
-    let tilrd = std::env::current_exe()?.with_file_name("tilrd");
+    let tilrd = crate::daemon::find_tilrd()?;
     let out = connection.dir.join("release");
     let mut fetch = Command::new(tilrd);
     fetch

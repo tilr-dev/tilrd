@@ -139,9 +139,7 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
         let latest = latest_version(cdn, platform).with_context(|| {
             format!("no release of tilr for {platform} on {cdn}; give one with --archive")
         })?;
-        let archive = download(cdn, &latest, platform).with_context(|| {
-            format!("no release of tilr for {platform} on {cdn}; give one with --archive")
-        })?;
+        let archive = download(cdn, &latest, platform)?;
         (archive_name(&latest, platform), archive)
     };
     fs::create_dir_all(out)?;

@@ -458,7 +458,10 @@ fn fetch_release_refuses_a_bad_checksum() {
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("checksum"));
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(err.contains("checksum"), "{err}");
+    assert!(!err.contains("no release"), "{err}");
+    assert!(!err.contains("--archive"), "{err}");
     assert!(!out.exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
