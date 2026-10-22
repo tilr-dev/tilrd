@@ -427,3 +427,66 @@ mod bundled_tls_tests {
         super::tls_test_peer::assert_bundled_root_was_used(error);
     }
 }
+
+#[cfg(test)]
+mod update_wait_tests {
+    use super::*;
+    use tilr_proto::{ExecExit, ExecStarted};
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    #[tokio::test]
+    async fn update_waits_for_command_exit_after_a_long_launch_delay() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let ws = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut peer = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let mut conn = Conn {
+            ws: Ws::Unix(Box::new(ws)),
+            next_request: 0,
+            heard: Instant::now(),
+            server_version: "test".into(),
+            applied_input: Vec::new(),
+        };
+        let task = tokio::spawn(async move { conn.server_command(&["update".into()]).await });
+        let packet = peer.next().await.unwrap().unwrap().into_data();
+        let request = tilr_proto::decode::<ClientMessage>(&packet).unwrap();
+        let Some(Msg::ExecStart(start)) = request.msg else {
+            panic!("expected update start")
+        };
+        assert_eq!(start.argv, ["update"]);
+        assert!(start.server_command);
+        assert_eq!(start.timeout_ms, 0);
+        peer.send(Message::Binary(tilr_proto::encode(&ServerMessage {
+            msg: Some(server_message::Msg::ExecStarted(ExecStarted {
+                request_id: start.request_id,
+                exec_id: 1,
+                ..Default::default()
+            })),
+        })))
+        .await
+        .unwrap();
+        // A pong proves the client consumed ExecStarted and is waiting for exit.
+        peer.send(Message::Ping(vec![1].into())).await.unwrap();
+        assert!(matches!(
+            peer.next().await.unwrap().unwrap(),
+            Message::Pong(_)
+        ));
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(86_400)).await;
+        assert!(
+            !task.is_finished(),
+            "first launch must not consume the reconnect window"
+        );
+        peer.send(Message::Binary(tilr_proto::encode(&ServerMessage {
+            msg: Some(server_message::Msg::ExecExit(ExecExit {
+                exec_id: 1,
+                code: 0,
+                ..Default::default()
+            })),
+        })))
+        .await
+        .unwrap();
+        let exit = task.await.unwrap().unwrap();
+        assert_eq!(exit.code, 0);
+        assert!(exit.reason.is_empty());
+    }
+}
