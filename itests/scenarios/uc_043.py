@@ -44,6 +44,18 @@ def server_drops(server) -> int:
     return server.logged("client went silent, dropping") + server.logged("client stopped answering pings")
 
 
+def record_connection_metrics(t: T, server, client, since: int) -> tuple[int, int]:
+    """Record each endpoint's observations; neither observes the other's timeout immediately."""
+    events = client.events[since:]
+    disconnects = sum(e.get("ev") == "disconnected" for e in events)
+    reconnects = sum(e.get("ev") == "reconnected" for e in events)
+    drops = server_drops(server)
+    t.metric("disconnects", disconnects)
+    t.metric("reconnects", reconnects)
+    t.metric("server_drops", drops)
+    return drops, disconnects
+
+
 @case(fixture="server_state", hosts=["phone"], net_admin=True, timeout=400, spec=[
     "client-liveness/a-lagging-client-skips-to-the-latest-screen",
 ])
@@ -79,15 +91,9 @@ def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it
         if now_tick > last_tick:
             last_tick, last_move = now_tick, now
         longest_stall = max(longest_stall, now - last_move)
-    events = phone.events[since:]
-    disconnects = sum(e.get("ev") == "disconnected" for e in events)
-    reconnects = sum(e.get("ev") == "reconnected" for e in events)
+    record_connection_metrics(t, server, phone, since)
     lat = phone.latency()
-    t.metric("disconnects", disconnects)
-    drops = server_drops(server)
-    t.metric("server_drops", drops)
     t.metric("frames_skipped", frames_skipped(server))
-    t.metric("reconnects", reconnects)
     t.metric("longest_screen_stall_ms", round(longest_stall * 1000))
     t.metric("ticks_seen_in_window", last_tick)
     for k in ("count", "p50_ms", "p90_ms", "max_ms", "unanswered"):
@@ -175,13 +181,11 @@ def a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect(t: T)
             last_tick, last_move = now_tick, now
         longest_stall = max(longest_stall, now - last_move)
     lat = client.latency()
-    disconnects = sum(e.get("ev") == "disconnected" for e in client.events[since:])
-    t.metric("disconnects", disconnects)
+    record_connection_metrics(t, server, client, since)
     t.metric("frames_skipped", frames_skipped(server))
     t.metric("longest_screen_stall_ms", round(longest_stall * 1000))
     for k in ("count", "p50_ms", "p90_ms", "max_ms"):
         t.metric(f"input_latency_{k}", lat[k])
-    t.metric("server_drops", server_drops(server))
     # The proxy's random retransmission stalls grow exponentially. They impose no
     # five-second echo or ten-second screen bound, nor a guarantee against silence
     # timeouts. The fixed-delay case tests the threshold with complete samples.
@@ -244,10 +248,7 @@ def uplink_silence_can_drop_a_client_that_still_receives_frames(t: T):
     proxy.set(dir="down", delay_ms=3000)
     proxy.freeze("up")
     t.eventually(lambda: observer.viewers(pane) == 0, "server silence timeout", timeout=35)
-    drops = server_drops(server)
-    disconnects = sum(e.get("ev") == "disconnected" for e in client.events[since:])
-    t.metric("server_drops", drops)
-    t.metric("disconnects", disconnects)
+    drops, disconnects = record_connection_metrics(t, server, client, since)
     t.metric("frames_received", counter.last(client))
     t.eq(drops, 1, "the server times out the silent client")
     t.eq(server.logged("client went silent, dropping"), 1, "the cause is silence, not lag")
