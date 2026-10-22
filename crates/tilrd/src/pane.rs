@@ -878,10 +878,11 @@ impl Pane {
             Some(Msg::Scroll(_) | Msg::Resize(_)) => Some(Credit::Applied),
             _ => None,
         };
-        let unnumbered_resize = !reliable && matches!(msg.msg, Some(Msg::Resize(_)));
+        let resize = matches!(msg.msg, Some(Msg::Resize(_)));
         self.handle_message(msg)?;
-        if unnumbered_resize {
-            // Publish the applied size after any older delivery acknowledgement.
+        if resize {
+            // Publish the applied size even when earlier PTY input keeps the
+            // cumulative delivery acknowledgement behind this resize.
             self.delivery_acks.push(tilr_proto::PaneInputAck {
                 seq: self
                     .delivery
