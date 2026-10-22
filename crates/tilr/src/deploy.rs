@@ -236,7 +236,7 @@ version=${version#* }
 version=${version%% *}
 token=
 # The installed client speaks the running server's protocol. The persistent
-# token survives reload, so no new-client handshake races the executable watcher.
+# token survives the explicit reload requested after installing the binaries.
 if [ -x "$bin/tilr" ] && "$bin/tilr" ls --quiet >/dev/null 2>&1; then
   token=$("$bin/tilr" token)
   [ -n "$token" ]
@@ -281,7 +281,13 @@ fi
 # Do not launch a fresh daemon before a service manager can refuse the install.
 if [ -z "$token" ]; then token=$("$bin/tilr" token); fi
 [ -n "$token" ]
+# Installation and startup are complete. A request can fail after signalling
+# another supervisor, so keep the installed files even when the request fails.
 committed=1
+if ! "$bin/tilrd" reload >&2; then
+  echo 'release installed, but could not request reload' >&2
+  exit 1
+fi
 echo "installed tilr $version in ~/.local/bin" >&2
 case ":$PATH:" in
   *":$bin:"*) ;;

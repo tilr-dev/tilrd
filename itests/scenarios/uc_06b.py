@@ -8,7 +8,9 @@ are copies in a directory of the case's own: `tilr` starts the `tilrd` next to i
 the case replaces the way an install does (write next to it, rename into place).
 """
 
+import os
 import shutil
+import signal
 import stat
 from pathlib import Path
 
@@ -47,6 +49,7 @@ def a_refused_reload_keeps_the_socket_and_tilr_finds_the_same_server(t: T):
     staged.write_text(WRAPPER.format(next=NEXT_EXE))
     staged.chmod(0o755)
     staged.rename(bin / "tilrd")
+    os.kill(pid, signal.SIGUSR1)
     log = socket.parent / "tilrd.log"
     t.eventually(lambda: "not reloading: the new executable could not resume" in log.read_text(),
                  "the server refuses to exec into the new file", timeout=30)

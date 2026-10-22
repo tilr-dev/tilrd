@@ -13,11 +13,7 @@ async fn a_failed_log_wait_unwinds_and_cleans_up_the_server() {
     const MISSING: &str = "deliberately absent log message";
     if let Ok(mode) = std::env::var(MODE) {
         let dir = PathBuf::from(std::env::var_os(DIR).unwrap());
-        let server = Server::start_in(
-            dir,
-            Path::new(env!("CARGO_BIN_EXE_tilrd")),
-            &["--no-auto-reload"],
-        );
+        let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
         let failure = match mode.as_str() {
             "async" => {
                 AssertUnwindSafe(server.wait_logged_within(MISSING, Duration::ZERO))

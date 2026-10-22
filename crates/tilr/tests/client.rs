@@ -1762,6 +1762,95 @@ fn deploy_rolls_back_both_programs_when_remote_start_or_service_fails() {
     }
 }
 
+// @spec reload/installation-requests-reload-explicitly
+#[test]
+fn deploy_reloads_a_server_on_a_custom_socket() {
+    let mut machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let installed = machine.dir.join(".local/bin");
+    std::fs::create_dir_all(&installed).unwrap();
+    let client = std::fs::read(TILR).unwrap();
+    let server = std::fs::read(Path::new(TILR).with_file_name("tilrd")).unwrap();
+    copy_program(Path::new(TILR), &installed.join("tilr"));
+    copy_program(
+        &Path::new(TILR).with_file_name("tilrd"),
+        &installed.join("tilrd"),
+    );
+    machine.tilr = installed.join("tilr");
+    let custom = machine.dir.join("custom/tilrd.sock");
+    let custom_str = custom.to_str().unwrap();
+    let pane = machine.ok(&["--socket", custom_str, "new", "-d"]);
+    assert!(!machine.socket().exists());
+    assert!(!machine.tilr(&["ls", "--quiet"]).status.success());
+    let lock = tilr_proto::local::lock_path(&custom);
+    let pid = std::fs::read_to_string(&lock).unwrap();
+    let log = tilr_proto::local::log_path(&custom);
+    let archive = deploy_archive(&machine, &client, &server);
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    eventually("custom-socket server reloads after deploy", || {
+        std::fs::read_to_string(&log).is_ok_and(|log| log.contains("resumed after reload with"))
+    });
+    assert_eq!(std::fs::read_to_string(lock).unwrap(), pid);
+    assert_eq!(machine.ok(&["--socket", custom_str, "ls", "--quiet"]), pane);
+}
+
+#[test]
+fn deploy_requests_reload_without_a_default_server_and_keeps_a_refused_installation() {
+    for succeeds in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        let installed = machine.dir.join(".local/bin");
+        std::fs::create_dir_all(&installed).unwrap();
+        // No server answers on the default socket. Discovery must still run.
+        executable_script(&installed.join("tilr"), "#!/bin/sh\nexit 1\n");
+        std::fs::write(installed.join("tilrd"), b"old server").unwrap();
+        let client = b"#!/bin/sh\ncase \"$1\" in --version) echo 'tilr 9.9.9';; token) echo persistent-token;; esac\n";
+        let server = format!(
+            "#!/bin/sh\ncase \"$1\" in --version) echo 'tilrd 9.9.9';; reload) echo requested >\"$HOME/reload.called\"; exit {};; esac\n",
+            if succeeds { 0 } else { 1 }
+        );
+        let archive = deploy_archive(&machine, client, server.as_bytes());
+        let output = machine
+            .command(&[
+                "deploy",
+                "--archive",
+                archive.to_str().unwrap(),
+                "user@host",
+            ])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(machine.dir.join("reload.called").exists(), "{output:?}");
+        assert_eq!(output.status.success(), succeeds, "{output:?}");
+        assert_eq!(
+            std::fs::read(installed.join("tilrd")).unwrap(),
+            server.as_bytes()
+        );
+        assert_eq!(std::fs::read(installed.join("tilr")).unwrap(), client);
+        if succeeds {
+            assert!(String::from_utf8_lossy(&output.stdout).ends_with("persistent-token\n"));
+        } else {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("release installed, but could not request reload"),
+                "{output:?}"
+            );
+            assert!(output.stdout.is_empty());
+        }
+        assert_eq!(std::fs::read_dir(installed).unwrap().count(), 2);
+    }
+}
+
 #[test]
 fn deploy_gets_the_token_before_replacing_an_old_protocol_client() {
     let machine = Machine::new();

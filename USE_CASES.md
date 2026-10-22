@@ -137,6 +137,7 @@ real Linux containers with the same FIFO barrier.
 | The lock file or `tilrd.log` is a symbolic link: `tilr new` refuses, the link is not followed and its target is intact | `a_symlinked_lock_file_is_refused` |
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
 | Deploy validates a release, installs both programs over SSH and prints connection commands and the remote token; unsupported platforms and damaged archives change nothing | `deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `deploy_names_a_platform_without_a_release`, `deploy_refuses_a_damaged_archive_before_sending_it` |
+| Deploy requests reload even without a default-socket server; a request that fails after installation keeps both new programs and exits non-zero | `deploy_requests_reload_without_a_default_server_and_keeps_a_refused_installation`, `deploy_reloads_a_server_on_a_custom_socket` |
 | Deploy obtains the persistent token before replacing an installed client whose protocol differs from the new release; a failed service install restores its previous configuration | `deploy_gets_the_token_before_replacing_an_old_protocol_client`, `deploy_restores_service_configuration_when_the_manager_refuses_it`, `deploy_restores_the_crontab_after_a_service_failure`, `deploy_does_not_start_a_daemon_before_a_failing_service_install` |
 | Fetch-release checks a foreign-platform archive and rejects a bad checksum without executing its programs | `fetch_release_writes_a_checked_archive`, `fetch_release_refuses_a_bad_checksum` |
 | Copying a private installation keeps destination writers out of unrelated forked children (FIFO-controlled Linux regression) | `copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork` |
@@ -272,7 +273,7 @@ Cloud repository.
 
 | Use case | Test |
 |---|---|
-| `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; a running server reloads on its own, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
+| `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; an explicit reload request tells a running server to reload, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
 | The latest release is already installed: nothing is downloaded, the file is untouched | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
 | The archive does not match its checksum, does not unpack (not an archive, cut short), lacks `tilrd` or `tilr`, one of them does not run, or there is no release for the platform: nothing is installed, nothing is left next to it | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
 | The CDN misbehaves: the download breaks off halfway, a release is named but its files are not there yet, someone else's page answers instead of the CDN, nobody answers: nothing is installed | `update_installs_nothing_when_the_cdn_misbehaves` |
@@ -318,8 +319,10 @@ state format; platforms other than `linux-aarch64`.
 | Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
-| The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
-| With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
+| Replacing the executable keeps the connection until an explicit reload request; the shells survive | `replacement_waits_for_an_explicit_request_and_keeps_the_shells` |
+| Explicit reload selects only its installation, including TCP-only servers, renamed binaries and paths with spaces; Linux needs no ps | `an_explicit_request_selects_only_its_installation_without_a_socket` |
+| Explicit reload with no server starts nothing, including on Linux without ps | `an_explicit_request_with_no_server_starts_nothing` |
+| The obsolete auto-reload option is rejected | `the_obsolete_auto_reload_option_is_rejected` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
 | `state-formats` prints this build's formats; a new executable that reads another pane state format is not reloaded into, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
 | Unit: a successor that reads another supervisor or pane state format, cannot show it can resume (no `reload-check 1`), names no format or an unparseable one is refused with that reason; one with the same formats is accepted (`src/reload.rs`) | `reload::tests::check_formats_rejects_every_format_mismatch`, `reload::tests::an_executable_reading_the_same_formats_can_take_over` |
@@ -341,7 +344,7 @@ state format; platforms other than `linux-aarch64`.
 | † A pane process crashed while taking over: that pane is lost (its shell ended), the others are intact | `a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on` |
 | † The new version crashed after taking over: the server and all shells are lost (the limit of reloading, there is no way back); no orphaned shells are left | `a_version_that_crashes_taking_over_ends_the_server_and_its_shells` |
 | † The server killed in the middle of a reload: the shells end, no orphans are left | `a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind` |
-| † The executable replaced again while a reload was under way: no shell is lost | `an_executable_replaced_again_during_a_reload_costs_no_shell` |
+| † The executable replaced again while a reload was under way: no shell is lost | `a_second_atomic_replacement_before_exec_keeps_the_shells` |
 | † The new version panics resuming in its check run: no exec, the same pid, connection and shell, no state or check file left | `a_successor_that_panics_resuming_is_not_reloaded_into` |
 | The new version rejects the server's command line (`--socket`): no exec, the log names the argument, the socket stays | `a_successor_that_rejects_the_command_line_is_not_reloaded_into` |
 | The configuration file has a key the new version refuses: no exec; with the key gone the next reload goes through | `a_successor_that_refuses_the_configuration_is_not_reloaded_into` |
