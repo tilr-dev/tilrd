@@ -74,6 +74,113 @@ async fn next_frame(client: &mut Client) -> Frame {
         .await
 }
 
+/// Each FIFO release produces one isolated read. Invisible output is kept
+/// across two completed no-op builds before the visible output emits a frame.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn frame_stage_durations_are_controlled_per_operation() {
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    let stages = dir.join("stages");
+    std::fs::write(&clock, "1000000").unwrap();
+    std::fs::write(&stages, "11 23 37").unwrap();
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[
+            ("TILR_TEST_TIME_FILE", clock.to_str().unwrap()),
+            ("TILR_TEST_FRAME_STAGE_TIME_FILE", stages.to_str().unwrap()),
+        ],
+    );
+    let controller = PauseController::bind(&server.dir);
+    let (fifo, mut release) = activity_fifo(&server);
+    let command = format!(
+        "stty -echo; read -r go < '{0}'; printf stage-ready; \
+         read -r go < '{0}'; printf '\\033[0m'; \
+         read -r go < '{0}'; printf '\\033[0m'; \
+         read -r go < '{0}'; printf stage-visible; read -r go < '{0}'",
+        fifo.display()
+    );
+    let (mut client, base) = connect_with_base(&server).await;
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 100,
+            rows: 30,
+            command: vec!["/bin/sh".into(), "-c".into(), command],
+            request_id: 5,
+            ..Default::default()
+        }))
+        .await;
+    let pane: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane).await;
+    let initial = next_frame(&mut client).await.timing.unwrap();
+    assert_eq!(
+        (initial.parse_us, initial.build_us, initial.encode_us),
+        (0, 23, 0)
+    );
+
+    release_activity_fifo(&mut release);
+    client.wait_screen("stage-ready").await;
+    let ready = client.frame.as_ref().unwrap().timing.as_ref().unwrap();
+    assert_eq!(ready.parse_us, 11 * ready.reads);
+    assert_eq!((ready.build_us, ready.encode_us), (23, 37));
+
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, "frame-stage-no-frame=pause").unwrap();
+    for _ in 0..2 {
+        release_activity_fifo(&mut release);
+        controller
+            .wait("frame-stage-no-frame")
+            .await
+            .release()
+            .await;
+    }
+    std::fs::write(&points, "").unwrap();
+    release_activity_fifo(&mut release);
+    client.wait_screen("stage-visible").await;
+    let accumulated = client.frame.as_ref().unwrap().timing.as_ref().unwrap();
+    assert_eq!(accumulated.reads, 3);
+    assert_eq!(accumulated.output_bytes, 8 + "stage-visible".len() as u32);
+    assert_eq!(
+        (
+            accumulated.parse_us,
+            accumulated.build_us,
+            accumulated.encode_us
+        ),
+        (33, 23, 37)
+    );
+
+    let next = stages.with_extension("next");
+    std::fs::write(&next, "41 53 71").unwrap();
+    std::fs::rename(next, &stages).unwrap();
+    for (seq, previous_encode) in [(base + 1, 37), (base + 2, 71)] {
+        send_with_seq(
+            &mut client,
+            Msg::Scroll(Scroll {
+                pane_id: pane.to_string(),
+                delta: 0,
+                to_bottom: true,
+            }),
+            seq,
+        )
+        .await;
+        let frame = frame_with_seq(&mut client, seq, |s| s < seq).await;
+        let timing = frame.timing.unwrap();
+        assert_eq!(
+            (timing.parse_us, timing.reads, timing.output_bytes),
+            (0, 0, 0)
+        );
+        assert_eq!((timing.build_us, timing.encode_us), (53, previous_encode));
+    }
+}
+
 #[tokio::test]
 async fn a_frame_names_the_input_it_shows_and_how_it_was_made() {
     let server = Server::start(&[]);

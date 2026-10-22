@@ -1159,6 +1159,15 @@ and pane processes use it for frame timing. Raw SOCKS sessions use the same cloc
 ten-second negotiation deadline; each publishes a local wake-up port beside the clock file,
 named for its client's TCP port. These controls exist only in `failpoints` builds.
 
+With that clock held fixed, `TILR_TEST_FRAME_STAGE_TIME_FILE` can name another file
+containing three positive microsecond durations, e.g. `11 23 37` for parse, build and
+encode. Each operation advances only the measurement clock, giving exact per-read
+parse durations, per-frame build durations, and the previous frame's encode duration.
+Atomically replace the stage file between acknowledged frames to change the values.
+Scheduling and deadlines continue to use their existing clocks. The
+`frame-stage-no-frame=pause` failpoint acknowledges a build that emitted no frame,
+so a test can accumulate invisible output across separate reads without a timing race.
+
 The black-box tests in `itests/` ([itests/README.md](itests/README.md),
 [itests/USE_CASES.md](itests/USE_CASES.md)) install and run the real binaries in containers:
 the installer, the daemon's life, services, sockets, updates, transfers.
