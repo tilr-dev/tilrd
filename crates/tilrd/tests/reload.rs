@@ -4,6 +4,89 @@ mod common;
 
 use common::*;
 
+#[test]
+fn warm_executable_process_fixture() {
+    if std::env::var_os("TILR_WARM_PROCESS_FIXTURE").is_none() {
+        return;
+    }
+    let exe = std::env::temp_dir().join("installed");
+    link_executable(&exe);
+    std::fs::remove_file(exe).unwrap();
+}
+
+#[test]
+fn warm_executables_do_not_accumulate_between_processes() {
+    let root = Server::scratch_dir();
+    let live = root.join(format!("tilr-warm-{}", std::process::id()));
+    std::fs::create_dir(&live).unwrap();
+    let sentinel = live.join("tilrd-warm-b");
+    std::fs::write(&sentinel, b"live process's pair").unwrap();
+    let run = || {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "warm_executable_process_fixture", "--nocapture"])
+            .env("TILR_WARM_PROCESS_FIXTURE", "1")
+            .env("TMPDIR", &root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &live)
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(first.len(), 1);
+    assert!(first[0].join("tilrd-warm-b").is_file());
+    let second = run();
+    assert_eq!(
+        second.len(),
+        1,
+        "a second process must reclaim the dead pair"
+    );
+    assert!(!first[0].exists(), "the exited process's pair was removed");
+    assert!(second[0].join("tilrd-warm-b").is_file());
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"live process's pair");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn warm_executable_links_reuse_inodes_and_replace_repeatedly() {
+    use std::os::unix::fs::MetadataExt;
+    fn identity(path: &Path) -> (u64, u64) {
+        let metadata = std::fs::metadata(path).unwrap();
+        (metadata.dev(), metadata.ino())
+    }
+
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    let peer = dir.join("tilrd-peer");
+    let staged = dir.join("tilrd.new");
+    link_executable(&exe);
+    link_executable(&peer);
+    let original = identity(&exe);
+    assert_eq!(identity(&peer), original);
+    let built = identity(Path::new(env!("CARGO_BIN_EXE_tilrd")));
+    if built.0 == original.0 {
+        assert_eq!(built, original, "reuse the original on the same filesystem");
+    }
+
+    let mut identities = Vec::new();
+    for _ in 0..3 {
+        link_replacement(&exe, &staged);
+        let next = identity(&staged);
+        assert_ne!(next, identity(&exe));
+        std::fs::rename(&staged, &exe).unwrap();
+        assert!(!staged.exists(), "rename must consume the staged path");
+        assert_eq!(identity(&exe), next);
+        assert_eq!(identity(&peer), original, "other installations stay intact");
+        identities.push(next);
+    }
+    assert_eq!(identities[1], original);
+    assert_eq!(identities[0], identities[2]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn a_command_running_across_a_reload_is_reported_when_it_ends() {
     let server = Server::start(&[]);
@@ -121,13 +204,13 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
     // way an upgrade does: write next to it, rename into place.
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     let staged = dir.join("tilrd.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
+    link_replacement(&exe, &staged);
     std::fs::rename(&staged, &exe).unwrap();
 
     // Nobody tells the server: it notices on its own.
@@ -140,13 +223,13 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
 async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let server = Server::start_in(dir.clone(), &exe, &["--no-auto-reload"]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
 
     let staged = dir.join("tilrd.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
+    link_replacement(&exe, &staged);
     std::fs::rename(&staged, &exe).unwrap();
 
     tokio::time::sleep(Duration::from_secs(4)).await;
@@ -174,7 +257,7 @@ const JUDGED: Duration = WATCH_INTERVAL
 async fn a_broken_executable_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
@@ -197,7 +280,10 @@ async fn a_broken_executable_is_not_reloaded_into() {
 async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
+    // Retain the running inode after a rejected script replaces its pathname.
+    let running_exe = dir.join("tilrd-running");
+    std::fs::hard_link(&exe, &running_exe).unwrap();
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
@@ -236,8 +322,9 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     assert_eq!(client.run(pane_id, "true").await, 0);
 
     // A version that reads this server's state is then reloaded into.
+    // Differ from the running original, not just the rejected script on disk.
     let staged = dir.join("tilrd.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
+    link_replacement(&running_exe, &staged);
     std::fs::rename(&staged, &exe).unwrap();
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
@@ -608,7 +695,7 @@ async fn stopping_the_server_after_a_reload_ends_the_shells() {
 fn failing_server(failpoints: &str) -> (Server, PathBuf) {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     (Server::start_failing(dir, &exe, &[], failpoints), exe)
 }
 
@@ -617,11 +704,7 @@ fn failing_server(failpoints: &str) -> (Server, PathBuf) {
 #[cfg(feature = "failpoints")]
 fn replace(exe: &Path) {
     let staged = exe.with_extension("new");
-    let mut bytes = std::fs::read(exe).unwrap();
-    bytes.push(0);
-    std::fs::write(&staged, bytes).unwrap();
-    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
-    std::fs::set_permissions(&staged, mode).unwrap();
+    link_replacement(exe, &staged);
     std::fs::rename(&staged, exe).unwrap();
 }
 
@@ -826,8 +909,8 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     let real = dir.join("tilrd-real");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &real).unwrap();
+    link_executable(&exe);
+    link_executable(&real);
     // A short path: a socket's is limited to about a hundred bytes.
     let socket = PathBuf::from(format!(
         "/tmp/tilr-rc-{}-{}.sock",
@@ -1225,7 +1308,7 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
     // itself, and stops reading it once the reload failed.
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let mut command = Command::new(&exe);
     command.args(["--listen", "127.0.0.1:0"]);
     Server::environment(&mut command, &dir, "reload-exec-missing=error");
