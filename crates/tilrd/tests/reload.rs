@@ -205,7 +205,7 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     link_executable(&exe);
-    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
@@ -284,7 +284,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     // Retain the running inode after a rejected script replaces its pathname.
     let running_exe = dir.join("tilrd-running");
     std::fs::hard_link(&exe, &running_exe).unwrap();
-    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
@@ -923,7 +923,7 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
             .unwrap()
     ));
     let socket_arg = socket.display().to_string();
-    let mut server = Server::start_in(dir.clone(), &exe, &["--socket", &socket_arg]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &["--socket", &socket_arg]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let pid = shell_pid(&server, &mut client, pane_id).await;

@@ -45,6 +45,18 @@ use crate::clipboard;
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// How long `state-formats` and the check of a successor may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Compatibility tests await their verdict rather than race the host's
+/// process scheduling. Release builds always enforce the production limit.
+fn state_formats_timeout() -> Option<Duration> {
+    #[cfg(feature = "failpoints")]
+    if std::env::var_os("TILR_TEST_STATE_FORMATS_UNBOUNDED").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        return None;
+    }
+    Some(CHECK_TIMEOUT)
+}
 /// Set for a process that only checks it could resume: the path of the copy
 /// of the state it reads.
 pub const CHECK_ENV: &str = "TILR_RELOAD_CHECK";
@@ -155,7 +167,11 @@ pub async fn check_executable(exe: &Path) -> Result<bool> {
             .wait_with_output()
             .await
     };
-    match tokio::time::timeout(CHECK_TIMEOUT, output).await {
+    let result = match state_formats_timeout() {
+        Some(limit) => tokio::time::timeout(limit, output).await,
+        None => Ok(output.await),
+    };
+    match result {
         Ok(Ok(output)) if output.status.success() => {
             check_formats(&String::from_utf8_lossy(&output.stdout))
                 .with_context(|| format!("{} cannot take over", exe.display()))
@@ -792,6 +808,102 @@ pub fn sweep_stale() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_state_formats_obeys_the_selected_policy() {
+        for setting in [None, Some("true"), Some("1")] {
+            let unbounded = cfg!(feature = "failpoints") && setting == Some("1");
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "reload::tests::delayed_formats_fixture",
+                    "--nocapture",
+                ])
+                .env(
+                    "TILR_DELAYED_FORMATS_FIXTURE",
+                    if unbounded { "unbounded" } else { "bounded" },
+                )
+                .env_remove("TILR_TEST_STATE_FORMATS_UNBOUNDED");
+            if let Some(setting) = setting {
+                command.env("TILR_TEST_STATE_FORMATS_UNBOUNDED", setting);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "unbounded={unbounded}: {output:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn delayed_formats_fixture() {
+        use std::future::Future;
+        use std::os::unix::fs::PermissionsExt;
+        use std::task::Poll;
+        let Ok(policy) = std::env::var("TILR_DELAYED_FORMATS_FIXTURE") else {
+            return;
+        };
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(scratch("delayed-formats"));
+        let dir = &scratch.0;
+        let ready = dir.join("ready");
+        let release = dir.join("release");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .args([&ready, &release])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut release_writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&release)
+            .unwrap();
+        let exe = dir.join("successor");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\nprintf ready > '{}'\nread release < '{}'\nprintf '%s' '{}'\n",
+                ready.display(),
+                release.display(),
+                formats()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut probe = Box::pin(check_executable(&exe));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        // FIFO EOF proves that the real successor has started and is held
+        // before reporting its formats. No wall-clock delay is required.
+        assert_eq!(tokio::fs::read(&ready).await.unwrap(), b"ready");
+        tokio::time::pause();
+        tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
+        let verdict = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
+        if policy == "unbounded" {
+            assert!(
+                verdict.is_pending(),
+                "the compatibility probe used the production deadline"
+            );
+            release_writer.write_all(b"continue\n").unwrap();
+            assert!(probe.await.unwrap());
+        } else {
+            let Poll::Ready(Err(err)) = verdict else {
+                panic!("a held successor must time out: {verdict:?}");
+            };
+            assert!(
+                err.to_string().contains("state-formats did not finish"),
+                "{err:#}"
+            );
+        }
+    }
 
     #[test]
     fn an_executable_reading_the_same_formats_can_take_over() {

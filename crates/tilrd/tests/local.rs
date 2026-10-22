@@ -836,7 +836,12 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
+    let mut daemon = Daemon::spawn_env(
+        &exe,
+        &scratch.0,
+        &["--no-listen"],
+        &[("TILR_TEST_STATE_FORMATS_UNBOUNDED", Path::new("1"))],
+    );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
     wait_logged(
@@ -855,7 +860,12 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
+    let mut daemon = Daemon::spawn_env(
+        &exe,
+        &scratch.0,
+        &[],
+        &[("TILR_TEST_STATE_FORMATS_UNBOUNDED", Path::new("1"))],
+    );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
     wait_logged(

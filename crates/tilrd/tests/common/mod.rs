@@ -325,6 +325,19 @@ impl Server {
         Self::start_failing(dir, exe, args, "")
     }
 
+    /// A compatibility assertion needs the successor's verdict, independently
+    /// of process scheduling. Only failpoints builds honor this opt-in; the
+    /// harness still bounds its waits for logs and client messages.
+    pub fn start_awaiting_formats(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
+        Self::start_full(
+            dir,
+            exe,
+            args,
+            "",
+            &[("TILR_TEST_STATE_FORMATS_UNBOUNDED", "1")],
+        )
+    }
+
     /// Start a server in which things go wrong where `failpoints` says, see
     /// `src/fail.rs`. It hands them on to what it reloads into.
     pub fn start_failing(dir: PathBuf, exe: &Path, args: &[&str], failpoints: &str) -> Self {
@@ -413,6 +426,7 @@ impl Server {
             .env("PS1", "$ ")
             // Each test opts into its own clock through `start_with_env`.
             .env_remove("TILR_TEST_TIME_FILE")
+            .env_remove("TILR_TEST_STATE_FORMATS_UNBOUNDED")
             // No real clipboard for the shims to fall back to, and no shell
             // startup file.
             .env_remove("DISPLAY")

@@ -1,0 +1,4 @@
+- [x] Reproduce delayed successor completion with a FIFO and virtual time.
+- [x] Add the feature-only completion policy and opt in the affected tests.
+- [x] Verify the controlled regression fails before the policy change.
+- [x] Verify reload and local compatibility verdicts and unchanged production timeout.
