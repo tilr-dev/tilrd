@@ -8,9 +8,9 @@
 # programs must run before either is put in place. Anything that fails leaves
 # the installation as it was (or none at all) and exits non-zero.
 #
-# Run it again to update: both are replaced, and a running server picks the
-# new executable up on its own and keeps every shell. The same release again
-# changes nothing.
+# Run it again to update: both are replaced, then an explicit reload request
+# tells a running server to use the new executable and keep every shell.
+# The same release again changes nothing.
 #
 # Nothing starts tilrd at boot: `tilr` starts it when none runs, and
 # `tilr service install` sets that up when you ask for it.
@@ -82,6 +82,8 @@ download() {
     file="$tmp/release/$name"
     [ -f "$file" ] && [ ! -L "$file" ] || die "$name in the archive of $version is not a file, nothing installed"
     chmod 755 "$file"
+    "$file" --version >/dev/null 2>&1 ||
+      die "$name $version does not run on this system (it needs glibc 2.36 or newer), nothing installed"
   done
 }
 
@@ -99,8 +101,6 @@ put_in_place() {
   for name in tilrd tilr; do
     { cp "$tmp/release/$name" "$BIN_DIR/.$name.new.$$" && chmod 755 "$BIN_DIR/.$name.new.$$"; } ||
       die "cannot write to $BIN_DIR, nothing installed"
-    "$BIN_DIR/.$name.new.$$" --version >/dev/null 2>&1 ||
-      die "$name $version does not run on this system (it needs glibc 2.36 or newer), nothing installed"
   done
 
   had_client=

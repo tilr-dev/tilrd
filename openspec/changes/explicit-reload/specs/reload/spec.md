@@ -3,6 +3,8 @@
 ### Requirement: Replacing the executable does not request reload
 Replacing the installed executable SHALL NOT trigger a reload. Only an explicit request SHALL initiate the successor checks and reload. The obsolete `--no-auto-reload` option SHALL be rejected as an unknown argument.
 
+**Verified by**: `reload::replacement_waits_for_an_explicit_request_and_keeps_the_shells`, `reload::the_obsolete_auto_reload_option_is_rejected`.
+
 #### Scenario: Replace without a request
 - **WHEN** the installed executable is atomically replaced while a client is connected
 - **THEN** the same connection keeps serving and the server has not initiated a reload
@@ -17,6 +19,8 @@ Replacing the installed executable SHALL NOT trigger a reload. Only an explicit 
 
 ### Requirement: Installation requests reload explicitly
 `tilrd reload` SHALL send `SIGUSR1` only to this user's supervisors running from that installation path, excluding pane and command processes and other installations. It SHALL exit successfully without starting a server when none is running. Update and installation SHALL use this explicit request after the atomic rename.
+
+**Verified by**: `reload::an_explicit_request_selects_only_its_installation_without_a_socket`, `reload::an_explicit_request_with_no_server_starts_nothing`; itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`).
 
 #### Scenario: Select the installed server
 - **WHEN** servers from two installation paths are running and `tilrd reload` runs from one installation
@@ -100,7 +104,7 @@ When the check process answers `error: <reason>`, ends in any other way or does 
 **Verified by**: `reload::a_successor_that_rejects_the_command_line_is_not_reloaded_into`, `reload::a_successor_that_refuses_the_configuration_is_not_reloaded_into`, `reload::a_successor_that_never_answers_the_check_is_not_reloaded_into`.
 
 #### Scenario: Successor rejects the command line
-- **WHEN** a server started with `--socket` gets `SIGUSR1` after its executable was replaced by one that prints this server's formats in `state-formats` but exits 2 with `error: unexpected argument '--socket' found` when given `--socket` and an explicit reload is requested
+- **WHEN** a server started with `--socket` gets `SIGUSR1` after its executable was replaced by one that prints this server's formats in `state-formats` but exits 2 with `error: unexpected argument '--socket' found` when given `--socket`
 - **THEN** no exec happens, the server keeps its pid, connection and panes, its socket stays, and the log names `--socket`
 
 #### Scenario: Configuration the successor refuses

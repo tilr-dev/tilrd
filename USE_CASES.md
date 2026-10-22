@@ -265,7 +265,7 @@ Cloud repository.
 
 | Use case | Test |
 |---|---|
-| `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; a running server reloads on its own, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
+| `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; an explicit reload request tells a running server to reload, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
 | The latest release is already installed: nothing is downloaded, the file is untouched | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
 | The archive does not match its checksum, does not unpack (not an archive, cut short), lacks `tilrd` or `tilr`, one of them does not run, or there is no release for the platform: nothing is installed, nothing is left next to it | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
 | The CDN misbehaves: the download breaks off halfway, a release is named but its files are not there yet, someone else's page answers instead of the CDN, nobody answers: nothing is installed | `update_installs_nothing_when_the_cdn_misbehaves` |

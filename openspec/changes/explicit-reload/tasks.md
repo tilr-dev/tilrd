@@ -9,3 +9,4 @@
 - [x] 3.1 Cover replacement without reload and explicit reload with surviving shells.
 - [x] 3.2 Adapt successor refusal, update and installer integration coverage.
 - [x] 3.3 Complete review and required checks.
+- [x] 3.4 Verify installer version checks precede destination creation, and align reload test references and documentation.

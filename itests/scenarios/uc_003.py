@@ -58,7 +58,7 @@ def installing_the_same_release_again_changes_nothing(t: T):
 
 @case(spec=[
     "installation/a-new-release-reloads-the-running-server",
-    "reload/replacing-the-executable-does-not-request-reload",
+    "reload/installation-requests-reload-explicitly",
     "reload/the-tcp-listener-carries-over",
 ])
 def installing_a_new_release_reloads_the_running_server_and_keeps_its_shells(t: T):

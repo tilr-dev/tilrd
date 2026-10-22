@@ -95,13 +95,36 @@ def an_archive_without_tilr_installs_nothing(t: T):
     "installation/both-programs-are-installed-or-neither",
 ])
 def a_program_that_does_not_run_installs_nothing(t: T):
-    """UC-004: tilr in the archive is not a program: tilrd is not installed either."""
+    """UC-004: tilr fails its version check: both checks precede any installation directory."""
     user, cdn, url, env = setup(t)
     version = t.manifest()["version"]
-    broken = t.scratch("broken") / "tilr"
-    broken.write_bytes(b"\x7fELF not really\n")
-    cdn.publish(version, client=broken)
+    evidence = t.scratch("version-checks")
+    evidence.chmod(0o777)
+    env["TILR_BIN_DIR"] = str(user.home / ".local/bin")
+    programs = {}
+    for name, status in (("tilrd", 0), ("tilr", 1)):
+        program = evidence / name
+        program.write_text(
+            '#!/bin/sh\n'
+            f'printf "%s\\n" "$0" "$1" > "{evidence}/{name}.called"\n'
+            f'if [ -e "$TILR_BIN_DIR" ]; then echo exists; else echo absent; fi '
+            f'>> "{evidence}/{name}.called"\n'
+            f'exit {status}\n'
+        )
+        program.chmod(0o755)
+        programs[name] = program
+    cdn.publish(version, server=programs["tilrd"], client=programs["tilr"])
     install_fails(t, user, url, env, f"tilr {version} does not run on this system", "nothing installed")
+    directories = []
+    for name in programs:
+        called, argument, destination = (evidence / f"{name}.called").read_text().splitlines()
+        path = Path(called)
+        t.eq(path.name, name, "the unpacked program is checked")
+        t.eq(path.parent.name, "release", "checked in the temporary release directory")
+        t.ok(path.is_relative_to("/tmp"), "checked under mktemp's temporary directory")
+        t.eq((argument, destination), ("--version", "absent"), "checked before making the install directory")
+        directories.append(path.parent)
+    t.eq(directories[0], directories[1], "both programs checked in the same temporary directory")
 
 
 @case(spec=[

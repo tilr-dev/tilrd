@@ -176,9 +176,9 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
     drop(staged);
     drop(lock);
     println!("updated {VERSION} -> {latest}: {}", dir.display());
-    println!("a running server reloads itself and keeps its shells");
     crate::reload_request::request(exe)
         .context("release installed, but could not request reload")?;
+    println!("a running server reloads itself and keeps its shells");
     Ok(())
 }
 
