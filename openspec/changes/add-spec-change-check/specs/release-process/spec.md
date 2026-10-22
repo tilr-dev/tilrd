@@ -72,3 +72,7 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 - **WHEN** an own delta renames an existing requirement through intermediate names and modifies or removes it
 - **THEN** the operation requires authorization for the original requirement in dev
 - **AND** cyclic or ambiguous rename mappings fail the check
+
+#### Scenario: A new requirement takes an existing scenario
+- **WHEN** an inserted requirement heading moves existing scenario lines out of a requirement that remains in the specification
+- **THEN** the check requires modify authorization for that existing requirement
