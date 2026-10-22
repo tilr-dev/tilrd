@@ -269,8 +269,8 @@ async fn serve(
     };
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
-    let mut delivery = HashMap::new();
-    let mut pending_delivery = VecDeque::new();
+    let delivery = HashMap::new();
+    let pending_delivery = VecDeque::new();
     let id = args.id.to_string();
     let mut last_input_seq = 0;
     let mut inputs = VecDeque::new();
@@ -284,12 +284,6 @@ async fn serve(
         let master = unsafe { OwnedFd::from_raw_fd(handover.master) };
         pty::set_cloexec(master.as_raw_fd(), true)?;
         pending_input = handover.pending_input;
-        delivery = handover
-            .delivery_states
-            .into_iter()
-            .map(|state| (state.identity.clone(), state))
-            .collect();
-        pending_delivery = handover.pending_delivery.into();
         last_input_seq = handover.last_input_seq;
         let now = Instant::now();
         let measurement_now = measurement_instant();
@@ -729,15 +723,9 @@ impl Pane {
             cols: u32::from(cols),
             rows: u32::from(rows),
             pending_input: self.pending_input.clone(),
-            delivery_states: self.delivery.values().cloned().collect(),
-            pending_delivery: self
-                .pending_delivery
-                .iter()
-                .map(|mark| tilr_proto::PendingDelivery {
-                    end: mark.end.saturating_sub(self.written),
-                    ..mark.clone()
-                })
-                .collect(),
+            // Delivery history ends at exec; queued PTY bytes remain above.
+            delivery_states: Vec::new(),
+            pending_delivery: Vec::new(),
             snapshot: snapshot.to_vec(),
             cell_width_px: cell.0,
             cell_height_px: cell.1,
@@ -821,6 +809,14 @@ impl Pane {
     }
 
     fn on_message(&mut self, msg: ClientMessage) -> Result<()> {
+        if msg.input_forget {
+            self.delivery.remove(&msg.input_identity);
+            self.pending_delivery
+                .retain(|mark| mark.identity != msg.input_identity);
+            self.delivery_acks
+                .retain(|ack| ack.identity != msg.input_identity);
+            return Ok(());
+        }
         if msg.input_probe != 0 {
             crate::fail::point("input-before-probe")?;
             crate::fail::point(&format!("input-before-probe:{}", self.id))?;
