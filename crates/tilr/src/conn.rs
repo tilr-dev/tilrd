@@ -444,6 +444,7 @@ mod update_wait_tests {
             next_request: 0,
             heard: Instant::now(),
             server_version: "test".into(),
+            applied_input: Vec::new(),
         };
         let task = tokio::spawn(async move { conn.server_command(&["update".into()]).await });
         let packet = peer.next().await.unwrap().unwrap().into_data();
