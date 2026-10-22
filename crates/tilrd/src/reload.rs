@@ -830,6 +830,10 @@ mod tests {
             }
             let output = command.output().unwrap();
             assert!(output.status.success(), "unbounded={unbounded}: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                "the controlled-delay fixture must actually run: {output:?}"
+            );
         }
     }
 
