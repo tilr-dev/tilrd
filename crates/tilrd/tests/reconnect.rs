@@ -368,7 +368,9 @@ async fn an_idle_client_that_is_still_there_stays_connected() {
     assert_eq!(client.run(pane_id, "true").await, 0);
 
     // Nothing to say for three timeouts. Reading the connection is all it
-    // takes to answer the server's pings.
+    // takes to answer the server's pings. A window, not a bound on a wait:
+    // a client wrongly taken for silent is dropped one timeout in, so three
+    // leave room for a late check.
     let idle = async {
         loop {
             assert!(client.next().await.is_some(), "connection closed");
@@ -390,6 +392,8 @@ async fn a_silent_client_is_kept_when_the_timeout_is_off() {
         .wait_for(|msg| matches!(msg, server_message::Msg::Frame(_)).then_some(()))
         .await;
 
+    // Rules out a timeout applied though it is off: the shortest one, 1 s,
+    // taken for 0 would have dropped the silent client within 2 s.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(stays.list_panes().await[0].viewers, 2);
     assert_eq!(silent.run(pane_id, "true").await, 0);
@@ -443,15 +447,25 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
         !server.is_running()
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(process_alive(pid), "the server is still running");
-    assert!(process_alive(pane_pid), "the pane process is still running");
-    assert!(process_alive(shell_pid), "the shell is still running");
-
+    // The SIGHUPs of the hang-up were sent by the time the login shell is
+    // gone. One that ended a process by its default action would have done
+    // so before the process runs again, so the server, the pane process and
+    // the shell each answering below shows that none of them was ended so.
     let mut client = Client::connect(&server).await;
     client.subscribe(pane_id).await;
     client.type_line(pane_id, "echo \"kept=$KEPT\"").await;
     client.wait_row("kept=yes").await;
+    // The server's own SIGHUP handler runs on a task of its own, unordered
+    // with the requests above, and what it logs went to the terminal that
+    // hung up. The window rules out that handler ending the server: by the
+    // answer above the server has run since the signal and its handler
+    // task only waits to be scheduled, which a second covers; a server
+    // shutting down would then refuse the command below.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(process_alive(pid), "the server is still running");
+    assert!(process_alive(pane_pid), "the pane process is still running");
+    assert!(process_alive(shell_pid), "the shell is still running");
 
     // Stopping it still ends the shells.
     // SAFETY: kill has no memory-safety preconditions.
@@ -826,15 +840,15 @@ async fn a_lagging_client_gets_the_last_screen_without_new_output() {
     while !next_frame(&mut slow).await.full {}
 
     // Heavy output `slow` does not read, then the pane goes quiet.
+    // `read` keeps the shell from printing its prompt after `<done>`: the
+    // screen with `<done>` is the pane's last.
     fast.type_line(
         pane_id,
-        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"",
+        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"; read _",
     )
     .await;
     fast.wait_screen("<done>").await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    // The pane's last screen, whole: what `fast` has read so far can stop
-    // short of it (the prompt after `<done>` comes in a frame of its own).
+    // The pane's last screen, whole.
     fast.subscribe(pane_id).await;
     while !next_frame(&mut fast).await.full {}
     let last = fast.screen.text();

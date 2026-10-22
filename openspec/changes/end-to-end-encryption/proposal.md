@@ -18,7 +18,7 @@ End-to-end encryption was recorded as a requirement on 2026-10-03 with details d
   - Threat model: Cloudflare (the tunnel) and Tilr Cloud must not read or alter session traffic; the client and the server machine are trusted; the local unix socket is excluded (same user, same machine).
   - Candidate approaches, compared neutrally: Noise (XX / IK) inside the WebSocket with a server key pair in the state directory and the key pinned by the client; TLS end to end with a pinned self-signed server certificate (the tunnel passes TCP through); others found while designing.
   - Key distribution and pinning (first use, `server_id`, Cloud as a directory without trusting it), rotation, multiple clients, and what a reload and a reconnect do to session keys.
-  - Protocol impact per `protocol-v3` (a version bump if every client must speak it).
+  - Protocol impact per the protocol version policy in `openspec/config.yaml`: version 1 without a bump before the first public release; afterward, bump only for incompatibility with a client or server of the previous public release, once per release as a separate step in its release milestone.
 
 ## Capabilities
 
@@ -32,4 +32,4 @@ End-to-end encryption was recorded as a requirement on 2026-10-03 with details d
 
 ## Impact
 
-None now. The later implementation will likely be **BREAKING** (PROTOCOL_VERSION bump) and keep key material in the state directory.
+None now. The later implementation will likely be **BREAKING** and keep key material in the state directory. Under the protocol version policy in `openspec/config.yaml`, even an incompatible change uses version 1 without a bump before the first public release; afterward, a bump is a separate step in its release milestone, once per release, only for incompatibility with a client or server of the previous public release.

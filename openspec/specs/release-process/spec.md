@@ -74,12 +74,12 @@ The layout SHALL NOT change without `tilrd update` (`crates/tilrd/src/update.rs`
 - **THEN** `releases/<version>/` holds only `tilr-<version>-linux-x86_64.tar.gz` and its `.sha256` for that platform
 
 ### Requirement: Publishing uploads the archive before latest
-With `--publish`, `scripts/release.sh` SHALL upload with `wrangler r2 object put ... --remote` to bucket `tilr-cdn` (`https://cdn.tilr.dev`), per platform: the archive (`application/gzip`) and its `.sha256` (`text/plain; charset=utf-8`) with `public, max-age=31536000, immutable`, and only then `releases/<platform>/latest` with `no-cache`, printing `published <version> for: <platforms>`.
+With `--publish`, `scripts/release.sh` SHALL upload with AWS CLI `aws s3 cp` through `https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com` with region `auto` to bucket `tilr-cdn` (`https://cdn.tilr.dev`), per platform: the archive (`application/gzip`) and its `.sha256` (`text/plain; charset=utf-8`) with `public, max-age=31536000, immutable`, and only then `releases/<platform>/latest` with `no-cache`, printing `published <version> for: <platforms>`.
 
 **Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest`.
 
 #### Scenario: Publish two platforms
-- **WHEN** `scripts/release.sh --publish linux-aarch64 linux-x86_64` runs with wrangler credentials
+- **WHEN** `scripts/release.sh --publish linux-aarch64 linux-x86_64` runs with S3 credentials scoped to objects in `tilr-cdn`
 - **THEN** each platform's archive and checksum are uploaded before its `latest`
 
 ### Requirement: Uploading needs the bucket's account id
@@ -101,7 +101,7 @@ With `--publish`, `scripts/release.sh` SHALL upload with `wrangler r2 object put
 - **THEN** it says `<platform> is built as <v1>, not <v2>`, exits 1 and uploads nothing
 
 ### Requirement: CI gates every change
-Every pull request and push to `main` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo test --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
+Every pull request and push to `main` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
@@ -119,13 +119,13 @@ CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version`
 - **THEN** the `test` job fails
 
 ### Requirement: Build tools are pinned and checked
-`scripts/install-tools.sh DIR [zig|protoc]` SHALL install Zig 0.15.2 and protoc 36.2 into `DIR` for Linux or macOS on x86_64 or aarch64, each checked against a pinned SHA-256; CI, release jobs and the Linux build image SHALL use it.
+`scripts/install-tools.sh DIR [zig|protoc|nextest]` SHALL install Zig 0.15.2, protoc 36.2 and cargo-nextest 0.9.149 into `DIR` for Linux or macOS on x86_64 or aarch64, each checked against a pinned SHA-256; CI, release jobs and the Linux build image SHALL use it.
 
 **Verified by**: `release::build_tools_are_pinned_by_checksum_and_used_everywhere` (static: `scripts/install-tools.sh`, the workflows and `scripts/linux.Dockerfile`).
 
 #### Scenario: Install both
 - **WHEN** `scripts/install-tools.sh "$RUNNER_TEMP/tools"` runs on Linux x86_64
-- **THEN** `DIR/zig` and `DIR/protoc` are in place after their checksums matched
+- **THEN** `DIR/zig`, `DIR/protoc` and `DIR/cargo-nextest` are in place after their checksums matched
 
 ### Requirement: release-please opens the release PR
 On `main`, release-please (`simple` strategy, `release-please-config.json`, acting as the `tilr-bot` GitHub App) SHALL keep a release PR open from the `feat` / `fix` Conventional Commits, bumping `[workspace.package] version` in `Cargo.toml`, the workspace crates' versions in `Cargo.lock`, and `CHANGELOG.md`. Versions and the changelog SHALL NOT be edited by hand. The release PR SHALL pass the same required checks as any PR.
@@ -146,7 +146,7 @@ Merging the release PR SHALL tag `vX.Y.Z` and create the GitHub release; `tilrd`
 - **THEN** tag `v0.2.0` has a GitHub release with one `tilr-v0.2.0-<target>.tar.gz` and checksum per target, each binary saying `0.2.0-<commit>`
 
 ### Requirement: The CDN gets the release last
-After the GitHub release has its assets, the `cdn` job (environment `cdn`, restricted to `main`, holding `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`) SHALL check every Linux platform built carries `<tag version>-<commit>` and run `scripts/release.sh --upload-only <platforms>` on the `dist/cdn` the Linux builds laid out; with arm64 off only `linux-x86_64` is uploaded and `releases/linux-aarch64/latest` is left as it is.
+After the GitHub release has its assets, the `cdn` job (environment `cdn`, restricted to `main`, holding bucket-scoped `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets and the `CLOUDFLARE_ACCOUNT_ID` variable) SHALL check every Linux platform built carries `<tag version>-<commit>` and run `scripts/release.sh --upload-only <platforms>` on the `dist/cdn` the Linux builds laid out; with arm64 off only `linux-x86_64` is uploaded and `releases/linux-aarch64/latest` is left as it is.
 
 **Verified by**: `release::the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` (static: `.github/workflows/release.yml`).
 
@@ -236,14 +236,14 @@ tilrd, tilr and tilr-driver SHALL verify outgoing secure WebSocket certificates 
 ### Requirement: The installer is published after the release it installs
 `scripts/release.sh --publish` and `--upload-only` SHALL upload `scripts/install.sh` to `install.sh` in bucket `tilr-cdn` (`text/x-shellscript; charset=utf-8`, `public, max-age=300`) after the `latest` of every platform given, and SHALL NOT upload it when any of those uploads failed. The served installer SHALL be the one the itests run (`scripts/install.sh`).
 
-**Verified by**: `release::the_installer_is_uploaded_after_latest` (a test of `scripts/release.sh --upload-only` with a stub `wrangler` on `PATH` that logs its calls).
+**Verified by**: `release::the_installer_is_uploaded_after_latest` (a test of `scripts/release.sh --upload-only` with a stub `aws` on `PATH` that logs its calls).
 
 #### Scenario: Upload order
-- **WHEN** `scripts/release.sh --upload-only linux-x86_64` runs with a stub `wrangler` that logs each `r2 object put`
+- **WHEN** `scripts/release.sh --upload-only linux-x86_64` runs with a stub `aws` that logs each `s3 cp`
 - **THEN** the log names the archive, its `.sha256`, `releases/linux-x86_64/latest` and then `install.sh`, in that order
 
 #### Scenario: A failed upload
-- **WHEN** the stub `wrangler` fails on `releases/linux-x86_64/latest`
+- **WHEN** the stub `aws` fails on `releases/linux-x86_64/latest`
 - **THEN** the script exits non-zero and `install.sh` is not uploaded
 
 ### Requirement: Shared Ghostty VT development build

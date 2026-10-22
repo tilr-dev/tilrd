@@ -17,7 +17,7 @@ A pane in a sandbox for agents was proposed with open questions: Seatbelt per pa
 ## What Changes
 
 - Experiment first (design D1); nothing else until it passes.
-- Then: `CreatePane` gains a sandbox request (allowed write paths, network on/off); the pane process applies it (macOS: runs the signed sandboxed pane binary; Linux: Landlock ruleset in `pre_exec`); `HelloAck.features` lists `sandbox` where the host supports it (it can be unavailable: old kernel, unsigned build), per `protocol-v3`'s rule.
+- Then: `CreatePane` gains a sandbox request (allowed write paths, network on/off); the pane process applies it (macOS: runs the signed sandboxed pane binary; Linux: Landlock ruleset in `pre_exec`); `HelloAck.features` lists `sandbox` where the host supports it (it can be unavailable: old kernel, unsigned build), per the protocol version policy in `openspec/config.yaml`; version 1 remains unchanged before the first public release.
 
 ## Capabilities
 

@@ -27,7 +27,7 @@ def mock_docker(args):
     image_index = next(i for i, x in enumerate(args) if x.startswith("sha256:") or x.startswith("tilr-linux-dev"))
     command = args[image_index + 1:]
     (source / "invocation.json").write_text(json.dumps({"args": args, "mounts": mounts, "target": target_name, "image": args[image_index], "command": command}))
-    if command == ["cargo", "test", "--workspace", "--features", "tilrd/failpoints", "--locked"]:
+    if command == ["cargo", "nextest", "run", "--workspace", "--features", "tilrd/failpoints", "--locked"]:
         return 0
     command = [x.replace("/src", str(source)).replace("/target", str(target)) for x in command]
     env = dict(os.environ, CARGO_TARGET_DIR=str(target), LINUX_TEST_LABEL=(source / "label").read_text())
