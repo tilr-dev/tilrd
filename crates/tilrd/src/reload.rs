@@ -29,7 +29,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Output, Stdio};
 use std::time::Duration;
@@ -41,8 +41,6 @@ use uuid::Uuid;
 
 use crate::clipboard;
 
-/// How often the executable on disk is checked for a change.
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// How long `state-formats` and the check of a successor may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Set for a process that only checks it could resume: the path of the copy
@@ -50,32 +48,6 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CHECK_ENV: &str = "TILR_RELOAD_CHECK";
 /// How old a state file must be to count as left behind.
 const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
-
-/// Identity of a file's current content, as far as a stat can tell.
-fn signature(path: &Path) -> Option<(u64, u64, i64, i64)> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.ino(), meta.size(), meta.mtime(), meta.mtime_nsec()))
-}
-
-/// Call `changed` whenever the executable at `exe` is replaced. A change
-/// counts once the file has looked the same on two checks in a row, so a
-/// build still writing it is not picked up half-done.
-pub async fn watch_executable(exe: &Path, mut changed: impl FnMut() -> bool) {
-    let mut running = signature(exe);
-    let mut seen = running;
-    let mut ticks = tokio::time::interval(WATCH_INTERVAL);
-    loop {
-        ticks.tick().await;
-        let now = signature(exe);
-        if now.is_some() && now == seen && now != running {
-            running = now;
-            if !changed() {
-                return;
-            }
-        }
-        seen = now;
-    }
-}
 
 /// Version of what a supervisor leaves its successor ([`SupervisorState`]).
 /// Raise it with any change an older or newer supervisor would misread.
@@ -792,6 +764,7 @@ pub fn sweep_stale() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn an_executable_reading_the_same_formats_can_take_over() {

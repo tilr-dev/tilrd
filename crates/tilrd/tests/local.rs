@@ -839,6 +839,13 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    assert!(
+        Command::new("kill")
+            .args(["-USR1", &daemon.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",
@@ -858,6 +865,13 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    assert!(
+        Command::new("kill")
+            .args(["-USR1", &daemon.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",

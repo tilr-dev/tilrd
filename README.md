@@ -297,7 +297,6 @@ cannot listen there.
 | `--clipboard-max SIZE` | `20MB` | Largest clipboard upload (`512K`, `20MB`, `1G`) |
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
 | `--client-timeout SECS` | `30` | Drop a client that stays silent, or does not answer the server's pings, this long; `0` = never |
-| `--no-auto-reload` | | Do not reload when the executable changes |
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
 | `--no-files` | | Do not offer the [files of this machine](#files-and-tilr-edit) (also `[files] enabled = false`) |
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
@@ -743,12 +742,13 @@ Rules:
 
 ## Reloading without closing shells
 
-The server picks up a new executable without ending any shell:
-
-- on its own, one to two seconds after the file it was started from is replaced (it is
-  checked every second and taken once it looks the same on two checks in a row, so a build
-  still writing it is not picked up half-done);
-- on `SIGUSR1`.
+The server picks up a new executable without ending any shell only when explicitly
+requested with `SIGUSR1`. The internal `tilrd reload` command signals only this
+user's supervisors from its own installation and starts nothing if none is running.
+`tilr update` and the installer request reload after atomically
+installing the release. Replacing the executable alone leaves the running server alone.
+The server checks the executable at its installation path and execs that path; a
+replacement between the check and exec is an accepted risk.
 
 The supervisor execs the new executable in place, keeping its pid, the listening sockets
 (TCP, and the Unix socket with its lock) and the pane processes, then has every pane process

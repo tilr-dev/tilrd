@@ -12,7 +12,7 @@
 //! The archive is unpacked into a directory next to the executable, both
 //! programs are checked to run, and then renamed over the installed ones:
 //! `tilr` first, `tilrd` (this executable) last. A server running from it
-//! notices and reloads, keeping its shells; nothing is restarted here.
+//! is explicitly asked to reload, keeping its shells.
 //!
 //! Until those renames nothing has changed: an update that fails, or is
 //! killed, leaves the installation as it was. If `tilrd` cannot be put in
@@ -39,7 +39,7 @@ const MAX_ARCHIVE: u64 = 256 << 20;
 const MAX_PROGRAM: u64 = 512 << 20;
 
 /// The programs of a release, in the order they are put in place: the
-/// server last, since renaming it is what makes a running one reload.
+/// server last, before explicitly requesting reload.
 const PROGRAMS: [&str; 2] = ["tilr", "tilrd"];
 
 /// What the directory an update unpacks into is called, before the pid.
@@ -171,8 +171,14 @@ pub fn run(cdn: &str, exe: &Path) -> Result<()> {
     // The new names on disk before success is reported.
     crate::durable::sync_dir(dir).with_context(|| format!("sync {}", dir.display()))?;
 
+    // A server may end this update exec as soon as it receives the request.
+    // Finish cleanup and report the installation before asking it to reload.
+    drop(staged);
+    drop(lock);
     println!("updated {VERSION} -> {latest}: {}", dir.display());
     println!("a running server reloads itself and keeps its shells");
+    crate::reload_request::request(exe)
+        .context("release installed, but could not request reload")?;
     Ok(())
 }
 

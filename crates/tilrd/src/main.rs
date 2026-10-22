@@ -18,6 +18,7 @@ mod pane;
 mod ps;
 mod pty;
 mod reload;
+mod reload_request;
 mod shell;
 mod socks;
 mod supervisor;
@@ -143,10 +144,6 @@ struct Cli {
     #[arg(long)]
     no_exec: bool,
 
-    /// Do not reload when the executable on disk changes. SIGUSR1 still does.
-    #[arg(long)]
-    no_auto_reload: bool,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -161,6 +158,9 @@ enum Command {
     /// Tilr app; see the daemon-lifecycle spec.
     #[command(hide = true)]
     StateFormats,
+    /// Internal: request reload from servers running from this installation.
+    #[command(hide = true)]
+    Reload,
     /// List the panes of a running server: id, pid of the pane process,
     /// size, viewers, directory and command. For users: `tilr ps`; kept
     /// for the Tilr app, which asks with --url and --server-version; see the
@@ -281,6 +281,7 @@ fn main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Pane(args)) => pane::run(args)?,
+        Some(Command::Reload) => reload_request::request(exe)?,
         Some(Command::StateFormats) => print!("{}", reload::formats()),
         Some(Command::Ps {
             url,
@@ -357,7 +358,6 @@ fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
         }),
         auth: !cli.no_auth,
         cloudflared: cli.cloudflared,
-        auto_reload: !cli.no_auto_reload,
         client_timeout: (cli.client_timeout > 0).then(|| Duration::from_secs(cli.client_timeout)),
         socks: config::socks(cli.socks, &config),
         files: config::files(cli.no_files, &config)?,

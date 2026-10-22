@@ -357,8 +357,6 @@ pub struct Options {
     pub cloudflared: PathBuf,
     /// `None` turns the shared clipboard off.
     pub clipboard: Option<clipboard::Limits>,
-    /// Reload when the executable on disk changes.
-    pub auto_reload: bool,
     /// Drop a client nothing was heard from for this long, pings included.
     /// `None` keeps silent clients forever.
     pub client_timeout: Option<Duration>,
@@ -562,13 +560,6 @@ pub fn run(options: Options) -> Result<()> {
             }
             if held.terminate || held.interrupt {
                 let _ = events_tx.send(Event::Shutdown);
-            }
-            if options.auto_reload {
-                let events = events_tx.clone();
-                tokio::spawn(reload::watch_executable(crate::exe(), move || {
-                    tracing::info!("executable changed on disk");
-                    events.send(Event::Reload).is_ok()
-                }));
             }
 
             let server_id = identity::server_id();

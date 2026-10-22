@@ -160,9 +160,9 @@ async fn update_installs_the_latest_release_and_the_running_server_keeps_its_she
     assert_eq!(std::fs::read(&exe).unwrap(), server);
     assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
 
-    // Nobody tells the server: it notices the new file and reloads.
+    // The updater explicitly requests reload after the final rename.
     let mut client = reconnect(&running, client).await;
-    running.wait_logged("executable changed on disk").await;
+    running.wait_logged("SIGUSR1 came: reload requested").await;
     client.subscribe(pane_id).await;
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
 }

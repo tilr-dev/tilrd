@@ -175,6 +175,7 @@ check "the server carries on" "$(pane_ids)" "$panes"
 
 echo "# 5. rollback by hand, then update again"
 install_by_hand "$old" || not_ok "the old release is put back"
+r "kill -USR1 $pid"
 wait_remote "test \"\$(grep -c 'resumed after reload with' $dir/log)\" -ge 2" ||
     not_ok "the server reloads into the old release"
 sleep 2
@@ -194,6 +195,7 @@ check "nothing was refused or lost" "$(r "grep -cE 'not reloading|WARN|ERROR' $d
 echo "# 6. update with the server stopped"
 stop_server
 install_by_hand "$old" || not_ok "the old release is put back"
+r "kill -USR1 $pid"
 r "$dir/tilrd update --cdn $cdn" >/dev/null && ok "the update runs without a server" ||
     not_ok "the update runs without a server"
 start_server && ok "the server starts" || not_ok "the server starts"

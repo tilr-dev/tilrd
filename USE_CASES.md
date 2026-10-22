@@ -298,8 +298,10 @@ state format; platforms other than `linux-aarch64`.
 |---|---|
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
-| The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
-| With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
+| Replacing the executable keeps the connection until an explicit reload request; the shells survive | `replacement_waits_for_an_explicit_request_and_keeps_the_shells` |
+| Explicit reload selects only its installation, including TCP-only servers, renamed binaries and paths with spaces | `an_explicit_request_selects_only_its_installation_without_a_socket` |
+| Explicit reload with no server starts nothing | `an_explicit_request_with_no_server_starts_nothing` |
+| The obsolete auto-reload option is rejected | `the_obsolete_auto_reload_option_is_rejected` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
 | `state-formats` prints this build's formats; a new executable that reads another pane state format is not reloaded into, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
 | Unit: a successor that reads another supervisor or pane state format, cannot show it can resume (no `reload-check 1`), names no format or an unparseable one is refused with that reason; one with the same formats is accepted (`src/reload.rs`) | `reload::tests::check_formats_rejects_every_format_mismatch`, `reload::tests::an_executable_reading_the_same_formats_can_take_over` |
@@ -321,7 +323,7 @@ state format; platforms other than `linux-aarch64`.
 | † A pane process crashed while taking over: that pane is lost (its shell ended), the others are intact | `a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on` |
 | † The new version crashed after taking over: the server and all shells are lost (the limit of reloading, there is no way back); no orphaned shells are left | `a_version_that_crashes_taking_over_ends_the_server_and_its_shells` |
 | † The server killed in the middle of a reload: the shells end, no orphans are left | `a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind` |
-| † The executable replaced again while a reload was under way: no shell is lost | `an_executable_replaced_again_during_a_reload_costs_no_shell` |
+| † The executable replaced again while a reload was under way: no shell is lost | `a_second_atomic_replacement_before_exec_keeps_the_shells` |
 | † The new version panics resuming in its check run: no exec, the same pid, connection and shell, no state or check file left | `a_successor_that_panics_resuming_is_not_reloaded_into` |
 | The new version rejects the server's command line (`--socket`): no exec, the log names the argument, the socket stays | `a_successor_that_rejects_the_command_line_is_not_reloaded_into` |
 | The configuration file has a key the new version refuses: no exec; with the key gone the next reload goes through | `a_successor_that_refuses_the_configuration_is_not_reloaded_into` |

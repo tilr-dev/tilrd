@@ -82,13 +82,11 @@ download() {
     file="$tmp/release/$name"
     [ -f "$file" ] && [ ! -L "$file" ] || die "$name in the archive of $version is not a file, nothing installed"
     chmod 755 "$file"
-    "$file" --version >/dev/null 2>&1 ||
-      die "$name $version does not run on this system (it needs glibc 2.36 or newer), nothing installed"
   done
 }
 
 # Both programs into $BIN_DIR, each renamed into place: tilr first, tilrd
-# last, since that rename is what a running server reloads on. If tilrd
+# last, then explicitly request reload. If tilrd
 # cannot be put in place, the tilr that was there is put back.
 put_in_place() {
   # The highest directory that is not there yet: removed again on failure.
@@ -101,6 +99,8 @@ put_in_place() {
   for name in tilrd tilr; do
     { cp "$tmp/release/$name" "$BIN_DIR/.$name.new.$$" && chmod 755 "$BIN_DIR/.$name.new.$$"; } ||
       die "cannot write to $BIN_DIR, nothing installed"
+    "$BIN_DIR/.$name.new.$$" --version >/dev/null 2>&1 ||
+      die "$name $version does not run on this system (it needs glibc 2.36 or newer), nothing installed"
   done
 
   had_client=
@@ -169,6 +169,7 @@ main() {
     tmp=$(mktemp -d) || die "cannot make a temporary directory, nothing installed"
     download
     put_in_place
+    "$bin" reload || die "installed tilr $version, but could not request reload"
     if command -v pgrep >/dev/null 2>&1 && pgrep -u "$(id -u)" -x tilrd >/dev/null 2>&1; then
       say "the running tilrd reloads itself and keeps its shells"
     fi
