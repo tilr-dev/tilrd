@@ -6,7 +6,7 @@ Shared test helpers that open and subscribe to an interactive shell SHALL wait
 for its first prompt before returning. Tests that deliberately send input before
 startup SHALL retain explicit control of that ordering.
 
-**Verified by**: `reconnect::opening_a_fresh_pane_waits_for_the_first_shell_prompt`, `reconnect::reconnect_output_when_input_precedes_the_shell_prompt`.
+**Verified by**: `reconnect::opening_a_fresh_pane_waits_for_the_first_shell_prompt`, `reconnect::reconnect_output_when_input_precedes_the_shell_prompt`, `reconnect::shell_readiness_ignores_prompts_from_other_panes`.
 
 #### Scenario: Shell startup is held
 - **WHEN** a test holds the shell before its first prompt and opens a pane through the shared helper
@@ -16,3 +16,7 @@ startup SHALL retain explicit control of that ordering.
 #### Scenario: A test deliberately precedes startup
 - **WHEN** a test explicitly uses the controlled startup fixture
 - **THEN** it can observe PTY input echo before releasing the shell's first prompt
+
+#### Scenario: Another subscribed pane prints a prompt
+- **WHEN** a client opening a new shell receives a prompt frame from an older pane
+- **THEN** only a prompt frame belonging to the newly opened pane can complete opening

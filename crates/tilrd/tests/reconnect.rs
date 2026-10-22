@@ -100,14 +100,25 @@ async fn opening_a_fresh_pane_waits_for_the_first_shell_prompt() {
                 .parse()
                 .unwrap();
             observer.subscribe(pane).await;
-            observer.wait_screen("shell startup held").await;
+            let mut subscribed = false;
+            let mut startup_held = false;
+            while !subscribed || !startup_held {
+                if let Some(server_message::Msg::PaneList(list)) = observer.next().await {
+                    subscribed |= list
+                        .panes
+                        .iter()
+                        .any(|info| info.pane_id == pane.to_string() && info.viewers == 2);
+                }
+                startup_held |= observer.screen.text().contains("shell startup held");
+            }
         };
         tokio::select! {
             biased;
             _ = &mut opening => panic!("opening returned before the first shell prompt"),
             _ = held => {}
         }
-        // Even after the observer has seen the held shell, opening cannot finish.
+        // Two viewers prove that opening passed PaneCreated and sent Subscribe.
+        // Pending now means waiting for the prompt, not for pane creation.
         std::future::poll_fn(|cx| {
             assert!(std::future::Future::poll(opening.as_mut(), cx).is_pending());
             std::task::Poll::Ready(())
@@ -120,6 +131,46 @@ async fn opening_a_fresh_pane_waits_for_the_first_shell_prompt() {
     // newline hides a prompt prefix: the opening helper must prevent that race.
     client.type_line(pane, "echo first out''put").await;
     client.wait_row("first output").await;
+}
+
+/// Ordered frames make an old pane's prompt arrive before the wanted one.
+#[tokio::test]
+async fn shell_readiness_ignores_prompts_from_other_panes() {
+    let server = Server::start(&[]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let wanted: PaneId = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+    let other: PaneId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+    let frames = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        for pane in [other, wanted] {
+            let msg = ServerMessage::from(server_message::Msg::Frame(Frame {
+                pane_id: pane.to_string(),
+                full: true,
+                cols: 100,
+                rows: 30,
+                changed: vec![tilr_proto::Row {
+                    y: 0,
+                    runs: vec![tilr_proto::Run {
+                        text: "$ ".into(),
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            }));
+            ws.send(Message::Binary(tilr_proto::encode(&msg)))
+                .await
+                .unwrap();
+        }
+    });
+    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        .await
+        .unwrap();
+    let mut client = Client::from_socket(&server, ws);
+    client.wait_shell_prompt(wanted).await;
+    assert_eq!(client.frame.as_ref().unwrap().pane_id, wanted.to_string());
+    frames.await.unwrap();
 }
 
 #[cfg(feature = "failpoints")]

@@ -9,10 +9,12 @@ remove that prefix.
 ## Readiness barrier
 
 The harness isolates shell startup files. Set PS1 to `$ ` explicitly at pane
-creation, since an intermediate shell can reset the inherited value. Observe its `$` row (frame rows omit trailing blank cells) on the subscribed screen
-before returning from either shared opening
-helper. Send no probe command: its echo would not prove shell readiness. Explicit
-custom commands and the fixture holding startup remain outside this barrier.
+creation, since an intermediate shell can reset the inherited value. Observe its
+`$` row (frame rows omit trailing blank cells) on the subscribed screen before
+returning from either shared opening helper. Match the frame pane ID rather than
+the shared screen, which can contain frames from other subscribed panes. Send no
+probe command: its echo would not prove shell readiness. Explicit custom
+commands and the fixture holding startup remain outside this barrier.
 
 Move the existing pre-prompt fixture into common and name its FIFO explicitly,
 allowing an independent output-release FIFO without renaming either path.
@@ -20,11 +22,16 @@ allowing an independent output-release FIFO without renaming either path.
 ## Regression
 
 A shell startup file disables line editing, announces entry and waits on a FIFO
-before its initial prompt. Drive the real shared opening helper concurrently with
-an observer client. Opening must remain pending while startup is held, then return
-after release. Its first command prints a split literal with no leading newline;
-its exact output row must appear. Removing the barrier makes opening return while
-the startup file is held.
+before its initial prompt. Drive the real shared opening helper concurrently
+with an observer client. The observer waits for two viewers as acknowledgement
+that the opening client has sent Subscribe, avoiding any dependence on
+PaneCreated delivery order. Opening must remain pending while startup is held,
+then return after release. Its first command prints a split literal with no
+leading newline; its exact output row must appear. Removing the barrier makes
+opening return while the startup file is held.
 
-Only test clients acquire a new wait. There is no new production state, reconnect
-state, reload handover or bulk-lane buffering.
+An ordered frame fixture delivers another pane's prompt first and verifies that
+readiness waits for the intended pane.
+
+Only test clients acquire a new wait. There is no new production state,
+reconnect state, reload handover or bulk-lane buffering.

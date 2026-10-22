@@ -847,11 +847,31 @@ impl Client {
             })
             .await;
         self.subscribe(pane_id).await;
-        // PS1 is fixed above. Creation and PTY input echo do
-        // not prove startup: the first prompt must precede the first command.
-        // Frame rows omit the prompt's trailing default-style space.
-        self.wait_row("$").await;
+        self.wait_shell_prompt(pane_id).await;
         pane_id
+    }
+
+    /// Await the isolated shell's first prompt on this pane's frame stream.
+    pub async fn wait_shell_prompt(&mut self, pane_id: PaneId) {
+        // Creation and PTY echo do not prove startup. Only this pane's prompt
+        // counts: frames from earlier subscribed panes can still arrive.
+        self.wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame)
+                if frame.pane_id == pane_id.to_string()
+                    && frame.changed.iter().any(|row| {
+                        row.runs
+                            .iter()
+                            .map(|run| run.text.as_str())
+                            .collect::<String>()
+                            .trim_end()
+                            == "$"
+                    }) =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
     }
 
     pub async fn subscribe(&mut self, pane_id: PaneId) {
