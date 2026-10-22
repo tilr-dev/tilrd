@@ -659,7 +659,7 @@ async fn input_that_is_not_wanted_is_ignored() {
     let mut stranger = Client::connect(&server).await;
     owner.hello().await;
     stranger.hello().await;
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let captured = server.dir.join("captured-input");
     let script = format!(
         "cat > '{}'; read -r go < '{}'; printf done; cat '{}'",
