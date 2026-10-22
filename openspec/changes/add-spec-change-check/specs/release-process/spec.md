@@ -67,3 +67,8 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 #### Scenario: A previous foreign archive is changed while another is created
 - **WHEN** a pull request edits or removes an existing foreign archive and creates a new archive copy of the same change
 - **THEN** archive authorization for the new copy does not authorize editing the previous archive
+
+#### Scenario: Chained requirement renames retain their original authorization
+- **WHEN** an own delta renames an existing requirement through intermediate names and modifies or removes it
+- **THEN** the operation requires authorization for the original requirement in dev
+- **AND** cyclic or ambiguous rename mappings fail the check
