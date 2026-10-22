@@ -109,11 +109,20 @@ real Linux containers with the same FIFO barrier.
 | Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
 | All six numbered input variants naming an absent UUID or malformed pane name receive an error and terminal acknowledgement; lost acknowledgements are repeated after reconnect, reclaiming entries without discarding another pane's pending input, while unnumbered input and controls receive only errors | `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect` |
 | A pane held before its Hello probe is killed; concurrent handshakes retain healthy counters and input applies once | `input_delivery::a_stuck_pane_does_not_block_other_panes_hello` |
+| Completed identities finalize and lose their counters, refusing further numbered input on the old connection | `finalized_sessions_do_not_accumulate_delivery_history` |
+| Expired disconnected sessions lose counters; active sessions retain them | `expired_sessions_are_removed_but_active_sessions_are_retained` |
+| Internal cleanup fields cannot be forged at client ingress | `clients_cannot_forge_internal_delivery_cleanup` |
+| Exec resets delivery history but preserves queued PTY bytes | `exec_resets_delivery_history_and_preserves_pending_bytes` |
+| The driver drains pending input before normal disconnect finalizes its session | `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing` |
+| Expiry removes delivery markers without discarding pending PTY bytes | `expiry_preserves_pending_bytes_without_stale_ack_markers` |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
 | Use case | Test |
 |---|---|
+| Normal detach finalizes acknowledged input | `normal_detach_finalizes_its_acknowledged_input` |
+| Detach with pending input while disconnected exits promptly without finalizing | `detach_with_unacknowledged_input_while_disconnected` |
+| Detach while a connected server withholds input ACKs exits promptly without finalizing | `detach_with_unacknowledged_input_while_connected` |
 | The first `tilr` starts a detached server (a session of its own, not its child, with TCP on loopback), the next one connects to the same; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
 | The TCP port is taken (the Tilr app, another user): a server started by `tilr` starts anyway, with a warning in the log, on the socket only | `a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken` |
 | Six `tilr` at once on an empty machine: one server, a second is not even started | `tilr_started_many_times_at_once_starts_one_server` |
@@ -126,6 +135,7 @@ real Linux containers with the same FIFO barrier.
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
 | Copying a private installation keeps destination writers out of unrelated forked children (FIFO-controlled Linux regression) | `copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork` |
 | `tilr update --cdn` runs in the local server against a loopback release feed, updates an isolated installation, and waits for a connection after reload | `tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` |
+| The client requests no update execution timeout and keeps waiting through a day of virtual time until the command exits successfully | `conn::update_wait_tests::update_waits_for_command_exit_after_a_long_launch_delay` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
 | On initial attach and reconnect, a terminal sends its current size before Subscribe, restoring a pane resized by another client | `reconnect_restores_terminal_size_before_subscribing` |
@@ -240,6 +250,7 @@ Cloud repository.
 | The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
 | AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
+| Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
@@ -296,6 +307,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | Replacing the executable keeps the connection until an explicit reload request; the shells survive | `replacement_waits_for_an_explicit_request_and_keeps_the_shells` |

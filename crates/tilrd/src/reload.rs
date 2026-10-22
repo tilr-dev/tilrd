@@ -43,6 +43,15 @@ use crate::clipboard;
 
 /// How long `state-formats` and the check of a successor may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Only explicitly selected compatibility tests separate OS launch admission
+/// from execution. Production always includes both in the ten-second limit.
+#[cfg(feature = "failpoints")]
+fn await_state_formats_startup() -> bool {
+    std::env::var_os("TILR_TEST_STATE_FORMATS_STARTUP").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
 /// Set for a process that only checks it could resume: the path of the copy
 /// of the state it reads.
 pub const CHECK_ENV: &str = "TILR_RELOAD_CHECK";
@@ -122,17 +131,70 @@ pub async fn check_executable(exe: &Path) -> Result<bool> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    #[cfg(feature = "failpoints")]
+    if await_state_formats_startup() {
+        return check_started_executable(command, exe).await;
+    }
     let output = async {
         spawn_unblocked(|| command.spawn())?
             .wait_with_output()
             .await
     };
-    match tokio::time::timeout(CHECK_TIMEOUT, output).await {
+    let result = tokio::time::timeout(CHECK_TIMEOUT, output).await;
+    match result {
         Ok(Ok(output)) if output.status.success() => {
             check_formats(&String::from_utf8_lossy(&output.stdout))
                 .with_context(|| format!("{} cannot take over", exe.display()))
         }
         Ok(Ok(output)) => bail!("{} state-formats: {}", exe.display(), output.status),
+        Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
+        Err(_) => bail!("{} state-formats did not finish", exe.display()),
+    }
+}
+
+/// The opt-in handshake uses the existing pipes. Keep the buffered reader
+/// through output collection: it may already contain formats after the marker.
+#[cfg(feature = "failpoints")]
+async fn check_started_executable(
+    mut command: tokio::process::Command,
+    exe: &Path,
+) -> Result<bool> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    command
+        .env("TILR_TEST_STATE_FORMATS_STARTUP", "child")
+        .stdin(Stdio::piped());
+    let mut child =
+        spawn_unblocked(|| command.spawn()).with_context(|| format!("run {}", exe.display()))?;
+    let mut stdout = BufReader::new(child.stdout.take().context("state-formats stdout")?);
+    let mut marker = String::new();
+    stdout
+        .read_line(&mut marker)
+        .await
+        .context("read successor startup")?;
+    if marker != "tilrd-state-formats-started\n" {
+        bail!("{} state-formats did not signal startup", exe.display());
+    }
+    tracing::info!("state-formats successor started");
+    let execution = async {
+        // This acknowledgment is inside the execution deadline. A child can
+        // start its work only after the parent has installed that deadline.
+        child
+            .stdin
+            .take()
+            .context("state-formats stdin")?
+            .write_all(b"continue\n")
+            .await?;
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).await?;
+        let status = child.wait().await?;
+        anyhow::Ok((status, output))
+    };
+    match tokio::time::timeout(CHECK_TIMEOUT, execution).await {
+        Ok(Ok((status, output))) if status.success() => {
+            check_formats(&String::from_utf8_lossy(&output))
+                .with_context(|| format!("{} cannot take over", exe.display()))
+        }
+        Ok(Ok((status, _))) => bail!("{} state-formats: {}", exe.display(), status),
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
         Err(_) => bail!("{} state-formats did not finish", exe.display()),
     }
@@ -765,6 +827,168 @@ pub fn sweep_stale() {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn delayed_state_formats_obeys_the_selected_policy() {
+        for setting in [None, Some("true"), Some("1")] {
+            let startup = cfg!(feature = "failpoints") && setting == Some("1");
+            for outcome in ["complete", "stall"] {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "reload::tests::delayed_formats_fixture",
+                        "--nocapture",
+                    ])
+                    .env(
+                        "TILR_DELAYED_FORMATS_FIXTURE",
+                        if startup { outcome } else { "bounded" },
+                    )
+                    .env_remove("TILR_TEST_STATE_FORMATS_STARTUP");
+                if let Some(setting) = setting {
+                    command.env("TILR_TEST_STATE_FORMATS_STARTUP", setting);
+                }
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "setting={setting:?}, {outcome}: {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                    "the controlled-delay fixture must actually run: {output:?}"
+                );
+            }
+        }
+    }
+
+    /// Nonblocking FIFO reads can be canceled by select without leaving a
+    /// filesystem worker stranded when a probe unexpectedly fails.
+    async fn read_fifo_event(path: &Path, expected: &[u8]) {
+        use std::io::Read;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap();
+        // SAFETY: this owned nonblocking FIFO stays open and registered
+        // until AsyncFd is dropped; no other code closes its descriptor.
+        let file = unsafe { tokio::io::unix::AsyncFd::register(file) }.unwrap();
+        let mut bytes = vec![0; expected.len()];
+        let mut at = 0;
+        while at < bytes.len() {
+            let mut ready = file.readable().await.unwrap();
+            if let Ok(result) = ready.try_io(|fd| fd.get_ref().read(&mut bytes[at..])) {
+                let count = result.unwrap();
+                assert_ne!(count, 0, "FIFO closed before its event");
+                at += count;
+            }
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    #[tokio::test]
+    async fn delayed_formats_fixture() {
+        use std::future::Future;
+        use std::os::unix::fs::PermissionsExt;
+        use std::task::Poll;
+        let Ok(policy) = std::env::var("TILR_DELAYED_FORMATS_FIXTURE") else {
+            return;
+        };
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(scratch("delayed-formats"));
+        let dir = &scratch.0;
+        let arrived = dir.join("arrived");
+        let start = dir.join("start");
+        let executing = dir.join("executing");
+        let finish = dir.join("finish");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .args([&arrived, &start, &executing, &finish])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let writer = |path: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .unwrap()
+        };
+        let mut start_writer = writer(&start);
+        let mut finish_writer = writer(&finish);
+        let exe = dir.join("successor");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\nprintf arrived > '{}'\nread start < '{}'\n\
+             if [ \"$TILR_TEST_STATE_FORMATS_STARTUP\" = child ]; then\n\
+             printf 'tilrd-state-formats-started\\n'\nread ack || exit 1\nfi\n\
+             printf executing > '{}'\nread finish < '{}'\nprintf '%s' '{}'\n",
+                arrived.display(),
+                start.display(),
+                executing.display(),
+                finish.display(),
+                formats()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut probe = Box::pin(check_executable(&exe));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        // Hold before the readiness event to reproduce launch admission.
+        read_fifo_event(&arrived, b"arrived").await;
+        tokio::time::pause();
+        tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
+        let verdict = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
+        if policy == "bounded" {
+            let Poll::Ready(Err(err)) = verdict else {
+                panic!("a held successor must time out: {verdict:?}");
+            };
+            assert!(
+                err.to_string().contains("state-formats did not finish"),
+                "{err:#}"
+            );
+            return;
+        }
+        assert!(
+            verdict.is_pending(),
+            "launch admission consumed the execution deadline: {verdict:?}"
+        );
+        tokio::time::resume();
+        start_writer.write_all(b"start\n").unwrap();
+        // The acknowledgment proves the execution timer has started before
+        // the child announces this second controlled hold.
+        tokio::select! {
+            result = &mut probe => panic!("probe finished before execution release: {result:?}"),
+            () = read_fifo_event(&executing, b"executing") => {},
+        }
+        if policy == "complete" {
+            finish_writer.write_all(b"finish\n").unwrap();
+            assert!(probe.await.unwrap());
+        } else {
+            tokio::time::pause();
+            tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
+            let verdict = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
+            let Poll::Ready(Err(err)) = verdict else {
+                panic!("execution must still time out: {verdict:?}");
+            };
+            assert!(
+                err.to_string().contains("state-formats did not finish"),
+                "{err:#}"
+            );
+        }
+    }
 
     #[test]
     fn an_executable_reading_the_same_formats_can_take_over() {

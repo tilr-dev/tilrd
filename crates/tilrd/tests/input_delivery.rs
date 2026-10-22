@@ -1,4 +1,4 @@
-//! Acknowledged input survives disconnects and exec without duplicate PTY bytes.
+//! Input deduplication, session cleanup and the delivery reset at exec.
 #![cfg(feature = "failpoints")]
 mod common;
 use common::*;
@@ -365,7 +365,7 @@ async fn unread_input_is_replayed_after_reload_in_the_middle_of_a_batch() {
             .find(|a| a.pane_id == pane.to_string())
             .unwrap()
             .seq,
-        1
+        0
     );
     client.subscribe(pane).await;
     queue.acknowledge(&ack(&mut client, pane, 2).await);
@@ -438,7 +438,17 @@ async fn disconnect_before_application_replays_one_copy() {
 // @spec protocol/input-is-acknowledged-after-application
 // @spec reload/pane-input-and-output-are-not-lost-across-a-reload
 #[tokio::test]
-async fn partially_written_input_keeps_its_boundary_through_exec() {
+async fn exec_resets_delivery_history_and_preserves_pending_bytes() {
+    cleanup_preserves_pending_bytes(true).await;
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[tokio::test]
+async fn expiry_preserves_pending_bytes_without_stale_ack_markers() {
+    cleanup_preserves_pending_bytes(false).await;
+}
+
+async fn cleanup_preserves_pending_bytes(reload: bool) {
     let server = server();
     let pauses = PauseController::bind(&server.dir);
     let (fifo, mut release) = activity_fifo(&server);
@@ -447,21 +457,22 @@ async fn partially_written_input_keeps_its_boundary_through_exec() {
     let file = server.dir.join("large-input");
     let tail = server.dir.join("after-input");
     client.type_line(pane, &format!(
-        "stty -echo -icanon min 1 time 0; printf 'reader-%s\\n' ready; read -r _ < '{}'; head -c 1048576 > '{}'; head -c 4 > '{}'; printf 'reader-%s\\n' finished",
+        "stty -echo -icanon min 1 time 0; printf 'reader-%s\\n' ready; read -r _ < '{}'; head -c 1048576 > '{}'; printf 'payload-%s\\n' saved; head -c 4 > '{}'; printf 'reader-%s\\n' finished",
         fifo.display(), file.display(), tail.display()
     )).await;
     client.wait_screen("reader-ready").await;
     let mut queue = Outbox::default();
+    send(&mut client, &queued(&mut queue, pane, b"")).await;
+    queue.acknowledge(&ack(&mut client, pane, 1).await);
     pause(&server, "input-before-apply");
     let message = queued(&mut queue, pane, &vec![b'a'; 1048576]);
     send(&mut client, &message).await;
     let hit = pauses.wait("input-before-apply").await;
     clear(&server);
     hit.release().await;
-    drop(client);
     // A probe is ordered after acceptance; the blocked reader prevents the
     // whole frame fitting in the PTY. No applied ACK is allowed yet.
-    let (mut client, hello) = resume(&server, &mut queue).await;
+    let hello = client.hello().await;
     assert_eq!(
         hello
             .applied_input
@@ -469,16 +480,22 @@ async fn partially_written_input_keeps_its_boundary_through_exec() {
             .find(|a| a.pane_id == pane.to_string())
             .unwrap()
             .seq,
-        0
+        1
     );
-    pause(&server, "reload-after-drain");
-    server.signal("-USR1");
-    let hit = pauses.wait("reload-after-drain").await;
-    clear(&server);
-    hit.release().await;
-    client = reconnect(&server, client).await;
-    drop(client);
-    let (mut client, hello) = resume(&server, &mut queue).await;
+    if reload {
+        pause(&server, "reload-after-drain");
+        server.signal("-USR1");
+        let hit = pauses.wait("reload-after-drain").await;
+        clear(&server);
+        hit.release().await;
+        client = reconnect(&server, client).await;
+        drop(client);
+    } else {
+        drop(client);
+        server.wait_logged("client disconnected").await;
+        std::fs::write(server.dir.join("failpoints"), "input-retention=error").unwrap();
+    }
+    let (mut client, hello) = identify(&server).await;
     assert_eq!(
         hello
             .applied_input
@@ -490,10 +507,11 @@ async fn partially_written_input_keeps_its_boundary_through_exec() {
     );
     client.subscribe(pane).await;
     release_activity_fifo(&mut release);
-    ack(&mut client, pane, 1).await;
+    // Wait until the first reader exits so its read-ahead cannot consume END.
+    client.wait_screen("payload-saved").await;
     let end = queued(&mut queue, pane, b"END\n");
     send(&mut client, &end).await;
-    ack(&mut client, pane, 2).await;
+    ack(&mut client, pane, 3).await;
     client.wait_screen("reader-finished").await;
     assert_eq!(std::fs::read(file).unwrap(), vec![b'a'; 1048576]);
     assert_eq!(std::fs::read(tail).unwrap(), b"END\n");
@@ -635,4 +653,112 @@ async fn numbered_input_before_hello_is_refused_and_closed() {
         matches!(closed, Some(Ok(Message::Close(_))) | None),
         "{closed:?}"
     );
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[tokio::test]
+async fn finalized_sessions_do_not_accumulate_delivery_history() {
+    let server = server();
+    let mut owner = Client::connect(&server).await;
+    let pane = owner.open_pane().await;
+    for n in 0..32 {
+        let mut client = Client::connect_silent(&server).await;
+        client.client_id = format!("completed-{n}");
+        client.hello().await;
+        let mut queue = Outbox::default();
+        send(&mut client, &queued(&mut queue, pane, b"")).await;
+        ack(&mut client, pane, 1).await;
+        client
+            .send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+            .await;
+        // Same connection must no longer admit numbered input.
+        send(&mut client, &queued(&mut queue, pane, b"")).await;
+        client
+            .wait_for(|msg| match msg {
+                server_message::Msg::Error(error)
+                    if error.message == "numbered input requires a stable client_id" =>
+                {
+                    Some(())
+                }
+                _ => None,
+            })
+            .await;
+        let mut fresh = Client::connect_silent(&server).await;
+        fresh.client_id = client.client_id.clone();
+        let hello = fresh.hello().await;
+        assert_eq!(
+            hello
+                .applied_input
+                .iter()
+                .find(|ack| ack.pane_id == pane.to_string())
+                .unwrap()
+                .seq,
+            0,
+            "retained identity {n}"
+        );
+    }
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[tokio::test]
+async fn expired_sessions_are_removed_but_active_sessions_are_retained() {
+    let server = server();
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let mut queue = Outbox::default();
+    send(&mut client, &queued(&mut queue, pane, b"")).await;
+    ack(&mut client, pane, 1).await;
+    std::fs::write(server.dir.join("failpoints"), "input-retention=error").unwrap();
+    // An active identity must survive even with a zero test retention period.
+    let (client, hello) = identify(&server).await;
+    assert_eq!(hello.applied_input[0].seq, 1);
+    clear(&server);
+    drop(client);
+    server.wait_logged("client disconnected").await;
+    std::fs::write(server.dir.join("failpoints"), "input-retention=error").unwrap();
+    let (_, hello) = identify(&server).await;
+    assert_eq!(hello.applied_input[0].seq, 0);
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[tokio::test]
+async fn reconnect_before_expiry_cancels_delivery_cleanup() {
+    let server = server();
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let mut queue = Outbox::default();
+    send(&mut client, &queued(&mut queue, pane, b"")).await;
+    ack(&mut client, pane, 1).await;
+    drop(client);
+    server.wait_logged("client disconnected").await;
+
+    // Reconnect with the normal retention period, before the deadline.
+    let (mut client, hello) = identify(&server).await;
+    assert_eq!(hello.applied_input[0].seq, 1);
+    std::fs::write(server.dir.join("failpoints"), "input-retention=error").unwrap();
+    // Another identity's Hello runs expiry without refreshing this identity.
+    let mut other = Client::connect_silent(&server).await;
+    other.client_id = "expiry-trigger".into();
+    other.hello().await;
+    let hello = client.hello().await;
+    assert_eq!(hello.applied_input[0].seq, 1);
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[tokio::test]
+async fn clients_cannot_forge_internal_delivery_cleanup() {
+    let server = server();
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let mut queue = Outbox::default();
+    send(&mut client, &queued(&mut queue, pane, b"")).await;
+    ack(&mut client, pane, 1).await;
+    let mut forged = queued(&mut queue, pane, b"");
+    forged.input_forget = true;
+    forged.input_identity = "forged".into();
+    forged.input_probe = 123;
+    send(&mut client, &forged).await;
+    ack(&mut client, pane, 2).await;
+    let (_, hello) = identify(&server).await;
+    assert_eq!(hello.applied_input[0].seq, 2);
 }

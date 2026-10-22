@@ -639,6 +639,65 @@ fn server_commands_run_in_the_server() {
     assert!(!remote.status.success());
 }
 
+/// A fresh staged path can wait for macOS launch assessment before main.
+/// The updater's existing confirmation follows both staged --version checks
+/// and installation. Wait for that event without a launch deadline, then
+/// start the bounded reload observation. Preserve all stdout, including any
+/// bytes the reader buffered beyond the confirmation.
+fn observe_reload_after_install(stdout: &mut impl BufRead, observe: impl FnOnce()) -> Vec<u8> {
+    let mut captured = Vec::new();
+    loop {
+        let start = captured.len();
+        let read = stdout.read_until(b'\n', &mut captured).unwrap();
+        assert_ne!(
+            read,
+            0,
+            "updater closed stdout before installation: {}",
+            String::from_utf8_lossy(&captured)
+        );
+        if captured[start..].starts_with(b"updated ") {
+            break;
+        }
+    }
+    observe();
+    captured
+}
+
+#[test]
+fn reload_observation_waits_for_install_confirmation() {
+    use std::cell::Cell;
+
+    // Each read is a controlled updater event. No elapsed time can substitute
+    // for the second event: until it arrives the staged launch is unfinished.
+    struct UpdateOutput<'a>(&'a Cell<usize>);
+    impl Read for UpdateOutput<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let event: &[u8] = match self.0.get() {
+                0 => b"downloading tilr 9.9.9-test\n",
+                1 => b"updated old -> new: /bin\na running server reloads itself\n",
+                _ => return Ok(0),
+            };
+            assert!(buf.len() >= event.len());
+            buf[..event.len()].copy_from_slice(event);
+            self.0.set(self.0.get() + 1);
+            Ok(event.len())
+        }
+    }
+    let events = Cell::new(0);
+    let observed = Cell::new(false);
+    let mut stdout = BufReader::new(UpdateOutput(&events));
+    let mut captured = observe_reload_after_install(&mut stdout, || {
+        assert_eq!(events.get(), 2, "both staged launches must finish first");
+        observed.set(true);
+    });
+    assert!(observed.get());
+    stdout.read_to_end(&mut captured).unwrap();
+    assert_eq!(
+        captured,
+        b"downloading tilr 9.9.9-test\nupdated old -> new: /bin\na running server reloads itself\n"
+    );
+}
+
 #[test]
 fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     let mut machine = Machine::new();
@@ -699,15 +758,20 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
         .expect("the local server requests the release archive");
     let mut hidden = HiddenSocket::hide(machine.socket());
     send_archive.send(()).unwrap();
-    eventually("the updated server resumes after reload", || {
-        machine.log().contains("resumed after reload with")
+    let mut stdout = BufReader::new(update.stdout.take().unwrap());
+    let mut captured_stdout = observe_reload_after_install(&mut stdout, || {
+        eventually("the updated server resumes after reload", || {
+            machine.log().contains("resumed after reload with")
+        });
     });
     assert!(
         update.try_wait().unwrap().is_none(),
         "tilr update waits for a connection to the reloaded server"
     );
     hidden.restore();
-    let output = update.wait_with_output().unwrap();
+    stdout.read_to_end(&mut captured_stdout).unwrap();
+    let mut output = update.wait_with_output().unwrap();
+    output.stdout = captured_stdout;
     assert!(
         output.status.success(),
         "tilr update: {output:?}\n--- server log ---\n{}",
@@ -1092,6 +1156,8 @@ enum Serve {
     CloseOnListPanes,
     /// Accepts and says nothing, not even the WebSocket handshake.
     Silent,
+    /// Keep the connection open but never acknowledge keys.
+    WithoutKeyAck,
     /// Everything, for as long as the client stays.
     Fully,
 }
@@ -1104,6 +1170,7 @@ struct FakeServer {
     /// The text of the keys it was sent.
     keys: std::sync::mpsc::Receiver<String>,
     subscriptions: std::sync::mpsc::Receiver<(usize, u32, u32)>,
+    finalized: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeServer {
@@ -1113,6 +1180,7 @@ impl FakeServer {
         let accepted = std::sync::Arc::new(AtomicU32::new(0));
         let (key_tx, keys) = std::sync::mpsc::channel();
         let (size_tx, subscriptions) = std::sync::mpsc::channel();
+        let (finalize_tx, finalized) = std::sync::mpsc::channel();
         let counter = accepted.clone();
         std::thread::spawn(move || {
             for (n, stream) in listener.incoming().enumerate() {
@@ -1121,7 +1189,10 @@ impl FakeServer {
                 counter.fetch_add(1, Ordering::SeqCst);
                 let keys = key_tx.clone();
                 let sizes = size_tx.clone();
-                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys, &sizes));
+                let finalized = finalize_tx.clone();
+                std::thread::spawn(move || {
+                    fake_connection(stream, serve, n + 1, &keys, &sizes, &finalized)
+                });
             }
         });
         Self {
@@ -1129,6 +1200,7 @@ impl FakeServer {
             accepted,
             keys,
             subscriptions,
+            finalized,
         }
     }
 
@@ -1143,6 +1215,7 @@ fn fake_connection(
     number: usize,
     keys: &std::sync::mpsc::Sender<String>,
     sizes: &std::sync::mpsc::Sender<(usize, u32, u32)>,
+    finalized: &std::sync::mpsc::Sender<()>,
 ) {
     use tilr_proto::{
         ClientMessage, Frame, HelloAck, PaneInfo, PaneList, Row, Run, ServerMessage,
@@ -1198,9 +1271,23 @@ fn fake_connection(
                     request_id: list.request_id,
                 }),
             ),
+            client_message::Msg::FinalizeInput(_) => {
+                let _ = finalized.send(());
+                Ok(())
+            }
             client_message::Msg::Resize(size) => {
                 (cols, rows) = (size.cols, size.rows);
-                Ok(())
+                if input_seq != 0 {
+                    send(
+                        &mut ws,
+                        server_message::Msg::InputAck(tilr_proto::InputAck {
+                            pane_id: size.pane_id,
+                            seq: input_seq,
+                        }),
+                    )
+                } else {
+                    Ok(())
+                }
             }
             client_message::Msg::Subscribe(_) => {
                 let _ = sizes.send((number, cols, rows));
@@ -1234,6 +1321,9 @@ fn fake_connection(
                 if matches!(serve, Serve::CloseOnKey) {
                     return;
                 }
+                if matches!(serve, Serve::WithoutKeyAck) {
+                    continue;
+                }
                 send(
                     &mut ws,
                     server_message::Msg::InputAck(tilr_proto::InputAck {
@@ -1264,6 +1354,25 @@ fn attach_to_fake(machine: &Machine, server: &FakeServer) -> Terminal {
     let mut terminal = Terminal::spawn(command);
     terminal.expect("fake screen 1");
     terminal
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[test]
+fn normal_detach_finalizes_its_acknowledged_input() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x\x1dd");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    server
+        .finalized
+        .recv_timeout(Duration::from_secs(15))
+        .expect("detach did not finalize its input session");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 #[test]
@@ -1308,6 +1417,47 @@ fn detach_works_while_a_reconnect_attempt_hangs() {
     let took = start.elapsed();
     assert!(took < Duration::from_secs(1), "detached after {took:?}");
     assert!(terminal.child.wait().unwrap().success());
+}
+
+// @spec tilr-cli/reconnect-attempts
+#[test]
+fn detach_with_unacknowledged_input_while_disconnected() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Silent]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    terminal.expect("tilr: disconnected (");
+    // Both events are read while reconnecting: y enters the delivery queue first.
+    let start = Instant::now();
+    terminal.write("y\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn detach_with_unacknowledged_input_while_connected() {
+    let machine = Machine::new();
+    // Model a full PTY: the server receives the key but cannot acknowledge it.
+    let server = FakeServer::start(vec![Serve::WithoutKeyAck]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    let start = Instant::now();
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
 }
 
 #[test]

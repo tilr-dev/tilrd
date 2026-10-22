@@ -58,6 +58,8 @@ const SILENT_FOR: Duration = Duration::from_secs(15);
 /// Waits between reconnect attempts: from the first to the last, doubling.
 const RETRY_FIRST: Duration = Duration::from_millis(100);
 const RETRY_LAST: Duration = Duration::from_secs(2);
+/// Give already sent input a brief chance to finish without delaying detach.
+const DETACH_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// How an attach ended.
 pub enum Exit {
@@ -162,6 +164,27 @@ enum Keyed {
     Nothing,
 }
 
+/// Finalize only after all ACKs, within the same short budget as draining them.
+/// Otherwise the disconnected identity expires on the server.
+async fn finish_input(
+    conn: Option<&mut Conn>,
+    delivery: &mut tilr_proto::input::Outbox,
+) -> Result<Exit> {
+    if let Some(live) = conn {
+        let _ = tokio::time::timeout(DETACH_TIMEOUT, async {
+            while delivery.pending().next().is_some() {
+                if let server_message::Msg::InputAck(ack) = live.recv().await? {
+                    delivery.acknowledge(&ack);
+                }
+            }
+            live.send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+                .await
+        })
+        .await;
+    }
+    Ok(Exit::Detached)
+}
+
 impl Attach<'_> {
     fn input_event(&mut self, event: Event) -> Keyed {
         let message = match event {
@@ -206,9 +229,9 @@ impl Attach<'_> {
                     tokio::select! {
                         outcome = &mut pending => break outcome,
                         event = input.next() => {
-                            let Some(event) = event else { return Ok(Exit::Detached) };
+                            let Some(event) = event else { return finish_input(None, &mut delivery).await };
                             match self.input_event(event?) {
-                                Keyed::Detach => return Ok(Exit::Detached),
+                                Keyed::Detach => return finish_input(None, &mut delivery).await,
                                 Keyed::Send(msg) => {
                                     if let Err(err) = delivery.push(msg.into()) { status(err)?; }
                                 }
@@ -292,9 +315,9 @@ impl Attach<'_> {
                     Err(err) => Some(err.to_string()),
                 },
                 event = input.next() => {
-                    let Some(event) = event else { return Ok(Exit::Detached) };
+                    let Some(event) = event else { return finish_input(Some(live), &mut delivery).await };
                     match self.input_event(event?) {
-                        Keyed::Detach => return Ok(Exit::Detached),
+                        Keyed::Detach => return finish_input(Some(live), &mut delivery).await,
                         Keyed::Send(msg) => match delivery.push(msg.into()) {
                             Ok(message) => live.send_message(message).await.err().map(|err| err.to_string()),
                             Err(err) => { status(err)?; None }

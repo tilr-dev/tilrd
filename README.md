@@ -880,7 +880,12 @@ its page), and the old connection is what the network it left still holds, a gho
 otherwise until the client timeout. The new connection subscribes again and receives a
 full screen. Its stable identity keeps the input delivery sequence: after Hello reports applied counters, the client replays
 unacknowledged input in order, and the pane deduplicates it. Admitted input reaches the
-pane exactly once even if the old connection revives. A client does not reconnect a
+pane exactly once while delivery history is retained, even if the old connection revives.
+A normal client exit drains acknowledgements and sends `FinalizeInput`, which removes
+its history immediately. Disconnected identities expire after one hour without
+reconnecting. Pane exec starts with empty delivery history while queued PTY bytes
+remain. Replaying unacknowledged input after expiry or reload can therefore duplicate
+previously applied bytes (including a partially written frame's prefix). A client does not reconnect a
 connection closed as superseded
 (`tilr` ends its attach). Another token, or the other transport, with the same id
 supersedes nobody; an empty `client_id` neither supersedes

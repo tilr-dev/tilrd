@@ -51,6 +51,7 @@ message ClientMessage {
     ExecInput exec_input = 27;
     ExecSignal exec_signal = 28;
     ExecCancel exec_cancel = 29;
+    FinalizeInput finalize_input = 30;
   }
   // Names an input message (KeyInput, MouseInput, Paste, RawInput, Scroll, Resize) so the
   // client can tell which frame shows its effect: HelloAck.seq_base + n, n = 1, 2, 3, ...
@@ -62,7 +63,12 @@ message ClientMessage {
   // Internal supervisor-to-pane fields; always overwritten at ingress.
   string input_identity = 102;
   uint64 input_probe = 103;
+  bool input_forget = 104;
 }
+
+// Sent after all admitted input is acknowledged, before a normal client exit.
+// Ends this connection's numbered input session and removes its delivery history.
+message FinalizeInput {}
 
 // Must be the first message on a connection. The server answers HelloAck, or,
 // if it does not speak `protocol_version`, an Error and closes the
@@ -1155,6 +1161,7 @@ message PaneHandover {
   // Those process groups: the shell's and the pty's foreground one, hung up
   // already (empty = none).
   repeated uint32 kill_pgids = 15;
+  // Legacy fields: delivery history is no longer written or restored at exec.
   repeated InputDeliveryState delivery_states = 16;
   repeated PendingDelivery pending_delivery = 17;
 }

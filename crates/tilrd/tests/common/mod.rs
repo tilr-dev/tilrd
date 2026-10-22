@@ -212,6 +212,14 @@ pub fn spawn_copied(command: &mut Command) -> Child {
     }
 }
 
+/// Shell successors implement the same test-only startup handshake as tilrd.
+pub const STATE_FORMATS_STARTUP: &str = r#"if [ "$TILR_TEST_STATE_FORMATS_STARTUP" = child ]; then
+printf 'tilrd-state-formats-started\n'
+read ack || exit 1
+[ "$ack" = continue ] || exit 1
+fi
+"#;
+
 /// Reclaim pairs left by exited test processes, including aborted runs. A live
 /// process still needs its source paths for subsequent hardlink installations.
 fn warm_executable_dir() -> PathBuf {
@@ -325,6 +333,19 @@ impl Server {
         Self::start_failing(dir, exe, args, "")
     }
 
+    /// Wait for successor startup before the bounded compatibility check.
+    /// Only failpoints builds honor this opt-in; the
+    /// harness still bounds its waits for logs and client messages.
+    pub fn start_awaiting_formats(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
+        Self::start_full(
+            dir,
+            exe,
+            args,
+            "",
+            &[("TILR_TEST_STATE_FORMATS_STARTUP", "1")],
+        )
+    }
+
     /// Start a server in which things go wrong where `failpoints` says, see
     /// `src/fail.rs`. It hands them on to what it reloads into.
     pub fn start_failing(dir: PathBuf, exe: &Path, args: &[&str], failpoints: &str) -> Self {
@@ -413,6 +434,7 @@ impl Server {
             .env("PS1", "$ ")
             // Each test opts into its own clock through `start_with_env`.
             .env_remove("TILR_TEST_TIME_FILE")
+            .env_remove("TILR_TEST_STATE_FORMATS_STARTUP")
             // No real clipboard for the shims to fall back to, and no shell
             // startup file.
             .env_remove("DISPLAY")
@@ -440,6 +462,38 @@ impl Server {
             .unwrap_or_else(|err| err.into_inner())
             .iter()
             .any(|line| line.contains(needle))
+    }
+
+    /// Count accepted startup events so a second replacement cannot reuse
+    /// the first probe's event.
+    pub fn formats_started(&self) -> usize {
+        self.log
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .iter()
+            .filter(|line| line.contains("state-formats successor started"))
+            .count()
+    }
+
+    /// Startup gets the ordinary harness bound. Verdict/client waits begin
+    /// only after this event, separately from launch admission.
+    pub async fn wait_formats_started(&self, after: usize) {
+        #[cfg(feature = "failpoints")]
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let changed = self.log_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.formats_started() > after {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("successor did not start\n{}", log_text(&self.log)));
+        #[cfg(not(feature = "failpoints"))]
+        let _ = after;
     }
 
     /// Wait up to [`TIMEOUT`] for the server to log a line with `needle`.
