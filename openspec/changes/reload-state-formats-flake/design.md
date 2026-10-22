@@ -61,3 +61,26 @@ after that event. A controlled startup hold must reproduce the measured
 pre-execution queue separately from a child that hangs after readiness. The
 latter must still time out. Any production policy change requires a separate
 explicit decision.
+
+## Test startup protocol
+
+An explicit `TILR_TEST_STATE_FORMATS_STARTUP=1` opt-in is honored only by
+`failpoints` builds. Only the state-formats child receives the value `child`.
+Its first action in main writes and flushes `tilrd-state-formats-started` to
+stdout, then waits for `continue` on stdin. Shell successor fixtures implement
+the same handshake; wrappers that exec tilrd delegate it to the real binary.
+The parent consumes the marker through a buffered reader, starts the unchanged
+ten-second execution deadline, and acknowledges startup within that deadline.
+Remaining stdout bytes and exit are collected inside the same deadline.
+EOF or a malformed startup marker refuses the probe, and cancellation kills the
+child in either phase. Ordinary probes retain their original path.
+
+The regression holds a real child before it emits readiness, advances virtual
+time past ten seconds, and verifies that only the opted-in probe survives. It
+then releases startup and waits for a second FIFO event after acknowledgment,
+which proves the execution timer is active. One branch releases execution and
+checks formats; another advances virtual time and proves execution still times
+out. Actual FIFO I/O runs with the real clock so Tokio cannot auto-advance a
+pending execution timer while a blocking filesystem worker completes an event.
+No host delay, retry, or enlarged limit is used. The existing outer harness
+bounds still report missing startup events as test failures.

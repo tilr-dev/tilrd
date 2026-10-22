@@ -1,6 +1,6 @@
 - [x] Measure a real failing parallel reload run from spawn through launch admission and stdout.
 - [x] Correlate the failed successors with the launch-policy scan queue and record the cause.
-- [ ] Replace the unbounded opt-in with synchronization that isolates the established startup delay.
-- [ ] Add a controlled startup-delay regression, red before the fix and green after it.
-- [ ] Verify that a child held after startup still observes the execution deadline.
-- [ ] Verify the scoped compatibility tests and unchanged production ten-second limit.
+- [x] Replace the unbounded opt-in with synchronization that isolates the established startup delay.
+- [x] Add a controlled startup-delay regression, red before the fix and green after it.
+- [x] Verify that a child held after startup still observes the execution deadline.
+- [x] Verify the scoped compatibility tests and unchanged production ten-second limit.

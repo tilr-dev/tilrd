@@ -808,7 +808,10 @@ fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
     let staged = scratch.0.join("tilrd.new");
     std::fs::write(
         &staged,
-        format!("#!/bin/sh\nprintf '{}'\n", older.replace('\n', "\\n")),
+        format!(
+            "#!/bin/sh\n{STATE_FORMATS_STARTUP}printf '{}'\n",
+            older.replace('\n', "\\n")
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -840,7 +843,7 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
         &exe,
         &scratch.0,
         &["--no-listen"],
-        &[("TILR_TEST_STATE_FORMATS_UNBOUNDED", Path::new("1"))],
+        &[("TILR_TEST_STATE_FORMATS_STARTUP", Path::new("1"))],
     );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
@@ -864,7 +867,7 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
         &exe,
         &scratch.0,
         &[],
-        &[("TILR_TEST_STATE_FORMATS_UNBOUNDED", Path::new("1"))],
+        &[("TILR_TEST_STATE_FORMATS_STARTUP", Path::new("1"))],
     );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);

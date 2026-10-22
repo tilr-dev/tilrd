@@ -306,7 +306,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let staged = dir.join("tilrd.new");
     std::fs::write(
         &staged,
-        "#!/bin/sh\necho 'supervisor-state 2\npane-state 2'\n",
+        format!("#!/bin/sh\n{STATE_FORMATS_STARTUP}echo 'supervisor-state 2\npane-state 2'\n"),
     )
     .unwrap();
     let mut mode = std::fs::metadata(&staged).unwrap().permissions();

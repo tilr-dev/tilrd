@@ -212,6 +212,14 @@ pub fn spawn_copied(command: &mut Command) -> Child {
     }
 }
 
+/// Shell successors implement the same test-only startup handshake as tilrd.
+pub const STATE_FORMATS_STARTUP: &str = r#"if [ "$TILR_TEST_STATE_FORMATS_STARTUP" = child ]; then
+printf 'tilrd-state-formats-started\n'
+read ack || exit 1
+[ "$ack" = continue ] || exit 1
+fi
+"#;
+
 /// Reclaim pairs left by exited test processes, including aborted runs. A live
 /// process still needs its source paths for subsequent hardlink installations.
 fn warm_executable_dir() -> PathBuf {
@@ -325,8 +333,8 @@ impl Server {
         Self::start_failing(dir, exe, args, "")
     }
 
-    /// A compatibility assertion needs the successor's verdict, independently
-    /// of process scheduling. Only failpoints builds honor this opt-in; the
+    /// Wait for successor startup before the bounded compatibility check.
+    /// Only failpoints builds honor this opt-in; the
     /// harness still bounds its waits for logs and client messages.
     pub fn start_awaiting_formats(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
         Self::start_full(
@@ -334,7 +342,7 @@ impl Server {
             exe,
             args,
             "",
-            &[("TILR_TEST_STATE_FORMATS_UNBOUNDED", "1")],
+            &[("TILR_TEST_STATE_FORMATS_STARTUP", "1")],
         )
     }
 
@@ -426,7 +434,7 @@ impl Server {
             .env("PS1", "$ ")
             // Each test opts into its own clock through `start_with_env`.
             .env_remove("TILR_TEST_TIME_FILE")
-            .env_remove("TILR_TEST_STATE_FORMATS_UNBOUNDED")
+            .env_remove("TILR_TEST_STATE_FORMATS_STARTUP")
             // No real clipboard for the shims to fall back to, and no shell
             // startup file.
             .env_remove("DISPLAY")
