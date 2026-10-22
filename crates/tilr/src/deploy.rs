@@ -237,12 +237,13 @@ version=${version%% *}
 token=
 # The installed client speaks the running server's protocol. The persistent
 # token survives reload, so no new-client handshake races the executable watcher.
-if [ -x "$bin/tilr" ]; then token=$("$bin/tilr" token); [ -n "$token" ]; fi
+if [ -x "$bin/tilr" ] && "$bin/tilr" ls --quiet >/dev/null 2>&1; then
+  token=$("$bin/tilr" token)
+  [ -n "$token" ]
+fi
 swapped=1
 mv -f "$tmp/release/tilr" "$bin/tilr"
 mv -f "$tmp/release/tilrd" "$bin/tilrd"
-if [ -z "$token" ]; then token=$("$bin/tilr" token); fi
-[ -n "$token" ]
 if [ -n '@SERVICE@' ]; then
   case "$(uname -s)" in
     Darwin)
@@ -277,6 +278,9 @@ if [ -n '@SERVICE@' ]; then
   service_started=1
   "$bin/tilr" service install >&2
 fi
+# Do not launch a fresh daemon before a service manager can refuse the install.
+if [ -z "$token" ]; then token=$("$bin/tilr" token); fi
+[ -n "$token" ]
 committed=1
 echo "installed tilr $version in ~/.local/bin" >&2
 case ":$PATH:" in

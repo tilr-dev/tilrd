@@ -32,6 +32,6 @@ Idea recorded with the tilrd naming decision (2026-10-16): a user with SSH acces
 
 Cloud registration (`--cloud`) needs a separate design after Cloud is in production.
 
-Industry note: Tailscale and Coder install, print a link and attach the machine to the account; VS Code Remote-SSH installs and connects over ssh with no account. `tilr deploy` is the second kind now, with `--cloud` adding the first later.
+Industry note: Tailscale and Coder install, print a link and attach the machine to the account; VS Code Remote-SSH installs and connects over ssh with no account. `tilr deploy` uses SSH without an account.
 
 An SSH transport in `tilr` (`tilr --ssh <dest>`, option (b)) is rejected for now; it overlaps `multi-server` / `quic-transport`.

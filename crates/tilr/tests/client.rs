@@ -1735,7 +1735,7 @@ fn deploy_gets_the_token_before_replacing_an_old_protocol_client() {
     std::fs::create_dir_all(&installed).unwrap();
     executable_script(
         &installed.join("tilr"),
-        "#!/bin/sh\n[ \"$1\" = token ] || exit 1\necho persistent-token\n",
+        "#!/bin/sh\ncase \"$1\" in ls) exit 0;; token) echo persistent-token;; *) exit 1;; esac\n",
     );
     std::fs::write(installed.join("tilrd"), b"old server").unwrap();
     let archive = deploy_archive(&machine,
@@ -1916,4 +1916,45 @@ fn reconnect_restores_terminal_size_before_subscribing() {
         "reconnect must reclaim the terminal size before Subscribe"
     );
     assert_eq!(first, (1, 80, 24));
+}
+
+#[test]
+fn deploy_does_not_start_a_daemon_before_a_failing_service_install() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    for name in ["systemctl", "launchctl", "loginctl"] {
+        executable_script(&bin.join(name), "#!/bin/sh\nexit 1\n");
+    }
+    executable_script(
+        &bin.join("crontab"),
+        "#!/bin/sh\n[ \"$1\" != -l ] || echo 'no crontab for test' >&2\nexit 1\n",
+    );
+    let archive = deploy_archive(
+        &machine,
+        &std::fs::read(TILR).unwrap(),
+        &std::fs::read(Path::new(TILR).with_file_name("tilrd")).unwrap(),
+    );
+    let output = machine
+        .command(&[
+            "deploy",
+            "--service",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("XDG_CONFIG_HOME", machine.dir.join(".config"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "service installation must fail");
+    assert!(
+        !machine.socket().exists(),
+        "failed deploy left a daemon running"
+    );
+    assert!(
+        !machine.dir.join("state/token").exists(),
+        "failed deploy created a token"
+    );
+    assert!(!machine.dir.join(".local/bin").exists());
+    assert!(output.stdout.is_empty());
 }

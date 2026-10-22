@@ -3,7 +3,7 @@
 ### Requirement: tilr deploy installs and starts tilrd over SSH
 `tilr deploy [--service] [--archive FILE] [--cdn URL] <dest>` SHALL use the user's `ssh` to find the remote platform, send it the matching release archive checked on the local machine, install `tilrd` and `tilr` into the remote `~/.local/bin` both or neither, run `tilr service install` there with `--service`, start tilrd there, and print an `ssh -t <dest> '~/.local/bin/tilr'` line, an `ssh -N -L` line and the remote token; any failure SHALL exit non-zero leaving the remote files as they were.
 
-**Verified by**: itests `UC-07C` (`uc_07c.py::deploy_installs_and_starts_tilrd_on_a_host_reached_over_ssh`, `uc_07c.py::a_failed_deploy_leaves_the_remote_as_it_was`) and `client::deploy_names_a_platform_without_a_release`, `client::deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `client::deploy_rolls_back_both_programs_when_remote_start_or_service_fails`, `client::deploy_gets_the_token_before_replacing_an_old_protocol_client`, `client::deploy_restores_service_configuration_when_the_manager_refuses_it`, `client::deploy_restores_the_crontab_after_a_service_failure` (crates/tilr/tests/client.rs).
+**Verified by**: itests `UC-07C` (`uc_07c.py::deploy_installs_and_starts_tilrd_on_a_host_reached_over_ssh`, `uc_07c.py::a_failed_deploy_leaves_the_remote_as_it_was`) and `client::deploy_names_a_platform_without_a_release`, `client::deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `client::deploy_rolls_back_both_programs_when_remote_start_or_service_fails`, `client::deploy_gets_the_token_before_replacing_an_old_protocol_client`, `client::deploy_restores_service_configuration_when_the_manager_refuses_it`, `client::deploy_restores_the_crontab_after_a_service_failure`, `client::deploy_does_not_start_a_daemon_before_a_failing_service_install` (crates/tilr/tests/client.rs).
 
 #### Scenario: A fresh host
 - **WHEN** the user runs `tilr deploy user@host` and host runs Linux x86_64 without tilr
@@ -32,6 +32,10 @@
 #### Scenario: Service installation fails
 - **WHEN** `--service` fails after writing its configuration
 - **THEN** deploy restores the previous service configuration and both programs, exits non-zero and prints no connection commands
+
+#### Scenario: Service failure on a fresh host
+- **WHEN** no tilrd runs on the host and its service manager refuses installation
+- **THEN** deploy fails without starting a daemon or creating its token, and restores both programs and service configuration
 
 ### Requirement: Internal release fetching for deploy
 `tilrd fetch-release --platform P --out DIR [--cdn URL] [--archive FILE]` SHALL validate a release's checksum and both regular program members using the updater's checks, write its archive into DIR, and exit non-zero on failure. It SHALL remain hidden from help and SHALL NOT execute the programs. With `--archive`, it SHALL validate the local archive and adjacent `.sha256` without HTTP.
