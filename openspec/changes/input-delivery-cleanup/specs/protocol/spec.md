@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Input is acknowledged after application
-Clients SHALL number input per stable identity and pane, retain it until acknowledged, and replay it after reconnecting. The server SHALL acknowledge completed PTY writes independently of output, discard accepted duplicates, and report applied counters during Hello. Deduplication SHALL last until explicit finalization, one hour without reconnect after disconnection, or pane exec, whichever comes first. Replay after expiry or exec MAY apply previously applied input again. Delivery and latency numbering SHALL be independent. Outboxes SHALL reject overflow before sending or advancing delivery counters.
+Clients SHALL number input per identity and pane and retain it until ACK for ordered replay. The server SHALL ACK completed PTY writes independently of output, deduplicate accepted sequences and report applied counters in Hello. Deduplication ends at finalization, one hour without reconnect after disconnect, or pane exec; later replay MAY duplicate input. Delivery and latency numbering SHALL be independent. Outboxes SHALL reject overflow before sending or advancing counters.
 
 **Verified by**: `input_delivery::numbered_input_requires_a_stable_client_id`, `input_delivery::disconnect_before_application_replays_one_copy`, `input_delivery::applied_input_with_a_lost_ack_is_not_applied_twice`, `input::tests::overflow_is_atomic_and_ack_reclaims_capacity`, `client::attach_replays_a_key_when_the_connection_ends_without_an_ack`, `session::input_delivery_tests::reconnect_replays_only_unacknowledged_input_in_order`.
 
@@ -28,13 +28,13 @@ Clients SHALL number input per stable identity and pane, retain it until acknowl
 ## ADDED Requirements
 
 ### Requirement: Input delivery identities have a bounded lifetime
-A client ending normally SHALL stop admitting input, wait until all admitted input is acknowledged, send `FinalizeInput`, and close. The server SHALL remove the finalized identity from every pane and refuse further numbered input on that connection. An abrupt disconnect SHALL retain delivery history for one hour without reconnect. Reconnection before the deadline SHALL cancel expiry. The server SHALL remove expired identities from all panes without removing queued PTY bytes. Internal cleanup commands SHALL NOT be accepted from clients. Neither counters nor disconnect deadlines SHALL survive exec. Protocol version SHALL remain 1.
+Clients SHALL finalize only after all admitted input is acknowledged. The server SHALL remove finalized identities immediately and disconnected identities after one hour without reconnect. Reconnect before expiry SHALL cancel the deadline. Cleanup SHALL preserve queued PTY bytes. Neither delivery counters nor disconnect deadlines SHALL survive exec. Protocol version SHALL remain 1.
 
 **Verified by**: `input_delivery::finalized_sessions_do_not_accumulate_delivery_history`, `input_delivery::expired_sessions_are_removed_but_active_sessions_are_retained`, `input_delivery::expiry_preserves_pending_bytes_without_stale_ack_markers`, `input_delivery::clients_cannot_forge_internal_delivery_cleanup`, `supervisor::tests::input_retention_expires_at_one_hour_and_reconnect_cancels_it`, `client::normal_detach_finalizes_its_acknowledged_input`, `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing`.
 
 #### Scenario: Many completed client sessions
-- **WHEN** successive identities send input, receive all acknowledgements and finalize
-- **THEN** their delivery records are removed immediately and later Hello reports no applied input for them
+- **WHEN** successive identities stop admitting input, receive all acknowledgements, send `FinalizeInput` and close
+- **THEN** their delivery records SHALL be removed immediately, further numbered input on the finalized connection SHALL be refused, and later Hello SHALL report no applied input for them
 
 #### Scenario: Disconnect retention and expiry
 - **WHEN** an identity disconnects without finalizing
@@ -46,5 +46,5 @@ A client ending normally SHALL stop admitting input, wait until all admitted inp
 
 #### Scenario: Client cannot request another identity's cleanup
 - **WHEN** a client supplies internal cleanup fields
-- **THEN** ingress clears them and no other identity is removed
+- **THEN** ingress SHALL clear them and SHALL NOT remove any other identity
 
