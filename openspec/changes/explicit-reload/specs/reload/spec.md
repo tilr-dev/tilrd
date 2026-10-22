@@ -26,12 +26,19 @@ Replacing the installed executable SHALL NOT trigger a reload. Only an explicit 
 - **WHEN** `tilrd reload` runs with no supervisor from its installation
 - **THEN** it exits 0 and starts no server
 
+### Requirement: Reload checks and executes the installation path
+The supervisor SHALL check the executable at its installation path and exec that same path. Replacement between check and exec is an accepted risk, without locks, pinned descriptors or private copies.
+
+#### Scenario: Replacement between check and exec
+- **WHEN** another atomic replacement occurs after the successor checks and before exec
+- **THEN** the server executes the file now at the installation path, which may differ from the checked file
+- **AND** a successor that fails after exec follows the existing reload failure behavior
+
 ## MODIFIED Requirements
 
 ### Requirement: SIGUSR1 reloads the server
 Only on an explicit reload request (`SIGUSR1`), including one sent after `tilr update` or installation, the supervisor SHALL exec the executable it was started from in place and then have every pane process do the same; every pane SHALL keep its shell (same pid) with its variables and jobs, its title, directory and creation time.
 
-The supervisor checks the executable at its installation path and execs that same path; replacement between the check and exec is an accepted risk, without locks, pinned descriptors or private copies.
 
 **Verified by**: `reload::panes_survive_a_reload_asked_for_with_a_signal`, `reload::every_pane_keeps_its_own_shell_across_a_reload`, `reload::the_title_and_directory_of_a_pane_are_kept_across_a_reload`.
 
