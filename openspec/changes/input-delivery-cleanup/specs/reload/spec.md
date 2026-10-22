@@ -12,3 +12,12 @@ Output a pane prints during a reload SHALL reach the client after it reconnects.
 #### Scenario: Reload during a batch
 - **WHEN** a pane reloads with part of an input frame still waiting for the PTY and the client replays it
 - **THEN** the restored pending suffix is preserved, Hello reports no applied counter, and replay may duplicate the already written prefix or queued suffix
+
+### Requirement: Client connections end and clients reconnect
+A reload SHALL end every client connection (sockets are not carried over); a client that reconnects SHALL find its panes as they were. Input admitted to the client's delivery queue SHALL reach the pane after reconnection, including input the supervisor had not read before exec. Admitted input SHALL retain its order without loss; replay MAY duplicate input applied but not acknowledged before reload.
+
+**Verified by**: `input_delivery::unread_input_is_replayed_after_reload_in_the_middle_of_a_batch`; itests `UC-063` (`uc_063.py::a_client_typing_through_an_update_reconnects_and_nothing_typed_is_lost_or_doubled`).
+
+#### Scenario: Typing through an update
+- **WHEN** a client types numbered lines into `cat >>typed` through an update
+- **THEN** after reconnection every admitted line is in the file in order, allowing replay of input not acknowledged before reload
