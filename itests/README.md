@@ -91,8 +91,18 @@ were measured. The report records each phase's count, pending, unanswered and
 p90 metrics. There are no sleeps, repeats or increased timeouts.
 
 This case asserts the expected threshold crossing and therefore passes with the
-delay enabled. It leaves the existing random-loss proxy and netem cases unchanged;
-their metrics describe a different network condition.
+delay enabled. The random-loss proxy and netem cases report degradation metrics
+and assert recovery after healing. Their random backoff supplies no absolute echo,
+screen-stall or disconnect-count guarantee. In particular, server silence can
+expire while the client still receives frames; neither side observes the other's
+timeout immediately.
+
+Two additional UC-043 regressions exercise the old false oracles directly:
+`fixed_delay_does_not_fail_the_lossy_proxy_recovery_case` runs the proxy recovery
+case with fixed 3000 ms each-way delay, and
+`uplink_silence_can_drop_a_client_that_still_receives_frames` freezes uplink while
+delaying downlink. The latter waits for viewer removal, checks the silence reason
+before the delayed close arrives, then resumes and verifies recovery.
 
 ## What a run does
 
