@@ -112,6 +112,43 @@ def a_lossy_slow_network_slows_the_session_without_tearing_it_down_or_hanging_it
     t.eq(phone.run(typing, "echo typed-after", timeout=60), 0, "input works after the network heals")
 
 
+@case(fixture="server_state", spec=["itest-echo-delay/controlled-input-echo-threshold-check"])
+def fixed_network_delay_moves_echo_p90_across_five_seconds(t: T):
+    """UC-043: fixed 3 s each way crosses 5 s echo p90; zero delay stays below it."""
+    server = t.server(state=t.root / "state")
+    proxy = t.proxy(server.port)
+    client = t.driver("client")
+    client.connect(proxy.url, token=server.token())
+    pane = client.shell_pane(100, 10)
+    client.line(pane, "cat >/dev/null")
+    # Establish that cat is reading and the shell's setup output has drained.
+    client.cmd("input", pane=pane, text="ready")
+    client.wait_for(pane, r"(?m)^ready$")
+    since = client.mark()
+    echoed = "ready"
+    for phase, delay_ms in (("baseline", 0), ("delayed", 3000), ("recovered", 0)):
+        proxy.set(dir="both", delay_ms=delay_ms, jitter_ms=0, loss_pct=0)
+        client.latency(reset=True)
+        for char in "abcdefghij":
+            echoed += char
+            client.cmd("input", pane=pane, text=char)
+            # Each distinct echo proves that this input's frame arrived. The driver
+            # records its latency before updating the screen matched by wait_for.
+            client.wait_for(pane, rf"(?m)^{echoed}$")
+        lat = client.latency()
+        for key in ("count", "pending", "unanswered", "p90_ms"):
+            t.metric(f"{phase}_input_latency_{key}", lat[key])
+        t.eq(lat["count"], 10, f"{phase}: every input has a measured echo")
+        t.eq(lat["pending"], 0, f"{phase}: no input is still awaiting a frame")
+        t.eq(lat["unanswered"], 0, f"{phase}: no input lost its connection")
+        p90 = lat["p90_ms"]
+        t.ok(p90 is not None and (p90 > 5000 if delay_ms else p90 < 5000),
+             f"{phase}: echo p90 {p90} ms is {'above' if delay_ms else 'below'} 5000 ms")
+    t.eq(sum(e.get("ev") == "disconnected" for e in client.events[since:]), 0,
+         "the controlled delay never disconnects the client")
+    t.eq(server_drops(server), 0, "the server never drops the delayed client")
+
+
 @case(fixture="server_state", spec=["client-liveness/a-lagging-client-skips-to-the-latest-screen"])
 def a_session_through_a_lossy_slow_proxy_keeps_moving_without_a_disconnect(t: T):
     """UC-043: layer 1: 300-700 ms per chunk and 30% of chunks held for a retransmission; no drop, the screen moves."""
