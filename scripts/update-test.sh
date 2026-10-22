@@ -195,7 +195,6 @@ check "nothing was refused or lost" "$(r "grep -cE 'not reloading|WARN|ERROR' $d
 echo "# 6. update with the server stopped"
 stop_server
 install_by_hand "$old" || not_ok "the old release is put back"
-r "kill -USR1 $pid"
 r "$dir/tilrd update --cdn $cdn" >/dev/null && ok "the update runs without a server" ||
     not_ok "the update runs without a server"
 start_server && ok "the server starts" || not_ok "the server starts"
