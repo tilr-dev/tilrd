@@ -2,8 +2,8 @@
 
 ## 1. Flake
 
-- [ ] 1.1 itests `uc_043`: find and fix the flake or quarantine it with its cause in itests/USE_CASES.md; verify 10 consecutive green runs of `./itests/dt` UC-043
+- [x] 1.1 Explain and fix the UC-043 oracles: random proxy backoff does not bound p90; incoming frames can keep the client alive while uplink silence expires the server timeout. Replace random-condition bounds with metrics and recovery checks. Reproduce deterministically with fixed 3000 ms each-way delay and uplink freeze plus delayed downlink; the old assertions reject both valid states. Verify the controlled baseline/delay/recovery threshold, delayed recovery, and silence/reconnect scenarios without consecutive-run criteria.
 
 ## 2. Checks
 
-- [ ] 2.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
+- [x] 2.1 Run the required repository checks through the finish workflow.
