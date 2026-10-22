@@ -1,9 +1,9 @@
 ## MODIFIED Requirements
 
 ### Requirement: Input that is not wanted is ignored
-`ExecInput` after `eof`, for an exec started without `stdin`, or for an exec that is not the client's MUST be ignored, the exec going on.
+`ExecInput` after `eof`, for an exec started without `stdin`, or for an exec that is not the client's MUST be ignored, the exec going on. No test covers it.
 
-**Verified by**: `exec::input_that_is_not_wanted_is_ignored` (planned in change server-requirement-tests).
+**Verified by**: `exec::input_that_is_not_wanted_is_ignored`.
 
 #### Scenario: Input after eof
 - **WHEN** a client sends `ExecInput` data after one with `eof`

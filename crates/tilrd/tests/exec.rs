@@ -638,3 +638,107 @@ async fn an_exec_does_not_get_the_service_managers_variables() {
     .await;
     assert!(ran.stdout().lines().any(|line| line == "NOTIFY_SOCKET=/x"));
 }
+
+#[tokio::test]
+async fn input_that_is_not_wanted_is_ignored() {
+    let server = Server::start(&[]);
+    let mut owner = Client::connect(&server).await;
+    let mut stranger = Client::connect(&server).await;
+    owner.hello().await;
+    stranger.hello().await;
+    let (fifo, mut release) = activity_fifo(&server);
+    let captured = server.dir.join("captured-input");
+    let script = format!(
+        "cat > '{}'; read -r go < '{}'; printf done; cat '{}'",
+        captured.display(),
+        fifo.display(),
+        captured.display()
+    );
+    for stdin in [false, true] {
+        let (exec_id, _) = start(
+            &mut owner,
+            ExecStart {
+                stdin,
+                ..argv(&["/bin/sh", "-c", &script])
+            },
+        )
+        .await;
+        if stdin {
+            owner
+                .send(Msg::ExecInput(ExecInput {
+                    exec_id,
+                    eof: true,
+                    ..Default::default()
+                }))
+                .await;
+        }
+        owner
+            .send(Msg::ExecInput(ExecInput {
+                exec_id,
+                data: Bytes::from_static(b"unwanted"),
+                eof: false,
+            }))
+            .await;
+        owner
+            .send(Msg::ExecInput(ExecInput {
+                exec_id,
+                eof: true,
+                ..Default::default()
+            }))
+            .await;
+        owner.ping(101).await;
+        owner
+            .wait_for(|msg| match msg {
+                server_message::Msg::Pong(pong) if pong.nonce == 101 => Some(()),
+                server_message::Msg::Error(_)
+                | server_message::Msg::ExecInputAck(_)
+                | server_message::Msg::ExecExit(_) => {
+                    panic!("unwanted input was not ignored: {msg:?}")
+                }
+                _ => None,
+            })
+            .await;
+        release_activity_fifo(&mut release);
+        let ran = finish(&mut owner, exec_id).await;
+        assert_eq!(ran.stdout(), "done");
+        assert!(ran.stderr.is_empty());
+        assert_eq!(ran.exit.code, 0);
+        assert_eq!(ran.exit.signal, 0);
+    }
+    let (exec_id, _) = start(
+        &mut owner,
+        ExecStart {
+            stdin: true,
+            ..argv(&["wc", "-c"])
+        },
+    )
+    .await;
+    stranger
+        .send(Msg::ExecInput(ExecInput {
+            exec_id,
+            data: Bytes::from_static(b"stranger"),
+            eof: true,
+        }))
+        .await;
+    stranger.ping(102).await;
+    stranger
+        .wait_for(|msg| match msg {
+            server_message::Msg::Pong(pong) if pong.nonce == 102 => Some(()),
+            server_message::Msg::Error(_)
+            | server_message::Msg::ExecInputAck(_)
+            | server_message::Msg::ExecExit(_) => panic!("stranger input was not ignored: {msg:?}"),
+            _ => None,
+        })
+        .await;
+    owner
+        .send(Msg::ExecInput(ExecInput {
+            exec_id,
+            data: Bytes::from_static(b"owner"),
+            eof: true,
+        }))
+        .await;
+    let ran = finish(&mut owner, exec_id).await;
+    assert_eq!(ran.stdout().trim(), "5");
+    assert_eq!(ran.exit.code, 0);
+    assert_eq!(ran.exit.signal, 0);
+}

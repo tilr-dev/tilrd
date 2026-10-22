@@ -423,6 +423,6 @@ When a numbered Resize is applied while earlier numbered input is still waiting 
 
 ## Notes
 
-- Requirements without a test: "A pane that cannot start is reported to its creator", "When a pane was used last" (`used_at_ms` is read by `tilr`'s choice of pane, see `tilr-cli`, but no test asserts it). Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
+- Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
 - Unit tests are cited as `module::tests::name` with their source file.
 - UC-082 (a 65535 x 65535 `Resize` is clamped to 1..65535, the pane lives) is a planned itests case without a scenario. Stopping the server, and what it ends in a pane (UC-086), is in `daemon-lifecycle`.

@@ -448,3 +448,38 @@ async fn a_server_starting_leaves_the_agent_sockets_of_a_live_one_alone() {
     let _program = UnixStream::connect(&socket.0).await.unwrap();
     assert_eq!(stream_open(&mut client).await.pane_id, pane_id.to_string());
 }
+
+#[tokio::test]
+async fn a_65th_stream_is_refused() {
+    let server = Server::start(&[]);
+    let mut client = agent_client(&server).await;
+    let pane = client.open_pane().await;
+    let socket = pane_socket(&server, &mut client, pane).await;
+    let mut programs = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..64 {
+        let program = UnixStream::connect(&socket.0).await.unwrap();
+        let open = stream_open(&mut client).await;
+        assert_eq!(open.pane_id, pane.to_string());
+        assert!(ids.insert(open.stream_id));
+        programs.push((program, open.stream_id));
+    }
+    let mut refused = UnixStream::connect(&socket.0).await.unwrap();
+    assert!(read_to_end(&mut refused).await.is_empty());
+    assert!(no_stream_message(&mut client, 65).await);
+    let (mut program, id) = programs.pop().unwrap();
+    client
+        .send(Msg::StreamClose(StreamClose { stream_id: id }))
+        .await;
+    assert!(read_to_end(&mut program).await.is_empty());
+    let mut replacement = UnixStream::connect(&socket.0).await.unwrap();
+    let open = stream_open(&mut client).await;
+    assert!(!ids.contains(&open.stream_id));
+    send_data(&mut client, open.stream_id, b"still forwarding").await;
+    let mut bytes = [0; 16];
+    tokio::time::timeout(TIMEOUT, replacement.read_exact(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&bytes, b"still forwarding");
+}

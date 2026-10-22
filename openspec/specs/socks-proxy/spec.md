@@ -166,7 +166,7 @@ A SOCKS session SHALL end, and the target see its connection end, when the clien
 
 ## Notes
 
-- Requirements without a test: "The SOCKS WebSocket is on the TCP port only", "The client must say where it goes within 10 s". Parts without a test: replies `03`, `04`, `08` and `01`; the 10 s connect timeout.
+- Parts without a test: replies `03`, `04`, `08` and `01`; the 10 s connect timeout.
 - No itests case cited here is currently red per itests/USE_CASES.md.
 - The proxy does not use the protocol's `StreamOpen` / `StreamData` / `StreamClose`: each SOCKS session is a WebSocket (`/socks`) or TCP connection of its own. "Through the client" (UC-074) means the client on the user's machine opening a local SOCKS port and carrying each connection to `/socks` (tilr-driver's `socks_listen`); the `tilr` client at HEAD has no such command.
 - UC-085 (foreign Origin / DNS rebinding on `/socks`) is listed in itests/USE_CASES.md without a scenario.

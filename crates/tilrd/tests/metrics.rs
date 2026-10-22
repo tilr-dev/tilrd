@@ -843,3 +843,114 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
         Some(0.0)
     );
 }
+
+/// The test clock isolates parse, build and previous-frame encoding; a
+/// completed no-op build keeps invisible output in the next frame's totals.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn the_timing_fields_measure_what_they_say() {
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    let stages = dir.join("stages");
+    std::fs::write(&clock, "1000000").unwrap();
+    std::fs::write(&stages, "17 31 47").unwrap();
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[
+            ("TILR_TEST_TIME_FILE", clock.to_str().unwrap()),
+            ("TILR_TEST_FRAME_STAGE_TIME_FILE", stages.to_str().unwrap()),
+        ],
+    );
+    let controller = PauseController::bind(&server.dir);
+    let (fifo, mut release) = activity_fifo(&server);
+    let command = format!(
+        "read -r go < '{0}'; printf '\\033[0m'; read -r go < '{0}'; printf visible; read -r go < '{0}'",
+        fifo.display()
+    );
+    let (mut client, base) = connect_with_base(&server).await;
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 100,
+            rows: 30,
+            command: vec!["/bin/sh".into(), "-c".into(), command],
+            request_id: 1,
+            ..Default::default()
+        }))
+        .await;
+    let pane: PaneId = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(created) => {
+                Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane).await;
+    let first = next_frame(&mut client).await.timing.unwrap();
+    assert_eq!(
+        (
+            first.wait_us,
+            first.parse_us,
+            first.build_us,
+            first.encode_us,
+            first.output_bytes,
+            first.reads
+        ),
+        (0, 0, 31, 0, 0, 0)
+    );
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, "frame-stage-no-frame=pause").unwrap();
+    release_activity_fifo(&mut release);
+    controller
+        .wait("frame-stage-no-frame")
+        .await
+        .release()
+        .await;
+    std::fs::write(&points, "").unwrap();
+    release_activity_fifo(&mut release);
+    client.wait_screen("visible").await;
+    let timing = client.frame.as_ref().unwrap().timing.as_ref().unwrap();
+    // Two 17 us parses, plus the measurement ticks between operations:
+    // first parse end -> no-op build -> next parse -> its build.
+    assert_eq!(
+        (
+            timing.wait_us,
+            timing.parse_us,
+            timing.build_us,
+            timing.encode_us,
+            timing.output_bytes,
+            timing.reads
+        ),
+        (37, 34, 31, 47, 11, 2)
+    );
+    let next = stages.with_extension("next");
+    std::fs::write(&next, "59 61 73").unwrap();
+    std::fs::rename(next, &stages).unwrap();
+    for (seq, previous_encode) in [(base + 1, 47), (base + 2, 73)] {
+        send_with_seq(
+            &mut client,
+            Msg::Mouse(MouseInput {
+                pane_id: pane.to_string(),
+                ..Default::default()
+            }),
+            seq,
+        )
+        .await;
+        let timing = frame_with_seq(&mut client, seq, |s| s < seq)
+            .await
+            .timing
+            .unwrap();
+        assert_eq!(
+            (
+                timing.wait_us,
+                timing.parse_us,
+                timing.build_us,
+                timing.encode_us,
+                timing.output_bytes,
+                timing.reads
+            ),
+            (0, 0, 61, previous_encode, 0, 0)
+        );
+    }
+}

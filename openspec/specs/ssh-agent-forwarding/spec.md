@@ -189,7 +189,7 @@ The forwarding SHALL serve the SSH agent protocol unchanged, so that `ssh-add -l
 
 ## Notes
 
-- Requirements without a test: "At most 64 streams per client". Parts without a test: a pane started without `SSH_AUTH_SOCK` when its socket cannot be made, streams surviving their pane's exit, sockets removed on a normal stop, a dropped `StreamOpen` when the client's queue is full, a pane from a server before the per-server directories keeping `agent/<pane id>.sock` after a reload (no older binary to reload from in the tests).
+- Parts without a test: a pane started without `SSH_AUTH_SOCK` when its socket cannot be made, streams surviving their pane's exit, sockets removed on a normal stop, a dropped `StreamOpen` when the client's queue is full, a pane from a server before the per-server directories keeping `agent/<pane id>.sock` after a reload (no older binary to reload from in the tests).
 - No itests case for these is currently red. `uc_073.py` was red until 2026-10-17 (packet-counted queue); it is green at HEAD per itests/USE_CASES.md.
 - The streams are generic in the proto (`StreamOpen.kind`), but `"ssh-agent"` is the only kind at HEAD; the SOCKS proxy does not use them (see the `socks-proxy` spec).
 - The itests case for real `ssh -A` / `git clone` is UC-078, not UC-075 (UC-075 is the clipboard).
