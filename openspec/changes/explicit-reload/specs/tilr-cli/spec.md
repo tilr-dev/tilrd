@@ -9,6 +9,22 @@
 - **WHEN** the user runs `tilr deploy user@host` and host runs Linux x86_64 without tilr
 - **THEN** `~/.local/bin/tilrd` and `tilr` on host are the release's, a tilrd runs there, and the output ends with the attach line, the forward line and the token
 
+#### Scenario: Discover and transfer the remote release
+- **WHEN** the user runs `tilr deploy <dest>`
+- **THEN** deploy uses the user's `ssh` to find the remote platform and sends the matching release archive checked on the local machine
+
+#### Scenario: Install both programs or neither
+- **WHEN** deploy installs the release into remote `~/.local/bin`
+- **THEN** it installs both `tilrd` and `tilr`, or restores both previous programs if installation fails
+
+#### Scenario: Install the remote service
+- **WHEN** the user runs `tilr deploy --service <dest>`
+- **THEN** deploy runs `tilr service install` on the remote host
+
+#### Scenario: Print connection commands
+- **WHEN** deployment succeeds
+- **THEN** deploy prints an `ssh -t <dest> '~/.local/bin/tilr'` attach line, an `ssh -N -L` forwarding line and the remote token
+
 #### Scenario: Local and remote home directories differ
 - **WHEN** the user runs the printed terminal command in a local shell whose home differs from the remote home
 - **THEN** the command preserves `~/.local/bin/tilr` for expansion by the remote shell

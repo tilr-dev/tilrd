@@ -12,3 +12,4 @@
 - [x] 3.4 Verify installer version checks precede destination creation, and align reload test references and documentation.
 - [x] 3.5 Request explicit reload after SSH deploy replaces the binaries, after committing installation.
 - [x] 3.6 Align reload request failure semantics across install, update and deploy; verify temporary-directory independence.
+- [x] 3.7 Preserve remote platform discovery, paired installation, service installation and connection command details in deploy scenarios.
