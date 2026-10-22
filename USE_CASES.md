@@ -467,6 +467,7 @@ pane process. The server's counters are at `GET /metrics`.
 
 | Use case | Test |
 |---|---|
+| A fixed test clock assigns distinct parse/build/encode durations; parse accumulates across two invisible reads and a visible read, and changing the configuration leaves encode reporting the previous frame | `frame_stage_durations_are_controlled_per_operation` |
 | Before any input `last_input_seq` = 0; frames after input with `seq` carry it, `timing` is always there, `build_us` > 0, a frame with output has `output_bytes` and `reads`; input without `seq` does not disturb the number; a `Scroll` with `seq` that moved nothing gets its own frame; a client numbering from 1 without `seq_base` works | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
 | A no-op scroll while output is accumulated: one frame carries the scroll seq and the changed output; after the final prompt, another no-op scroll gets an empty frame | `a_no_op_scroll_frame_includes_accumulated_output` |
 | Input that changed nothing on screen with no pending output (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
