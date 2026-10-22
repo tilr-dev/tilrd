@@ -84,6 +84,8 @@ Every frame SHALL carry `timing` (`FrameTiming`), in microseconds on the pane pr
 ### Requirement: What the timing fields measure
 `wait_us` SHALL be from the first pty output since the previous frame to the start of this frame's build (0 for a frame no output caused); `parse_us` feeding output into the screen model, summed; `build_us` building this frame; `encode_us` encoding and compressing the pane's previous frame (0 on its first); `output_bytes` and `reads` the pty output since the previous frame (output that changed nothing counts in the next frame) and the reads that brought it.
 
+**Verified by**: `metrics::the_timing_fields_measure_what_they_say`.
+
 #### Scenario: A frame no output caused
 - **WHEN** a frame answers a click that changed nothing
 - **THEN** its `wait_us` and `output_bytes` are 0
@@ -266,6 +268,6 @@ A client SHALL be able to measure input latency on its own clock, from sending a
 
 ## Notes
 
-- Requirements without a test: "What the timing fields measure" (only `build_us`, `output_bytes`, `reads`, and `wait_us` 0 on an empty frame are asserted). Parts without a test: the 400 for a head over 16 KiB or 10 s, the 5 s response timeout, the 503 after 5 s, the counters resetting on a reload, the `silent` and `no_pong` reasons through `/metrics` (the drops themselves are tested in `client-liveness`).
+- Parts without a test: the 400 for a head over 16 KiB or 10 s, the 5 s response timeout, the 503 after 5 s, the counters resetting on a reload, the `silent` and `no_pong` reasons through `/metrics` (the drops themselves are tested in `client-liveness`).
 - Unit tests are cited as `module::tests::name`; `metrics::tests::*` are in crates/tilrd/src/metrics.rs. Also relevant: `metrics::tests::stat_times_are_counted_from_the_name` (Linux CPU time parsing) and `supervisor::tests::metrics_without_a_token_are_for_this_machine_only` (crates/tilrd/src/supervisor.rs).
 - The "head that never ends" scenario of "Limits of a metrics request" is not tested end to end; `metrics::tests::request_head_is_parsed` checks only the parsing of a head.

@@ -140,6 +140,8 @@ When a client disconnects or its connection is cut (reset, or silent past the cl
 ### Requirement: At most 64 streams per client
 A client SHALL have at most 64 streams open at once; a program that connects while the serving client has 64 open MUST have its connection closed at once, and no `StreamOpen` is sent.
 
+**Verified by**: `agent::a_65th_stream_is_refused`.
+
 #### Scenario: The 65th connection
 - **WHEN** a client has 64 agent streams open and a program connects to a socket it would serve
 - **THEN** the program's connection is closed and the client gets no `StreamOpen`
@@ -189,7 +191,7 @@ The forwarding SHALL serve the SSH agent protocol unchanged, so that `ssh-add -l
 
 ## Notes
 
-- Requirements without a test: "At most 64 streams per client". Parts without a test: a pane started without `SSH_AUTH_SOCK` when its socket cannot be made, streams surviving their pane's exit, sockets removed on a normal stop, a dropped `StreamOpen` when the client's queue is full, a pane from a server before the per-server directories keeping `agent/<pane id>.sock` after a reload (no older binary to reload from in the tests).
+- Parts without a test: a pane started without `SSH_AUTH_SOCK` when its socket cannot be made, streams surviving their pane's exit, sockets removed on a normal stop, a dropped `StreamOpen` when the client's queue is full, a pane from a server before the per-server directories keeping `agent/<pane id>.sock` after a reload (no older binary to reload from in the tests).
 - No itests case for these is currently red. `uc_073.py` was red until 2026-10-17 (packet-counted queue); it is green at HEAD per itests/USE_CASES.md.
 - The streams are generic in the proto (`StreamOpen.kind`), but `"ssh-agent"` is the only kind at HEAD; the SOCKS proxy does not use them (see the `socks-proxy` spec).
 - The itests case for real `ssh -A` / `git clone` is UC-078, not UC-075 (UC-075 is the clipboard).
