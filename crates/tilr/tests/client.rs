@@ -661,6 +661,26 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     let mut updated_server = std::fs::read(&server_exe).unwrap();
     updated_server.push(0); // A different executable that reports the same test build version.
     let installed_client = std::fs::read(&machine.tilr).unwrap();
+    // Warm the exact release bytes before the reload observation window. A fresh
+    // Mach-O can wait for macOS launch policy before reaching main, including
+    // during the updater's staged --version checks. Keep that outside eventually.
+    let warm_dir = machine.dir.join("release-warmup");
+    std::fs::create_dir(&warm_dir).unwrap();
+    for (name, bytes) in [("tilrd", &updated_server), ("tilr", &installed_client)] {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = warm_dir.join(name);
+        std::fs::write(&executable, bytes).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(&executable)
+            .env_remove("RUST_LOG")
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "release {name} --version: {output:?}"
+        );
+    }
     let archive = release_archive(&updated_server, &installed_client);
     let cdn_dir = machine.dir.join("cdn");
     let release_name = format!("tilr-9.9.9-test-{platform}.tar.gz");
