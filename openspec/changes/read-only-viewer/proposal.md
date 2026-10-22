@@ -15,7 +15,7 @@ Checked at 1163abd: not there. One token per server (`<state>/token`, `crates/ti
 - Everything else from it is refused with `Error { message: "this connection is read-only" }` and has no effect: key, mouse, paste, raw input, `Scroll` (the view is the pane's, shared), `Resize`, `CreatePane`, `ClosePane`, `ClipboardPut`, `Fs*`, `Exec*`, `StreamData`/`StreamClose`. It is never sent `HostEvent`, agent streams or (with change `reverse-clipboard`) `ClipboardWrite`.
 - `Viewer.read_only` in `PaneInfo.viewed_by`, so other clients see who only watches.
 - Replacing the viewer token closes the read-only connections that used the old one (`Error` "the viewer token was replaced", then a normal close).
-- The Unix socket and the full token are unchanged; no PROTOCOL_VERSION bump and no feature (protocol-v3 rule): `HelloAck.read_only` and `Viewer.read_only` are new fields with a harmless default; the viewer token is not something a server can be "run without" (no file, no viewers).
+- The Unix socket and the full token are unchanged. The protocol version policy in `openspec/config.yaml` keeps version 1 without a bump before the first public release. `HelloAck.read_only` and `Viewer.read_only` are new fields with a harmless default; there is no feature because the viewer token is not something a server can be "run without" (no file, no viewers).
 
 ## Capabilities
 

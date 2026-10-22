@@ -60,3 +60,21 @@ pub fn sample(text: &str, series: &str) -> Option<f64> {
         .find_map(|line| line.strip_prefix(series)?.strip_prefix(' '))
         .map(|value| value.parse().unwrap())
 }
+
+/// Scrape `GET /metrics` every 20 ms until the sample `series` is above
+/// `floor`; fails if it is not within [`TIMEOUT`].
+pub async fn wait_sample_above(server: &Server, series: &str, floor: f64) {
+    let url = format!("/metrics?token={}", server.token());
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let (_, text) = http_get(server, &url, &[]).await;
+        if sample(&text, series).is_some_and(|value| value > floor) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{series} not above {floor} within {TIMEOUT:?}:\n{text}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

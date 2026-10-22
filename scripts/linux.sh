@@ -27,7 +27,7 @@ target="tilr-linux-target-$worktree$suffix"
 image_id=$(docker build --quiet ${platform:+--platform "$platform"} -t "$image$suffix" -f scripts/linux.Dockerfile scripts)
 
 if [ "$#" -eq 0 ]; then
-    set -- cargo test --workspace --features tilrd/failpoints --locked
+    set -- cargo nextest run --workspace --features tilrd/failpoints --locked
 fi
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi

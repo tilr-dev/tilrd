@@ -20,7 +20,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tilr_proto::{ClipboardAck, ClipboardPut};
@@ -160,7 +160,7 @@ impl Store {
     /// content (its file's inode), which [`Store::read_with_id`] gives with it
     /// for as long as nothing replaced it.
     pub fn publish(&self, mime: &str, data: &[u8], ttl: Option<Duration>) -> io::Result<u64> {
-        let expires = ttl.map_or(0, |ttl| unix_now_ms() + ttl.as_millis() as u64);
+        let expires = ttl.map_or(0, |ttl| crate::time::now_ms() + ttl.as_millis() as u64);
         let tmp = self
             .dir
             .join(format!("{CONTENT_FILE}.{}", std::process::id()));
@@ -193,7 +193,7 @@ impl Store {
         let mime = std::str::from_utf8(parts.next()?).ok()?.to_owned();
         let expires: u64 = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
         let data = parts.next()?.to_vec();
-        if expires != 0 && unix_now_ms() >= expires {
+        if expires != 0 && crate::time::now_ms() >= expires {
             return None;
         }
         Some((Content { mime, data }, id))
@@ -211,13 +211,6 @@ pub fn max_from_env() -> Option<u64> {
 fn ttl_from_env() -> Option<Duration> {
     let seconds: u64 = std::env::var(TTL_ENV).ok()?.parse().ok()?;
     (seconds > 0).then(|| Duration::from_secs(seconds))
-}
-
-/// Milliseconds since the Unix epoch.
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
 }
 
 // ---------------------------------------------------------------------------

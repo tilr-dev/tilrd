@@ -144,7 +144,6 @@ async fn a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_n
     let started = std::time::Instant::now();
     let mut silent = Client::connect_silent(&server).await;
     let mut greets = Client::connect_silent(&server).await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
     greets.hello().await;
 
     // Reading answers the server's pings, should it send any.
@@ -165,8 +164,11 @@ async fn a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_n
     );
     server.wait_logged("client sent no Hello in 10s").await;
 
-    // The one that said Hello after a second stays.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // The one that said Hello stays. Its own deadline, had the Hello not
+    // counted, would pass a few milliseconds after the silent one's (it
+    // connected right after it); half a second after that close rules it
+    // out.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(greets.list_panes().await.is_empty());
 
     // Only the silent one is counted, and as no_hello.

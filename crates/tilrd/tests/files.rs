@@ -718,6 +718,10 @@ async fn a_watched_directory_reports_what_changes_in_it() {
         .await;
     assert_eq!(ack(&mut client, 4).await, "~/watched: not watched");
     std::fs::write(dir.join("after.txt"), "x").unwrap();
+    // Rules out an FsChanged for a path no longer watched. The watcher's
+    // events come with no latency of their own (inotify; FSEvents with
+    // latency 0 in notify 8.2.0, checked 2026-10-21), so one would be on
+    // its way well within the second; the pong after it orders the rest.
     tokio::time::sleep(Duration::from_millis(1000)).await;
     client.ping(9).await;
     let after = path_of("after.txt");
