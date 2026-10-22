@@ -28,7 +28,7 @@ Idea recorded with the tilrd naming decision (2026-10-16): a user with SSH acces
 
 ## Decision (2026-10-18)
 
-`tilr deploy` installs tilrd on the remote over ssh, then prints ready commands to connect: `ssh -t <dest> ~/.local/bin/tilr` for the terminal, and `ssh -N -L 7890:127.0.0.1:7890 <dest>` plus the remote token for the app (option (a)). No new transport.
+`tilr deploy` installs tilrd on the remote over ssh, then prints ready commands to connect: `ssh -t <dest> '~/.local/bin/tilr'` for the terminal, and `ssh -N -L 7890:127.0.0.1:7890 <dest>` plus the remote token for the app (option (a)). No new transport.
 
 Cloud registration (`--cloud`) needs a separate design after Cloud is in production.
 

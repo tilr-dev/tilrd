@@ -148,7 +148,7 @@ pub fn run(args: &Args) -> Result<()> {
     } else {
         quote(&args.dest)
     };
-    println!("ssh -t {dest} ~/.local/bin/tilr");
+    println!("ssh -t {dest} '~/.local/bin/tilr'");
     println!("ssh -N -L 7890:127.0.0.1:7890 {dest}");
     println!("{token}");
     Ok(())

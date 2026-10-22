@@ -148,7 +148,7 @@ tilr edit FILE | open URL   # inside a pane: ask the clients watching it to open
 ```
 
 `tilr deploy user@host` uses your SSH config and agent to install both programs in
-`~/.local/bin` on the remote and start tilrd. It prints `ssh -t user@host ~/.local/bin/tilr`
+`~/.local/bin` on the remote and start tilrd. It prints `ssh -t user@host '~/.local/bin/tilr'`
 for a terminal, `ssh -N -L 7890:127.0.0.1:7890 user@host` for the app, and the remote
 access token. `--service` also installs the remote user's boot service. Releases
 come from `--cdn URL`, `TILR_CDN`, or `https://cdn.tilr.dev`; `--archive FILE` uses a

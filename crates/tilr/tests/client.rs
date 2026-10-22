@@ -1624,10 +1624,28 @@ fn deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect() {
     );
     let token = std::fs::read_to_string(machine.dir.join("state/token")).unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
+    let connect_bin = machine.dir.join("connect-bin");
+    std::fs::create_dir(&connect_bin).unwrap();
+    executable_script(
+        &connect_bin.join("ssh"),
+        "#!/bin/sh\n[ \"$1\" = -t ] && [ \"$2\" = user@host ] || exit 91\nprintf '%s\\n' \"$3\"\n",
+    );
+    let connect = Command::new("/bin/sh")
+        .args(["-c", stdout.lines().next().unwrap()])
+        .env("HOME", machine.dir.join("different-local-home"))
+        .env("PATH", &connect_bin)
+        .output()
+        .unwrap();
+    assert!(connect.status.success());
+    assert_eq!(
+        String::from_utf8(connect.stdout).unwrap(),
+        "~/.local/bin/tilr\n",
+        "the remote shell must expand the remote home"
+    );
     assert_eq!(
         stdout,
         format!(
-            "ssh -t user@host ~/.local/bin/tilr\nssh -N -L 7890:127.0.0.1:7890 user@host\n{}\n",
+            "ssh -t user@host '~/.local/bin/tilr'\nssh -N -L 7890:127.0.0.1:7890 user@host\n{}\n",
             token.trim()
         )
     );

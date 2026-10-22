@@ -1,13 +1,17 @@
 ## ADDED Requirements
 
 ### Requirement: tilr deploy installs and starts tilrd over SSH
-`tilr deploy [--service] [--archive FILE] [--cdn URL] <dest>` SHALL use the user's `ssh` to find the remote platform, send it the matching release archive checked on the local machine, install `tilrd` and `tilr` into the remote `~/.local/bin` both or neither, run `tilr service install` there with `--service`, start tilrd there, and print an `ssh -t <dest> ~/.local/bin/tilr` line, an `ssh -N -L` line and the remote token; any failure SHALL exit non-zero leaving the remote files as they were.
+`tilr deploy [--service] [--archive FILE] [--cdn URL] <dest>` SHALL use the user's `ssh` to find the remote platform, send it the matching release archive checked on the local machine, install `tilrd` and `tilr` into the remote `~/.local/bin` both or neither, run `tilr service install` there with `--service`, start tilrd there, and print an `ssh -t <dest> '~/.local/bin/tilr'` line, an `ssh -N -L` line and the remote token; any failure SHALL exit non-zero leaving the remote files as they were.
 
 **Verified by**: itests `UC-07C` (`uc_07c.py::deploy_installs_and_starts_tilrd_on_a_host_reached_over_ssh`, `uc_07c.py::a_failed_deploy_leaves_the_remote_as_it_was`) and `client::deploy_names_a_platform_without_a_release`, `client::deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `client::deploy_rolls_back_both_programs_when_remote_start_or_service_fails`, `client::deploy_gets_the_token_before_replacing_an_old_protocol_client`, `client::deploy_restores_service_configuration_when_the_manager_refuses_it`, `client::deploy_restores_the_crontab_after_a_service_failure` (crates/tilr/tests/client.rs).
 
 #### Scenario: A fresh host
 - **WHEN** the user runs `tilr deploy user@host` and host runs Linux x86_64 without tilr
 - **THEN** `~/.local/bin/tilrd` and `tilr` on host are the release's, a tilrd runs there, and the output ends with the attach line, the forward line and the token
+
+#### Scenario: Local and remote home directories differ
+- **WHEN** the user runs the printed terminal command in a local shell whose home differs from the remote home
+- **THEN** the command preserves `~/.local/bin/tilr` for expansion by the remote shell
 
 #### Scenario: A damaged archive
 - **WHEN** the archive given with `--archive` does not match its `.sha256`

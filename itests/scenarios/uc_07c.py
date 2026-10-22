@@ -32,7 +32,7 @@ def deployed(t: T, laptop, *args):
     result = laptop.run("tilr", "deploy", *args, "target")
     t.eq(result.code, 0, f"deploy succeeds:\n{result.text}")
     lines = result.out.strip().splitlines()
-    t.eq(lines[:2], ["ssh -t target ~/.local/bin/tilr",
+    t.eq(lines[:2], ["ssh -t target '~/.local/bin/tilr'",
                      "ssh -N -L 7890:127.0.0.1:7890 target"], "ready connection commands")
     t.ok(len(lines) == 3 and len(lines[2]) >= 32, "remote token printed")
     return lines[2]
