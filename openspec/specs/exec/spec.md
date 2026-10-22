@@ -87,7 +87,9 @@ With `stdin`, `ExecInput.data` SHALL be written to the program's stdin in order 
 - **THEN** `ExecExit` has `reason` `"input overrun"` and signal 9, and the program is gone
 
 ### Requirement: Input that is not wanted is ignored
-`ExecInput` after `eof`, for an exec started without `stdin`, or for an exec that is not the client's MUST be ignored, the exec going on. No test covers it.
+`ExecInput` after `eof`, for an exec started without `stdin`, or for an exec that is not the client's MUST be ignored, the exec going on.
+
+**Verified by**: `exec::input_that_is_not_wanted_is_ignored`.
 
 #### Scenario: Input after eof
 - **WHEN** a client sends `ExecInput` data after one with `eof`
