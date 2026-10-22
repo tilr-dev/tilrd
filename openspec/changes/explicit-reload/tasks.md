@@ -10,4 +10,5 @@
 - [x] 3.2 Adapt successor refusal, update and installer integration coverage.
 - [x] 3.3 Complete review and required checks.
 - [x] 3.4 Verify installer version checks precede destination creation, and align reload test references and documentation.
-- [x] 3.5 Request explicit reload after SSH deploy replaces the binaries, before committing installation.
+- [x] 3.5 Request explicit reload after SSH deploy replaces the binaries, after committing installation.
+- [x] 3.6 Align reload request failure semantics across install, update and deploy; verify temporary-directory independence.

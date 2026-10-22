@@ -281,10 +281,13 @@ fi
 # Do not launch a fresh daemon before a service manager can refuse the install.
 if [ -z "$token" ]; then token=$("$bin/tilr" token); fi
 [ -n "$token" ]
-# Discover by installation path, including servers on custom sockets. A request
-# failure must still restore the previous installation through cleanup.
-"$bin/tilrd" reload >&2
+# Installation and startup are complete. A request can fail after signalling
+# another supervisor, so keep the installed files even when the request fails.
 committed=1
+if ! "$bin/tilrd" reload >&2; then
+  echo 'release installed, but could not request reload' >&2
+  exit 1
+fi
 echo "installed tilr $version in ~/.local/bin" >&2
 case ":$PATH:" in
   *":$bin:"*) ;;

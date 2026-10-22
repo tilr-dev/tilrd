@@ -4,7 +4,8 @@ a program, a program in it that does not run, no release for the platform, a ver
 named whose archive is not there. Nothing of the release is installed and nothing is
 left (no temporary file in the home or in /tmp, no directory made for it), and the
 installer exits non-zero; an installation already there, and its running server, stay
-as they were.
+as they were. A reload request that fails after installation instead keeps both
+new programs, exits non-zero and reports the request failure.
 
 The installer (scripts/install.sh) downloads the archive into a directory of mktemp,
 checks and unpacks it there and runs both programs before it makes ~/.local/bin.
@@ -100,6 +101,10 @@ def a_program_that_does_not_run_installs_nothing(t: T):
     version = t.manifest()["version"]
     evidence = t.scratch("version-checks")
     evidence.chmod(0o777)
+    temporary = evidence / "custom-tmp"
+    temporary.mkdir(mode=0o777)
+    temporary.chmod(0o777)
+    env["TMPDIR"] = str(temporary)
     env["TILR_BIN_DIR"] = str(user.home / ".local/bin")
     programs = {}
     for name, status in (("tilrd", 0), ("tilr", 1)):
@@ -121,7 +126,7 @@ def a_program_that_does_not_run_installs_nothing(t: T):
         path = Path(called)
         t.eq(path.name, name, "the unpacked program is checked")
         t.eq(path.parent.name, "release", "checked in the temporary release directory")
-        t.ok(path.is_relative_to("/tmp"), "checked under mktemp's temporary directory")
+        t.ok(path.is_relative_to(temporary), "checked under the configured TMPDIR")
         t.eq((argument, destination), ("--version", "absent"), "checked before making the install directory")
         directories.append(path.parent)
     t.eq(directories[0], directories[1], "both programs checked in the same temporary directory")
@@ -179,3 +184,31 @@ def a_broken_update_leaves_the_installation_and_its_server_alone(t: T):
     t.eq(changes(before, snapshot(user.home, skip=(".local/state",))), [], "what changed in the home")
     t.eq([d.pid for d in t.tilrd_daemons()], [daemon.pid], "the same server")
     t.has(user.run(str(bin / "tilr"), "version").out, f"tilr {m['version']}", f"tilrd {m['version']}")
+
+
+@case(spec=["installation/a-failed-reload-request-keeps-the-installed-release"])
+def a_failed_reload_request_keeps_the_installed_release(t: T):
+    """UC-004: after installation, a refused reload request keeps both new files."""
+    user, cdn, url, env = setup(t)
+    evidence = t.scratch("reload-request")
+    temporary = t.scratch("reload-tmp")
+    temporary.chmod(0o777)
+    env["TMPDIR"] = str(temporary)
+    server = evidence / "tilrd"
+    client = evidence / "tilr"
+    server.write_text('#!/bin/sh\ncase "$1" in --version) echo "tilrd release";; reload) exit 1;; esac\n')
+    client.write_text('#!/bin/sh\necho "tilr release"\n')
+    for program in (server, client):
+        program.chmod(0o755)
+    version = t.manifest()["version"]
+    cdn.publish(version, server=server, client=client)
+    r = user.sh(f"curl -fsSL {url} | sh", env=env)
+    t.ok(r.code != 0, "reload request failure exits nonzero")
+    t.has(r.err, f"installed tilr {version}, but could not request reload")
+    t.ok("the running tilrd reloads itself" not in r.err, "no reload success reported")
+    installed = user.home / ".local/bin"
+    for program in (server, client):
+        t.eq((installed / program.name).read_bytes(), program.read_bytes(), "new program retained")
+    t.eq(sorted(p.name for p in installed.iterdir()), ["tilr", "tilrd"], "no staging files")
+    t.eq(list(temporary.iterdir()), [], "temporary download directory removed")
+    t.eq(t.tilrd_daemons(), [], "no server started")

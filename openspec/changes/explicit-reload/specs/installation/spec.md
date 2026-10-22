@@ -9,3 +9,14 @@ Run with a new release, the installer SHALL rename the new `tilr` into place fir
 - **WHEN** a newer release is published and the installer runs
 - **THEN** stderr says `downloading tilr <new version>` and `the running tilrd reloads itself and keeps its shells`, both executables report the new version, and the server pid, panes, `$KEPT`, `$$` and background job are the same
 
+
+## ADDED Requirements
+
+### Requirement: A failed reload request keeps the installed release
+After both programs are installed, a reload request failure SHALL leave the new programs installed, exit non-zero and report that installation succeeded but reload could not be requested. It SHALL NOT report reload success. Some servers may already have received the request.
+
+**Verified by**: itests `UC-004` (`uc_004.py::a_failed_reload_request_keeps_the_installed_release`).
+
+#### Scenario: Request cannot be sent
+- **WHEN** installation succeeds but the subsequent reload request fails
+- **THEN** both new programs remain installed, temporary files are removed, and the command exits non-zero with an explicit reload request error

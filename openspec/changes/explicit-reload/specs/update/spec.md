@@ -17,3 +17,14 @@ The update SHALL rename the staged client into place first and the server last, 
 ## Purpose
 
 Covers release discovery, verification and atomic installation by `tilrd update` / `tilr update`, followed by an explicit request to reload a running server. Reload handover is specified by `reload`.
+
+## ADDED Requirements
+
+### Requirement: A failed reload request keeps the installed release
+After both programs are installed, a reload request failure SHALL leave the new programs installed, exit non-zero and report that installation succeeded but reload could not be requested. It SHALL NOT report reload success. Some servers may already have received the request.
+
+**Verified by**: `update::a_failed_reload_request_keeps_the_installed_release`.
+
+#### Scenario: Request cannot be sent
+- **WHEN** installation succeeds but the subsequent reload request fails
+- **THEN** both new programs remain installed, temporary files are removed, and the command exits non-zero with an explicit reload request error

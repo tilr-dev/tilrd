@@ -5,8 +5,9 @@
 # Puts tilrd (the tilr server) and tilr (its client, the command you type) into
 # ~/.local/bin. A release is one archive with both, which is downloaded into a
 # temporary directory, checked against its checksum and unpacked there; both
-# programs must run before either is put in place. Anything that fails leaves
-# the installation as it was (or none at all) and exits non-zero.
+# programs must run before either is put in place. Failures before installation
+# leave it as it was (or none at all) and exit non-zero. A reload request failure
+# also exits non-zero but keeps both installed programs and reports the failure.
 #
 # Run it again to update: both are replaced, then an explicit reload request
 # tells a running server to use the new executable and keep every shell.

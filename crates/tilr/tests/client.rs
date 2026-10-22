@@ -1805,7 +1805,7 @@ fn deploy_reloads_a_server_on_a_custom_socket() {
 }
 
 #[test]
-fn deploy_requests_reload_without_a_default_server_and_rolls_back_a_refused_request() {
+fn deploy_requests_reload_without_a_default_server_and_keeps_a_refused_installation() {
     for succeeds in [false, true] {
         let machine = Machine::new();
         let bin = deploy_ssh(&machine, deploy_uname());
@@ -1832,20 +1832,18 @@ fn deploy_requests_reload_without_a_default_server_and_rolls_back_a_refused_requ
             .unwrap();
         assert!(machine.dir.join("reload.called").exists(), "{output:?}");
         assert_eq!(output.status.success(), succeeds, "{output:?}");
+        assert_eq!(
+            std::fs::read(installed.join("tilrd")).unwrap(),
+            server.as_bytes()
+        );
+        assert_eq!(std::fs::read(installed.join("tilr")).unwrap(), client);
         if succeeds {
-            assert_eq!(
-                std::fs::read(installed.join("tilrd")).unwrap(),
-                server.as_bytes()
-            );
             assert!(String::from_utf8_lossy(&output.stdout).ends_with("persistent-token\n"));
         } else {
-            assert_eq!(
-                std::fs::read(installed.join("tilrd")).unwrap(),
-                b"old server"
-            );
-            assert_eq!(
-                std::fs::read(installed.join("tilr")).unwrap(),
-                b"#!/bin/sh\nexit 1\n"
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("release installed, but could not request reload"),
+                "{output:?}"
             );
             assert!(output.stdout.is_empty());
         }

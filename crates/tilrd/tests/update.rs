@@ -465,3 +465,34 @@ fn fetch_release_refuses_a_bad_checksum() {
     assert!(!out.exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_failed_reload_request_keeps_the_installed_release() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let cdn = Server::scratch_dir();
+    let archive = release(STUB);
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
+    let url = serve_files(cdn.clone());
+    let empty_path = Server::scratch_dir();
+    // macOS discovery cannot start ps, so the request fails before signalling.
+    let output = Command::new(&exe)
+        .args(["update", "--cdn", &url])
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("release installed, but could not request reload"),
+        "{output:?}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("a running server reloads itself"));
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
+    assert_eq!(files_in(&dir), ["tilr", "tilrd"]);
+    for path in [dir, cdn, empty_path] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

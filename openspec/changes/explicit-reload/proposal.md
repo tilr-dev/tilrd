@@ -8,7 +8,8 @@ Replacing the installed executable must not implicitly restart a running server.
 - Request reload explicitly after update or installation replaces the programs.
 - Keep successor compatibility and resume checks, installed-path exec and live pane handover.
 - Remove the superseded checked-file reload proposal.
+- Keep completed installations on reload request failure, exit non-zero and report the failure consistently across installer, update and SSH deploy.
 
 ## Impact
-- Reload, update and installation specifications.
+- Reload, update, installation and CLI specifications.
 - Supervisor startup, update, installer, SSH deploy and their integration tests.

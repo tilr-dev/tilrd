@@ -37,6 +37,8 @@ Replacing the installed executable SHALL NOT trigger a reload. Only an explicit 
 ### Requirement: Reload checks and executes the installation path
 The supervisor SHALL check the executable at its installation path and exec that same path. Replacement between check and exec is an accepted risk, without locks, pinned descriptors or private copies.
 
+**Verified by**: `reload::a_second_atomic_replacement_before_exec_keeps_the_shells`.
+
 #### Scenario: Replacement between check and exec
 - **WHEN** another atomic replacement occurs after the successor checks and before exec
 - **THEN** the server executes the file now at the installation path, which may differ from the checked file
