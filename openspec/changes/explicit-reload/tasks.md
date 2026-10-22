@@ -10,3 +10,4 @@
 - [x] 3.2 Adapt successor refusal, update and installer integration coverage.
 - [x] 3.3 Complete review and required checks.
 - [x] 3.4 Verify installer version checks precede destination creation, and align reload test references and documentation.
+- [x] 3.5 Request explicit reload after SSH deploy commits an existing server installation.

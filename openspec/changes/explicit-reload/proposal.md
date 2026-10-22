@@ -11,4 +11,4 @@ Replacing the installed executable must not implicitly restart a running server.
 
 ## Impact
 - Reload, update and installation specifications.
-- Supervisor startup, update, installer and their integration tests.
+- Supervisor startup, update, installer, SSH deploy and their integration tests.

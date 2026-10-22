@@ -235,11 +235,13 @@ version=$("$tmp/release/tilr" --version)
 version=${version#* }
 version=${version%% *}
 token=
+reload=
 # The installed client speaks the running server's protocol. The persistent
-# token survives reload, so no new-client handshake races the executable watcher.
+# token survives the explicit reload requested after committing installation.
 if [ -x "$bin/tilr" ] && "$bin/tilr" ls --quiet >/dev/null 2>&1; then
   token=$("$bin/tilr" token)
   [ -n "$token" ]
+  reload=1
 fi
 swapped=1
 mv -f "$tmp/release/tilr" "$bin/tilr"
@@ -282,6 +284,7 @@ fi
 if [ -z "$token" ]; then token=$("$bin/tilr" token); fi
 [ -n "$token" ]
 committed=1
+if [ -n "$reload" ]; then "$bin/tilrd" reload; fi
 echo "installed tilr $version in ~/.local/bin" >&2
 case ":$PATH:" in
   *":$bin:"*) ;;

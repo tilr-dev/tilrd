@@ -20,7 +20,7 @@ Replacing the installed executable SHALL NOT trigger a reload. Only an explicit 
 ### Requirement: Installation requests reload explicitly
 `tilrd reload` SHALL send `SIGUSR1` only to this user's supervisors running from that installation path, excluding pane and command processes and other installations. It SHALL exit successfully without starting a server when none is running. Update and installation SHALL use this explicit request after the atomic rename.
 
-**Verified by**: `reload::an_explicit_request_selects_only_its_installation_without_a_socket`, `reload::an_explicit_request_with_no_server_starts_nothing`; itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`).
+**Verified by**: `reload::an_explicit_request_selects_only_its_installation_without_a_socket`, `reload::an_explicit_request_with_no_server_starts_nothing`; itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`), `UC-07C` (`uc_07c.py::deploy_installs_and_starts_tilrd_on_a_host_reached_over_ssh`).
 
 #### Scenario: Select the installed server
 - **WHEN** servers from two installation paths are running and `tilrd reload` runs from one installation
@@ -29,6 +29,10 @@ Replacing the installed executable SHALL NOT trigger a reload. Only an explicit 
 #### Scenario: No running server
 - **WHEN** `tilrd reload` runs with no supervisor from its installation
 - **THEN** it exits 0 and starts no server
+
+#### Scenario: Deploy over SSH
+- **WHEN** `tilr deploy` replaces an existing server installation over SSH
+- **THEN** it explicitly requests reload after committing the installation, and the running server keeps its shells and their state
 
 ### Requirement: Reload checks and executes the installation path
 The supervisor SHALL check the executable at its installation path and exec that same path. Replacement between check and exec is an accepted risk, without locks, pinned descriptors or private copies.
