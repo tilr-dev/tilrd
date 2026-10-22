@@ -87,7 +87,9 @@ With `stdin`, `ExecInput.data` SHALL be written to the program's stdin in order 
 - **THEN** `ExecExit` has `reason` `"input overrun"` and signal 9, and the program is gone
 
 ### Requirement: Input that is not wanted is ignored
-`ExecInput` after `eof`, for an exec started without `stdin`, or for an exec that is not the client's MUST be ignored, the exec going on. No test covers it.
+`ExecInput` after `eof`, for an exec started without `stdin`, or for an exec that is not the client's MUST be ignored, the exec going on.
+
+**Verified by**: `exec::input_that_is_not_wanted_is_ignored`.
 
 #### Scenario: Input after eof
 - **WHEN** a client sends `ExecInput` data after one with `eof`
@@ -197,6 +199,6 @@ An `ExecStart` with `server_command` SHALL run the server's own executable with 
 
 ## Notes
 
-- Requirements without a test: Input that is not wanted is ignored. Untested details inside other requirements: the 64-exec-per-client refusal, `reason` `"shutdown"` on a server stop, `PR_SET_PDEATHSIG`, and ignoring a signal for an exec that is not the client's.
+- Untested details inside requirements: the 64-exec-per-client refusal, `reason` `"shutdown"` on a server stop, `PR_SET_PDEATHSIG`, and ignoring a signal for an exec that is not the client's.
 - UC-077 was red before 2026-10-17 (no Exec) and passes at HEAD per itests/USE_CASES.md; no case cited here is currently failing.
 - Unit tests in `crates/tilrd/src/*.rs` are cited as `module::tests::name` with their file.

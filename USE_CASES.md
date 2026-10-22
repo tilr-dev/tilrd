@@ -33,6 +33,7 @@ real Linux containers with the same FIFO barrier.
 
 | Use case | Test |
 |---|---|
+| A pane whose command does not exist reports a create-pane error only to its creator, stays out of pane lists and allows another creation | `a_pane_whose_command_cannot_start_is_reported_to_its_creator` |
 | A bell reaches greeted clients that do not watch the pane | `a_bell_in_an_unwatched_pane_is_reported` |
 | Bells within a second are dropped, and the next second permits a bell | `bells_are_reported_once_a_second` (`failpoints`) |
 | BEL ending an OSC title sequence is not reported as activity | `a_bel_ending_an_osc_is_not_reported` |
@@ -312,6 +313,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| Startup and reload sweep state files and temporary state files older than one hour, preserving recent files and unrelated old files | `stale_state_files_are_swept_at_start` |
 | Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
@@ -406,6 +408,7 @@ through the server's socket.
 
 | Use case | Test |
 |---|---|
+| The Unix socket refuses the SOCKS WebSocket path with HTTP 404 both with the proxy enabled and disabled; TCP still serves SOCKS when enabled | `the_socks_path_is_not_served_on_the_unix_socket` |
 | A page over the WebSocket `/socks` with the token in `Authorization: Bearer` reaches a service on the server's loopback (IPv4), there and back, more than one message included | `a_page_reaches_a_loopback_service_through_the_socks_websocket` |
 | The token in `?token=`; the name `localhost` is resolved on the server | `a_page_that_cannot_set_headers_gives_the_token_in_the_query` |
 | `pb.localhost`, `nonexistent.LocalHost`: the server's loopback, no DNS | `any_name_under_localhost_is_the_servers_loopback` |
@@ -428,6 +431,7 @@ client's side in a `StreamOpen` / `StreamData` / `StreamClose` stream.
 
 | Use case | Test |
 |---|---|
+| With 64 agent streams open, a 65th socket closes without a StreamOpen; freeing one slot restores forwarding | `a_65th_stream_is_refused` |
 | The server announces the `agent` feature; with `--no-agent` and `agent = false` it does not, there is no socket, `SSH_AUTH_SOCK` in the pane is empty | `the_agent_is_forwarded_unless_turned_off` |
 | In a pane `SSH_AUTH_SOCK` points at its own socket (`agent/<pid>/<pane>.sock`, 0600, directory 0700); every pane has its own; the pane closed: no socket | `a_pane_has_ssh_auth_sock_pointing_at_its_own_socket` |
 | A program connected: the client gets `StreamOpen` (`ssh-agent`, the pane); bytes go both ways, more than one message too; the program closed: `StreamClose`; the client closed: the program reads what was sent and gets the end; data for a closed or foreign stream is ignored | `a_program_talks_to_the_agent_of_the_client_through_the_panes_socket` |
@@ -448,6 +452,7 @@ nothing in the group outlives the exec.
 
 | Use case | Test |
 |---|---|
+| Input after EOF, without stdin enabled, or from another client is ignored while the exec continues and the owner can still supply input | `input_that_is_not_wanted_is_ignored` |
 | The server announces the `exec` feature; with `--no-exec` and `exec = false` it does not, `ExecStart` is answered with `ExecStarted` `exec_id` 0 and error `exec is turned off`, the connection is alive | `exec_is_offered_unless_turned_off` |
 | stdout and stderr apart, the exit code; arguments as given (`$HOME`, `*`, `` `id` ``, a space are not expanded); the directory and the environment, without a directory the home one; without stdin the program reads the end; no program, an empty `argv`, no directory, an environment entry that is not `NAME=value`: refused in `ExecStarted.error`; the start, the end and the refusal are logged | `a_program_runs_without_a_shell_and_its_outputs_come_apart` |
 | An exec does not get the service manager's variables (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*`) the server was started with; its own `env` may still set them | `an_exec_does_not_get_the_service_managers_variables` |
@@ -474,6 +479,7 @@ pane process. The server's counters are at `GET /metrics`.
 
 | Use case | Test |
 |---|---|
+| Exact controlled durations distinguish parse, build and previous-frame encode; invisible output accumulates reads, bytes and wait time, while ignored clicks have zero output and wait | `the_timing_fields_measure_what_they_say` (`failpoints`) |
 | A fixed test clock assigns distinct parse/build/encode durations; parse accumulates across two invisible reads and a visible read, and changing the configuration leaves encode reporting the previous frame | `frame_stage_durations_are_controlled_per_operation` |
 | Before any input `last_input_seq` = 0; frames after input with `seq` carry it, `timing` is always there, `build_us` > 0, a frame with output has `output_bytes` and `reads`; input without `seq` does not disturb the number; a `Scroll` with `seq` that moved nothing gets its own frame; a client numbering from 1 without `seq_base` works | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
 | A no-op scroll while output is accumulated: one frame carries the scroll seq and the changed output; after the final prompt, another no-op scroll gets an empty frame | `a_no_op_scroll_frame_includes_accumulated_output` |

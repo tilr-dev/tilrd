@@ -23,6 +23,8 @@ On `CreatePane` the server SHALL start a pane of `cols` x `rows` cells (each cla
 ### Requirement: A pane that cannot start is reported to its creator
 When a pane cannot be started (its process cannot be spawned, its program cannot be run, or its process dies during startup) the asking client SHALL get an `Error` whose message starts with `create pane: `, and no pane SHALL be listed for the request.
 
+**Verified by**: `panes::a_pane_whose_command_cannot_start_is_reported_to_its_creator`.
+
 #### Scenario: A program that does not exist
 - **WHEN** a client sends `CreatePane` with `command` `["/no/such/program"]`
 - **THEN** it gets an `Error` starting with `create pane: ` and no `PaneCreated`
@@ -156,6 +158,8 @@ The server SHALL push a `PaneList` with `request_id` 0 to every client that has 
 
 ### Requirement: When a pane was used last
 `PaneInfo.used_at_ms` SHALL be the Unix time in milliseconds when a client last subscribed to the pane or sent it key, mouse, paste, raw or scroll input, and `created_at_ms` until then. A change of `used_at_ms` alone SHALL NOT push a `PaneList`.
+
+**Verified by**: `panes::used_at_ms_follows_subscribe_and_input`.
 
 #### Scenario: Input marks the pane used
 - **WHEN** a client sends `KeyInput` to a pane and then sends `ListPanes`
@@ -423,6 +427,6 @@ When a numbered Resize is applied while earlier numbered input is still waiting 
 
 ## Notes
 
-- Requirements without a test: "A pane that cannot start is reported to its creator", "When a pane was used last" (`used_at_ms` is read by `tilr`'s choice of pane, see `tilr-cli`, but no test asserts it). Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
+- Parts without a test: the -1 exit code cases, the `XPC_*` removal, `COLORTERM=truecolor`, the 1..65535 clamp, the `tilrd ps` 5 s timeout, the fallback to a fresh server id.
 - Unit tests are cited as `module::tests::name` with their source file.
 - UC-082 (a 65535 x 65535 `Resize` is clamped to 1..65535, the pane lives) is a planned itests case without a scenario. Stopping the server, and what it ends in a pane (UC-086), is in `daemon-lifecycle`.

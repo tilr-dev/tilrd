@@ -1128,3 +1128,47 @@ async fn a_nohup_background_job_is_left_when_the_server_stops() {
         "a nohup job outlives the server, as a hangup leaves it"
     );
 }
+
+#[tokio::test]
+async fn a_pane_whose_command_cannot_start_is_reported_to_its_creator() {
+    let server = Server::start(&[]);
+    let mut creator = Client::connect(&server).await;
+    let mut observer = Client::connect(&server).await;
+    creator.hello().await;
+    observer.hello().await;
+    let missing = server.dir.join("no-such-program");
+    creator
+        .send(Msg::CreatePane(CreatePane {
+            command: vec![missing.to_str().unwrap().into()],
+            cols: 100,
+            rows: 30,
+            request_id: 71,
+            ..Default::default()
+        }))
+        .await;
+    let error = creator
+        .wait_for(|msg| match msg {
+            server_message::Msg::Error(error) => Some(error.message.clone()),
+            server_message::Msg::PaneCreated(_) => panic!("failed pane was created"),
+            _ => None,
+        })
+        .await;
+    assert!(error.starts_with("create pane: "), "{error}");
+    for client in [&mut creator, &mut observer] {
+        client.ping(72).await;
+        client
+            .wait_for(|msg| match msg {
+                server_message::Msg::Pong(pong) if pong.nonce == 72 => Some(()),
+                server_message::Msg::Error(_)
+                | server_message::Msg::PaneCreated(_)
+                | server_message::Msg::PaneExited(_) => {
+                    panic!("unexpected startup notification: {msg:?}")
+                }
+                _ => None,
+            })
+            .await;
+        assert!(client.list_panes().await.is_empty());
+    }
+    creator.open_pane().await;
+    assert_eq!(creator.list_panes().await.len(), 1);
+}
