@@ -54,3 +54,8 @@ After the trusted workflow is released to main and the dev ruleset is activated,
 #### Scenario: A foreign change is rewritten while archived
 - **WHEN** a foreign change is archived with altered file contents
 - **THEN** both archive and edit authorization are required for that change
+
+#### Scenario: Text is inserted into an existing requirement
+- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in dev
+- **THEN** matching modify authorization for that existing requirement is required
+- **AND** adding a separate new requirement remains allowed without authorization
