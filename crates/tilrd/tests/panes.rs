@@ -578,11 +578,13 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
     assert_eq!(panes[0].pane_id, pane_id.to_string());
     assert_eq!(
         args(&panes[0]),
-        format!("--id {pane_id} --cwd {home} -- /bin/sh")
+        format!("--id {pane_id} --cwd {home} -- /bin/sh -c PS1='$ ' exec /bin/sh")
     );
     assert_eq!(
         args(&panes[1]),
-        format!("--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh")
+        format!(
+            "--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh -c PS1='$ ' exec /bin/sh"
+        )
     );
 }
 
