@@ -83,7 +83,7 @@ async fn bells_are_reported_once_a_second() {
         &[],
         &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
     );
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let command = script(
         &server,
         "bells.sh",
@@ -124,7 +124,7 @@ async fn bells_are_reported_once_a_second() {
 #[tokio::test]
 async fn a_finished_foreground_command_is_reported() {
     let server = Server::start(&[]);
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let command = script(
         &server,
         "foreground.sh",
@@ -578,11 +578,13 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
     assert_eq!(panes[0].pane_id, pane_id.to_string());
     assert_eq!(
         args(&panes[0]),
-        format!("--id {pane_id} --cwd {home} -- /bin/sh")
+        format!("--id {pane_id} --cwd {home} -- /bin/sh -c PS1='$ ' exec /bin/sh")
     );
     assert_eq!(
         args(&panes[1]),
-        format!("--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh")
+        format!(
+            "--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh -c PS1='$ ' exec /bin/sh"
+        )
     );
 }
 

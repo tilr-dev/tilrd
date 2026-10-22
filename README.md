@@ -1118,6 +1118,13 @@ cover — connecting, the Unix socket, the client, reconnecting, scrolling, relo
 updating, the clipboard, files, the SOCKS proxy, the SSH agent, exec, metrics — and what is
 not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
 
+The shared `open_pane` and `open_pane_with` helpers wait for the isolated shell's
+first `$ ` prompt before returning, so a first command's PTY echo cannot precede
+shell startup and leave its output prefixed by that prompt. Tests that deliberately
+exercise input before startup use `pane_before_shell_prompt` and explicitly release
+its FIFO; custom-command panes keep their own readiness protocol. Independent
+startup and output gates use named `activity_fifo` paths.
+
 Integration test servers use an internal ownership connection
 (`TILR_TEST_OWNER_SOCKET`) independent of their command socket. The harness registers
 a process exit watcher before acknowledging startup. Closing ownership, including

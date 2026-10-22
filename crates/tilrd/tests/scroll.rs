@@ -224,7 +224,7 @@ async fn a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload(
 async fn output_arriving_while_scrolled_back_does_not_move_the_view() {
     let server = Server::start(&[]);
     let (mut client, pane_id) = pane_with_history(&server).await;
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     // The title the command sets after its output comes in a frame even
     // while the view is scrolled back: by then the pane has the output.
     client

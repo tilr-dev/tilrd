@@ -105,7 +105,7 @@ impl TimedPane {
             ],
         );
         let controller = PauseController::bind(&server.dir);
-        let (fifo, release) = activity_fifo(&server);
+        let (fifo, release) = activity_fifo(&server, "activity-release");
         let command = command(&fifo);
         let (mut client, base) = connect_with_base(&server).await;
         client
@@ -536,7 +536,7 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     );
     let (mut client, base) = connect_with_base(&server).await;
     let pane_id = client.open_pane().await;
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     send_with_seq(
         &mut client,
         raw(

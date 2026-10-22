@@ -818,7 +818,7 @@ impl Client {
         .await
     }
 
-    /// Start a shell in a new pane and watch it.
+    /// Start a shell in a new pane and watch it, waiting for its first prompt.
     pub async fn open_pane(&mut self) -> PaneId {
         self.open_pane_with(100, 30, "").await
     }
@@ -827,7 +827,12 @@ impl Client {
         self.send(Msg::CreatePane(CreatePane {
             cols,
             rows,
-            command: vec!["/bin/sh".into()],
+            // An intermediate shell (e.g. the hangup fixture) may reset PS1.
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "PS1='$ ' exec /bin/sh".into(),
+            ],
             cwd: cwd.into(),
             request_id: 5,
         }))
@@ -842,7 +847,31 @@ impl Client {
             })
             .await;
         self.subscribe(pane_id).await;
+        self.wait_shell_prompt(pane_id).await;
         pane_id
+    }
+
+    /// Await the isolated shell's first prompt on this pane's frame stream.
+    pub async fn wait_shell_prompt(&mut self, pane_id: PaneId) {
+        // Creation and PTY echo do not prove startup. Only this pane's prompt
+        // counts: frames from earlier subscribed panes can still arrive.
+        self.wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame)
+                if frame.pane_id == pane_id.to_string()
+                    && frame.changed.iter().any(|row| {
+                        row.runs
+                            .iter()
+                            .map(|run| run.text.as_str())
+                            .collect::<String>()
+                            .trim_end()
+                            == "$"
+                    }) =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
     }
 
     pub async fn subscribe(&mut self, pane_id: PaneId) {
@@ -1044,10 +1073,51 @@ pub fn script(server: &Server, name: &str, script: &str) -> String {
     format!("sh '{}'", path.display())
 }
 
+/// Return a subscribed pane whose first shell prompt is held behind a FIFO.
+pub async fn pane_before_shell_prompt(
+    server: &Server,
+    client: &mut Client,
+    cols: u32,
+    rows: u32,
+) -> (PaneId, std::fs::File) {
+    // PTY echo can precede the shell's first prompt. Disable line editing so
+    // the shell consumes that queued line without redrawing it after the prompt.
+    let (startup_fifo, release) = activity_fifo(server, "shell-startup-release");
+    let startup = server.dir.join("shell-startup");
+    std::fs::write(&startup, "set +o emacs; set +o vi\n").unwrap();
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols,
+            rows,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "read -r release < '{}'; PS1='startup> ' ENV='{}' exec /bin/sh",
+                    startup_fifo.display(),
+                    startup.display()
+                ),
+            ],
+            request_id: 83,
+            ..Default::default()
+        }))
+        .await;
+    let pane = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(p) if p.request_id == 83 => {
+                Some(p.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane).await;
+    (pane, release)
+}
+
 /// A FIFO kept open at both ends so sending a short release never waits for
 /// a reader. The command under test still blocks until we write a line.
-pub fn activity_fifo(server: &Server) -> (PathBuf, std::fs::File) {
-    let fifo = server.dir.join("activity-release");
+pub fn activity_fifo(server: &Server, name: &str) -> (PathBuf, std::fs::File) {
+    let fifo = server.dir.join(name);
     assert!(
         Command::new("mkfifo")
             .arg(&fifo)
