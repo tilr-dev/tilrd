@@ -93,7 +93,7 @@ async fn frame_stage_durations_are_controlled_per_operation() {
         ],
     );
     let controller = PauseController::bind(&server.dir);
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     let command = format!(
         "stty -echo; read -r go < '{0}'; printf stage-ready; \
          read -r go < '{0}'; printf '\\033[0m'; \
@@ -477,7 +477,7 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     );
     let (mut client, base) = connect_with_base(&server).await;
     let pane_id = client.open_pane().await;
-    let (fifo, mut release) = activity_fifo(&server);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     send_with_seq(
         &mut client,
         raw(
