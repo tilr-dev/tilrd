@@ -193,7 +193,15 @@ impl Attach<'_> {
         let mut retry = RETRY_FIRST;
         let mut attempts = 0u32;
         let mut next_attempt = Instant::now();
+        let mut finishing = false;
         loop {
+            if finishing && delivery.pending().next().is_none() {
+                if let Some(live) = &mut conn {
+                    live.send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+                        .await?;
+                }
+                return Ok(Exit::Detached);
+            }
             let Some(live) = &mut conn else {
                 // Retain input while connecting; the detach prefix remains available.
                 let (target, client_id, pane_id) = (self.target, self.client_id, self.pane_id);
@@ -203,12 +211,15 @@ impl Attach<'_> {
                     reconnect(target, client_id, pane_id).await
                 });
                 let outcome = loop {
+                    if finishing && delivery.pending().next().is_none() {
+                        return Ok(Exit::Detached);
+                    }
                     tokio::select! {
                         outcome = &mut pending => break outcome,
-                        event = input.next() => {
-                            let Some(event) = event else { return Ok(Exit::Detached) };
+                        event = input.next(), if !finishing => {
+                            let Some(event) = event else { finishing = true; continue };
                             match self.input_event(event?) {
-                                Keyed::Detach => return Ok(Exit::Detached),
+                                Keyed::Detach => finishing = true,
                                 Keyed::Send(msg) => {
                                     if let Err(err) = delivery.push(msg.into()) { status(err)?; }
                                 }
@@ -291,10 +302,10 @@ impl Attach<'_> {
                     Err(err) if superseded(&err) => return Ok(Exit::Superseded),
                     Err(err) => Some(err.to_string()),
                 },
-                event = input.next() => {
-                    let Some(event) = event else { return Ok(Exit::Detached) };
+                event = input.next(), if !finishing => {
+                    let Some(event) = event else { finishing = true; continue };
                     match self.input_event(event?) {
-                        Keyed::Detach => return Ok(Exit::Detached),
+                        Keyed::Detach => { finishing = true; None },
                         Keyed::Send(msg) => match delivery.push(msg.into()) {
                             Ok(message) => live.send_message(message).await.err().map(|err| err.to_string()),
                             Err(err) => { status(err)?; None }

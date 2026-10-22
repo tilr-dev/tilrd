@@ -1168,6 +1168,7 @@ struct FakeServer {
     /// The text of the keys it was sent.
     keys: std::sync::mpsc::Receiver<String>,
     subscriptions: std::sync::mpsc::Receiver<(usize, u32, u32)>,
+    finalized: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeServer {
@@ -1177,6 +1178,7 @@ impl FakeServer {
         let accepted = std::sync::Arc::new(AtomicU32::new(0));
         let (key_tx, keys) = std::sync::mpsc::channel();
         let (size_tx, subscriptions) = std::sync::mpsc::channel();
+        let (finalize_tx, finalized) = std::sync::mpsc::channel();
         let counter = accepted.clone();
         std::thread::spawn(move || {
             for (n, stream) in listener.incoming().enumerate() {
@@ -1185,7 +1187,10 @@ impl FakeServer {
                 counter.fetch_add(1, Ordering::SeqCst);
                 let keys = key_tx.clone();
                 let sizes = size_tx.clone();
-                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys, &sizes));
+                let finalized = finalize_tx.clone();
+                std::thread::spawn(move || {
+                    fake_connection(stream, serve, n + 1, &keys, &sizes, &finalized)
+                });
             }
         });
         Self {
@@ -1193,6 +1198,7 @@ impl FakeServer {
             accepted,
             keys,
             subscriptions,
+            finalized,
         }
     }
 
@@ -1207,6 +1213,7 @@ fn fake_connection(
     number: usize,
     keys: &std::sync::mpsc::Sender<String>,
     sizes: &std::sync::mpsc::Sender<(usize, u32, u32)>,
+    finalized: &std::sync::mpsc::Sender<()>,
 ) {
     use tilr_proto::{
         ClientMessage, Frame, HelloAck, PaneInfo, PaneList, Row, Run, ServerMessage,
@@ -1262,9 +1269,23 @@ fn fake_connection(
                     request_id: list.request_id,
                 }),
             ),
+            client_message::Msg::FinalizeInput(_) => {
+                let _ = finalized.send(());
+                Ok(())
+            }
             client_message::Msg::Resize(size) => {
                 (cols, rows) = (size.cols, size.rows);
-                Ok(())
+                if input_seq != 0 {
+                    send(
+                        &mut ws,
+                        server_message::Msg::InputAck(tilr_proto::InputAck {
+                            pane_id: size.pane_id,
+                            seq: input_seq,
+                        }),
+                    )
+                } else {
+                    Ok(())
+                }
             }
             client_message::Msg::Subscribe(_) => {
                 let _ = sizes.send((number, cols, rows));
@@ -1328,6 +1349,25 @@ fn attach_to_fake(machine: &Machine, server: &FakeServer) -> Terminal {
     let mut terminal = Terminal::spawn(command);
     terminal.expect("fake screen 1");
     terminal
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[test]
+fn normal_detach_finalizes_its_acknowledged_input() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x\x1dd");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    server
+        .finalized
+        .recv_timeout(Duration::from_secs(15))
+        .expect("detach did not finalize its input session");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 #[test]

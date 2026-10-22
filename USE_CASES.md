@@ -109,11 +109,18 @@ real Linux containers with the same FIFO barrier.
 | Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
 | All six numbered input variants naming an absent UUID or malformed pane name receive an error and terminal acknowledgement; lost acknowledgements are repeated after reconnect, reclaiming entries without discarding another pane's pending input, while unnumbered input and controls receive only errors | `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect` |
 | A pane held before its Hello probe is killed; concurrent handshakes retain healthy counters and input applies once | `input_delivery::a_stuck_pane_does_not_block_other_panes_hello` |
+| Completed identities finalize and lose their counters, refusing further numbered input on the old connection | `finalized_sessions_do_not_accumulate_delivery_history` |
+| Expired disconnected sessions lose counters; active sessions retain them | `expired_sessions_are_removed_but_active_sessions_are_retained` |
+| Internal cleanup fields cannot be forged at client ingress | `clients_cannot_forge_internal_delivery_cleanup` |
+| Exec resets delivery history but preserves queued PTY bytes | `exec_resets_delivery_history_and_preserves_pending_bytes` |
+| The driver drains pending input before normal disconnect finalizes its session | `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing` |
+| Expiry removes delivery markers without discarding pending PTY bytes | `expiry_preserves_pending_bytes_without_stale_ack_markers` |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
 | Use case | Test |
 |---|---|
+| Normal detach finalizes acknowledged input | `normal_detach_finalizes_its_acknowledged_input` |
 | The first `tilr` starts a detached server (a session of its own, not its child, with TCP on loopback), the next one connects to the same; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
 | The TCP port is taken (the Tilr app, another user): a server started by `tilr` starts anyway, with a warning in the log, on the socket only | `a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken` |
 | Six `tilr` at once on an empty machine: one server, a second is not even started | `tilr_started_many_times_at_once_starts_one_server` |

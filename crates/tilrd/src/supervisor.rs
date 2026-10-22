@@ -52,6 +52,39 @@ use crate::{
     socks,
 };
 
+const INPUT_RETENTION: Duration = Duration::from_secs(60 * 60);
+
+/// Disconnect deadlines are deliberately local to this supervisor incarnation.
+#[derive(Default)]
+struct InputRetention {
+    disconnected: HashMap<String, Instant>,
+}
+
+impl InputRetention {
+    fn disconnect(&mut self, identity: String, now: Instant) {
+        if !identity.is_empty() {
+            self.disconnected.entry(identity).or_insert(now);
+        }
+    }
+
+    fn reconnect(&mut self, identity: &str) {
+        self.disconnected.remove(identity);
+    }
+
+    fn expire(&mut self, now: Instant, retention: Duration) -> Vec<String> {
+        let mut expired = Vec::new();
+        self.disconnected.retain(|identity, disconnected| {
+            if now.saturating_duration_since(*disconnected) >= retention {
+                expired.push(identity.clone());
+                false
+            } else {
+                true
+            }
+        });
+        expired
+    }
+}
+
 const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
 /// queued for it.
@@ -630,6 +663,7 @@ pub fn run(options: Options) -> Result<()> {
                 listener,
                 local,
                 clients: HashMap::new(),
+                input_retention: InputRetention::default(),
                 panes: HashMap::new(),
                 starting: HashMap::new(),
                 server_id,
@@ -1599,6 +1633,7 @@ struct Supervisor {
     /// The Unix socket for local clients.
     local: Option<local::Local>,
     clients: HashMap<ClientId, Client>,
+    input_retention: InputRetention,
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
     server_id: Uuid,
@@ -1778,6 +1813,7 @@ impl Supervisor {
                 self.ask_lagging_for_full_frames();
                 self.close_unresponsive_hello_panes();
                 self.close_ungreeted();
+                self.expire_input(Instant::now());
             }
             Event::Metrics { reply } => {
                 let _ = reply.send(self.metrics_snapshot());
@@ -2241,6 +2277,7 @@ impl Supervisor {
             Ok(mut envelope) => {
                 let input_seq = envelope.input_seq;
                 envelope.input_probe = 0;
+                envelope.input_forget = false;
                 envelope.input_identity = self
                     .clients
                     .get(&client_id)
@@ -2312,13 +2349,14 @@ impl Supervisor {
         }
         match msg {
             Msg::Hello(hello) => {
+                self.expire_input(Instant::now());
                 self.supersede(client_id, &hello.client_id, &hello.token);
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.greeted = false;
                     // Length-prefix each identity component before hashing: neither
                     // the token nor another transport's identity reaches a pane.
                     use sha2::{Digest, Sha256};
-                    client.input_identity.clear();
+                    let previous_identity = std::mem::take(&mut client.input_identity);
                     if !hello.client_id.is_empty() {
                         let mut digest = Sha256::new();
                         digest.update([u8::from(client.local)]);
@@ -2330,6 +2368,10 @@ impl Supervisor {
                             .iter()
                             .map(|byte| format!("{byte:02x}"))
                             .collect();
+                    }
+                    if previous_identity != client.input_identity {
+                        self.input_retention
+                            .disconnect(previous_identity, Instant::now());
                     }
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                     client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
@@ -2371,6 +2413,7 @@ impl Supervisor {
                     applied_input: Vec::new(),
                 };
                 let identity = self.clients[&client_id].input_identity.clone();
+                self.input_retention.reconnect(&identity);
                 let waiting: HashSet<_> = if identity.is_empty() {
                     HashSet::new()
                 } else {
@@ -2395,6 +2438,17 @@ impl Supervisor {
                     started: Instant::now(),
                 });
                 self.finish_input_hello(client_id);
+            }
+            Msg::FinalizeInput(_) => {
+                let identity = std::mem::take(
+                    &mut self
+                        .clients
+                        .get_mut(&client_id)
+                        .expect("connected")
+                        .input_identity,
+                );
+                self.input_retention.reconnect(&identity);
+                self.forget_input(&identity);
             }
             Msg::CreatePane(create) => {
                 if let Err(err) = self.create_pane(client_id, &create) {
@@ -3088,11 +3142,40 @@ impl Supervisor {
         self.broadcast_pane_list();
     }
 
+    fn forget_input(&self, identity: &str) {
+        if identity.is_empty() {
+            return;
+        }
+        let command = ClientMessage {
+            input_identity: identity.to_owned(),
+            input_forget: true,
+            ..Default::default()
+        };
+        let packet = tilr_proto::encode(&command);
+        for pane in self.panes.values() {
+            let _ = pane.to_pane.send((packet.clone(), None));
+        }
+    }
+
+    fn expire_input(&mut self, now: Instant) {
+        // Tests can expire disconnected identities without waiting an hour.
+        let retention = if crate::fail::point("input-retention").is_err() {
+            Duration::ZERO
+        } else {
+            INPUT_RETENTION
+        };
+        for identity in self.input_retention.expire(now, retention) {
+            self.forget_input(&identity);
+        }
+    }
+
     /// Forget a client and end its connection, saying why.
     fn drop_client(&mut self, client_id: ClientId, why: Gone) {
         let Some(client) = self.clients.remove(&client_id) else {
             return;
         };
+        self.input_retention
+            .disconnect(client.input_identity.clone(), Instant::now());
         let (id, addr) = (client.client_id.as_str(), client.addr);
         let closing = match why {
             Gone::Disconnected => {
@@ -3611,6 +3694,46 @@ async fn read_pane(
 mod tests {
     use super::*;
 
+    // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+    #[test]
+    fn input_retention_expires_at_one_hour_and_reconnect_cancels_it() {
+        let now = Instant::now();
+        let mut history = InputRetention::default();
+        history.disconnect("expired".into(), now);
+        history.disconnect("reconnected".into(), now);
+        assert!(
+            history
+                .expire(
+                    now + INPUT_RETENTION - Duration::from_nanos(1),
+                    INPUT_RETENTION
+                )
+                .is_empty()
+        );
+        history.reconnect("reconnected");
+        assert_eq!(
+            history.expire(now + INPUT_RETENTION, INPUT_RETENTION),
+            ["expired"]
+        );
+        assert!(
+            history
+                .expire(now + INPUT_RETENTION * 2, INPUT_RETENTION)
+                .is_empty()
+        );
+        history.disconnect("reconnected".into(), now + INPUT_RETENTION * 2);
+        assert!(
+            history
+                .expire(
+                    now + INPUT_RETENTION * 3 - Duration::from_nanos(1),
+                    INPUT_RETENTION
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            history.expire(now + INPUT_RETENTION * 3, INPUT_RETENTION),
+            ["reconnected"]
+        );
+    }
+
     /// The fake pane lets the test supply old delta after observing Subscribe.
     #[tokio::test]
     async fn a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo() {
@@ -3620,6 +3743,7 @@ mod tests {
             listener: None,
             local: None,
             clients: HashMap::new(),
+            input_retention: InputRetention::default(),
             panes: HashMap::new(),
             starting: HashMap::new(),
             server_id: Uuid::new_v4(),

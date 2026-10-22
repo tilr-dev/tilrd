@@ -359,6 +359,23 @@ impl Session {
     /// Close the connection properly, with a WebSocket close.
     pub async fn disconnect(&mut self) {
         self.lost_at = None;
+        let deadline = Instant::now() + SEND_TIMEOUT;
+        while self.delivery.pending().next().is_some()
+            && self.ws.is_some()
+            && Instant::now() < deadline
+        {
+            self.read(deadline).await;
+        }
+        if self.ws.is_some()
+            && self.delivery.pending().next().is_none()
+            && self
+                .send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+                .await
+                .is_ok()
+        {
+            self.delivery = tilr_proto::input::Outbox::default();
+        }
+        self.lost_at = None;
         if let Some(mut ws) = self.ws.take() {
             let _ = tokio::time::timeout(SEND_TIMEOUT, ws.close(None)).await;
         }
@@ -959,6 +976,75 @@ mod bundled_tls_tests {
 mod input_delivery_tests {
     use super::*;
     use tilr_proto::{HelloAck, InputAck, RawInput};
+
+    // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+    #[tokio::test]
+    async fn normal_disconnect_drains_input_before_finalizing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = Target {
+            url: format!("ws://{}", listener.local_addr().unwrap()),
+            token: String::new(),
+            origin: None,
+            features: vec![],
+            timeout: Duration::from_secs(5),
+            client_id: "finalize-test".into(),
+        };
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let Message::Binary(_) = ws.next().await.unwrap().unwrap() else {
+                panic!("hello")
+            };
+            ws.send(Message::Binary(tilr_proto::encode(
+                &tilr_proto::ServerMessage::from(server_message::Msg::HelloAck(HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    ..Default::default()
+                })),
+            )))
+            .await
+            .unwrap();
+            let Message::Binary(packet) = ws.next().await.unwrap().unwrap() else {
+                panic!("input")
+            };
+            let input: ClientMessage = tilr_proto::decode(&packet).unwrap();
+            assert_eq!(input.input_seq, 1);
+            ready.send(()).unwrap();
+            released.await.unwrap();
+            ws.send(Message::Binary(tilr_proto::encode(
+                &tilr_proto::ServerMessage::from(server_message::Msg::InputAck(InputAck {
+                    pane_id: "pane".into(),
+                    seq: 1,
+                })),
+            )))
+            .await
+            .unwrap();
+            let Message::Binary(packet) = ws.next().await.unwrap().unwrap() else {
+                panic!("closed before finalizing")
+            };
+            let message: ClientMessage = tilr_proto::decode(&packet).unwrap();
+            assert!(matches!(message.msg, Some(Msg::FinalizeInput(_))));
+            let _ = ws.next().await;
+        });
+        let mut session = Session::new();
+        session.connect(target).await.unwrap();
+        session
+            .send_input(Msg::Raw(RawInput {
+                pane_id: "pane".into(),
+                data: Bytes::from_static(b"x"),
+            }))
+            .await
+            .unwrap();
+        let mut ending = std::pin::pin!(session.disconnect());
+        tokio::select! {
+            _ = &mut ending => panic!("normal disconnect ended before the pending ACK"),
+            result = received => result.unwrap(),
+        }
+        release.send(()).unwrap();
+        ending.await;
+        peer.await.unwrap();
+    }
 
     // @spec protocol/input-is-acknowledged-after-application
     #[tokio::test]
