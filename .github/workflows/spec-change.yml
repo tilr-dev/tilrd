@@ -42,7 +42,7 @@ jobs:
           curl --fail --silent --show-error --location \
             https://raw.githubusercontent.com/tilr-dev/gitpm/main/scripts/spec_change.py \
             --output "$RUNNER_TEMP/spec_change.py"
-          printf '6b366dbce43ae5df3c4f571fb9004f03a944608f6805daf0e98ab75435cc177c  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
+          printf '233cd1d54fe7226bd22ea9057c8e4e2f7e7a6b185081ea9b24439b640cbf5ba0  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
       - name: Authorize specification changes
         env:
           ITSAPLAN_READ_ONLY_TOKEN: ${{ secrets.ITSAPLAN_READ_ONLY_TOKEN }}
