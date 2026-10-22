@@ -60,9 +60,12 @@ the line.
 - release-please (`.github/workflows/release.yml`): `feat` / `fix` commits open or update the
   release PR; merging it tags `vX.Y.Z`, builds the binaries for the GitHub release and
   publishes the Linux ones to the CDN (`scripts/release.sh --upload-only`).
-- `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported (by
-  hand e.g. via `infisical run --path /cloudflare`; in CI the `cdn` environment's variable)
-  besides wrangler credentials; the script fails without it.
+- `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported
+  (in CI the `cdn` environment's variable), plus AWS keys scoped to objects in tilr-cdn.
+  For manual publishing, Infisical `/cloudflare` in `prod` supplies `CF_ACCOUNT_ID` and
+  `R2_CDN_TOKEN`: export `CLOUDFLARE_ACCOUNT_ID` from `CF_ACCOUNT_ID`, use the token ID
+  as `AWS_ACCESS_KEY_ID`, and the lowercase hex SHA-256 of the token value (without a
+  newline) as `AWS_SECRET_ACCESS_KEY`. README's Releases section has a runnable example.
 - Do not edit versions (`[workspace.package] version`, Cargo.lock) or CHANGELOG.md by hand.
 - The `aarch64-unknown-linux-gnu` release build (on `ubuntu-24.04-arm`, free only for public
   repos) is off by default: set repo variable RELEASE_LINUX_ARM64=true once the repo is

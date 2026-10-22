@@ -76,10 +76,12 @@ done
 "#,
         );
         executable(
-            &dir.join("bin/wrangler"),
+            &dir.join("bin/aws"),
             r#"#!/bin/sh
-printf '%s\n' "$*" >> "$WRANGLER_LOG"
-if [ -f "$WRANGLER_FAIL" ] && [ "$4" = "tilr-cdn/$(cat "$WRANGLER_FAIL")" ]; then
+[ "$AWS_ACCESS_KEY_ID" = fixture-key ] && [ "$AWS_SECRET_ACCESS_KEY" = fixture-secret ] || exit 9
+printf '%s|' "$@" >> "$AWS_LOG"
+printf '\n' >> "$AWS_LOG"
+if [ -f "$AWS_FAIL" ] && [ "$4" = "s3://tilr-cdn/$(cat "$AWS_FAIL")" ]; then
   exit 1
 fi
 "#,
@@ -106,8 +108,11 @@ fi
                 std::env::var("PATH").unwrap()
             ),
         );
-        command.env("WRANGLER_LOG", self.dir.join("wrangler.log"));
-        command.env("WRANGLER_FAIL", self.dir.join("wrangler.fail"));
+        command.env("AWS_LOG", self.dir.join("aws.log"));
+        command.env("AWS_FAIL", self.dir.join("aws.fail"));
+        command.env("AWS_ACCESS_KEY_ID", "fixture-key");
+        command.env("AWS_SECRET_ACCESS_KEY", "fixture-secret");
+        command.env_remove("AWS_SESSION_TOKEN");
         command.env_remove("CLOUDFLARE_ACCOUNT_ID");
         if account {
             command.env("CLOUDFLARE_ACCOUNT_ID", "fixture-account");
@@ -129,12 +134,12 @@ fi
     }
 
     fn log(&self) -> String {
-        fs::read_to_string(self.dir.join("wrangler.log")).unwrap_or_default()
+        fs::read_to_string(self.dir.join("aws.log")).unwrap_or_default()
     }
 
-    /// The stub wrangler fails to upload `name` (an object of tilr-cdn).
+    /// The stub aws fails to upload `name` (an object of tilr-cdn).
     fn fail_upload(&self, name: &str) {
-        fs::write(self.dir.join("wrangler.fail"), name).unwrap();
+        fs::write(self.dir.join("aws.fail"), name).unwrap();
     }
 
     /// The objects uploaded, in order.
@@ -142,8 +147,12 @@ fi
         self.log()
             .lines()
             .map(|line| {
-                let name = line.strip_prefix("r2 object put tilr-cdn/").unwrap();
-                name[..name.find(' ').unwrap()].to_owned()
+                line.split('|')
+                    .nth(3)
+                    .unwrap()
+                    .strip_prefix("s3://tilr-cdn/")
+                    .unwrap()
+                    .to_owned()
             })
             .collect()
     }
@@ -237,6 +246,7 @@ fn publishing_without_the_account_id_does_nothing() {
     let output = f.run(&["--publish", "linux-aarch64"], false);
     assert_exit(&output, 2);
     assert!(String::from_utf8_lossy(&output.stderr).contains("CLOUDFLARE_ACCOUNT_ID"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("README"));
     assert!(!f.dir.join("build.log").exists());
     assert!(f.log().is_empty());
 }
@@ -270,15 +280,23 @@ fn publishing_uploads_the_archive_and_its_checksum_before_latest() {
         ),
     ] {
         assert!(
-            line.starts_with(&format!("r2 object put tilr-cdn/{name} --file ")),
+            line.starts_with(&format!("s3|cp|dist/cdn/{name}|s3://tilr-cdn/{name}|")),
             "{line}"
         );
         assert!(
-            line.contains(&format!("--content-type {content_type}")),
+            line.contains(&format!("|--content-type|{content_type}|")),
             "{line}"
         );
-        assert!(line.contains(&format!("--cache-control {cache}")), "{line}");
-        assert!(line.ends_with("--remote"), "{line}");
+        assert!(
+            line.contains(&format!("|--cache-control|{cache}|")),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "|--endpoint-url|https://fixture-account.r2.cloudflarestorage.com|--region|auto|"
+            ),
+            "{line}"
+        );
     }
 }
 
@@ -345,21 +363,26 @@ fn the_installer_is_uploaded_after_latest() {
     );
     let line = f.log().lines().last().unwrap().to_owned();
     assert!(
-        line.starts_with("r2 object put tilr-cdn/install.sh --file scripts/install.sh "),
+        line.starts_with("s3|cp|scripts/install.sh|s3://tilr-cdn/install.sh|"),
         "{line}"
     );
     assert!(
-        line.contains("--content-type text/x-shellscript; charset=utf-8"),
+        line.contains("|--content-type|text/x-shellscript; charset=utf-8|"),
         "{line}"
     );
     assert!(
-        line.contains("--cache-control public, max-age=300"),
+        line.contains("|--cache-control|public, max-age=300|"),
         "{line}"
     );
-    assert!(line.ends_with("--remote"), "{line}");
+    assert!(
+        line.contains(
+            "|--endpoint-url|https://fixture-account.r2.cloudflarestorage.com|--region|auto|"
+        ),
+        "{line}"
+    );
 
     // With two platforms, after both latests.
-    fs::remove_file(f.dir.join("wrangler.log")).unwrap();
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
     assert_exit(
         &f.run(&["--upload-only", "linux-aarch64", "linux-x86_64"], true),
         0,
@@ -371,7 +394,7 @@ fn the_installer_is_uploaded_after_latest() {
     assert_eq!(uploads[6], "install.sh");
 
     // A failed upload stops it before the installer.
-    fs::remove_file(f.dir.join("wrangler.log")).unwrap();
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
     f.fail_upload("releases/linux-x86_64/latest");
     let output = f.run(&["--upload-only", "linux-x86_64"], true);
     assert_ne!(output.status.code(), Some(0), "{output:?}");
@@ -810,7 +833,9 @@ fn assert_cdn_contract(release: &str) {
         "for platform in $PLATFORMS",
         "want=\"${TAG#v}-$(git rev-parse --short HEAD)\"",
         "test \"$(cat \"dist/cdn/releases/$platform/latest\")\" = \"$want\"",
-        "CLOUDFLARE_API_TOKEN:",
+        "AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}",
+        "AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+        "run: aws --version",
         "CLOUDFLARE_ACCOUNT_ID:",
         "scripts/release.sh --upload-only $PLATFORMS",
     ] {
