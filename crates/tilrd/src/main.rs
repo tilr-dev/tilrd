@@ -197,6 +197,18 @@ enum Command {
         #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
         cdn: String,
     },
+    /// Internal: fetch and validate a release for deploy.
+    #[command(hide = true)]
+    FetchRelease {
+        #[arg(long)]
+        platform: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
+        cdn: String,
+        #[arg(long)]
+        archive: Option<PathBuf>,
+    },
     /// Run in a pane: ask the tilr client watching it to open something.
     #[command(flatten)]
     Host(host::Command),
@@ -295,6 +307,12 @@ fn main() -> anyhow::Result<ExitCode> {
             CloudCommand::Status => cloud::status()?,
         },
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
+        Some(Command::FetchRelease {
+            platform,
+            out,
+            cdn,
+            archive,
+        }) => update::fetch_release(&cdn, &platform, &out, archive.as_deref())?,
         Some(Command::Host(command)) => return Ok(host::run(command)),
         None => {
             // Before anything is bound: a signal from here until the

@@ -4,6 +4,49 @@ mod common;
 
 use common::*;
 
+/// Return a subscribed pane whose first shell prompt is held behind a FIFO.
+async fn pane_before_shell_prompt(
+    server: &Server,
+    client: &mut Client,
+    cols: u32,
+    rows: u32,
+) -> (PaneId, std::fs::File) {
+    // PTY echo can precede the shell's first prompt. Disable line editing so
+    // the shell consumes that queued line without redrawing it after the prompt.
+    let (fifo, release) = activity_fifo(server);
+    let startup_fifo = server.dir.join("shell-startup-release");
+    std::fs::rename(&fifo, &startup_fifo).unwrap();
+    let startup = server.dir.join("shell-startup");
+    std::fs::write(&startup, "set +o emacs; set +o vi\n").unwrap();
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols,
+            rows,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "read -r release < '{}'; PS1='startup> ' ENV='{}' exec /bin/sh",
+                    startup_fifo.display(),
+                    startup.display()
+                ),
+            ],
+            request_id: 83,
+            ..Default::default()
+        }))
+        .await;
+    let pane = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(p) if p.request_id == 83 => {
+                Some(p.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane).await;
+    (pane, release)
+}
+
 /// Walk each reconnect boundary under explicit controller release. The FIFO
 /// makes output happen only after Unsubscribe has been acknowledged. The ready
 /// marker has no trailing bytes that could produce another frame after it is seen.
@@ -12,17 +55,19 @@ async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
     let server = Server::start(&["--client-timeout", "0"]);
     let controller = PauseController::bind(&server.dir);
     let mut first = Client::connect(&server).await;
-    let pane = first.open_pane_with(300, 100, "").await;
+    let (pane, mut startup) = pane_before_shell_prompt(&server, &mut first, 300, 100).await;
     let (fifo, mut release) = activity_fifo(&server);
     let command = script(
         &server,
         "wait-for-output.sh",
         &format!(
-            "printf 'ready for release'; read -r release < '{}'; printf '\\nprinted while unwatched\\n'\n",
+            "printf '\\nready for release'; read -r release < '{}'; printf '\\nprinted while unwatched\\n'\n",
             fifo.display()
         ),
     );
     first.type_line(pane, &command).await;
+    first.wait_screen("wait-for-output.sh").await;
+    release_activity_fifo(&mut startup);
     first.wait_row("ready for release").await;
     first
         .send(Msg::Unsubscribe(Unsubscribe {
@@ -63,7 +108,11 @@ async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
     std::fs::write(&points, "").unwrap();
     sending_full.release().await;
     assert!(next_frame(&mut client).await.full);
-    client.wait_row("printed while unwatched").await;
+    assert!(
+        client.screen.has_row("printed while unwatched"),
+        "first reconnect frame missed unwatched output:\n{}",
+        client.screen.text()
+    );
     (server, client, pane, controller)
 }
 
@@ -161,32 +210,38 @@ async fn a_client_that_reconnects_finds_its_pane_as_it_left_it() {
 }
 
 #[tokio::test]
-async fn output_printed_while_nobody_watched_is_there_on_reconnect() {
+async fn reconnect_output_when_input_precedes_the_shell_prompt() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
-    let pane_id = client.open_pane().await;
-    let (fifo, mut release) = activity_fifo(&server);
-    let printed = server.dir.join("printed");
+    let (pane, mut release) = pane_before_shell_prompt(&server, &mut client, 100, 30).await;
+    // A leading newline isolates the output from a prompt printed after echo.
     client
-        .type_line(
-            pane_id,
-            &format!(
-                "read _ < '{}'; echo \"printed la\"\"ter\"; touch '{}'",
-                fifo.display(),
-                printed.display()
-            ),
-        )
+        .type_line(pane, "printf '\\nprinted la''ter\\n'")
         .await;
-    // Make sure the shell has the line before leaving.
-    client.wait_screen("read _").await;
+    client.wait_screen("printf").await;
+    client
+        .send(Msg::Unsubscribe(Unsubscribe {
+            pane_id: pane.to_string(),
+        }))
+        .await;
+    assert_eq!(client.list_panes().await[0].viewers, 0);
     drop(client);
-    server.wait_logged("client disconnected").await;
-
     release_activity_fifo(&mut release);
-    eventually("the shell printed", || printed.exists()).await;
     let mut client = Client::connect(&server).await;
-    client.subscribe(pane_id).await;
-    client.wait_row("printed later").await;
+    client.subscribe(pane).await;
+    client.wait_screen("printed later").await;
+    assert!(
+        client.screen.has_row("printed later"),
+        "screen:\n{}",
+        client.screen.text()
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn output_printed_while_nobody_watched_is_there_on_reconnect() {
+    let (_server, client, _pane, _controller) = controlled_reconnect().await;
+    assert!(client.screen.has_row("printed while unwatched"));
 }
 
 #[tokio::test]

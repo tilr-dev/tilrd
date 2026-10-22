@@ -142,9 +142,19 @@ tilr kill-server            # stop the server: shells end, socket and lock go
 tilr ps                     # the panes with the pids of their processes
 tilr version                # the client's and the server's builds
 tilr token | update | cloud login|status|logout   # run in the server, see below
+tilr deploy [--service] [--archive FILE] [--cdn URL] user@host  # install over SSH
 tilr service install|uninstall                    # start tilrd at boot, see below
 tilr edit FILE | open URL   # inside a pane: ask the clients watching it to open it
 ```
+
+`tilr deploy user@host` uses your SSH config and agent to install both programs in
+`~/.local/bin` on the remote and start tilrd. It prints `ssh -t user@host '~/.local/bin/tilr'`
+for a terminal, `ssh -N -L 7890:127.0.0.1:7890 user@host` for the app, and the remote
+access token. `--service` also installs the remote user's boot service. Releases
+come from `--cdn URL`, `TILR_CDN`, or `https://cdn.tilr.dev`; `--archive FILE` uses a
+local `tilr-<version>-<platform>.tar.gz` with its `.sha256` alongside it. Supported
+hosts are Linux x86_64/aarch64 and macOS arm64 (macOS requires a local archive).
+An existing server reloads into the new release and keeps its panes.
 
 **The tmux model.** `tilr` talks to the server of this user on this machine over a Unix
 socket. With no server running it starts one: `tilrd` next to the `tilr` executable, else on
@@ -1148,6 +1158,15 @@ that file atomically between protocol events. The supervisor reads it for pane t
 and pane processes use it for frame timing. Raw SOCKS sessions use the same clock for their
 ten-second negotiation deadline; each publishes a local wake-up port beside the clock file,
 named for its client's TCP port. These controls exist only in `failpoints` builds.
+
+With that clock held fixed, `TILR_TEST_FRAME_STAGE_TIME_FILE` can name another file
+containing three positive microsecond durations, e.g. `11 23 37` for parse, build and
+encode. Each operation advances only the measurement clock, giving exact per-read
+parse durations, per-frame build durations, and the previous frame's encode duration.
+Atomically replace the stage file between acknowledged frames to change the values.
+Scheduling and deadlines continue to use their existing clocks. The
+`frame-stage-no-frame=pause` failpoint acknowledges a build that emitted no frame,
+so a test can accumulate invisible output across separate reads without a timing race.
 
 The black-box tests in `itests/` ([itests/README.md](itests/README.md),
 [itests/USE_CASES.md](itests/USE_CASES.md)) install and run the real binaries in containers:

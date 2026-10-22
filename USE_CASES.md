@@ -133,6 +133,9 @@ real Linux containers with the same FIFO barrier.
 | A runtime directory open to group or others (0755, 0770) or a symbolic link to a private one: `new`, `ls`, `kill-server` refuse naming it and what is wrong, no server is started, nothing is made there; private again, it works (another user's directory: itests UC-03A) | `a_runtime_directory_open_to_others_or_a_link_is_refused_and_nothing_started` |
 | The lock file or `tilrd.log` is a symbolic link: `tilr new` refuses, the link is not followed and its target is intact | `a_symlinked_lock_file_is_refused` |
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
+| Deploy validates a release, installs both programs over SSH and prints connection commands and the remote token; unsupported platforms and damaged archives change nothing | `deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `deploy_names_a_platform_without_a_release`, `deploy_refuses_a_damaged_archive_before_sending_it` |
+| Deploy obtains the persistent token before replacing an installed client whose protocol differs from the new release; a failed service install restores its previous configuration | `deploy_gets_the_token_before_replacing_an_old_protocol_client`, `deploy_restores_service_configuration_when_the_manager_refuses_it`, `deploy_restores_the_crontab_after_a_service_failure`, `deploy_does_not_start_a_daemon_before_a_failing_service_install` |
+| Fetch-release checks a foreign-platform archive and rejects a bad checksum without executing its programs | `fetch_release_writes_a_checked_archive`, `fetch_release_refuses_a_bad_checksum` |
 | Copying a private installation keeps destination writers out of unrelated forked children (FIFO-controlled Linux regression) | `copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork` |
 | `tilr update --cdn` runs in the local server against a loopback release feed, updates an isolated installation, and waits for a connection after reload | `tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` |
 | The client requests no update execution timeout and keeps waiting through a day of virtual time until the command exits successfully | `conn::update_wait_tests::update_waits_for_command_exit_after_a_long_launch_delay` |
@@ -204,6 +207,7 @@ Cloud repository.
 |---|---|
 | A client came back: the pane is there, the first frame is the whole screen, the shell is the same | `a_client_that_reconnects_finds_its_pane_as_it_left_it` |
 | What was printed while nobody watched is visible after coming back | `output_printed_while_nobody_watched_is_there_on_reconnect` |
+| Input echoed before the shell starts does not attach the expected output to its initial prompt | `reconnect_output_when_input_precedes_the_shell_prompt` |
 | Explicit pauses order unwatched output, accepted reconnect, subscription and full-frame enqueue | `a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect` (`failpoints`) |
 | A reconnected client's reads stay paused while it can send; continuous output reaches the lag decision, then explicit resume receives full-frame recovery | `a_test_pauses_socket_reads_until_reconnected_client_lags` (`failpoints`) |
 | Subscribing again sends the whole screen again | `subscribing_again_sends_the_whole_screen_again` |
@@ -467,6 +471,7 @@ pane process. The server's counters are at `GET /metrics`.
 
 | Use case | Test |
 |---|---|
+| A fixed test clock assigns distinct parse/build/encode durations; parse accumulates across two invisible reads and a visible read, and changing the configuration leaves encode reporting the previous frame | `frame_stage_durations_are_controlled_per_operation` |
 | Before any input `last_input_seq` = 0; frames after input with `seq` carry it, `timing` is always there, `build_us` > 0, a frame with output has `output_bytes` and `reads`; input without `seq` does not disturb the number; a `Scroll` with `seq` that moved nothing gets its own frame; a client numbering from 1 without `seq_base` works | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
 | A no-op scroll while output is accumulated: one frame carries the scroll seq and the changed output; after the final prompt, another no-op scroll gets an empty frame | `a_no_op_scroll_frame_includes_accumulated_output` |
 | Input that changed nothing on screen with no pending output (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
