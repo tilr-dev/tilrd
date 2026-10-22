@@ -8,3 +8,7 @@ The client SHALL wait for the local update command to complete even when staged 
 #### Scenario: Staged startup outlasts the reload window
 - **WHEN** a local update command has started and a day of virtual time passes before its successful exit
 - **THEN** the client remains waiting, requests no execution timeout, and returns success only after receiving the command exit
+
+#### Scenario: Integration observation follows actual staged startup
+- **WHEN** the integration harness updates with real release executables whose staged version checks have not yet completed
+- **THEN** it waits for the updater's installation confirmation without a launch deadline before starting the unchanged reload observation window

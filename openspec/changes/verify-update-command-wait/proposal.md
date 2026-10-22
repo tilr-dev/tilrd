@@ -6,7 +6,7 @@ A fresh executable can wait for operating-system launch policy before entering m
 
 ## What Changes
 
-- Warm the exact server and client bytes used in the integration release before releasing the archive response and starting reload observation.
+- Wait without a launch deadline for the real updater's installation confirmation before starting reload observation. This confirmation follows both staged version checks, so launch assessment of the exact staged paths completes outside the observation window. Warming identical bytes at another path does not establish this boundary.
 - Verify the existing client wait with a controlled peer and virtual time, independently of launch policy latency.
 - Retain the real executable update, reload, reconnect and unchanged observation deadlines.
 

@@ -639,6 +639,65 @@ fn server_commands_run_in_the_server() {
     assert!(!remote.status.success());
 }
 
+/// A fresh staged path can wait for macOS launch assessment before main.
+/// The updater's existing confirmation follows both staged --version checks
+/// and installation. Wait for that event without a launch deadline, then
+/// start the bounded reload observation. Preserve all stdout, including any
+/// bytes the reader buffered beyond the confirmation.
+fn observe_reload_after_install(stdout: &mut impl BufRead, observe: impl FnOnce()) -> Vec<u8> {
+    let mut captured = Vec::new();
+    loop {
+        let start = captured.len();
+        let read = stdout.read_until(b'\n', &mut captured).unwrap();
+        assert_ne!(
+            read,
+            0,
+            "updater closed stdout before installation: {}",
+            String::from_utf8_lossy(&captured)
+        );
+        if captured[start..].starts_with(b"updated ") {
+            break;
+        }
+    }
+    observe();
+    captured
+}
+
+#[test]
+fn reload_observation_waits_for_install_confirmation() {
+    use std::cell::Cell;
+
+    // Each read is a controlled updater event. No elapsed time can substitute
+    // for the second event: until it arrives the staged launch is unfinished.
+    struct UpdateOutput<'a>(&'a Cell<usize>);
+    impl Read for UpdateOutput<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let event: &[u8] = match self.0.get() {
+                0 => b"downloading tilr 9.9.9-test\n",
+                1 => b"updated old -> new: /bin\na running server reloads itself\n",
+                _ => return Ok(0),
+            };
+            assert!(buf.len() >= event.len());
+            buf[..event.len()].copy_from_slice(event);
+            self.0.set(self.0.get() + 1);
+            Ok(event.len())
+        }
+    }
+    let events = Cell::new(0);
+    let observed = Cell::new(false);
+    let mut stdout = BufReader::new(UpdateOutput(&events));
+    let mut captured = observe_reload_after_install(&mut stdout, || {
+        assert_eq!(events.get(), 2, "both staged launches must finish first");
+        observed.set(true);
+    });
+    assert!(observed.get());
+    stdout.read_to_end(&mut captured).unwrap();
+    assert_eq!(
+        captured,
+        b"downloading tilr 9.9.9-test\nupdated old -> new: /bin\na running server reloads itself\n"
+    );
+}
+
 #[test]
 fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     let mut machine = Machine::new();
@@ -661,26 +720,6 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     let mut updated_server = std::fs::read(&server_exe).unwrap();
     updated_server.push(0); // A different executable that reports the same test build version.
     let installed_client = std::fs::read(&machine.tilr).unwrap();
-    // Warm the exact release bytes before the reload observation window. A fresh
-    // Mach-O can wait for macOS launch policy before reaching main, including
-    // during the updater's staged --version checks. Keep that outside eventually.
-    let warm_dir = machine.dir.join("release-warmup");
-    std::fs::create_dir(&warm_dir).unwrap();
-    for (name, bytes) in [("tilrd", &updated_server), ("tilr", &installed_client)] {
-        use std::os::unix::fs::PermissionsExt;
-        let executable = warm_dir.join(name);
-        std::fs::write(&executable, bytes).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let output = Command::new(&executable)
-            .env_remove("RUST_LOG")
-            .arg("--version")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "release {name} --version: {output:?}"
-        );
-    }
     let archive = release_archive(&updated_server, &installed_client);
     let cdn_dir = machine.dir.join("cdn");
     let release_name = format!("tilr-9.9.9-test-{platform}.tar.gz");
@@ -719,15 +758,20 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
         .expect("the local server requests the release archive");
     let mut hidden = HiddenSocket::hide(machine.socket());
     send_archive.send(()).unwrap();
-    eventually("the updated server resumes after reload", || {
-        machine.log().contains("resumed after reload with")
+    let mut stdout = BufReader::new(update.stdout.take().unwrap());
+    let mut captured_stdout = observe_reload_after_install(&mut stdout, || {
+        eventually("the updated server resumes after reload", || {
+            machine.log().contains("resumed after reload with")
+        });
     });
     assert!(
         update.try_wait().unwrap().is_none(),
         "tilr update waits for a connection to the reloaded server"
     );
     hidden.restore();
-    let output = update.wait_with_output().unwrap();
+    stdout.read_to_end(&mut captured_stdout).unwrap();
+    let mut output = update.wait_with_output().unwrap();
+    output.stdout = captured_stdout;
     assert!(
         output.status.success(),
         "tilr update: {output:?}\n--- server log ---\n{}",
