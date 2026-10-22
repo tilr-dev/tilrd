@@ -52,10 +52,45 @@ use crate::{
     socks,
 };
 
+const INPUT_RETENTION: Duration = Duration::from_secs(60 * 60);
+
+/// Disconnect deadlines are deliberately local to this supervisor incarnation.
+#[derive(Default)]
+struct InputRetention {
+    disconnected: HashMap<String, Instant>,
+}
+
+impl InputRetention {
+    fn disconnect(&mut self, identity: String, now: Instant) {
+        if !identity.is_empty() {
+            self.disconnected.entry(identity).or_insert(now);
+        }
+    }
+
+    fn reconnect(&mut self, identity: &str) {
+        self.disconnected.remove(identity);
+    }
+
+    fn expire(&mut self, now: Instant, retention: Duration) -> Vec<String> {
+        let mut expired = Vec::new();
+        self.disconnected.retain(|identity, disconnected| {
+            if now.saturating_duration_since(*disconnected) >= retention {
+                expired.push(identity.clone());
+                false
+            } else {
+                true
+            }
+        });
+        expired
+    }
+}
+
 const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
 /// queued for it.
 const DETACH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a pane may hold up Hello while reporting applied input.
+const HELLO_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A reload asked for while a pane is starting is tried again this much
 /// later.
 const RELOAD_RETRY: Duration = Duration::from_millis(200);
@@ -162,6 +197,10 @@ enum Event {
         pane_id: PaneId,
         copy: ClipboardWrite,
     },
+    PaneInputAck {
+        pane_id: PaneId,
+        ack: tilr_proto::PaneInputAck,
+    },
     PaneActivity {
         pane_id: PaneId,
         activity: tilr_proto::PaneActivity,
@@ -217,6 +256,12 @@ impl std::fmt::Display for Peer {
     }
 }
 
+struct PendingHello {
+    ack: HelloAck,
+    waiting: HashSet<PaneId>,
+    started: Instant,
+}
+
 struct Client {
     tx: ToClient,
     close: mpsc::UnboundedSender<Closing>,
@@ -230,6 +275,8 @@ struct Client {
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
     greeted: bool,
+    input_identity: String,
+    hello_pending: Option<PendingHello>,
     /// Announced "host-events" in `Hello.features`: it is sent `HostEvent`s.
     host_events: bool,
     /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
@@ -295,6 +342,8 @@ struct Pane {
     /// A full frame is asked for, for clients that lagged, and has not come
     /// yet.
     full_asked: bool,
+    /// A probe timeout has already signalled this process; await link closure.
+    probe_killed: bool,
 }
 
 /// The tasks moving packets to and from one pane process.
@@ -614,6 +663,7 @@ pub fn run(options: Options) -> Result<()> {
                 listener,
                 local,
                 clients: HashMap::new(),
+                input_retention: InputRetention::default(),
                 panes: HashMap::new(),
                 starting: HashMap::new(),
                 server_id,
@@ -867,6 +917,7 @@ async fn reload_signal(
     events: mpsc::UnboundedSender<Event>,
 ) {
     while usr1.recv().await.is_some() {
+        tracing::info!("SIGUSR1 came: reload requested");
         if events.send(Event::Reload).is_err() {
             break;
         }
@@ -1582,6 +1633,7 @@ struct Supervisor {
     /// The Unix socket for local clients.
     local: Option<local::Local>,
     clients: HashMap<ClientId, Client>,
+    input_retention: InputRetention,
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
     server_id: Uuid,
@@ -1687,6 +1739,8 @@ impl Supervisor {
                         subscriptions: HashSet::new(),
                         connected: Instant::now(),
                         greeted: false,
+                        input_identity: String::new(),
+                        hello_pending: None,
                         host_events: false,
                         agent: false,
                         clipboard_write: false,
@@ -1722,6 +1776,7 @@ impl Supervisor {
                     self.broadcast_pane_list();
                 }
             }
+            Event::PaneInputAck { pane_id, ack } => self.on_input_ack(pane_id, ack),
             Event::PaneActivity {
                 pane_id,
                 mut activity,
@@ -1756,7 +1811,9 @@ impl Supervisor {
             Event::Tick(due) => {
                 self.metrics.loop_lag.observe(due.elapsed());
                 self.ask_lagging_for_full_frames();
+                self.close_unresponsive_hello_panes();
                 self.close_ungreeted();
+                self.expire_input(Instant::now());
             }
             Event::Metrics { reply } => {
                 let _ = reply.send(self.metrics_snapshot());
@@ -1833,6 +1890,7 @@ impl Supervisor {
                     link,
                     counters: metrics::PaneCounters::default(),
                     full_asked: false,
+                    probe_killed: false,
                 },
             );
         }
@@ -2158,12 +2216,76 @@ impl Supervisor {
         err
     }
 
+    fn finish_input_hello(&mut self, client_id: ClientId) {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return;
+        };
+        if client
+            .hello_pending
+            .as_ref()
+            .is_some_and(|pending| pending.waiting.is_empty())
+        {
+            let pending = client.hello_pending.take().expect("pending hello");
+            client.greeted = true;
+            self.send(client_id, server_message::Msg::HelloAck(pending.ack));
+        }
+    }
+
+    fn on_input_ack(&mut self, pane_id: PaneId, ack: tilr_proto::PaneInputAck) {
+        if let Some(pane) = self.panes.get_mut(&pane_id)
+            && (pane.cols != ack.cols as u16 || pane.rows != ack.rows as u16)
+        {
+            pane.cols = ack.cols as u16;
+            pane.rows = ack.rows as u16;
+            self.broadcast_pane_list();
+        }
+        let applied = tilr_proto::InputAck {
+            pane_id: pane_id.to_string(),
+            seq: ack.seq,
+        };
+        if ack.probe != 0 {
+            if let Some(client) = self.clients.get_mut(&(ack.probe - 1))
+                && client.input_identity == ack.identity
+                && let Some(pending) = &mut client.hello_pending
+                && pending.waiting.remove(&pane_id)
+            {
+                pending.ack.applied_input.push(applied);
+            }
+            self.finish_input_hello(ack.probe - 1);
+        } else {
+            let clients: Vec<_> = self
+                .clients
+                .iter()
+                .filter_map(|(&id, client)| {
+                    (client.greeted && client.input_identity == ack.identity).then_some(id)
+                })
+                .collect();
+            for id in clients {
+                self.send(id, server_message::Msg::InputAck(applied.clone()));
+            }
+        }
+    }
+
     async fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
         // A client the supervisor has dropped may still have packets on the
         // way. Acting on them would subscribe a client nobody will ever
         // remove again.
         let Some(greeted) = self.clients.get(&client_id).map(|client| client.greeted) else {
             return;
+        };
+        let (packet, input_seq) = match tilr_proto::decode::<ClientMessage>(&packet) {
+            Ok(mut envelope) => {
+                let input_seq = envelope.input_seq;
+                envelope.input_probe = 0;
+                envelope.input_forget = false;
+                envelope.input_identity = self
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.input_identity.clone())
+                    .unwrap_or_default();
+                (tilr_proto::encode(&envelope), input_seq)
+            }
+            Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
         };
         let msg = match tilr_proto::decode::<ClientMessage>(&packet) {
             Ok(ClientMessage { msg: Some(msg), .. }) => msg,
@@ -2201,11 +2323,56 @@ impl Supervisor {
             _ if !greeted => return self.refuse(client_id, "expected Hello first"),
             _ => {}
         }
+        if input_seq != 0
+            && self
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.input_identity.is_empty())
+        {
+            return self.send_error(client_id, "numbered input requires a stable client_id");
+        }
+        if input_seq != 0
+            && let Some(named) = tilr_proto::input::pane(&msg)
+            && self.pane_mut(named).is_none()
+        {
+            // No future replay can apply input to this missing pane. Finish
+            // delivery without claiming application in any pane's counters.
+            self.send_no_pane(client_id, named);
+            self.send(
+                client_id,
+                server_message::Msg::InputAck(tilr_proto::InputAck {
+                    pane_id: named.to_owned(),
+                    seq: input_seq,
+                }),
+            );
+            return;
+        }
         match msg {
             Msg::Hello(hello) => {
+                self.expire_input(Instant::now());
                 self.supersede(client_id, &hello.client_id, &hello.token);
                 if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.greeted = true;
+                    client.greeted = false;
+                    // Length-prefix each identity component before hashing: neither
+                    // the token nor another transport's identity reaches a pane.
+                    use sha2::{Digest, Sha256};
+                    let previous_identity = std::mem::take(&mut client.input_identity);
+                    if !hello.client_id.is_empty() {
+                        let mut digest = Sha256::new();
+                        digest.update([u8::from(client.local)]);
+                        digest.update((hello.token.len() as u64).to_le_bytes());
+                        digest.update(hello.token.as_bytes());
+                        digest.update(hello.client_id.as_bytes());
+                        client.input_identity = digest
+                            .finalize()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                    }
+                    if previous_identity != client.input_identity {
+                        self.input_retention
+                            .disconnect(previous_identity, Instant::now());
+                    }
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                     client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
                     client.clipboard_write =
@@ -2231,22 +2398,57 @@ impl Supervisor {
                     (FEATURE_AGENT, self.agent.is_some()),
                     (FEATURE_EXEC, self.exec),
                 ];
-                self.send(
-                    client_id,
-                    server_message::Msg::HelloAck(HelloAck {
-                        protocol_version: PROTOCOL_VERSION,
-                        server_version: crate::VERSION.into(),
-                        features: features
-                            .into_iter()
-                            .filter(|(_, on)| *on)
-                            .map(|(name, _)| name.to_owned())
-                            .collect(),
-                        clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
-                        server_id: self.server_id.to_string(),
-                        fs_max_bytes: fs_max_bytes.unwrap_or(0),
-                        seq_base: seq_base(client_id),
-                    }),
+                let ack = HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    server_version: crate::VERSION.into(),
+                    features: features
+                        .into_iter()
+                        .filter(|(_, on)| *on)
+                        .map(|(name, _)| name.to_owned())
+                        .collect(),
+                    clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
+                    server_id: self.server_id.to_string(),
+                    fs_max_bytes: fs_max_bytes.unwrap_or(0),
+                    seq_base: seq_base(client_id),
+                    applied_input: Vec::new(),
+                };
+                let identity = self.clients[&client_id].input_identity.clone();
+                self.input_retention.reconnect(&identity);
+                let waiting: HashSet<_> = if identity.is_empty() {
+                    HashSet::new()
+                } else {
+                    self.panes.keys().copied().collect()
+                };
+                for pane_id in &waiting {
+                    let query = ClientMessage {
+                        input_identity: identity.clone(),
+                        input_probe: client_id + 1,
+                        ..Default::default()
+                    };
+                    let _ = self.panes[pane_id]
+                        .to_pane
+                        .send((tilr_proto::encode(&query), None));
+                }
+                self.clients
+                    .get_mut(&client_id)
+                    .expect("connected")
+                    .hello_pending = Some(PendingHello {
+                    ack,
+                    waiting,
+                    started: Instant::now(),
+                });
+                self.finish_input_hello(client_id);
+            }
+            Msg::FinalizeInput(_) => {
+                let identity = std::mem::take(
+                    &mut self
+                        .clients
+                        .get_mut(&client_id)
+                        .expect("connected")
+                        .input_identity,
                 );
+                self.input_retention.reconnect(&identity);
+                self.forget_input(&identity);
             }
             Msg::CreatePane(create) => {
                 if let Err(err) = self.create_pane(client_id, &create) {
@@ -2304,8 +2506,10 @@ impl Supervisor {
                 let Some((_, pane)) = self.pane_mut(&resize.pane_id) else {
                     return self.send_no_pane(client_id, &resize.pane_id);
                 };
-                pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
-                pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
+                if input_seq == 0 {
+                    pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
+                    pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
+                }
                 let _ = pane.to_pane.send((packet, None));
                 self.broadcast_pane_list();
             }
@@ -2670,6 +2874,7 @@ impl Supervisor {
             link,
             counters: metrics::PaneCounters::default(),
             full_asked: false,
+            probe_killed: false,
         };
         self.starting.insert(
             pane_id,
@@ -2822,14 +3027,45 @@ impl Supervisor {
         }
     }
 
+    /// A pane that cannot report its applied counters must exit before Hello
+    /// can omit it. Never invent counters for a live, unresponsive pane.
+    fn close_unresponsive_hello_panes(&mut self) {
+        let expired: HashSet<_> = self
+            .clients
+            .values()
+            .filter_map(|client| client.hello_pending.as_ref())
+            .filter(|pending| pending.started.elapsed() >= HELLO_PROBE_TIMEOUT)
+            .flat_map(|pending| pending.waiting.iter().copied())
+            .collect();
+        for pane_id in expired {
+            if let Some(pane) = self.panes.get_mut(&pane_id)
+                && !pane.probe_killed
+            {
+                pane.probe_killed = true;
+                tracing::error!(pane = %pane_id, "pane process did not answer Hello probe, closing it");
+                // The reader reaps it and reports PaneLinkClosed, which releases
+                // all waiting Hellos only after the pane is actually gone.
+                // SAFETY: kill has no memory-safety preconditions.
+                unsafe {
+                    libc::kill(pane.pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
     /// Every tick: a connection that has not said `Hello` within
     /// [`HELLO_TIMEOUT`] of its WebSocket opening is closed, whatever the
-    /// client timeout, so an un-greeted one is held 20 s at most.
+    /// client timeout, so a connection without Hello is held at most that
+    /// long plus one tick.
     fn close_ungreeted(&mut self) {
         let late: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, client)| !client.greeted && client.connected.elapsed() >= HELLO_TIMEOUT)
+            .filter(|(_, client)| {
+                !client.greeted
+                    && client.hello_pending.is_none()
+                    && client.connected.elapsed() >= HELLO_TIMEOUT
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in late {
@@ -2878,6 +3114,19 @@ impl Supervisor {
         });
 
         self.panes.remove(&pane_id);
+        let waiting: Vec<_> = self
+            .clients
+            .iter_mut()
+            .filter_map(|(&id, client)| {
+                client
+                    .hello_pending
+                    .as_mut()
+                    .and_then(|pending| pending.waiting.remove(&pane_id).then_some(id))
+            })
+            .collect();
+        for id in waiting {
+            self.finish_input_hello(id);
+        }
         tracing::info!(pane = %pane_id, exit_code, "pane exited");
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneExited(
             PaneExited {
@@ -2893,11 +3142,40 @@ impl Supervisor {
         self.broadcast_pane_list();
     }
 
+    fn forget_input(&self, identity: &str) {
+        if identity.is_empty() {
+            return;
+        }
+        let command = ClientMessage {
+            input_identity: identity.to_owned(),
+            input_forget: true,
+            ..Default::default()
+        };
+        let packet = tilr_proto::encode(&command);
+        for pane in self.panes.values() {
+            let _ = pane.to_pane.send((packet.clone(), None));
+        }
+    }
+
+    fn expire_input(&mut self, now: Instant) {
+        // Tests can expire disconnected identities without waiting an hour.
+        let retention = if crate::fail::point("input-retention").is_err() {
+            Duration::ZERO
+        } else {
+            INPUT_RETENTION
+        };
+        for identity in self.input_retention.expire(now, retention) {
+            self.forget_input(&identity);
+        }
+    }
+
     /// Forget a client and end its connection, saying why.
     fn drop_client(&mut self, client_id: ClientId, why: Gone) {
         let Some(client) = self.clients.remove(&client_id) else {
             return;
         };
+        self.input_retention
+            .disconnect(client.input_identity.clone(), Instant::now());
         let (id, addr) = (client.client_id.as_str(), client.addr);
         let closing = match why {
             Gone::Disconnected => {
@@ -3009,7 +3287,7 @@ impl Supervisor {
             .iter()
             .filter(|&(&id, client)| {
                 id != new
-                    && client.greeted
+                    && (client.greeted || client.hello_pending.is_some())
                     && client.local == local
                     && client.client_id == client_id
                     && auth::matches(&client.token, token)
@@ -3364,6 +3642,12 @@ async fn read_pane(
                         Err(_) => continue,
                     }
                 }
+                link::kind::INPUT_ACK => {
+                    match tilr_proto::decode::<tilr_proto::PaneInputAck>(&packet) {
+                        Ok(ack) => Event::PaneInputAck { pane_id, ack },
+                        Err(_) => continue,
+                    }
+                }
                 link::kind::STARTED => Event::PaneStarted { pane_id },
                 link::kind::EXITED => {
                     exit_code = tilr_proto::decode::<PaneExited>(&packet)
@@ -3410,6 +3694,46 @@ async fn read_pane(
 mod tests {
     use super::*;
 
+    // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+    #[test]
+    fn input_retention_expires_at_one_hour_and_reconnect_cancels_it() {
+        let now = Instant::now();
+        let mut history = InputRetention::default();
+        history.disconnect("expired".into(), now);
+        history.disconnect("reconnected".into(), now);
+        assert!(
+            history
+                .expire(
+                    now + INPUT_RETENTION - Duration::from_nanos(1),
+                    INPUT_RETENTION
+                )
+                .is_empty()
+        );
+        history.reconnect("reconnected");
+        assert_eq!(
+            history.expire(now + INPUT_RETENTION, INPUT_RETENTION),
+            ["expired"]
+        );
+        assert!(
+            history
+                .expire(now + INPUT_RETENTION * 2, INPUT_RETENTION)
+                .is_empty()
+        );
+        history.disconnect("reconnected".into(), now + INPUT_RETENTION * 2);
+        assert!(
+            history
+                .expire(
+                    now + INPUT_RETENTION * 3 - Duration::from_nanos(1),
+                    INPUT_RETENTION
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            history.expire(now + INPUT_RETENTION * 3, INPUT_RETENTION),
+            ["reconnected"]
+        );
+    }
+
     /// The fake pane lets the test supply old delta after observing Subscribe.
     #[tokio::test]
     async fn a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo() {
@@ -3419,6 +3743,7 @@ mod tests {
             listener: None,
             local: None,
             clients: HashMap::new(),
+            input_retention: InputRetention::default(),
             panes: HashMap::new(),
             starting: HashMap::new(),
             server_id: Uuid::new_v4(),
@@ -3459,6 +3784,7 @@ mod tests {
                 },
                 counters: metrics::PaneCounters::default(),
                 full_asked: false,
+                probe_killed: false,
             },
         );
         let mut viewers = Vec::new();

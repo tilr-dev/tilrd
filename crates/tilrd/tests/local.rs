@@ -95,17 +95,8 @@ impl Daemon {
     /// the way: its socket takes connections before that (and before its
     /// token is written), and they are served only once it has.
     fn wait_ready(&mut self) {
-        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
-        notify
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .unwrap();
         let deadline = std::time::Instant::now() + TIMEOUT;
-        let mut message = [0; 64];
-        loop {
-            if let Ok(n) = notify.recv(&mut message) {
-                assert_eq!(&message[..n], b"READY=1");
-                return;
-            }
+        while !self.said_ready() {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!("tilrd exited {status}: {}", self.log_text());
             }
@@ -114,6 +105,22 @@ impl Daemon {
                 "tilrd not ready within {TIMEOUT:?}: {}",
                 self.log_text()
             );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Whether `READY=1` has come since the last look, without waiting.
+    fn said_ready(&self) -> bool {
+        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
+        notify.set_nonblocking(true).unwrap();
+        let mut message = [0; 64];
+        match notify.recv(&mut message) {
+            Ok(n) => {
+                assert_eq!(&message[..n], b"READY=1");
+                true
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(err) => panic!("NOTIFY_SOCKET: {err}"),
         }
     }
 
@@ -548,7 +555,27 @@ fn of_servers_started_at_once_one_serves_the_socket() {
     let mut daemons: Vec<Daemon> = (0..8)
         .map(|_| Daemon::spawn(&scratch.0, &["--no-listen"]))
         .collect();
-    std::thread::sleep(Duration::from_millis(1500));
+    // Each one either says it is ready, having the socket, or exits; looked
+    // at every 20 ms.
+    let mut ready = vec![false; daemons.len()];
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let mut settled = 0;
+        for (daemon, ready) in daemons.iter_mut().zip(&mut ready) {
+            *ready = *ready || daemon.said_ready();
+            if *ready || !daemon.running() {
+                settled += 1;
+            }
+        }
+        if settled == daemons.len() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not all settled within {TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let running: Vec<usize> = (0..daemons.len())
         .filter(|&i| daemons[i].running())
         .collect();
@@ -781,7 +808,10 @@ fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
     let staged = scratch.0.join("tilrd.new");
     std::fs::write(
         &staged,
-        format!("#!/bin/sh\nprintf '{}'\n", older.replace('\n', "\\n")),
+        format!(
+            "#!/bin/sh\n{STATE_FORMATS_STARTUP}printf '{}'\n",
+            older.replace('\n', "\\n")
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -809,9 +839,16 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
+    let mut daemon = Daemon::spawn_env(
+        &exe,
+        &scratch.0,
+        &["--no-listen"],
+        &[("TILR_TEST_STATE_FORMATS_STARTUP", Path::new("1"))],
+    );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    #[cfg(feature = "failpoints")]
+    wait_logged(&daemon, "state-formats successor started");
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",
@@ -828,9 +865,16 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
+    let mut daemon = Daemon::spawn_env(
+        &exe,
+        &scratch.0,
+        &[],
+        &[("TILR_TEST_STATE_FORMATS_STARTUP", Path::new("1"))],
+    );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    #[cfg(feature = "failpoints")]
+    wait_logged(&daemon, "state-formats successor started");
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",

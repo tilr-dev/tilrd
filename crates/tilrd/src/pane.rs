@@ -10,7 +10,7 @@
 //! and the rest travel in a file named after the pane, which the new process
 //! finds by the id it is started with.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -206,6 +206,9 @@ struct Pane {
     hung_up: Vec<libc::pid_t>,
     /// Input waiting for the pty to accept it.
     pending_input: Vec<u8>,
+    delivery: HashMap<String, tilr_proto::InputDeliveryState>,
+    pending_delivery: VecDeque<tilr_proto::PendingDelivery>,
+    delivery_acks: Vec<tilr_proto::PaneInputAck>,
     seq: u64,
     dirty: bool,
     want_full: bool,
@@ -266,6 +269,8 @@ async fn serve(
     };
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
+    let delivery = HashMap::new();
+    let pending_delivery = VecDeque::new();
     let id = args.id.to_string();
     let mut last_input_seq = 0;
     let mut inputs = VecDeque::new();
@@ -369,6 +374,9 @@ async fn serve(
         kill_at,
         hung_up,
         pending_input,
+        delivery,
+        pending_delivery,
+        delivery_acks: Vec::new(),
         seq,
         // A resumed pane redraws its clients from the restored screen.
         dirty: seq > 0,
@@ -386,7 +394,24 @@ async fn serve(
     let mut foreground_tick = tokio::time::interval(Duration::from_secs(1));
     let mut buf = vec![0u8; READ_BUF];
 
+    // Keep the frame wait alive across other events: a test can hold frame
+    // delivery while the pane continues to read output and credit input.
+    let frame_ready = wait_for_frame(pane.last_frame + FRAME_INTERVAL);
+    tokio::pin!(frame_ready);
     loop {
+        for mut ack in std::mem::take(&mut pane.delivery_acks) {
+            let (cols, rows) = pane.screen.size();
+            ack.cols = cols.into();
+            ack.rows = rows.into();
+            crate::fail::point("input-before-ack")?;
+            link::write_tagged(
+                &mut pane.to_supervisor,
+                link::kind::INPUT_ACK,
+                &tilr_proto::encode(&ack),
+            )
+            .await
+            .context("acknowledge input")?;
+        }
         tokio::select! {
             guard = pane.pty.readable() => {
                 let read = guard?.try_io(|fd| pty::read(fd.as_raw_fd(), &mut buf));
@@ -398,6 +423,8 @@ async fn serve(
                     Ok(Ok(n)) => {
                         pane.on_output(&buf[..n]).await?;
                         pane.send_copies().await?;
+                        #[cfg(feature = "failpoints")]
+                        crate::fail::point_async("pane-output-applied".into()).await;
                     }
                     Ok(Err(err)) => return Err(err).context("read pty"),
                     Err(_would_block) => {}
@@ -416,7 +443,11 @@ async fn serve(
             packet = packets.recv() => match packet {
                 Some(FromSupervisor::Packet(packet)) => {
                     match tilr_proto::decode::<ClientMessage>(&packet) {
-                        Ok(msg) => pane.on_message(msg)?,
+                        Ok(msg) => {
+                            pane.on_message(msg)?;
+                            #[cfg(feature = "failpoints")]
+                            crate::fail::point_async("pane-input-applied".into()).await;
+                        }
                         Err(err) => tracing::warn!(pane = pane.id, "bad packet from supervisor: {err}"),
                     }
                 }
@@ -441,8 +472,9 @@ async fn serve(
                     return Ok(());
                 }
             },
-            () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
+            () = &mut frame_ready, if pane.dirty => {
                 pane.send_frame().await?;
+                frame_ready.set(wait_for_frame(pane.last_frame + FRAME_INTERVAL));
             }
             _ = foreground_tick.tick() => {
                 // A leader can exec without changing its process group. Keep
@@ -477,6 +509,12 @@ async fn serve(
     link::write_tagged(&mut pane.to_supervisor, link::kind::EXITED, &packet)
         .await
         .context("report exit to supervisor")
+}
+
+async fn wait_for_frame(deadline: Instant) {
+    tokio::time::sleep_until(deadline).await;
+    #[cfg(feature = "failpoints")]
+    crate::fail::point_async("pane-frame-ready".into()).await;
 }
 
 impl Pane {
@@ -554,6 +592,7 @@ impl Pane {
         self.pending_input.drain(..n);
         self.written += n as u64;
         self.settle_inputs();
+        self.settle_delivery();
     }
 
     /// Note an input message named by `seq`: it is credited once what is
@@ -686,6 +725,9 @@ impl Pane {
             cols: u32::from(cols),
             rows: u32::from(rows),
             pending_input: self.pending_input.clone(),
+            // Delivery history ends at exec; queued PTY bytes remain above.
+            delivery_states: Vec::new(),
+            pending_delivery: Vec::new(),
             snapshot: snapshot.to_vec(),
             cell_width_px: cell.0,
             cell_height_px: cell.1,
@@ -747,7 +789,77 @@ impl Pane {
         err
     }
 
+    fn settle_delivery(&mut self) {
+        while self
+            .pending_delivery
+            .front()
+            .is_some_and(|mark| mark.end <= self.written)
+        {
+            let mark = self.pending_delivery.pop_front().expect("front exists");
+            let state = self
+                .delivery
+                .get_mut(&mark.identity)
+                .expect("accepted identity");
+            state.applied = mark.seq;
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                identity: mark.identity,
+                seq: mark.seq,
+                probe: 0,
+                ..Default::default()
+            });
+        }
+    }
+
     fn on_message(&mut self, msg: ClientMessage) -> Result<()> {
+        if msg.input_forget {
+            self.delivery.remove(&msg.input_identity);
+            self.pending_delivery
+                .retain(|mark| mark.identity != msg.input_identity);
+            self.delivery_acks
+                .retain(|ack| ack.identity != msg.input_identity);
+            return Ok(());
+        }
+        if msg.input_probe != 0 {
+            crate::fail::point("input-before-probe")?;
+            crate::fail::point(&format!("input-before-probe:{}", self.id))?;
+            let seq = self
+                .delivery
+                .get(&msg.input_identity)
+                .map_or(0, |state| state.applied);
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                identity: msg.input_identity,
+                seq,
+                probe: msg.input_probe,
+                ..Default::default()
+            });
+            return Ok(());
+        }
+        let delivery_seq = msg.input_seq;
+        let identity = msg.input_identity.clone();
+        let reliable = delivery_seq != 0
+            && !identity.is_empty()
+            && msg.msg.as_ref().and_then(tilr_proto::input::pane).is_some();
+        if reliable {
+            let state = self.delivery.entry(identity.clone()).or_insert_with(|| {
+                tilr_proto::InputDeliveryState {
+                    identity: identity.clone(),
+                    accepted: 0,
+                    applied: 0,
+                }
+            });
+            if delivery_seq <= state.accepted {
+                self.delivery_acks.push(tilr_proto::PaneInputAck {
+                    identity,
+                    seq: state.applied,
+                    probe: 0,
+                    ..Default::default()
+                });
+                return Ok(());
+            }
+            // WebSocket ordering and ordered replay guarantee increasing sequences.
+            state.accepted = delivery_seq;
+            crate::fail::point("input-before-apply")?;
+        }
         /// How an input message is credited.
         enum Credit {
             /// Once its bytes are written to the pty.
@@ -764,7 +876,29 @@ impl Pane {
             Some(Msg::Scroll(_) | Msg::Resize(_)) => Some(Credit::Applied),
             _ => None,
         };
+        let resize = matches!(msg.msg, Some(Msg::Resize(_)));
         self.handle_message(msg)?;
+        if resize {
+            // Publish the applied size even when earlier PTY input keeps the
+            // cumulative delivery acknowledgement behind this resize.
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                seq: self
+                    .delivery
+                    .get(&identity)
+                    .map_or(0, |state| state.applied),
+                identity: identity.clone(),
+                ..Default::default()
+            });
+        }
+        if reliable {
+            self.pending_delivery
+                .push_back(tilr_proto::PendingDelivery {
+                    identity,
+                    seq: delivery_seq,
+                    end: self.written + self.pending_input.len() as u64,
+                });
+            self.settle_delivery();
+        }
         match (received, credit) {
             (Some(received), Some(Credit::Written)) => self.mark_input(seq, received),
             (Some(received), Some(Credit::Applied)) => self.credit_input(seq, received),

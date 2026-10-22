@@ -154,17 +154,43 @@ async fn the_clipboard_can_be_turned_off() {
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "||\n");
 }
 
+// Expiry is read on the test clock by the server (which stamps it) and by
+// the pane's clipboard tool (which compares it), so no real time passes in
+// this test: a slow check cannot make it miss the content or see it late.
+#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn pasted_content_expires() {
-    let server = Server::start(&["--clipboard-ttl", "1"]);
+    const START_US: u64 = 1_700_000_000_000_000;
+    const TTL_US: u64 = 1_000_000;
+    const MS_US: u64 = 1_000;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    set_test_time(&clock, START_US);
+    let server = Server::start_with_env(
+        dir,
+        &["--clipboard-ttl", "1"],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     let check = script(&server, "check.sh", CLAUDE_CHECK_IMAGE);
     client.put_clipboard(1, "image/png", &image(100)).await;
     assert!(client.clipboard_ack().await.ok);
-    assert_eq!(client.run(pane_id, &check).await, 0);
-    tokio::time::sleep(Duration::from_millis(2100)).await;
-    assert_ne!(client.run(pane_id, &check).await, 0);
+    assert_eq!(
+        client.run(pane_id, &check).await,
+        0,
+        "not there after the ack"
+    );
+
+    // The last millisecond of the TTL still has it; at the TTL it is gone.
+    set_test_time(&clock, START_US + TTL_US - MS_US);
+    assert_eq!(client.run(pane_id, &check).await, 0, "gone before the TTL");
+    set_test_time(&clock, START_US + TTL_US);
+    assert_ne!(
+        client.run(pane_id, &check).await,
+        0,
+        "still there at the TTL"
+    );
 }
 
 /// `printf` of an OSC 52 copy of `base64` to the clipboard.

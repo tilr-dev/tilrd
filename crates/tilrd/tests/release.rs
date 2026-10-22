@@ -76,10 +76,12 @@ done
 "#,
         );
         executable(
-            &dir.join("bin/wrangler"),
+            &dir.join("bin/aws"),
             r#"#!/bin/sh
-printf '%s\n' "$*" >> "$WRANGLER_LOG"
-if [ -f "$WRANGLER_FAIL" ] && [ "$4" = "tilr-cdn/$(cat "$WRANGLER_FAIL")" ]; then
+[ "$AWS_ACCESS_KEY_ID" = fixture-key ] && [ "$AWS_SECRET_ACCESS_KEY" = fixture-secret ] || exit 9
+printf '%s|' "$@" >> "$AWS_LOG"
+printf '\n' >> "$AWS_LOG"
+if [ -f "$AWS_FAIL" ] && [ "$4" = "s3://tilr-cdn/$(cat "$AWS_FAIL")" ]; then
   exit 1
 fi
 "#,
@@ -106,8 +108,11 @@ fi
                 std::env::var("PATH").unwrap()
             ),
         );
-        command.env("WRANGLER_LOG", self.dir.join("wrangler.log"));
-        command.env("WRANGLER_FAIL", self.dir.join("wrangler.fail"));
+        command.env("AWS_LOG", self.dir.join("aws.log"));
+        command.env("AWS_FAIL", self.dir.join("aws.fail"));
+        command.env("AWS_ACCESS_KEY_ID", "fixture-key");
+        command.env("AWS_SECRET_ACCESS_KEY", "fixture-secret");
+        command.env_remove("AWS_SESSION_TOKEN");
         command.env_remove("CLOUDFLARE_ACCOUNT_ID");
         if account {
             command.env("CLOUDFLARE_ACCOUNT_ID", "fixture-account");
@@ -129,12 +134,12 @@ fi
     }
 
     fn log(&self) -> String {
-        fs::read_to_string(self.dir.join("wrangler.log")).unwrap_or_default()
+        fs::read_to_string(self.dir.join("aws.log")).unwrap_or_default()
     }
 
-    /// The stub wrangler fails to upload `name` (an object of tilr-cdn).
+    /// The stub aws fails to upload `name` (an object of tilr-cdn).
     fn fail_upload(&self, name: &str) {
-        fs::write(self.dir.join("wrangler.fail"), name).unwrap();
+        fs::write(self.dir.join("aws.fail"), name).unwrap();
     }
 
     /// The objects uploaded, in order.
@@ -142,8 +147,12 @@ fi
         self.log()
             .lines()
             .map(|line| {
-                let name = line.strip_prefix("r2 object put tilr-cdn/").unwrap();
-                name[..name.find(' ').unwrap()].to_owned()
+                line.split('|')
+                    .nth(3)
+                    .unwrap()
+                    .strip_prefix("s3://tilr-cdn/")
+                    .unwrap()
+                    .to_owned()
             })
             .collect()
     }
@@ -237,6 +246,7 @@ fn publishing_without_the_account_id_does_nothing() {
     let output = f.run(&["--publish", "linux-aarch64"], false);
     assert_exit(&output, 2);
     assert!(String::from_utf8_lossy(&output.stderr).contains("CLOUDFLARE_ACCOUNT_ID"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("README"));
     assert!(!f.dir.join("build.log").exists());
     assert!(f.log().is_empty());
 }
@@ -270,15 +280,23 @@ fn publishing_uploads_the_archive_and_its_checksum_before_latest() {
         ),
     ] {
         assert!(
-            line.starts_with(&format!("r2 object put tilr-cdn/{name} --file ")),
+            line.starts_with(&format!("s3|cp|dist/cdn/{name}|s3://tilr-cdn/{name}|")),
             "{line}"
         );
         assert!(
-            line.contains(&format!("--content-type {content_type}")),
+            line.contains(&format!("|--content-type|{content_type}|")),
             "{line}"
         );
-        assert!(line.contains(&format!("--cache-control {cache}")), "{line}");
-        assert!(line.ends_with("--remote"), "{line}");
+        assert!(
+            line.contains(&format!("|--cache-control|{cache}|")),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "|--endpoint-url|https://fixture-account.r2.cloudflarestorage.com|--region|auto|"
+            ),
+            "{line}"
+        );
     }
 }
 
@@ -345,21 +363,26 @@ fn the_installer_is_uploaded_after_latest() {
     );
     let line = f.log().lines().last().unwrap().to_owned();
     assert!(
-        line.starts_with("r2 object put tilr-cdn/install.sh --file scripts/install.sh "),
+        line.starts_with("s3|cp|scripts/install.sh|s3://tilr-cdn/install.sh|"),
         "{line}"
     );
     assert!(
-        line.contains("--content-type text/x-shellscript; charset=utf-8"),
+        line.contains("|--content-type|text/x-shellscript; charset=utf-8|"),
         "{line}"
     );
     assert!(
-        line.contains("--cache-control public, max-age=300"),
+        line.contains("|--cache-control|public, max-age=300|"),
         "{line}"
     );
-    assert!(line.ends_with("--remote"), "{line}");
+    assert!(
+        line.contains(
+            "|--endpoint-url|https://fixture-account.r2.cloudflarestorage.com|--region|auto|"
+        ),
+        "{line}"
+    );
 
     // With two platforms, after both latests.
-    fs::remove_file(f.dir.join("wrangler.log")).unwrap();
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
     assert_exit(
         &f.run(&["--upload-only", "linux-aarch64", "linux-x86_64"], true),
         0,
@@ -371,7 +394,7 @@ fn the_installer_is_uploaded_after_latest() {
     assert_eq!(uploads[6], "install.sh");
 
     // A failed upload stops it before the installer.
-    fs::remove_file(f.dir.join("wrangler.log")).unwrap();
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
     f.fail_upload("releases/linux-x86_64/latest");
     let output = f.run(&["--upload-only", "linux-x86_64"], true);
     assert_ne!(output.status.code(), Some(0), "{output:?}");
@@ -487,7 +510,7 @@ fn the_linux_build_runs_in_the_pinned_debian_12_image() {
     assert!(from.starts_with("FROM rust:1.99-bookworm@sha256:"));
     assert_eq!(from.split("sha256:").nth(1).unwrap().len(), 64);
     assert!(docker.contains("protobuf-compiler"));
-    assert!(docker.contains("install-tools.sh /opt/tilr-tools zig"));
+    assert!(docker.contains("install-tools.sh /opt/tilr-tools zig nextest"));
     let linux = active(&text_file("scripts/linux.sh"));
     assert!(linux.contains("scripts/linux.Dockerfile"));
     assert!(linux.contains("docker build"));
@@ -517,6 +540,8 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
     let tools = active(&text_file("scripts/install-tools.sh"));
     assert!(tools.contains("ZIG_VERSION=0.15.2"));
     assert!(tools.contains("PROTOC_VERSION=36.2"));
+    assert!(tools.contains("NEXTEST_VERSION=0.9."));
+    assert!(tools.contains("set -- zig protoc nextest"));
     for platform in [
         "Linux-x86_64",
         "Linux-aarch64",
@@ -530,7 +555,7 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
             .split(";;")
             .next()
             .unwrap();
-        for key in ["zig_sha256=", "protoc_sha256="] {
+        for key in ["zig_sha256=", "protoc_sha256=", "nextest_sha256="] {
             let hash = branch.split(key).nth(1).unwrap().lines().next().unwrap();
             assert_eq!(hash.len(), 64, "{platform} {key}");
             assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
@@ -539,6 +564,11 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
     assert!(tools.contains("fetch \"https://ziglang.org/download/"));
     assert!(tools.contains("\"$zig_sha256\""));
     assert!(tools.contains("\"$protoc_sha256\""));
+    assert!(tools.contains(
+        "fetch \"https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$NEXTEST_VERSION/"
+    ));
+    assert!(tools.contains("\"$nextest_sha256\""));
+    assert!(tools.contains("\"$dir/cargo-nextest\""));
     assert!(tools.contains("[ \"$got\" = \"$2\" ]"));
     for workflow in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
         assert!(
@@ -546,13 +576,52 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
             "{workflow}"
         );
     }
-    assert!(
-        active(&text_file("scripts/linux.Dockerfile"))
-            .contains("install-tools.sh /opt/tilr-tools zig")
-    );
+    let docker = active(&text_file("scripts/linux.Dockerfile"));
+    assert!(docker.contains("install-tools.sh /opt/tilr-tools zig nextest"));
+    assert!(docker.contains("ln -s /opt/tilr-tools/cargo-nextest /usr/local/bin/cargo-nextest"));
     let ci = active(&text_file(".github/workflows/ci.yml"));
+    // The test job installs the default set, cargo-nextest included.
+    assert!(
+        job(&ci, "test").contains("scripts/install-tools.sh \"$RUNNER_TEMP/tools\"\n"),
+        "the test job must install cargo-nextest"
+    );
     for gate in ["DENY_SHA256:", "GITLEAKS_SHA256:", "sha256sum -c -"] {
         assert!(ci.contains(gate), "{gate}");
+    }
+}
+
+/// AGENTS.md, README, the container's default command and CI run the tests with one and
+/// the same command, so the static CI check above checks what developers run.
+#[test]
+fn the_test_command_is_the_same_everywhere() {
+    for file in [
+        "AGENTS.md",
+        "README.md",
+        "USE_CASES.md",
+        "scripts/linux.sh",
+        ".github/workflows/ci.yml",
+    ] {
+        let text = text_file(file);
+        assert!(
+            text.contains("cargo nextest run --workspace --features tilrd/failpoints --locked"),
+            "{file} must name the nextest command"
+        );
+        assert!(
+            !text.contains("cargo test --workspace"),
+            "{file} still names cargo test"
+        );
+    }
+}
+
+/// Release documentation must be present in both the build and runtime snapshots.
+#[test]
+fn repository_documentation_matches_the_build_snapshot() {
+    for (file, compiled) in [
+        ("AGENTS.md", include_str!("../../../AGENTS.md")),
+        ("README.md", include_str!("../../../README.md")),
+        ("USE_CASES.md", include_str!("../../../USE_CASES.md")),
+    ] {
+        assert_eq!(text_file(file), compiled, "{file}");
     }
 }
 
@@ -580,7 +649,9 @@ fn assert_ci_gates(ci: &str) {
     ] {
         assert!(lint.contains(gate), "missing CI gate: {gate}");
     }
-    assert!(test.contains("- run: cargo test --workspace --features tilrd/failpoints --locked"));
+    assert!(
+        test.contains("- run: cargo nextest run --workspace --features tilrd/failpoints --locked")
+    );
     assert!(deny.contains("- run: '\"$CARGO_DENY\" --locked check'"));
     assert!(secrets.contains("- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'"));
     assert!(test.contains("os: [ubuntu-latest, macos-15]"));
@@ -601,7 +672,7 @@ fn ci_runs_every_gate_of_agents_md() {
         "- run: cargo fmt --all --check",
         "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
         "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
-        "- run: cargo test --workspace --features tilrd/failpoints --locked",
+        "- run: cargo nextest run --workspace --features tilrd/failpoints --locked",
         "- run: '\"$CARGO_DENY\" --locked check'",
         "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'",
     ] {
@@ -774,7 +845,9 @@ fn assert_cdn_contract(release: &str) {
         "for platform in $PLATFORMS",
         "want=\"${TAG#v}-$(git rev-parse --short HEAD)\"",
         "test \"$(cat \"dist/cdn/releases/$platform/latest\")\" = \"$want\"",
-        "CLOUDFLARE_API_TOKEN:",
+        "AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}",
+        "AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+        "run: aws --version",
         "CLOUDFLARE_ACCOUNT_ID:",
         "scripts/release.sh --upload-only $PLATFORMS",
     ] {
@@ -829,7 +902,7 @@ fn the_pinned_zig_selects_a_compatible_macos_sdk() {
         (
             ".github/workflows/ci.yml",
             "test",
-            "name: Install Zig and protoc",
+            "name: Install Zig, protoc and cargo-nextest",
         ),
         (
             ".github/workflows/release.yml",

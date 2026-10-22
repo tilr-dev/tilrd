@@ -22,7 +22,7 @@ itests/                   black-box tests: real installs and servers in containe
 scripts/release.sh        the Linux release archive in the CDN layout; --publish uploads it
 scripts/package.sh        GitHub release archive of built binaries (release.yml)
 scripts/linux.sh          a command (the test suite by default) in the Linux build container
-scripts/install-tools.sh  the pinned Zig and protoc the build needs (CI, the container)
+scripts/install-tools.sh  the pinned Zig, protoc and cargo-nextest (CI, the container)
 scripts/update-test.sh    live check of `tilrd update` on a real machine
 ```
 
@@ -169,8 +169,10 @@ latest `PaneInfo.used_at_ms` (a subscribe, or input).
 **Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as it runs. A
 connection that drops (a reload of the server, the network) is made again with it 0.1 s
 after the loss, then after waits from 0.1 s doubling to 2 s; the bottom row says
-`disconnected …, reconnecting…` meanwhile, and what is typed then is dropped, not sent
-later. An attempt that connects but loses the connection (or gets no answer) before the pane
+`disconnected …, reconnecting…` meanwhile. Input stays queued until the pane acknowledges
+application to its PTY and is replayed after reconnect without applying duplicates. The
+queue holds at most 4 MiB or 4096 messages; a full queue rejects new input with a visible
+`input buffer full` error. An attempt that connects but loses the connection (or gets no answer) before the pane
 is listed and subscribed is a failed attempt like a refused one, and Ctrl+] d detaches at
 once also while an attempt waits. It pings every 5 s, on the Unix socket as over TCP, and
 takes 15 s of silence as a dropped connection. A pane gone after the reconnect, or a local
@@ -875,12 +877,31 @@ access token and on the same transport (the Unix socket, or TCP: neither speaks 
 other), the server closes that older connection at once with close code 4000
 (`superseded`): it is the same client come back (from another network, after a reload of
 its page), and the old connection is what the network it left still holds, a ghost viewer
-otherwise until the client timeout. The new connection starts afresh and subscribes itself;
-nothing is carried over and no input is replayed (input sent into the old connection may be
-lost, never doubled). A client does not reconnect a connection closed as superseded
+otherwise until the client timeout. The new connection subscribes again and receives a
+full screen. Its stable identity keeps the input delivery sequence: after Hello reports applied counters, the client replays
+unacknowledged input in order, and the pane deduplicates it. Admitted input reaches the
+pane exactly once while delivery history is retained, even if the old connection revives.
+A normal client exit drains acknowledgements and sends `FinalizeInput`, which removes
+its history immediately. Disconnected identities expire after one hour without
+reconnecting. Pane exec starts with empty delivery history while queued PTY bytes
+remain. Replaying unacknowledged input after expiry or reload can therefore duplicate
+previously applied bytes (including a partially written frame's prefix). A client does not reconnect a
+connection closed as superseded
 (`tilr` ends its attach). Another token, or the other transport, with the same id
 supersedes nobody; an empty `client_id` neither supersedes
-nor is superseded. `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
+nor is superseded. Numbered input without a stable `client_id` returns
+`Error "numbered input requires a stable client_id"` and is not applied.
+Numbered input naming no running pane receives `Error "no such pane: <name as sent>"`
+followed by `InputAck` for that exact pane string and delivery sequence. This is a
+terminal rejection: the client reclaims that pane's queued input through that sequence,
+and a lost acknowledgement is returned again on replay. It does not change any pane's
+applied counter or add a missing pane to `HelloAck.applied_input`. Unnumbered requests
+receive only the error.
+Hello probes each pane for applied counters. A pane that does not answer within
+five seconds (checked on each supervisor tick) is killed and closed; HelloAck
+waits for its link to close and retains counters from responsive panes. Pending
+probes are governed by this bound rather than the timeout for missing Hello.
+`PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
 The server does not hoard frames for a client that cannot keep up. Unsent data the kernel
@@ -1067,7 +1088,7 @@ Prometheus queries and alerts; the server emits only the new names.
 ## Tests
 
 ```sh
-cargo test --workspace --features tilrd/failpoints --locked
+cargo nextest run --workspace --features tilrd/failpoints --locked
 scripts/linux.sh                  # the same suite in the Linux build container
 python3 scripts/test_server_cleanup_stand_selftest.py  # check the stand itself
 python3 scripts/test_server_cleanup_stand.py           # signal/timeout cleanup diagnostic
@@ -1150,7 +1171,8 @@ CDN: it installs an older release there, opens panes and updates them to the lat
 
 Needs Rust 1.90+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network access on the
 first build (libghostty-vt fetches the Ghostty source). `scripts/install-tools.sh DIR`
-downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
+downloads the pinned Zig, protoc and cargo-nextest (the tests run with it) into `DIR` and
+checks their SHA-256 sums.
 
 ```sh
 cargo build --release --locked -p tilrd -p tilr
@@ -1267,10 +1289,32 @@ releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
 `linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
-hand, from a clean checkout: `scripts/release.sh --publish linux-aarch64 linux-x86_64`
-builds in the Linux container and uploads with `wrangler` (see the script); export
-`CLOUDFLARE_ACCOUNT_ID` first, e.g. via `infisical run --path /cloudflare`. Versions and
-CHANGELOG.md are not edited by hand.
+hand, from a clean checkout, `scripts/release.sh --publish linux-aarch64 linux-x86_64`
+builds in the Linux container and uploads with AWS CLI. Install AWS CLI and OpenSSL
+first. Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
+`R2_CDN_TOKEN`; it does not hold the derived AWS keys. `AWS_ACCESS_KEY_ID` is that
+API token's **ID** (the `id` returned when creating the Cloudflare Account API token),
+and `AWS_SECRET_ACCESS_KEY` is the lowercase hexadecimal SHA-256 of the token value,
+with no trailing newline included in the hash. See [Cloudflare's credential derivation](https://developers.cloudflare.com/r2/api/tokens/#get-s3-api-credentials-from-an-api-token).
+
+Replace `YOUR_R2_CDN_TOKEN_ID` below with the ID belonging to `R2_CDN_TOKEN` (after
+rotation, use the new token's ID). Run from the checkout with your Infisical project
+selected and access to `prod`:
+
+```sh
+infisical run --env prod --path /cloudflare -- sh -eu <<'SH'
+export CLOUDFLARE_ACCOUNT_ID="$CF_ACCOUNT_ID"
+export AWS_ACCESS_KEY_ID='YOUR_R2_CDN_TOKEN_ID'
+AWS_SECRET_ACCESS_KEY=$(printf '%s' "$R2_CDN_TOKEN" | openssl dgst -sha256 -r | cut -d ' ' -f 1)
+export AWS_SECRET_ACCESS_KEY
+scripts/release.sh --publish linux-aarch64 linux-x86_64
+SH
+```
+
+The keys are passed through the process environment; keep shell tracing off and do
+not save their values in the checkout. `--upload-only` uses the same credentials.
+In CI, the `cdn` environment supplies both AWS secrets and the
+`CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
 
 ## License
 

@@ -18,7 +18,12 @@ pub mod server_owner;
 pub use server_owner::Owner;
 
 pub mod scrape;
-pub use scrape::{http_get, http_request, sample};
+pub use scrape::{http_get, http_request, sample, wait_sample_above};
+
+#[cfg(feature = "failpoints")]
+pub mod time;
+#[cfg(feature = "failpoints")]
+pub use time::set_test_time;
 
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
@@ -207,6 +212,102 @@ pub fn spawn_copied(command: &mut Command) -> Child {
     }
 }
 
+/// Shell successors implement the same test-only startup handshake as tilrd.
+pub const STATE_FORMATS_STARTUP: &str = r#"if [ "$TILR_TEST_STATE_FORMATS_STARTUP" = child ]; then
+printf 'tilrd-state-formats-started\n'
+read ack || exit 1
+[ "$ack" = continue ] || exit 1
+fi
+"#;
+
+/// Reclaim pairs left by exited test processes, including aborted runs. A live
+/// process still needs its source paths for subsequent hardlink installations.
+fn warm_executable_dir() -> PathBuf {
+    let root = std::env::temp_dir();
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("tilr-warm-"))
+            .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+            .filter(|pid| *pid > 0)
+        else {
+            continue;
+        };
+        // SAFETY: signal zero only checks existence; it sends no signal.
+        let exited = unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if exited {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                // Another test binary may have reclaimed the same dead pair.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => panic!("remove {}: {err}", entry.path().display()),
+            }
+        }
+    }
+    let dir = root.join(format!("tilr-warm-{}", std::process::id()));
+    // A reused PID can have left a directory in an earlier run.
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
+/// Two warmed inodes shared by this integration-test binary. Keep both source
+/// paths alive: private installations may be renamed or removed by their tests.
+fn warm_executables() -> &'static [PathBuf; 2] {
+    static EXECUTABLES: std::sync::OnceLock<[PathBuf; 2]> = std::sync::OnceLock::new();
+    EXECUTABLES.get_or_init(|| {
+        let original = PathBuf::from(env!("CARGO_BIN_EXE_tilrd"));
+        let dir = warm_executable_dir();
+        let first = dir.join("tilrd-warm-a");
+        let alternate = dir.join("tilrd-warm-b");
+        let warm = |exe: &Path| {
+            let status = spawn_copied(Command::new(exe).arg("--version"))
+                .wait()
+                .unwrap();
+            assert!(status.success(), "warm {}: {status}", exe.display());
+        };
+        warm(&original);
+        match std::fs::hard_link(&original, &first) {
+            Ok(()) => {}
+            // Linux containers put Cargo's target directory on a separate
+            // volume. Copy once into the tests' filesystem, never per test.
+            Err(err) if err.raw_os_error() == Some(libc::EXDEV) => {
+                std::fs::copy(&original, &first).unwrap();
+                warm(&first);
+            }
+            Err(err) => panic!("link {} to {}: {err}", original.display(), first.display()),
+        }
+        std::fs::copy(&original, &alternate).unwrap();
+        warm(&alternate);
+        [first, alternate]
+    })
+}
+
+/// Install a private path without triggering assessment of a fresh executable.
+/// Callers must replace/unlink this path rather than modify its shared inode.
+pub fn link_executable(destination: &Path) {
+    std::fs::hard_link(&warm_executables()[0], destination).unwrap();
+}
+
+/// Stage a different warmed inode, including when replacing the same path again.
+pub fn link_replacement(current: &Path, staged: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let sources = warm_executables();
+    let current = std::fs::metadata(current).unwrap();
+    let first = std::fs::metadata(&sources[0]).unwrap();
+    let source = if (current.dev(), current.ino()) == (first.dev(), first.ino()) {
+        &sources[1]
+    } else {
+        &sources[0]
+    };
+    std::fs::hard_link(source, staged).unwrap();
+}
+
 impl Server {
     pub fn start(args: &[&str]) -> Self {
         Self::start_exe(Path::new(env!("CARGO_BIN_EXE_tilrd")), args)
@@ -230,6 +331,19 @@ impl Server {
 
     pub fn start_in(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
         Self::start_failing(dir, exe, args, "")
+    }
+
+    /// Wait for successor startup before the bounded compatibility check.
+    /// Only failpoints builds honor this opt-in; the
+    /// harness still bounds its waits for logs and client messages.
+    pub fn start_awaiting_formats(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
+        Self::start_full(
+            dir,
+            exe,
+            args,
+            "",
+            &[("TILR_TEST_STATE_FORMATS_STARTUP", "1")],
+        )
     }
 
     /// Start a server in which things go wrong where `failpoints` says, see
@@ -321,6 +435,7 @@ impl Server {
             // Each test opts into its own clock through `start_with_env`.
             .env_remove("TILR_TEST_TIME_FILE")
             .env_remove("TILR_TEST_FRAME_STAGE_TIME_FILE")
+            .env_remove("TILR_TEST_STATE_FORMATS_STARTUP")
             // No real clipboard for the shims to fall back to, and no shell
             // startup file.
             .env_remove("DISPLAY")
@@ -350,6 +465,38 @@ impl Server {
             .any(|line| line.contains(needle))
     }
 
+    /// Count accepted startup events so a second replacement cannot reuse
+    /// the first probe's event.
+    pub fn formats_started(&self) -> usize {
+        self.log
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .iter()
+            .filter(|line| line.contains("state-formats successor started"))
+            .count()
+    }
+
+    /// Startup gets the ordinary harness bound. Verdict/client waits begin
+    /// only after this event, separately from launch admission.
+    pub async fn wait_formats_started(&self, after: usize) {
+        #[cfg(feature = "failpoints")]
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let changed = self.log_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.formats_started() > after {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("successor did not start\n{}", log_text(&self.log)));
+        #[cfg(not(feature = "failpoints"))]
+        let _ = after;
+    }
+
     /// Wait up to [`TIMEOUT`] for the server to log a line with `needle`.
     pub async fn wait_logged(&self, needle: &str) {
         self.wait_logged_within(needle, TIMEOUT).await;
@@ -357,11 +504,38 @@ impl Server {
 
     /// Wait up to `within` for the server to log a line with `needle`.
     pub async fn wait_logged_within(&self, needle: &str, within: Duration) {
+        let what = format!("not logged within {within:?}: {needle}");
+        self.wait_log_within(&what, within, |log| {
+            log.iter().any(|line| line.contains(needle))
+        })
+        .await;
+    }
+
+    /// Wait up to [`TIMEOUT`] for the server's log so far to satisfy `done`;
+    /// fails with `what` and the log if it does not.
+    pub async fn wait_log(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+        self.wait_log_within(what, TIMEOUT, done).await;
+    }
+
+    /// [`Server::wait_log`] with a caller-provided deadline: the log is
+    /// looked at every 20 ms.
+    pub async fn wait_log_within(
+        &self,
+        what: &str,
+        within: Duration,
+        done: impl Fn(&[String]) -> bool,
+    ) {
         let deadline = tokio::time::Instant::now() + within;
-        while !self.logged(needle) {
+        loop {
+            // The guard ends here: a failed wait panics with none held, so
+            // the log is left unpoisoned for the cleanup that follows.
+            let met = done(&self.log.lock().unwrap_or_else(|err| err.into_inner()));
+            if met {
+                return;
+            }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "not logged within {within:?}: {needle}\n{}",
+                "{what}\n{}",
                 log_text(&self.log)
             );
             tokio::time::sleep(Duration::from_millis(20)).await;

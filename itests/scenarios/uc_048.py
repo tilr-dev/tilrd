@@ -1,4 +1,4 @@
-"""UC-048: input sent while the connection breaks may be lost, but never arrives twice;
+"""UC-048: input accepted while the connection breaks arrives exactly once;
 after the return, input works again.
 
 Every input is a command `echo <mark> >>marks` typed into an idle shell, so the marks
@@ -9,7 +9,6 @@ drops the old connection on its timeout), and a freeze that revives after the cl
 reconnected (what was typed into the dead connection arrives late, once).
 """
 
-import time
 from collections import Counter as Tally
 
 from tt import T, case
@@ -29,11 +28,11 @@ def setup(t: T, *server_args):
 
 
 def type_marks(client, pane: str, marks, names) -> list[str]:
-    """Type a mark per name; the ones the client managed to send."""
+    """Queue a mark per name, including input awaiting reconnection."""
     sent = []
     for name in names:
-        if client.cmd("input", pane=pane, text=f"echo {name} >>{marks}\r", ok=False, quiet=True)["ev"] == "ok":
-            sent.append(name)
+        client.cmd("input", pane=pane, text=f"echo {name} >>{marks}\r", quiet=True)
+        sent.append(name)
     return sent
 
 
@@ -51,13 +50,14 @@ def after_return(t: T, client, pane: str, marks, typed: list[str]):
     lost = [m for m in typed if m not in counts]
     t.metric("inputs_typed", len(typed))
     t.metric("inputs_lost", len(lost))
+    t.eq(lost, [], "every queued input ran")
     t.eq(counts["after"], 1, "the input after the return ran once")
     return counts
 
 
 @case(fixture="server_state", spec=["client-liveness/a-new-connection-starts-afresh"])
-def input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled(t: T):
-    """UC-048: RST after 20 of 60 rapid inputs; what ran is the first part, in order, once; input works after."""
+def input_cut_by_a_reset_mid_burst_arrives_once_in_order(t: T):
+    """UC-048: RST after 20 of 60 rapid inputs; all inputs run in order, once; input works after."""
     server, proxy, client, pane, marks = setup(t)
     names = [f"burst{n:02d}" for n in range(60)]
     proxy.set(dir="up", cut_after_ws_messages=20)
@@ -65,28 +65,24 @@ def input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled(t:
     t.eventually(lambda: proxy.stats()[0]["closed"], "the proxy cut the connection", timeout=5)
     after_return(t, client, pane, marks, typed)
     got = [m for m in ran(marks) if m.startswith("burst")]
-    t.eq(got, names[:len(got)], "the inputs that ran are the first ones, in order")
+    t.eq(got, names, "all inputs ran once, in order")
 
 
 @case(fixture="server_state", spec=["client-liveness/a-new-connection-starts-afresh"])
-def input_typed_into_a_silent_connection_is_lost_but_never_doubled(t: T):
-    """UC-048: freeze, type for 3 s, the client reconnects after the network returns; held input never runs twice."""
+def input_typed_into_a_silent_connection_arrives_exactly_once(t: T):
+    """UC-048: freeze and queue input, then wait for the client to detect the dead connection; all input is replayed."""
     server, proxy, client, pane, marks = setup(t, "--client-timeout", CLIENT_TIMEOUT_S)
     since = client.mark()
     proxy.freeze()
-    typed = []
-    for n in range(10):
-        typed += type_marks(client, pane, marks, [f"frozen{n}"])
-        time.sleep(0.3)
+    typed = type_marks(client, pane, marks, [f"frozen{n}" for n in range(10)])
     client.wait_event("dead", since=since, timeout=10)
-    time.sleep(CLIENT_TIMEOUT_S)
     proxy.resume()
     client.wait_event("reconnected", since=since, timeout=20)
     after_return(t, client, pane, marks, typed)
 
 
 @case(fixture="server_state", spec=["client-liveness/a-new-connection-starts-afresh"])
-def input_held_in_a_connection_that_revives_arrives_once_at_most(t: T):
+def input_held_in_a_connection_that_revives_arrives_exactly_once(t: T):
     """UC-048: freeze the connection, type, the client reconnects; the old connection revives with the held input."""
     server, proxy, client, pane, marks = setup(t)
     since = client.mark()
@@ -96,7 +92,7 @@ def input_held_in_a_connection_that_revives_arrives_once_at_most(t: T):
     client.wait_for(pane, r"(?m)^\$ ?$", timeout=10)
     typed += type_marks(client, pane, marks, ["fresh"])
     proxy.resume(conn=1)
-    time.sleep(2)
+    t.eventually(lambda: proxy.stats()[0]["closed"], "the superseded connection closed", timeout=10)
     counts = after_return(t, client, pane, marks, typed)
     t.metric("held_inputs_run_late", sum(counts[f"held{n}"] for n in range(5)))
     t.eq(counts["fresh"], 1, "input typed on the new connection ran once")
