@@ -250,6 +250,7 @@ Cloud repository.
 | The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
 | AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
+| Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
@@ -306,6 +307,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |

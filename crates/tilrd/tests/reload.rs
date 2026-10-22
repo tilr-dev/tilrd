@@ -205,13 +205,15 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     link_executable(&exe);
-    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     let staged = dir.join("tilrd.new");
     link_replacement(&exe, &staged);
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    server.wait_formats_started(startup).await;
 
     // Nobody tells the server: it notices on its own.
     let client = reconnect(&server, client).await;
@@ -284,7 +286,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     // Retain the running inode after a rejected script replaces its pathname.
     let running_exe = dir.join("tilrd-running");
     std::fs::hard_link(&exe, &running_exe).unwrap();
-    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
@@ -306,13 +308,15 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let staged = dir.join("tilrd.new");
     std::fs::write(
         &staged,
-        "#!/bin/sh\necho 'supervisor-state 2\npane-state 2'\n",
+        format!("#!/bin/sh\n{STATE_FORMATS_STARTUP}echo 'supervisor-state 2\npane-state 2'\n"),
     )
     .unwrap();
     let mut mode = std::fs::metadata(&staged).unwrap().permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
     std::fs::set_permissions(&staged, mode).unwrap();
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    server.wait_formats_started(startup).await;
 
     server
         .wait_logged_within("reads pane-state format 2, this server writes 3", JUDGED)
@@ -325,7 +329,9 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     // Differ from the running original, not just the rejected script on disk.
     let staged = dir.join("tilrd.new");
     link_replacement(&running_exe, &staged);
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    server.wait_formats_started(startup).await;
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
@@ -923,7 +929,7 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
             .unwrap()
     ));
     let socket_arg = socket.display().to_string();
-    let mut server = Server::start_in(dir.clone(), &exe, &["--socket", &socket_arg]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &["--socket", &socket_arg]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let pid = shell_pid(&server, &mut client, pane_id).await;
@@ -945,9 +951,11 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
     .unwrap();
     let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(&staged, mode).unwrap();
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
 
     server.signal("-USR1");
+    server.wait_formats_started(startup).await;
     server.wait_logged(REFUSED).await;
     // The log names the argument.
     server.wait_logged("unexpected argument '--socket'").await;
