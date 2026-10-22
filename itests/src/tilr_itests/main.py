@@ -96,8 +96,9 @@ with open("/tt-result.json", "w") as f:
 # older than the last build of another tree (another commit, worktree or run) would be
 # taken as built and tested as the other tree, down to code generated from another
 # tilr.proto. The digests of the tree a target dir was last given are in
-# DIR/.tt-sources.json, written before CMD runs: a build that fails halfway has still
-# been given that tree.
+# DIR/.tt-sources.json. Invalidate the records before CMD can change any artifacts,
+# and publish them only after success: a failed or interrupted multi-target build
+# may leave any target partially built, or never reach the next-release target.
 FRESH = r'''#!/usr/bin/env python3
 import fcntl, hashlib, json, os, subprocess, sys
 split = sys.argv.index("--")
@@ -130,10 +131,17 @@ for d in sorted(dirs):
         os.utime(path)
     print(f"[tt-fresh] {d}: {len(changed)} of {len(now)} source files changed since its last build",
           file=sys.stderr, flush=True)
+    try:
+        os.unlink(f"{d}/.tt-sources.json")
+    except FileNotFoundError:
+        pass
+code = subprocess.run(argv).returncode
+if code:
+    sys.exit(code)
+for d in sorted(dirs):
     with open(f"{d}/.tt-sources.json.tmp", "w") as f:
         json.dump(now, f)
     os.replace(f"{d}/.tt-sources.json.tmp", f"{d}/.tt-sources.json")
-sys.exit(subprocess.run(argv).returncode)
 '''
 
 # Builds everything once: the server and the driver, the test executables (with
