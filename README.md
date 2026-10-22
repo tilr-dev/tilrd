@@ -72,7 +72,9 @@ installer and `tilr update` look for them: one archive per platform,
 its `.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`; `tilr.sh` serves
 `scripts/install.sh`, uploaded with each release) downloads it into a
 temporary directory, checks it, unpacks it there and runs both programs, and only then puts
-both in `~/.local/bin`; anything that fails installs nothing. It sets up no service and
+both in `~/.local/bin`; a failed check installs nothing. After installation it explicitly
+requests reload. If that request fails, both new programs remain installed and the command
+exits non-zero with an error saying reload could not be requested. It sets up no service and
 edits no profile: it prints what to type next (`tilr`, `tilr service install` to start
 tilrd at boot, `tilr token`, `tilr cloud login`) and, if `~/.local/bin` is not on `PATH`,
 the line to add to `~/.profile`. By hand:
@@ -110,7 +112,9 @@ both programs run, and renames them over the installed ones: `tilr` (next to `ti
 synced to disk before the renames and the directory after them, so `updated …` means the
 release is on disk (a power loss after it does not leave an empty executable). A running server
 then [reloads itself](#reloading-without-closing-shells) and keeps every shell. `--cdn URL`
-(or `TILR_CDN`) names another place to fetch releases from.
+(or `TILR_CDN`) names another place to fetch releases from. If the reload request fails
+after installation, the new programs remain installed, the command exits non-zero and
+reports the request failure without claiming reload succeeded.
 
 `tilr version` prints what builds the client and the running server are: the package
 version, the commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)` (`tilr
@@ -154,7 +158,10 @@ access token. `--service` also installs the remote user's boot service. Releases
 come from `--cdn URL`, `TILR_CDN`, or `https://cdn.tilr.dev`; `--archive FILE` uses a
 local `tilr-<version>-<platform>.tar.gz` with its `.sha256` alongside it. Supported
 hosts are Linux x86_64/aarch64 and macOS arm64 (macOS requires a local archive).
-An existing server reloads into the new release and keeps its panes.
+An existing server reloads into the new release and keeps its panes. Failures before
+installation and startup complete restore the previous remote files. If the subsequent
+reload request fails, deploy keeps both new programs, exits non-zero with an explicit
+request error and prints no connection instructions or token.
 
 **The tmux model.** `tilr` talks to the server of this user on this machine over a Unix
 socket. With no server running it starts one: `tilrd` next to the `tilr` executable, else on
