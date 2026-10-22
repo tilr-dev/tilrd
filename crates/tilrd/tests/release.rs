@@ -487,7 +487,7 @@ fn the_linux_build_runs_in_the_pinned_debian_12_image() {
     assert!(from.starts_with("FROM rust:1.99-bookworm@sha256:"));
     assert_eq!(from.split("sha256:").nth(1).unwrap().len(), 64);
     assert!(docker.contains("protobuf-compiler"));
-    assert!(docker.contains("install-tools.sh /opt/tilr-tools zig"));
+    assert!(docker.contains("install-tools.sh /opt/tilr-tools zig nextest"));
     let linux = active(&text_file("scripts/linux.sh"));
     assert!(linux.contains("scripts/linux.Dockerfile"));
     assert!(linux.contains("docker build"));
@@ -517,6 +517,8 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
     let tools = active(&text_file("scripts/install-tools.sh"));
     assert!(tools.contains("ZIG_VERSION=0.15.2"));
     assert!(tools.contains("PROTOC_VERSION=36.2"));
+    assert!(tools.contains("NEXTEST_VERSION=0.9."));
+    assert!(tools.contains("set -- zig protoc nextest"));
     for platform in [
         "Linux-x86_64",
         "Linux-aarch64",
@@ -530,7 +532,7 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
             .split(";;")
             .next()
             .unwrap();
-        for key in ["zig_sha256=", "protoc_sha256="] {
+        for key in ["zig_sha256=", "protoc_sha256=", "nextest_sha256="] {
             let hash = branch.split(key).nth(1).unwrap().lines().next().unwrap();
             assert_eq!(hash.len(), 64, "{platform} {key}");
             assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
@@ -539,6 +541,11 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
     assert!(tools.contains("fetch \"https://ziglang.org/download/"));
     assert!(tools.contains("\"$zig_sha256\""));
     assert!(tools.contains("\"$protoc_sha256\""));
+    assert!(tools.contains(
+        "fetch \"https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$NEXTEST_VERSION/"
+    ));
+    assert!(tools.contains("\"$nextest_sha256\""));
+    assert!(tools.contains("\"$dir/cargo-nextest\""));
     assert!(tools.contains("[ \"$got\" = \"$2\" ]"));
     for workflow in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
         assert!(
@@ -546,13 +553,40 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
             "{workflow}"
         );
     }
-    assert!(
-        active(&text_file("scripts/linux.Dockerfile"))
-            .contains("install-tools.sh /opt/tilr-tools zig")
-    );
+    let docker = active(&text_file("scripts/linux.Dockerfile"));
+    assert!(docker.contains("install-tools.sh /opt/tilr-tools zig nextest"));
+    assert!(docker.contains("ln -s /opt/tilr-tools/cargo-nextest /usr/local/bin/cargo-nextest"));
     let ci = active(&text_file(".github/workflows/ci.yml"));
+    // The test job installs the default set, cargo-nextest included.
+    assert!(
+        job(&ci, "test").contains("scripts/install-tools.sh \"$RUNNER_TEMP/tools\"\n"),
+        "the test job must install cargo-nextest"
+    );
     for gate in ["DENY_SHA256:", "GITLEAKS_SHA256:", "sha256sum -c -"] {
         assert!(ci.contains(gate), "{gate}");
+    }
+}
+
+/// AGENTS.md, README, the container's default command and CI run the tests with one and
+/// the same command, so the static CI check above checks what developers run.
+#[test]
+fn the_test_command_is_the_same_everywhere() {
+    for file in [
+        "AGENTS.md",
+        "README.md",
+        "USE_CASES.md",
+        "scripts/linux.sh",
+        ".github/workflows/ci.yml",
+    ] {
+        let text = text_file(file);
+        assert!(
+            text.contains("cargo nextest run --workspace --features tilrd/failpoints --locked"),
+            "{file} must name the nextest command"
+        );
+        assert!(
+            !text.contains("cargo test --workspace"),
+            "{file} still names cargo test"
+        );
     }
 }
 
@@ -580,7 +614,9 @@ fn assert_ci_gates(ci: &str) {
     ] {
         assert!(lint.contains(gate), "missing CI gate: {gate}");
     }
-    assert!(test.contains("- run: cargo test --workspace --features tilrd/failpoints --locked"));
+    assert!(
+        test.contains("- run: cargo nextest run --workspace --features tilrd/failpoints --locked")
+    );
     assert!(deny.contains("- run: '\"$CARGO_DENY\" --locked check'"));
     assert!(secrets.contains("- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'"));
     assert!(test.contains("os: [ubuntu-latest, macos-15]"));
@@ -601,7 +637,7 @@ fn ci_runs_every_gate_of_agents_md() {
         "- run: cargo fmt --all --check",
         "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
         "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
-        "- run: cargo test --workspace --features tilrd/failpoints --locked",
+        "- run: cargo nextest run --workspace --features tilrd/failpoints --locked",
         "- run: '\"$CARGO_DENY\" --locked check'",
         "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'",
     ] {
@@ -829,7 +865,7 @@ fn the_pinned_zig_selects_a_compatible_macos_sdk() {
         (
             ".github/workflows/ci.yml",
             "test",
-            "name: Install Zig and protoc",
+            "name: Install Zig, protoc and cargo-nextest",
         ),
         (
             ".github/workflows/release.yml",

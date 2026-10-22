@@ -57,6 +57,11 @@ message ClientMessage {
   // counted by the client on its connection; echoed in Frame.last_input_seq. 0 = not named.
   // Optional; a server that does not know the field ignores it.
   uint64 seq = 100;
+  // Delivery sequence per stable client/pane, independent of latency seq.
+  uint64 input_seq = 101;
+  // Internal supervisor-to-pane fields; always overwritten at ingress.
+  string input_identity = 102;
+  uint64 input_probe = 103;
 }
 
 // Must be the first message on a connection. The server answers HelloAck, or,
@@ -567,6 +572,7 @@ message ServerMessage {
     ExecInputAck exec_input_ack = 21;
     ClipboardWrite clipboard_write = 22;
     PaneActivity pane_activity = 23;
+    InputAck input_ack = 24;
   }
 }
 
@@ -602,6 +608,7 @@ message HelloAck {
   // seq echoed, but with several clients on a pane, or after it reconnects, it cannot tell
   // its echoes from another connection's. 0 from a server that does not know seq.
   uint64 seq_base = 7;
+  repeated InputAck applied_input = 8;
 }
 
 message PaneInfo {
@@ -1148,6 +1155,8 @@ message PaneHandover {
   // Those process groups: the shell's and the pty's foreground one, hung up
   // already (empty = none).
   repeated uint32 kill_pgids = 15;
+  repeated InputDeliveryState delivery_states = 16;
+  repeated PendingDelivery pending_delivery = 17;
 }
 
 // An input message named by ClientMessage.seq whose bytes are not all
@@ -1158,4 +1167,31 @@ message PendingInput {
   uint64 end = 2;
   // Microseconds since the pane process received it.
   uint64 age_us = 3;
+}
+
+// Cumulative completed input for one pane of the greeted client: applied to
+// the PTY, or terminally rejected with Error because that pane does not exist.
+// HelloAck.applied_input contains only applied counters from running panes.
+message InputAck {
+  string pane_id = 1;
+  uint64 seq = 2;
+}
+
+// Internal pane state and acknowledgements, never accepted from clients.
+message InputDeliveryState {
+  string identity = 1;
+  uint64 accepted = 2;
+  uint64 applied = 3;
+}
+message PendingDelivery {
+  string identity = 1;
+  uint64 seq = 2;
+  uint64 end = 3;
+}
+message PaneInputAck {
+  uint32 cols = 4;
+  uint32 rows = 5;
+  string identity = 1;
+  uint64 seq = 2;
+  uint64 probe = 3;
 }

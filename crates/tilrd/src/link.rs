@@ -72,6 +72,8 @@ pub mod kind {
     pub const CLIPBOARD: u8 = 6;
     /// A `PaneActivity` packet to broadcast to every greeted client.
     pub const ACTIVITY: u8 = 7;
+    /// A private PaneInputAck, routed only to its authenticated identity.
+    pub const INPUT_ACK: u8 = 8;
 }
 
 /// What a `FRAME` packet says of its frame ahead of the `ServerMessage`.

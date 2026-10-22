@@ -727,27 +727,40 @@ async fn a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn an_executable_replaced_again_during_a_reload_costs_no_shell() {
-    // The reload takes a second and a half, so the second replacement lands
-    // in the middle of it.
-    let (mut server, exe) = failing_server("reload-before-exec=sleep:1500");
+    // The reload is held just before its exec, so the second replacement
+    // lands in the middle of it.
+    let (mut server, exe) = failing_server("reload-before-exec=pause");
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     replace(&exe);
-    // The server first runs the new file to ask what it reads, which takes
-    // macOS seconds for a file it has not seen before.
-    let started = tokio::time::Instant::now();
-    while !server.logged("reloading") {
-        assert!(started.elapsed() < TIMEOUT, "the reload did not start");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let paused = pauses.wait("reload-before-exec").await;
     replace(&exe);
+    paused.release().await;
 
     let client = reconnect(&server, client).await;
+    // From here on the log is the successor's: the server before it logged
+    // all it did before its exec.
+    let index = server.log.lock().unwrap().len();
     assert_pane_survived(&mut server, client, pane_id).await;
     // Whatever the server makes of the second file, it stays up with its
-    // panes.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // panes. The successor runs the second file and watches it from its
+    // start, so the file does not change under it and no reload comes
+    // after this one. One that took the second file for a change would see
+    // it on its watcher's second look, a WATCH_INTERVAL after its start, and
+    // log "executable changed on disk" then: two intervals from here, after
+    // the successor started, cover that look and its log line. The check
+    // run that would follow, and its "reloading exe=", can take longer; as
+    // in the test with auto reload off, that is not waited for.
+    tokio::time::sleep(WATCH_INTERVAL * 2).await;
+    {
+        let log = server.log.lock().unwrap();
+        let reloads = log[index..].iter().filter(|line| {
+            line.contains("executable changed on disk") || line.contains("reloading exe=")
+        });
+        assert_eq!(reloads.count(), 0, "the successor reloaded: {:#?}", *log);
+    }
     let mut client = Client::connect(&server).await;
     assert_eq!(client.list_panes().await.len(), 2);
     assert!(!server.logged("pane process died"));
@@ -1277,16 +1290,55 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
         unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Let the last reloads finish.
-    let mut seen = count_logged(&server, "resumed after reload with");
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let now = count_logged(&server, "resumed after reload with");
-        if now == seen {
-            break;
-        }
-        seen = now;
-    }
+    // Let the last reloads finish. Each SIGUSR1 leaves a "SIGUSR1 came"
+    // line: logged by the handler as it comes (a line the server writes for
+    // this test to wait on), or, held across an exec, by the successor as it
+    // starts. A sentinel signal sent after the storm is delivered after
+    // every storm signal (or merged with one still pending). `index` counts
+    // the lines read from the server's stderr so far, not the lines it has
+    // written: the receipt waited for here is the first one read after the
+    // storm receipts already read, the sentinel's or a storm one still in
+    // the pipe. The wait for "resumed after reload" below, after whichever
+    // receipt was read last, covers the latter.
+    let index = server.log.lock().unwrap().len();
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
+    server
+        .wait_log("no receipt of the sentinel", |log| {
+            log[index..]
+                .iter()
+                .any(|line| line.contains("SIGUSR1 came"))
+        })
+        .await;
+    // The reload of the last receipt ends with a resume. A handler's receipt
+    // is followed by its reload, or comes during one already under way,
+    // whose exec drops it; either way the next resume ends it. A held one is
+    // logged before its own server resumes and reloads after that, so it
+    // takes a reload logged after it, then a resume.
+    server
+        .wait_log("the last reload did not finish", |log| {
+            let last = log
+                .iter()
+                .rposition(|line| line.contains("SIGUSR1 came"))
+                .unwrap();
+            let after = &log[last + 1..];
+            let after = if log[last].contains("SIGUSR1 came: reload requested") {
+                after
+            } else {
+                match after
+                    .iter()
+                    .position(|line| line.contains("reloading exe="))
+                {
+                    Some(at) => &after[at + 1..],
+                    None => return false,
+                }
+            };
+            after
+                .iter()
+                .any(|line| line.contains("resumed after reload with"))
+        })
+        .await;
+    let seen = count_logged(&server, "resumed after reload with");
     assert!(server.is_running());
     assert_eq!(server.child.id(), server_pid);
     assert!(seen >= 2, "reloads: {seen}");

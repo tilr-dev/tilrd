@@ -34,6 +34,7 @@ pub struct Conn {
     pub heard: Instant,
     /// What the server said it is, in `HelloAck`.
     pub server_version: String,
+    pub applied_input: Vec<tilr_proto::InputAck>,
 }
 
 /// How a server command ended.
@@ -110,6 +111,7 @@ impl Conn {
                 next_request: 0,
                 heard: Instant::now(),
                 server_version: String::new(),
+                applied_input: Vec::new(),
             };
             conn.hello(client_id, token)
                 .await
@@ -136,6 +138,7 @@ impl Conn {
         match self.recv().await? {
             server_message::Msg::HelloAck(ack) if ack.protocol_version == PROTOCOL_VERSION => {
                 self.server_version = ack.server_version;
+                self.applied_input = ack.applied_input;
                 Ok(())
             }
             server_message::Msg::HelloAck(ack) => bail!(
@@ -148,7 +151,11 @@ impl Conn {
     }
 
     pub async fn send(&mut self, msg: Msg) -> Result<()> {
-        let message = Message::Binary(tilr_proto::encode(&ClientMessage::from(msg)));
+        self.send_message(ClientMessage::from(msg)).await
+    }
+
+    pub async fn send_message(&mut self, msg: ClientMessage) -> Result<()> {
+        let message = Message::Binary(tilr_proto::encode(&msg));
         match &mut self.ws {
             Ws::Unix(ws) => ws.send(message).await,
             Ws::Tcp(ws) => ws.send(message).await,
