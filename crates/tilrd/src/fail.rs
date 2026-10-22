@@ -109,3 +109,22 @@ fn pause(name: &str) -> Result<()> {
     };
     wait().with_context(|| format!("failpoint {name}: pause"))
 }
+
+/// Announce entry into user code for a test-only state-formats probe. The
+/// parent starts the execution deadline before acknowledging this event.
+#[cfg(feature = "failpoints")]
+pub fn state_formats_started() -> Result<()> {
+    use std::io::{Read, Write};
+    if std::env::var_os("TILR_TEST_STATE_FORMATS_STARTUP").as_deref()
+        == Some(std::ffi::OsStr::new("child"))
+    {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "tilrd-state-formats-started")?;
+        stdout.flush()?;
+        drop(stdout);
+        let mut ack = [0; 9];
+        std::io::stdin().read_exact(&mut ack)?;
+        anyhow::ensure!(&ack == b"continue\n", "invalid startup acknowledgment");
+    }
+    Ok(())
+}

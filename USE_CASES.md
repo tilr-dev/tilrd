@@ -307,6 +307,7 @@ state format; platforms other than `linux-aarch64`.
 
 | Use case | Test |
 |---|---|
+| Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
 | The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
