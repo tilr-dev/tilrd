@@ -1,10 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: Build-script output for Rust tests
-The dt stand SHALL preserve the real Cargo build-script stdout files associated
-with its Rust test build and make them available at the compile-time paths in
-each Rust test runtime. These files SHALL belong to the exported build snapshot;
-the runtime SHALL NOT require access to a shared Cargo target cache.
+The dt stand SHALL export the Rust test build's Cargo build-script stdout and
+restore it at compile-time paths in each Rust runtime, independently of the
+shared Cargo target cache.
 
 **Verified by:** `tilr/build_script::every_watched_file_exists_and_the_git_head_is_watched`
 and `tilrd/build_script::every_watched_file_exists_and_the_git_head_is_watched`
