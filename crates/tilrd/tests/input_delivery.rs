@@ -722,6 +722,30 @@ async fn expired_sessions_are_removed_but_active_sessions_are_retained() {
 
 // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
 #[tokio::test]
+async fn reconnect_before_expiry_cancels_delivery_cleanup() {
+    let server = server();
+    let (mut client, _) = identify(&server).await;
+    let pane = client.open_pane().await;
+    let mut queue = Outbox::default();
+    send(&mut client, &queued(&mut queue, pane, b"")).await;
+    ack(&mut client, pane, 1).await;
+    drop(client);
+    server.wait_logged("client disconnected").await;
+
+    // Reconnect with the normal retention period, before the deadline.
+    let (mut client, hello) = identify(&server).await;
+    assert_eq!(hello.applied_input[0].seq, 1);
+    std::fs::write(server.dir.join("failpoints"), "input-retention=error").unwrap();
+    // Another identity's Hello runs expiry without refreshing this identity.
+    let mut other = Client::connect_silent(&server).await;
+    other.client_id = "expiry-trigger".into();
+    other.hello().await;
+    let hello = client.hello().await;
+    assert_eq!(hello.applied_input[0].seq, 1);
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[tokio::test]
 async fn clients_cannot_forge_internal_delivery_cleanup() {
     let server = server();
     let (mut client, _) = identify(&server).await;
