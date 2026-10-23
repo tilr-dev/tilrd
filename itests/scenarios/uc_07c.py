@@ -40,9 +40,10 @@ def deployed(t: T, laptop, *args):
 
 @case(hosts=["laptop", "remote"], services=["cdn"], spec=[
     SPEC + "#a-fresh-host", SPEC + "#a-server-already-running-there",
+    "reload/installation-requests-reload-explicitly#deploy-over-ssh",
 ])
 def deploy_installs_and_starts_tilrd_on_a_host_reached_over_ssh(t: T):
-    """Fresh install and a newer CDN release keep a live shell and client."""
+    """Fresh install and explicit reload after a CDN deploy keep a live shell."""
     laptop, remote = setup(t)
     version, platform = t.manifest()["version"], t.manifest()["platform"]
     archive = f"/tmp/tilr-{version}-{platform}.tar.gz"

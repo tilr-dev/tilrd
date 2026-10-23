@@ -78,7 +78,7 @@ When the installed `tilrd` and `tilr` both report the version `latest` names (`-
 - **THEN** no archive is requested, both files keep their inode and mtime, the server pid is the same and its log has no `reloading`
 
 ### Requirement: A new release reloads the running server
-Run with a new release, the installer SHALL rename the new `tilr` into place first and the new `tilrd` over the old one last, so that the running server reloads into it in place (same pid, panes, shells and their state; see the `reload` spec), and SHALL say `the running tilrd reloads itself and keeps its shells` when a `tilrd` of the user runs.
+Run with a new release, the installer SHALL rename the new `tilr` into place first and the new `tilrd` over the old one last, then SHALL explicitly request reload from the running server so it reloads into it in place (same pid, panes, shells and their state; see the `reload` spec), and SHALL say `the running tilrd reloads itself and keeps its shells` when a `tilrd` of the user runs.
 
 **Verified by**: itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`).
 
@@ -139,6 +139,15 @@ A manual install SHALL need only the CDN layout: read `releases/<platform>/lates
 #### Scenario: By hand
 - **WHEN** a user fetches `latest` for `linux-aarch64` and unpacks `tilrd` and `tilr` of that version's archive into `~/.local/bin`
 - **THEN** `tilr` starts the unpacked `tilrd` and attaches
+
+### Requirement: A failed reload request keeps the installed release
+After both programs are installed, a reload request failure SHALL leave the new programs installed, exit non-zero and report that installation succeeded but reload could not be requested. It SHALL NOT report reload success. Some servers may already have received the request.
+
+**Verified by**: itests `UC-004` (`uc_004.py::a_failed_reload_request_keeps_the_installed_release`).
+
+#### Scenario: Request cannot be sent
+- **WHEN** installation succeeds but the subsequent reload request fails
+- **THEN** both new programs remain installed, temporary files are removed, and the command exits non-zero with an explicit reload request error
 
 ## Notes
 

@@ -199,9 +199,7 @@ async fn panes_survive_a_reload_asked_for_with_a_signal() {
 }
 
 #[tokio::test]
-async fn panes_survive_the_executable_being_replaced_on_disk() {
-    // Run a copy of the server, then install a "new version" over it the
-    // way an upgrade does: write next to it, rename into place.
+async fn replacement_waits_for_an_explicit_request_and_keeps_the_shells() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     link_executable(&exe);
@@ -213,47 +211,80 @@ async fn panes_survive_the_executable_being_replaced_on_disk() {
     link_replacement(&exe, &staged);
     let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
-    server.wait_formats_started(startup).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(!server.logged("reloading"));
 
-    // Nobody tells the server: it notices on its own.
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    server.wait_formats_started(startup).await;
     let client = reconnect(&server, client).await;
-    server.wait_logged("executable changed on disk").await;
+    server.wait_logged("SIGUSR1 came: reload requested").await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
 
 #[tokio::test]
-async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
+async fn an_explicit_request_selects_only_its_installation_without_a_socket() {
+    let root = Server::scratch_dir();
+    let first = root.join("first installation");
+    let second = root.join("second installation");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    let exe = first.join("renamed-server");
+    let other_exe = second.join("tilrd");
+    link_executable(&exe);
+    link_executable(&other_exe);
+    let mut server = Server::start_in(first, &exe, &["--no-socket"]);
+    let other = Server::start_in(second, &other_exe, &[]);
+    let mut client = Client::connect(&server).await;
+    let mut other_client = Client::connect(&other).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let other_pane = other_client.open_pane().await;
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let client = reconnect(&server, client).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+    assert_eq!(other_client.run(other_pane, "true").await, 0);
+    assert!(!other.logged("reload requested"));
+}
+
+#[test]
+fn an_explicit_request_with_no_server_starts_nothing() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     link_executable(&exe);
-    let server = Server::start_in(dir.clone(), &exe, &["--no-auto-reload"]);
-    let mut client = Client::connect(&server).await;
-    let pane_id = client.open_pane().await;
-
-    let staged = dir.join("tilrd.new");
-    link_replacement(&exe, &staged);
-    std::fs::rename(&staged, &exe).unwrap();
-
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    // Still the same connection, still the same server.
-    assert_eq!(client.run(pane_id, "true").await, 0);
-    assert!(!server.logged("reloading"));
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1);
 }
 
-/// How often the server looks at its executable on disk, and how long it
-/// gives a new one to answer `state-formats` (`WATCH_INTERVAL` and
-/// `CHECK_TIMEOUT` in src/reload.rs).
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
-const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-/// By when a server has logged what it makes of a new executable on disk:
-/// it sees the file within two looks at it and gives it up to
-/// `CHECK_TIMEOUT` to say what it reads, which under load the shell that
-/// runs it can take most of. Waiting less gives up on a server still within
-/// its bounds.
-const JUDGED: Duration = WATCH_INTERVAL
-    .saturating_mul(2)
-    .saturating_add(CHECK_TIMEOUT)
-    .saturating_add(Duration::from_secs(5));
+#[test]
+fn the_obsolete_auto_reload_option_is_rejected() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .arg("--no-auto-reload")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+}
+
+/// The successor's check deadline, plus time for its answer to reach the log.
+const JUDGED: Duration = Duration::from_secs(15);
 
 #[tokio::test]
 async fn a_broken_executable_is_not_reloaded_into() {
@@ -272,6 +303,7 @@ async fn a_broken_executable_is_not_reloaded_into() {
     std::fs::set_permissions(&staged, mode).unwrap();
     std::fs::rename(&staged, &exe).unwrap();
 
+    server.signal("-USR1");
     server.wait_logged_within("not reloading", JUDGED).await;
     // The server carries on with the code it has.
     assert!(server.is_running());
@@ -316,8 +348,8 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     std::fs::set_permissions(&staged, mode).unwrap();
     let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    server.signal("-USR1");
     server.wait_formats_started(startup).await;
-
     server
         .wait_logged_within("reads pane-state format 2, this server writes 3", JUDGED)
         .await;
@@ -331,6 +363,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     link_replacement(&running_exe, &staged);
     let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    server.signal("-USR1");
     server.wait_formats_started(startup).await;
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
@@ -815,43 +848,20 @@ async fn a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind() {
 
 #[cfg(feature = "failpoints")]
 #[tokio::test]
-async fn an_executable_replaced_again_during_a_reload_costs_no_shell() {
-    // The reload is held just before its exec, so the second replacement
-    // lands in the middle of it.
+async fn a_second_atomic_replacement_before_exec_keeps_the_shells() {
     let (mut server, exe) = failing_server("reload-before-exec=pause");
     let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     replace(&exe);
+    server.signal("-USR1");
     let paused = pauses.wait("reload-before-exec").await;
     replace(&exe);
     paused.release().await;
 
     let client = reconnect(&server, client).await;
-    // From here on the log is the successor's: the server before it logged
-    // all it did before its exec.
-    let index = server.log.lock().unwrap().len();
     assert_pane_survived(&mut server, client, pane_id).await;
-    // Whatever the server makes of the second file, it stays up with its
-    // panes. The successor runs the second file and watches it from its
-    // start, so the file does not change under it and no reload comes
-    // after this one. One that took the second file for a change would see
-    // it on its watcher's second look, a WATCH_INTERVAL after its start, and
-    // log "executable changed on disk" then: two intervals from here, after
-    // the successor started, cover that look and its log line. The check
-    // run that would follow, and its "reloading exe=", can take longer; as
-    // in the test with auto reload off, that is not waited for.
-    tokio::time::sleep(WATCH_INTERVAL * 2).await;
-    {
-        let log = server.log.lock().unwrap();
-        let reloads = log[index..].iter().filter(|line| {
-            line.contains("executable changed on disk") || line.contains("reloading exe=")
-        });
-        assert_eq!(reloads.count(), 0, "the successor reloaded: {:#?}", *log);
-    }
-    let mut client = Client::connect(&server).await;
-    assert_eq!(client.list_panes().await.len(), 2);
     assert!(!server.logged("pane process died"));
 }
 

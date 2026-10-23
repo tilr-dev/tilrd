@@ -11,7 +11,7 @@ works on the new server:
   stream (the socket made again at the same path) works.
 
 The update is the new executable renamed over the installed one, as `tilrd
-update` finishes; the server notices it and reloads (auto reload). The panes' shells
+update` finishes; an explicit request makes the server reload. The panes' shells
 survive all of it.
 
 Was red until 2026-10-17: the write cut by the reload left its temporary file
@@ -23,6 +23,7 @@ reloaded removes those of writes whose process is gone or was itself
 
 import hashlib
 import shutil
+import signal
 import socket
 import threading
 import time
@@ -35,11 +36,12 @@ WRITE = {"path": "~/doc.txt", "size": 8 * 1024 * 1024, "fill": "new content\n", 
          "pause_ms": 50, "timeout_ms": 60_000}
 
 
-def install_next(exe: Path):
+def install_next(exe: Path, server):
     """What `tilrd update` does last: the new executable renamed over the old."""
     staged = exe.with_name(exe.name + ".new.tt")
     shutil.copy2(NEXT_EXE, staged)
     staged.rename(exe)
+    server.signal(signal.SIGUSR1)
 
 
 def start(t: T, *args, features=()):
@@ -76,7 +78,7 @@ def a_file_write_broken_by_an_update_leaves_the_file_as_it_was_and_the_retry_wor
     target = home / "doc.txt"
     target.write_text("the original\n" * 1000)
     before = digest(target)
-    timer = threading.Timer(1.0, install_next, args=(exe,))
+    timer = threading.Timer(1.0, install_next, args=(exe, server))
     since = d.mark()
     timer.start()
     answer = d.cmd("fs_write", ok=False, **WRITE)
@@ -132,7 +134,7 @@ def a_socks_session_open_during_an_update_ends_for_the_service_and_a_new_one_wor
     t.eq(d.cmd("socks_recv", socks=sid, bytes=7)["text"], "before\n", "the session echoes before the update")
     since = d.mark()
     installed = time.monotonic()
-    install_next(exe)
+    install_next(exe, server)
     after(t, server, d, shell, since)
     t.eventually(lambda: echo.ended, "the service on the server's machine sees its connection end", timeout=10)
     t.metric("service_eof_after_install_ms", round((echo.ended[0] - installed) * 1000))
@@ -192,7 +194,7 @@ def an_agent_stream_open_during_an_update_ends_for_the_program_and_the_next_one_
     t.eventually(lambda: len(lines(log)) >= 10, "the program talks to the agent", timeout=10)
     since = d.mark()
     installed = time.monotonic()
-    install_next(exe)
+    install_next(exe, server)
     t.eventually(lambda: any(l.startswith("EOF") for l in lines(log)), "the program reads the end of its stream",
                  timeout=15, interval=0.05)
     t.metric("program_eof_after_install_ms", round((time.monotonic() - installed) * 1000))

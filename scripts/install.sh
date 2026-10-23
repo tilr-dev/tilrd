@@ -5,12 +5,13 @@
 # Puts tilrd (the tilr server) and tilr (its client, the command you type) into
 # ~/.local/bin. A release is one archive with both, which is downloaded into a
 # temporary directory, checked against its checksum and unpacked there; both
-# programs must run before either is put in place. Anything that fails leaves
-# the installation as it was (or none at all) and exits non-zero.
+# programs must run before either is put in place. Failures before installation
+# leave it as it was (or none at all) and exit non-zero. A reload request failure
+# also exits non-zero but keeps both installed programs and reports the failure.
 #
-# Run it again to update: both are replaced, and a running server picks the
-# new executable up on its own and keeps every shell. The same release again
-# changes nothing.
+# Run it again to update: both are replaced, then an explicit reload request
+# tells a running server to use the new executable and keep every shell.
+# The same release again changes nothing.
 #
 # Nothing starts tilrd at boot: `tilr` starts it when none runs, and
 # `tilr service install` sets that up when you ask for it.
@@ -88,7 +89,7 @@ download() {
 }
 
 # Both programs into $BIN_DIR, each renamed into place: tilr first, tilrd
-# last, since that rename is what a running server reloads on. If tilrd
+# last, then explicitly request reload. If tilrd
 # cannot be put in place, the tilr that was there is put back.
 put_in_place() {
   # The highest directory that is not there yet: removed again on failure.
@@ -169,6 +170,7 @@ main() {
     tmp=$(mktemp -d) || die "cannot make a temporary directory, nothing installed"
     download
     put_in_place
+    "$bin" reload || die "installed tilr $version, but could not request reload"
     if command -v pgrep >/dev/null 2>&1 && pgrep -u "$(id -u)" -x tilrd >/dev/null 2>&1; then
       say "the running tilrd reloads itself and keeps its shells"
     fi
