@@ -23,7 +23,7 @@ pub use scrape::{http_get, http_request, sample, wait_sample_above};
 #[cfg(feature = "failpoints")]
 pub mod time;
 #[cfg(feature = "failpoints")]
-pub use time::set_test_time;
+pub use time::{hello_deadline, set_test_time, signal_before_deadline, signal_deadline};
 
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};

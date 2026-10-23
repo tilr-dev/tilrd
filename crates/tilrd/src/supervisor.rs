@@ -148,6 +148,11 @@ type PaneId = Uuid;
 type ToPane = (Bytes, Option<Instant>);
 
 enum Event {
+    #[cfg(feature = "failpoints")]
+    TestHelloExpired {
+        id: ClientId,
+        signal: TcpStream,
+    },
     ClientConnected {
         id: ClientId,
         addr: Peer,
@@ -1713,6 +1718,16 @@ impl Supervisor {
 
     async fn on_event(&mut self, event: Event) {
         match event {
+            #[cfg(feature = "failpoints")]
+            Event::TestHelloExpired { id, signal } => {
+                if let Some(client) = self.clients.get(&id) {
+                    let ungreeted = !client.greeted && client.hello_pending.is_none();
+                    crate::time::TestDeadline::acknowledge(signal).await;
+                    if ungreeted {
+                        self.drop_client(id, Gone::Dropped(ClientDrop::NoHello));
+                    }
+                }
+            }
             Event::ClientConnected {
                 id,
                 addr,
@@ -1720,6 +1735,31 @@ impl Supervisor {
                 tx,
                 close,
             } => {
+                #[cfg(feature = "failpoints")]
+                let deadline_name = match addr {
+                    Peer::Tcp(addr) => format!("hello-{}", addr.port()),
+                    Peer::Unix(_) => format!("hello-unix-{id}"),
+                };
+                #[cfg(feature = "failpoints")]
+                if let Some(deadline) =
+                    crate::time::TestDeadline::new(&deadline_name, HELLO_TIMEOUT).await
+                {
+                    let events = self.events.clone();
+                    let close = close.clone();
+                    tokio::spawn(async move {
+                        // Stop listening when the connection ends; a greeted
+                        // connection also cannot retain this task indefinitely.
+                        let _ = tokio::time::timeout(HELLO_TIMEOUT, async {
+                            tokio::select! {
+                                signal = deadline.expired() => {
+                                    let _ = events.send(Event::TestHelloExpired { id, signal });
+                                }
+                                _ = close.closed() => {}
+                            }
+                        })
+                        .await;
+                    });
+                }
                 self.clients.insert(
                     id,
                     Client {
