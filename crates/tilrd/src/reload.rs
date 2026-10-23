@@ -140,7 +140,7 @@ pub async fn check_executable(exe: &Path) -> Result<bool> {
             .wait_with_output()
             .await
     };
-    let result = tokio::time::timeout(CHECK_TIMEOUT, output).await;
+    let result = check_timeout("check-formats", output).await;
     match result {
         Ok(Ok(output)) if output.status.success() => {
             check_formats(&String::from_utf8_lossy(&output.stdout))
@@ -189,7 +189,7 @@ async fn check_started_executable(
         let status = child.wait().await?;
         anyhow::Ok((status, output))
     };
-    match tokio::time::timeout(CHECK_TIMEOUT, execution).await {
+    match check_timeout("check-formats", execution).await {
         Ok(Ok((status, output))) if status.success() => {
             check_formats(&String::from_utf8_lossy(&output))
                 .with_context(|| format!("{} cannot take over", exe.display()))
@@ -222,7 +222,7 @@ pub async fn check_successor(
         .kill_on_drop(true);
     let child =
         spawn_unblocked(|| command.spawn()).with_context(|| format!("run {}", exe.display()))?;
-    match tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await {
+    match check_timeout("check-successor", child.wait_with_output()).await {
         Ok(Ok(output)) => verdict(&output),
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
         Err(_) => bail!("it did not answer within {} s", CHECK_TIMEOUT.as_secs()),
@@ -821,6 +821,31 @@ pub fn sweep_stale() {
             }
         }
     }
+}
+
+/// Test-clock expiry is an additional path; the production upper bound is
+/// always active, including while the test listener is being prepared.
+async fn check_timeout<F: std::future::Future>(
+    name: &str,
+    operation: F,
+) -> std::result::Result<F::Output, ()> {
+    #[cfg(not(feature = "failpoints"))]
+    let _ = name;
+    tokio::time::timeout(CHECK_TIMEOUT, async {
+        #[cfg(feature = "failpoints")]
+        if let Some(deadline) = crate::time::TestDeadline::new(name, CHECK_TIMEOUT).await {
+            return tokio::select! {
+                result = operation => Ok(result),
+                signal = deadline.expired() => {
+                    crate::time::TestDeadline::acknowledge(signal).await;
+                    Err(())
+                }
+            };
+        }
+        Ok(operation.await)
+    })
+    .await
+    .unwrap_or(Err(()))
 }
 
 #[cfg(test)]

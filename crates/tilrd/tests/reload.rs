@@ -283,9 +283,6 @@ fn the_obsolete_auto_reload_option_is_rejected() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
 }
 
-/// The successor's check deadline, plus time for its answer to reach the log.
-const JUDGED: Duration = Duration::from_secs(15);
-
 #[tokio::test]
 async fn a_broken_executable_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
@@ -304,7 +301,7 @@ async fn a_broken_executable_is_not_reloaded_into() {
     std::fs::rename(&staged, &exe).unwrap();
 
     server.signal("-USR1");
-    server.wait_logged_within("not reloading", JUDGED).await;
+    server.wait_logged("not reloading").await;
     // The server carries on with the code it has.
     assert!(server.is_running());
     assert_eq!(client.run(pane_id, "true").await, 0);
@@ -351,7 +348,7 @@ async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     server.signal("-USR1");
     server.wait_formats_started(startup).await;
     server
-        .wait_logged_within("reads pane-state format 2, this server writes 3", JUDGED)
+        .wait_logged("reads pane-state format 2, this server writes 3")
         .await;
     // Same server, same connection, same shell.
     assert!(server.is_running());
@@ -1008,19 +1005,37 @@ async fn a_successor_that_refuses_the_configuration_is_not_reloaded_into() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_successor_that_never_answers_the_check_is_not_reloaded_into() {
-    let (mut server, _) = failing_server("supervisor-resume=sleep:20000");
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    link_executable(&exe);
+    let clock = dir.join("clock");
+    const START_US: u64 = 1_700_000_000_000_000;
+    set_test_time(&clock, START_US);
+    let mut server = Server::start_full(
+        dir,
+        &exe,
+        &[],
+        "supervisor-resume=pause",
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let pid = shell_pid(&server, &mut client, pane_id).await;
 
     server.signal("-USR1");
-    // The server serves while it waits for the answer.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let _paused = pauses.wait("supervisor-resume").await;
+    server
+        .wait_logged("test deadline ready: check-successor")
+        .await;
+    // The server serves while the successor is deterministically paused.
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
     assert!(!server.logged(REFUSED));
-    server
-        .wait_logged_within("did not answer within 10 s", Duration::from_secs(30))
-        .await;
+    set_test_time(&clock, START_US + 9_999_999);
+    signal_before_deadline(&clock, "check-successor").await;
+    set_test_time(&clock, START_US + 10_000_000);
+    signal_deadline(&clock, "check-successor").await;
+    server.wait_logged("did not answer within 10 s").await;
     server.wait_logged(REFUSED).await;
     assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
 }

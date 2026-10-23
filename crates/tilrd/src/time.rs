@@ -120,3 +120,56 @@ pub fn test_time_us() -> Option<u64> {
             .expect("TILR_TEST_TIME_FILE must contain unsigned decimal microseconds"),
     )
 }
+
+/// One explicitly signaled test-clock deadline. The caller keeps its real
+/// upper bound and acknowledges only after selecting this expiration path.
+#[cfg(feature = "failpoints")]
+pub struct TestDeadline {
+    control: tokio::net::TcpListener,
+    deadline_us: u64,
+}
+
+#[cfg(feature = "failpoints")]
+impl TestDeadline {
+    pub async fn new(name: &str, duration: std::time::Duration) -> Option<Self> {
+        let path = test_time_file()?;
+        let start_us = test_time_us().expect("test clock path is set");
+        let control = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test deadline control");
+        let deadline = Self {
+            deadline_us: start_us.saturating_add(duration.as_micros() as u64),
+            control,
+        };
+        std::fs::write(
+            path.with_extension(name),
+            deadline
+                .control
+                .local_addr()
+                .expect("control address")
+                .port()
+                .to_string(),
+        )
+        .expect("publish test deadline control");
+        // This event proves both the start timestamp and listener are ready.
+        tracing::info!("test deadline ready: {name}");
+        Some(deadline)
+    }
+
+    pub async fn expired(&self) -> tokio::net::TcpStream {
+        loop {
+            let (signal, _) = self.control.accept().await.expect("test deadline signal");
+            if test_time_us().expect("test clock path is set") >= self.deadline_us {
+                return signal;
+            }
+        }
+    }
+
+    pub async fn acknowledge(mut signal: tokio::net::TcpStream) {
+        use tokio::io::AsyncWriteExt;
+        signal
+            .write_all(&[1])
+            .await
+            .expect("acknowledge test deadline");
+    }
+}
