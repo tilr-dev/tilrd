@@ -859,7 +859,7 @@ The Tilr app's `server` plugin and tilr-mac need version 1 to talk to this serve
 the frame. `Run.link` is the URI's index plus one, or 0 for plain text; runs split when
 the link changes. URIs longer than 8 KiB are omitted and their cells remain plain text.
 `tilr attach` draws linked runs with OSC 8 in the local terminal. These fields have
-harmless defaults: clients ignoring them still show the text, with protocol version 3
+harmless defaults: clients ignoring them still show the text, with protocol version 1
 and no feature flag.
 
 `HelloAck.features` lists only what a server can be run without, so a client checks it

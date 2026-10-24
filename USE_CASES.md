@@ -316,7 +316,6 @@ state format; platforms other than `linux-aarch64`.
 | Use case | Test |
 |---|---|
 | Hyperlinks become plain text after reload; newly printed links work | `hyperlinks_are_plain_text_after_a_reload_and_new_ones_work` |
-
 | Startup and reload sweep state files and temporary state files older than one hour, preserving recent files and unrelated old files | `stale_state_files_are_swept_at_start` |
 | Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
 | A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
