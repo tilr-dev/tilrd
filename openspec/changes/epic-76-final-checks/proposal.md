@@ -24,4 +24,4 @@ its meaning. No wire protocol, feature flag, reload state, or update behavior ch
 
 ## Implementation
 
-Implementation commit: pending.
+Implementation commit: `aca24ca` (`fix(coverage): recognize Python and crate-qualified test evidence`).
