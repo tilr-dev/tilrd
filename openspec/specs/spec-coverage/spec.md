@@ -17,7 +17,7 @@ The repository SHALL keep generated `openspec/coverage/` reports out of version 
 
 ### Requirement: Report selection
 
-`./itests/dt coverage` SHALL accept `--report PATH` and use that report's run metadata and scenario results for the generated `coverage.json` and `coverage.md`. An explicit path SHALL take precedence over a local `itests/results/latest/report.json`; a missing explicit path SHALL fail visibly without replacing the existing coverage files. With no explicit path, the local latest report SHALL take precedence over previously generated coverage. Verified by `itests/tests/test_coverage.py::CoverageRunTest`.
+`./itests/dt coverage` SHALL accept `--report PATH` and use that report's run metadata and scenario results for the generated `coverage.json` and `coverage.md`. An explicit path SHALL take precedence over a local `itests/results/latest/report.json`; a missing explicit path SHALL fail visibly without replacing the existing coverage files. With no explicit path, the local latest report SHALL take precedence over previously generated coverage. Verified by `itests/tests/test_coverage.py`.
 
 #### Scenario: Explicit report from another folder
 - **WHEN** a caller supplies `--report PATH` for a valid report outside this checkout
@@ -33,7 +33,7 @@ The repository SHALL keep generated `openspec/coverage/` reports out of version 
 
 ### Requirement: Preserve recorded run without a report
 
-When neither an explicit nor a local report is available, `./itests/dt coverage` SHALL retain the last-run metadata and statuses of current case IDs from the existing `coverage.json` in its output directory. An existing `coverage.json` that cannot be read SHALL fail visibly without replacing the coverage files. It SHALL generate requirements and case lists from the current specs and registry. With no existing coverage file, it SHALL show no last run. Verified by `itests/tests/test_coverage.py::CoverageRunTest`.
+When neither an explicit nor a local report is available, `./itests/dt coverage` SHALL retain the last-run metadata and statuses of current case IDs from the existing `coverage.json` in its output directory. An existing `coverage.json` that cannot be read SHALL fail visibly without replacing the coverage files. It SHALL generate requirements and case lists from the current specs and registry. With no existing coverage file, it SHALL show no last run. Verified by `itests/tests/test_coverage.py`.
 
 #### Scenario: No local report with existing coverage
 - **WHEN** the local latest report is absent and an existing `coverage.json` records a run

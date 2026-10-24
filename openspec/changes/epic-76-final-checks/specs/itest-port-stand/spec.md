@@ -56,7 +56,7 @@ and Linux script Rust tests in both build and runtime source snapshots at the
 compiled workspace path. The runtime SHALL provide Python, Git and `shasum` so
 these tests run without Docker or release credentials.
 
-**Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest` and `linux_script::parallel_worktrees_keep_their_linux_build_outputs` via `./itests/dt --only rust --filter release` and `./itests/dt --only rust --filter linux_script`.
+**Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest` and `linux_script::parallel_worktrees_keep_their_linux_build_outputs`.
 
 #### Scenario: Release fixtures run in dt
 - **WHEN** dt runs the Rust `release` suite
@@ -77,7 +77,7 @@ shared Cargo target cache.
 
 **Verified by:** `tilr/build_script::every_watched_file_exists_and_the_git_head_is_watched`
 and `tilrd/build_script::every_watched_file_exists_and_the_git_head_is_watched`
-and `itests/tests/test_build.py::BuildTest::test_build_script_stdout_survives_without_the_build_cache` via `./itests/dt --only rust --filter build_script`.
+and `itests/tests/test_build.py` via `./itests/dt --only rust --filter build_script`.
 
 #### Scenario: Build-script tests run in a separate runtime
 - **WHEN** dt runs the `tilr` and `tilrd` build-script tests
