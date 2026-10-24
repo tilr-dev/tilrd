@@ -777,6 +777,10 @@ images keep their places,
 those scrolled into the history too. A pane being closed (`ClosePane`, its program not
 gone yet) is still killed at its deadline, 2 s after the close, by the successor.
 
+OSC 8 hyperlinks on the screen and in scrollback become plain text after a reload:
+libghostty's VT snapshot formatter does not preserve per-cell links. Their text and styles
+remain; newly printed hyperlinks work normally.
+
 A process is exec'd with the arguments it was started with, so it looks the same in `ps`
 before and after. What it hands to its successor goes into a file in the runtime directory
 that the successor finds by name: `server-<pid>.state` for the supervisor (an exec keeps the
@@ -850,6 +854,18 @@ the `bytes` twins of file paths, `Ping`, the bulk window paced by pongs,
 `PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002 are all part of version 1.
 The Tilr app's `server` plugin and tilr-mac need version 1 to talk to this server;
 `tilr` and `tilr-driver` are built with it.
+
+`Frame.links` is a table of hyperlink URIs used by its changed rows, deduplicated within
+the frame. `Run.link` is the URI's index plus one, or 0 for plain text; runs split when
+the link changes. URIs exceeding the VT engine's OSC payload limit are omitted and
+their cells remain plain text. With libghostty-vt 0.2.2 (checked 2026-10-24), a
+parameter-free OSC 8 retains a 2046-byte URI and drops a 2047-byte URI; OSC parameters
+also use that budget. Recheck with
+`cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked`.
+The frame reader also has a defensive 8 KiB URI bound.
+`tilr attach` draws linked runs with OSC 8 in the local terminal. These fields have
+harmless defaults: clients ignoring them still show the text, with protocol version 1
+and no feature flag.
 
 `HelloAck.features` lists only what a server can be run without, so a client checks it
 before sending that capability's requests, in this order:
@@ -1231,6 +1247,14 @@ or building Ghostty. Without a discoverable package, the existing Zig source bui
 remains available. `GHOSTTY_SOURCE_DIR` bypasses pkg-config, so unset it when using
 the shared library. Linux containers retain their source-build path because
 `scripts/linux.sh` does not forward the host package path.
+
+The Linux image seeds Zig's package cache with the pinned ImGui, zigimg and uucode
+archives from `codeload.github.com`, checking their hashes against Ghostty's package
+manifests. This avoids the GitHub redirect response: checked 2026-10-24, its CSP
+header alone exceeds Zig 0.15.2's 8 KiB HTTP read buffer. To recheck, run
+`curl -sSI https://github.com/ocornut/imgui/archive/refs/tags/v1.92.5-docking.tar.gz`
+and compare the response header size with Zig's `lib/std/http/Client.zig`
+`read_buffer_size`. When upgrading Ghostty, update the image's package pins too.
 
 When upgrading `libghostty-vt`, keep the direct sys dependency at the matching exact
 version. Read that version's `build.rs`, update this script's Ghostty revision and

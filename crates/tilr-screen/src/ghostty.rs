@@ -335,6 +335,9 @@ impl Screen for GhosttyScreen {
         };
 
         let mut styles = StyleTable::default();
+        let mut links = Vec::<String>::new();
+        let mut link_indices = std::collections::HashMap::<String, u32>::new();
+        let mut uri_buf = [0u8; 8192];
         let mut changed = Vec::new();
         self.placeholders
             .resize_with(usize::from(self.size.1), Vec::new);
@@ -342,6 +345,7 @@ impl Screen for GhosttyScreen {
         let mut y = 0u32;
         while let Some(row) = row_iter.next() {
             if all_rows || row.dirty()? {
+                let row_has_links = row.raw_row()?.has_hyperlink()?;
                 let mut runs = RunBuilder::default();
                 let mut placeholders = PlaceholderRuns::default();
                 let mut column = 0u32;
@@ -355,6 +359,17 @@ impl Screen for GhosttyScreen {
                     };
                     let x = column;
                     column += if wide { 2 } else { 1 };
+                    let link = if row_has_links && raw.has_hyperlink()? {
+                        // Defensive bound: the current VT parser rejects long OSCs
+                        // before this read; see the_vt_osc_limit_keeps_text_but_drops_long_links.
+                        let result = self
+                            .term
+                            .grid_ref(Point::Viewport(PointCoordinate { x: x as u16, y }))?
+                            .hyperlink_uri(&mut uri_buf);
+                        uri_index(result, &uri_buf, &mut links, &mut link_indices)?
+                    } else {
+                        0
+                    };
                     let styled = raw.has_styling()?;
                     let mut style = if styled {
                         style_to_proto(cell.style()?)
@@ -385,14 +400,14 @@ impl Screen for GhosttyScreen {
                             // image's row and column from the diacritics.
                             let vt_style = if styled { Some(cell.style()?) } else { None };
                             placeholders.push(x, &cps, vt_style);
-                            runs.push_char(' ', style, wide);
+                            runs.push_char(' ', style, wide, link);
                         } else {
-                            runs.push_cluster(cps.into_iter().collect(), style, wide);
+                            runs.push_cluster(cps.into_iter().collect(), style, wide, link);
                         }
                         continue;
                     }
                     placeholders.end();
-                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide);
+                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide, link);
                 }
                 if let Some(slot) = self.placeholders.get_mut(y as usize) {
                     *slot = placeholders.finish();
@@ -442,6 +457,7 @@ impl Screen for GhosttyScreen {
             cols: u32::from(self.size.0),
             rows: u32::from(self.size.1),
             styles: styles.list,
+            links,
             changed,
             cursor: Some(cursor),
             title,
@@ -1496,15 +1512,38 @@ fn color_key(color: Option<&Color>) -> u64 {
     }
 }
 
+/// Intern a URI read from a cell, preserving plain text when the buffer is too small.
+fn uri_index(
+    result: std::result::Result<usize, libghostty_vt::Error>,
+    buffer: &[u8],
+    links: &mut Vec<String>,
+    indices: &mut std::collections::HashMap<String, u32>,
+) -> std::result::Result<u32, libghostty_vt::Error> {
+    match result {
+        Ok(0) | Err(libghostty_vt::Error::OutOfSpace { .. }) => Ok(0),
+        Ok(len) => match std::str::from_utf8(&buffer[..len]) {
+            Ok(uri) => Ok(*indices.entry(uri.to_owned()).or_insert_with(|| {
+                links.push(uri.to_owned());
+                links.len() as u32
+            })),
+            // Protobuf strings cannot carry arbitrary OSC bytes.
+            Err(_) => Ok(0),
+        },
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Default)]
 struct RunBuilder {
     runs: Vec<Run>,
 }
 
 impl RunBuilder {
-    fn push_char(&mut self, ch: char, style: u32, wide: bool) {
+    fn push_char(&mut self, ch: char, style: u32, wide: bool, link: u32) {
         match self.runs.last_mut() {
-            Some(run) if run.style == style && run.wide == wide && !run.cluster => {
+            Some(run)
+                if run.style == style && run.wide == wide && run.link == link && !run.cluster =>
+            {
                 run.text.push(ch);
             }
             _ => self.runs.push(Run {
@@ -1512,24 +1551,26 @@ impl RunBuilder {
                 text: ch.to_string(),
                 wide,
                 cluster: false,
+                link,
             }),
         }
     }
 
-    fn push_cluster(&mut self, text: String, style: u32, wide: bool) {
+    fn push_cluster(&mut self, text: String, style: u32, wide: bool, link: u32) {
         self.runs.push(Run {
             style,
             text,
             wide,
             cluster: true,
+            link,
         });
     }
 
-    /// Drop trailing blank default-style cells; the client clears the rest of
+    /// Drop trailing blank unlinked default-style cells; the client clears the rest of
     /// the row anyway.
     fn finish(mut self) -> Vec<Run> {
         while let Some(run) = self.runs.last_mut() {
-            if run.style != 0 || run.wide || run.cluster {
+            if run.style != 0 || run.wide || run.cluster || run.link != 0 {
                 break;
             }
             let trimmed = run.text.trim_end_matches(' ').len();
@@ -2045,6 +2086,101 @@ mod tests {
         screen.feed(b"\x1b[D");
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(frame.cursor.unwrap().x, 2);
+    }
+
+    #[test]
+    fn a_hyperlink_goes_with_its_run() {
+        let mut screen = screen();
+        screen.feed(b"a\x1b]8;;https://example.com/\x1b\\link\x1b]8;;\x1b\\b\r\n\x1b]8;;https://example.com/\x1b\\again\x1b]8;;\x1b\\");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(frame.links, ["https://example.com/"]);
+        let runs = &frame.changed[0].runs;
+        assert_eq!(
+            runs.iter()
+                .map(|r| (r.text.as_str(), r.link))
+                .collect::<Vec<_>>(),
+            [("a", 0), ("link", 1), ("b", 0)]
+        );
+        assert_eq!(frame.changed[1].runs[0].link, 1);
+        screen.feed(b"\x1b[2J\x1b[Hplain");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert!(frame.links.is_empty());
+        assert!(
+            frame
+                .changed
+                .iter()
+                .flat_map(|row| &row.runs)
+                .all(|run| run.link == 0)
+        );
+    }
+
+    #[test]
+    fn linked_trailing_spaces_keep_their_cells() {
+        for label in ["x ", " "] {
+            let mut screen = screen();
+            screen.feed(
+                format!("\x1b]8;;https://example.com/\x1b\\{label}\x1b]8;;\x1b\\  ").as_bytes(),
+            );
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(frame.links, ["https://example.com/"]);
+            let runs = &frame.changed[0].runs;
+            assert_eq!(runs.len(), 1, "label {label:?}");
+            assert_eq!(runs[0].text, label);
+            assert_eq!(runs[0].link, 1);
+        }
+    }
+
+    #[test]
+    fn a_non_utf8_hyperlink_is_plain_text() {
+        let mut screen = screen();
+        screen.feed(b"\x1b]8;;https://example.com/\xff\x1b\\x\x1b]8;;\x1b\\");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "x");
+        assert!(frame.links.is_empty());
+        assert_eq!(frame.changed[0].runs[0].link, 0);
+    }
+
+    #[test]
+    fn an_overlong_hyperlink_is_left_out() {
+        let mut screen = screen();
+        let uri = format!("https://example.com/{}", "x".repeat(8193));
+        screen.feed(format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\").as_bytes());
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "link");
+        assert_eq!(frame.changed[0].runs[0].link, 0);
+        assert!(frame.links.is_empty());
+    }
+
+    #[test]
+    fn the_vt_osc_limit_keeps_text_but_drops_long_links() {
+        // Measured on libghostty-vt 0.2.2, 2026-10-24. No OSC parameters.
+        for (len, retained) in [(2046, true), (2047, false)] {
+            let mut screen = screen();
+            let uri = format!("https://example.com/{}", "x".repeat(len - 20));
+            assert_eq!(uri.len(), len);
+            screen.feed(format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\").as_bytes());
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 0), "link");
+            assert_eq!(frame.changed[0].runs[0].link, u32::from(retained));
+            assert_eq!(frame.links, if retained { vec![uri] } else { vec![] });
+        }
+    }
+
+    #[test]
+    fn an_out_of_space_uri_is_left_out() {
+        let mut links = Vec::new();
+        let mut indices = std::collections::HashMap::new();
+        let buffer = [0; 8192];
+        let link = uri_index(
+            Err(libghostty_vt::Error::OutOfSpace { required: 8193 }),
+            &buffer,
+            &mut links,
+            &mut indices,
+        )
+        .unwrap();
+        assert_eq!(link, 0);
+        assert!(links.is_empty());
+        assert!(indices.is_empty());
     }
 
     #[test]

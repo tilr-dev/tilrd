@@ -566,7 +566,10 @@ impl Drop for TerminalGuard {
 }
 
 fn draw(frame: &Frame) -> Result<()> {
-    let mut out = std::io::stdout().lock();
+    draw_to(frame, &mut std::io::stdout().lock())
+}
+
+fn draw_to(frame: &Frame, mut out: impl Write) -> Result<()> {
     queue!(out, BeginSynchronizedUpdate, cursor::Hide)?;
     if frame.full {
         queue!(out, SetAttribute(Attribute::Reset), Clear(ClearType::All))?;
@@ -579,7 +582,17 @@ fn draw(frame: &Frame) -> Result<()> {
                 .checked_sub(1)
                 .and_then(|index| frame.styles.get(index as usize));
             apply_style(&mut out, style)?;
+            let link = run
+                .link
+                .checked_sub(1)
+                .and_then(|index| frame.links.get(index as usize));
+            if let Some(uri) = link {
+                write!(out, "\x1b]8;;{uri}\x1b\\")?;
+            }
             queue!(out, Print(&run.text))?;
+            if link.is_some() {
+                write!(out, "\x1b]8;;\x1b\\")?;
+            }
         }
         queue!(
             out,
@@ -802,6 +815,40 @@ fn mouse_message(pane_id: &str, mouse: &MouseEvent, tracking: bool) -> Option<Ms
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_linked_run_is_drawn_inside_osc_8() {
+        let frame = Frame {
+            links: vec!["https://example.com/".into()],
+            changed: vec![tilr_proto::Row {
+                y: 0,
+                runs: vec![
+                    tilr_proto::Run {
+                        text: "linked".into(),
+                        link: 1,
+                        ..Default::default()
+                    },
+                    tilr_proto::Run {
+                        text: "plain".into(),
+                        ..Default::default()
+                    },
+                    tilr_proto::Run {
+                        text: "invalid".into(),
+                        link: 2,
+                        ..Default::default()
+                    },
+                ],
+            }],
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        draw_to(&frame, &mut bytes).unwrap();
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("\x1b]8;;https://example.com/\x1b\\linked\x1b]8;;\x1b\\"));
+        assert_eq!(output.matches("\x1b]8;;").count(), 2);
+        assert!(output.contains("plain"));
+        assert!(output.contains("invalid"));
+    }
 
     fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)

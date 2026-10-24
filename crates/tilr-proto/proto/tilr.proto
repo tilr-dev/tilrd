@@ -932,6 +932,8 @@ message Run {
   // Every cell of this run is two columns wide.
   bool wide = 3;
   bool cluster = 4;
+  // Index into Frame.links plus one; 0 = no hyperlink.
+  uint32 link = 5;
 }
 
 // Replaces viewport row `y` entirely. Columns past the last run are blank.
@@ -965,6 +967,12 @@ message Cursor {
 // frames it missed is carried by that full frame's `last_input_seq`, so every
 // input of a client still gets a frame that echoes it.
 message Frame {
+  // Hyperlink URIs used by changed rows, deduplicated within this frame.
+  // Run.link indexes this table plus one; URIs over the VT engine's OSC limit
+  // are plain text (about 2 KiB in libghostty-vt 0.2.2, checked 2026-10-24).
+  // Recheck: cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked
+  // The frame reader also has a defensive 8 KiB URI bound.
+  repeated string links = 20;
   string pane_id = 1;
   uint64 seq = 2;
   bool full = 3;
