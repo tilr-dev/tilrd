@@ -23,10 +23,10 @@ use anyhow::{Context, Result, bail};
 use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use tilr_proto::{
-    ClientMessage, ClipboardAck, ClipboardPut, CreatePane, Error as ProtoError, Frame, HelloAck,
-    HostEvent, PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList, PaneState,
-    PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, Viewer, client_message::Msg,
-    close, server_message,
+    ClientMessage, ClipboardAck, ClipboardPut, ClipboardWrite, CreatePane, Error as ProtoError,
+    Frame, HelloAck, HostEvent, PROTOCOL_VERSION, PaneCreated, PaneExited, PaneInfo, PaneList,
+    PaneState, PaneStatus, Pong, ServerMessage, Subscribe, SupervisorState, Viewer,
+    client_message::Msg, close, server_message,
 };
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -52,10 +52,45 @@ use crate::{
     socks,
 };
 
+const INPUT_RETENTION: Duration = Duration::from_secs(60 * 60);
+
+/// Disconnect deadlines are deliberately local to this supervisor incarnation.
+#[derive(Default)]
+struct InputRetention {
+    disconnected: HashMap<String, Instant>,
+}
+
+impl InputRetention {
+    fn disconnect(&mut self, identity: String, now: Instant) {
+        if !identity.is_empty() {
+            self.disconnected.entry(identity).or_insert(now);
+        }
+    }
+
+    fn reconnect(&mut self, identity: &str) {
+        self.disconnected.remove(identity);
+    }
+
+    fn expire(&mut self, now: Instant, retention: Duration) -> Vec<String> {
+        let mut expired = Vec::new();
+        self.disconnected.retain(|identity, disconnected| {
+            if now.saturating_duration_since(*disconnected) >= retention {
+                expired.push(identity.clone());
+                false
+            } else {
+                true
+            }
+        });
+        expired
+    }
+}
+
 const READ_BUF: usize = 64 * 1024;
 /// How long a reload waits for a pane process to take the input already
 /// queued for it.
 const DETACH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a pane may hold up Hello while reporting applied input.
+const HELLO_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A reload asked for while a pane is starting is tried again this much
 /// later.
 const RELOAD_RETRY: Duration = Duration::from_millis(200);
@@ -91,6 +126,8 @@ const FEATURE_CLIPBOARD: &str = "clipboard";
 const FEATURE_FILES: &str = "files";
 /// Feature name for `HostEvent`, see `HelloAck.features`.
 const FEATURE_HOST_EVENTS: &str = "host-events";
+/// What a client lists in `Hello.features` to be sent `ClipboardWrite`.
+const FEATURE_CLIPBOARD_WRITE: &str = "clipboard-write";
 /// Feature name for SSH agent forwarding, see `HelloAck.features`.
 const FEATURE_AGENT: &str = "agent";
 /// Feature name for Exec, see `HelloAck.features`.
@@ -98,7 +135,7 @@ const FEATURE_EXEC: &str = "exec";
 /// How long a reload waits for what its clients were last sent (the ends of
 /// their execs) to be written out before the connections go.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// How often the event loop's lag is measured (`tilr_supervisor_loop_lag_seconds`).
+/// How often the event loop's lag is measured (`tilrd_supervisor_loop_lag_seconds`).
 const LAG_TICK: Duration = Duration::from_secs(1);
 /// How long a scrape of `/metrics` waits for the event loop.
 const METRICS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -107,10 +144,15 @@ type ClientId = u64;
 /// Made up when the pane is created; on the wire in its text form.
 type PaneId = Uuid;
 /// A packet for a pane process; with a client's input, when the supervisor
-/// read it from the client (`tilr_route_input_seconds`).
+/// read it from the client (`tilrd_route_input_seconds`).
 type ToPane = (Bytes, Option<Instant>);
 
 enum Event {
+    #[cfg(feature = "failpoints")]
+    TestHelloExpired {
+        id: ClientId,
+        signal: TcpStream,
+    },
     ClientConnected {
         id: ClientId,
         addr: Peer,
@@ -154,6 +196,19 @@ enum Event {
     PaneStatus {
         pane_id: PaneId,
         status: PaneStatus,
+    },
+    /// The program in the pane copied to the clipboard (OSC 52).
+    PaneCopy {
+        pane_id: PaneId,
+        copy: ClipboardWrite,
+    },
+    PaneInputAck {
+        pane_id: PaneId,
+        ack: tilr_proto::PaneInputAck,
+    },
+    PaneActivity {
+        pane_id: PaneId,
+        activity: tilr_proto::PaneActivity,
     },
     /// The pane process is gone, and the shell with it. `exit_code` is the
     /// shell's, if the process got to report it; `error` is why the shell
@@ -206,6 +261,12 @@ impl std::fmt::Display for Peer {
     }
 }
 
+struct PendingHello {
+    ack: HelloAck,
+    waiting: HashSet<PaneId>,
+    started: Instant,
+}
+
 struct Client {
     tx: ToClient,
     close: mpsc::UnboundedSender<Closing>,
@@ -219,16 +280,21 @@ struct Client {
     /// Said `Hello` with the protocol version this server speaks. Nothing
     /// else is taken from the client before that.
     greeted: bool,
+    input_identity: String,
+    hello_pending: Option<PendingHello>,
     /// Announced "host-events" in `Hello.features`: it is sent `HostEvent`s.
     host_events: bool,
     /// Announced "agent" in `Hello.features`: it can serve the SSH agent.
     agent: bool,
+    /// Announced "clipboard-write" in `Hello.features`: it is sent the
+    /// copies made in the panes it watches.
+    clipboard_write: bool,
     /// `Hello.client_id`, `client_name` and `token`.
     client_id: String,
     name: String,
     token: String,
-    /// Panes whose frames this client is skipping until a full one, because
-    /// it lagged; see [`Supervisor::on_pane_output`].
+    /// Panes awaiting a full frame after Subscribe or after this client
+    /// lagged; see [`Supervisor::on_pane_output`].
     lagging: HashMap<PaneId, Lag>,
 }
 
@@ -239,6 +305,10 @@ struct Lag {
     /// `last_input_seq`, 0 if none: the full frame that ends the lag carries
     /// it, so every input still gets its echo.
     own_seq: u64,
+    /// Set by `Subscribe`: the client waits for its first full frame, and
+    /// the frames skipped meanwhile are not lag (`frames_skipped`) unless its
+    /// queue lags too.
+    subscribed: bool,
 }
 
 /// How a connection is to end, as its writer is told.
@@ -256,8 +326,6 @@ enum Gone {
     Disconnected,
     /// Turned away (see [`Supervisor::refuse`]).
     Refused,
-    /// Said no `Hello` within [`HELLO_TIMEOUT`] of its WebSocket opening.
-    NoHello,
     Dropped(ClientDrop),
 }
 
@@ -279,6 +347,8 @@ struct Pane {
     /// A full frame is asked for, for clients that lagged, and has not come
     /// yet.
     full_asked: bool,
+    /// A probe timeout has already signalled this process; await link closure.
+    probe_killed: bool,
 }
 
 /// The tasks moving packets to and from one pane process.
@@ -325,8 +395,6 @@ pub struct Options {
     pub cloudflared: PathBuf,
     /// `None` turns the shared clipboard off.
     pub clipboard: Option<clipboard::Limits>,
-    /// Reload when the executable on disk changes.
-    pub auto_reload: bool,
     /// Drop a client nothing was heard from for this long, pings included.
     /// `None` keeps silent clients forever.
     pub client_timeout: Option<Duration>,
@@ -531,13 +599,6 @@ pub fn run(options: Options) -> Result<()> {
             if held.terminate || held.interrupt {
                 let _ = events_tx.send(Event::Shutdown);
             }
-            if options.auto_reload {
-                let events = events_tx.clone();
-                tokio::spawn(reload::watch_executable(crate::exe(), move || {
-                    tracing::info!("executable changed on disk");
-                    events.send(Event::Reload).is_ok()
-                }));
-            }
 
             let server_id = identity::server_id();
             let host_socket = set_up_host_socket(&server_id, events_tx.clone());
@@ -598,6 +659,7 @@ pub fn run(options: Options) -> Result<()> {
                 listener,
                 local,
                 clients: HashMap::new(),
+                input_retention: InputRetention::default(),
                 panes: HashMap::new(),
                 starting: HashMap::new(),
                 server_id,
@@ -612,6 +674,8 @@ pub fn run(options: Options) -> Result<()> {
                 exec: options.exec,
                 metrics: shared_metrics,
                 next_client_id,
+                copies: HashMap::new(),
+                last_copy: state.as_ref().map_or(0, |state| state.last_copy_id),
             };
             if let Some(state) = state {
                 supervisor.resume(state);
@@ -758,8 +822,8 @@ fn set_up_host_socket(
 }
 
 /// Put this executable on the PATH of the panes as the tools they get from
-/// the server: `xclip` and `wl-paste` for the clipboard, `tilr` for host
-/// events. Returns the clipboard's receiver for uploads, if it is on, and the
+/// the server: `xclip`, `wl-paste` and `wl-copy` for the clipboard, `tilr`
+/// for host events. Returns the clipboard's receiver for uploads, if it is on, and the
 /// environment for the panes.
 fn set_up_shims(
     clipboard: Option<clipboard::Limits>,
@@ -772,6 +836,16 @@ fn set_up_shims(
         match clipboard::Store::create(dir.clone()) {
             Ok(store) => {
                 env.push((OsString::from(clipboard::DIR_ENV), dir.into_os_string()));
+                env.push((
+                    OsString::from(clipboard::MAX_ENV),
+                    limits.max_bytes.to_string().into(),
+                ));
+                if let Some(ttl) = limits.ttl {
+                    env.push((
+                        OsString::from(clipboard::TTL_ENV),
+                        ttl.as_secs().to_string().into(),
+                    ));
+                }
                 Some(clipboard::Receiver::new(store, limits))
             }
             Err(err) => {
@@ -839,6 +913,7 @@ async fn reload_signal(
     events: mpsc::UnboundedSender<Event>,
 ) {
     while usr1.recv().await.is_some() {
+        tracing::info!("SIGUSR1 came: reload requested");
         if events.send(Event::Reload).is_err() {
             break;
         }
@@ -1110,6 +1185,9 @@ async fn serve_websocket<S>(
         socks::serve_websocket(ws, client_timeout, addr).await;
         return;
     }
+    // reconnect-client-accepted: WebSocket established, before registration.
+    #[cfg(feature = "failpoints")]
+    crate::fail::point_async("reconnect-client-accepted".into()).await;
     tracing::info!(client = id, %addr, "client connected");
     if !local {
         limit_unsent(socket);
@@ -1551,6 +1629,7 @@ struct Supervisor {
     /// The Unix socket for local clients.
     local: Option<local::Local>,
     clients: HashMap<ClientId, Client>,
+    input_retention: InputRetention,
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
     server_id: Uuid,
@@ -1578,6 +1657,12 @@ struct Supervisor {
     metrics: Arc<metrics::Shared>,
     /// The id the next connection gets; handed on in a reload.
     next_client_id: Arc<AtomicU64>,
+    /// The task sending each client a copy made in a pane, while it runs:
+    /// a newer copy ends it.
+    copies: HashMap<ClientId, tokio::task::AbortHandle>,
+    /// `ClipboardWrite.transfer_id` of the last copy sent; handed on in a
+    /// reload, so that transfer ids only grow.
+    last_copy: u64,
 }
 
 impl Supervisor {
@@ -1592,7 +1677,7 @@ impl Supervisor {
                     }
                 }
                 Event::Shutdown => break,
-                event => self.on_event(event),
+                event => self.on_event(event).await,
             }
         }
         // Closing the pipes to the pane processes makes them end what runs
@@ -1631,8 +1716,18 @@ impl Supervisor {
         }
     }
 
-    fn on_event(&mut self, event: Event) {
+    async fn on_event(&mut self, event: Event) {
         match event {
+            #[cfg(feature = "failpoints")]
+            Event::TestHelloExpired { id, signal } => {
+                if let Some(client) = self.clients.get(&id) {
+                    let ungreeted = !client.greeted && client.hello_pending.is_none();
+                    crate::time::TestDeadline::acknowledge(signal).await;
+                    if ungreeted {
+                        self.drop_client(id, Gone::Dropped(ClientDrop::NoHello));
+                    }
+                }
+            }
             Event::ClientConnected {
                 id,
                 addr,
@@ -1640,6 +1735,31 @@ impl Supervisor {
                 tx,
                 close,
             } => {
+                #[cfg(feature = "failpoints")]
+                let deadline_name = match addr {
+                    Peer::Tcp(addr) => format!("hello-{}", addr.port()),
+                    Peer::Unix(_) => format!("hello-unix-{id}"),
+                };
+                #[cfg(feature = "failpoints")]
+                if let Some(deadline) =
+                    crate::time::TestDeadline::new(&deadline_name, HELLO_TIMEOUT).await
+                {
+                    let events = self.events.clone();
+                    let close = close.clone();
+                    tokio::spawn(async move {
+                        // Stop listening when the connection ends; a greeted
+                        // connection also cannot retain this task indefinitely.
+                        let _ = tokio::time::timeout(HELLO_TIMEOUT, async {
+                            tokio::select! {
+                                signal = deadline.expired() => {
+                                    let _ = events.send(Event::TestHelloExpired { id, signal });
+                                }
+                                _ = close.closed() => {}
+                            }
+                        })
+                        .await;
+                    });
+                }
                 self.clients.insert(
                     id,
                     Client {
@@ -1650,8 +1770,11 @@ impl Supervisor {
                         subscriptions: HashSet::new(),
                         connected: Instant::now(),
                         greeted: false,
+                        input_identity: String::new(),
+                        hello_pending: None,
                         host_events: false,
                         agent: false,
+                        clipboard_write: false,
                         client_id: String::new(),
                         name: String::new(),
                         token: String::new(),
@@ -1663,7 +1786,7 @@ impl Supervisor {
                 id,
                 packet,
                 received,
-            } => self.on_client_packet(id, packet, received),
+            } => self.on_client_packet(id, packet, received).await,
             Event::ClientGone { id, why } => {
                 self.drop_client(id, why.map_or(Gone::Disconnected, Gone::Dropped));
             }
@@ -1674,7 +1797,7 @@ impl Supervisor {
                 packet,
                 read_at,
                 head,
-            } => self.on_pane_output(pane_id, packet, read_at, head),
+            } => self.on_pane_output(pane_id, packet, read_at, head).await,
             Event::PaneStatus { pane_id, status } => {
                 if let Some(pane) = self.panes.get_mut(&pane_id) {
                     pane.title = status.title;
@@ -1682,6 +1805,16 @@ impl Supervisor {
                         pane.cwd = status.cwd;
                     }
                     self.broadcast_pane_list();
+                }
+            }
+            Event::PaneInputAck { pane_id, ack } => self.on_input_ack(pane_id, ack),
+            Event::PaneActivity {
+                pane_id,
+                mut activity,
+            } => {
+                if self.panes.contains_key(&pane_id) {
+                    activity.pane_id = pane_id.to_string();
+                    self.broadcast_activity(activity);
                 }
             }
             Event::PaneLinkClosed {
@@ -1699,13 +1832,19 @@ impl Supervisor {
             // An exec's reply did not fit the client's lane: dropped, as for
             // a frame, rather than left waiting for it.
             Event::Exec(exec::Output::Stuck { client }) => self.drop_stuck(client),
+            Event::PaneCopy { pane_id, copy } => self.on_pane_copy(pane_id, copy),
+            Event::Host { request, reply } if request.name == host::CLIPBOARD_WRITE => {
+                let _ = reply.send(self.on_shim_copy(&request.pane_id, request.copy_id));
+            }
             Event::Host { request, reply } => {
                 let _ = reply.send(self.on_host_event(request));
             }
             Event::Tick(due) => {
                 self.metrics.loop_lag.observe(due.elapsed());
                 self.ask_lagging_for_full_frames();
+                self.close_unresponsive_hello_panes();
                 self.close_ungreeted();
+                self.expire_input(Instant::now());
             }
             Event::Metrics { reply } => {
                 let _ = reply.send(self.metrics_snapshot());
@@ -1782,6 +1921,7 @@ impl Supervisor {
                     link,
                     counters: metrics::PaneCounters::default(),
                     full_asked: false,
+                    probe_killed: false,
                 },
             );
         }
@@ -1897,7 +2037,7 @@ impl Supervisor {
         while let Ok(event) = events.try_recv() {
             match event {
                 Event::Shutdown => return true,
-                event => self.on_event(event),
+                event => self.on_event(event).await,
             }
         }
         // A test stops here, after the last read of the events.
@@ -1976,7 +2116,7 @@ impl Supervisor {
                 event = events.recv() => match event {
                     None | Some(Event::Shutdown) => return None,
                     Some(Event::Reload) => {}
-                    Some(event) => self.on_event(event),
+                    Some(event) => self.on_event(event).await,
                 },
             }
         }
@@ -2012,6 +2152,7 @@ impl Supervisor {
                 .unwrap_or_default(),
             format: reload::STATE_FORMAT,
             next_client_id: self.next_client_id.load(Ordering::Relaxed),
+            last_copy_id: self.last_copy,
             panes: panes
                 .into_iter()
                 .filter_map(|(pane_id, (to_pane, from_pane), unparsed)| {
@@ -2106,12 +2247,76 @@ impl Supervisor {
         err
     }
 
-    fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
+    fn finish_input_hello(&mut self, client_id: ClientId) {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return;
+        };
+        if client
+            .hello_pending
+            .as_ref()
+            .is_some_and(|pending| pending.waiting.is_empty())
+        {
+            let pending = client.hello_pending.take().expect("pending hello");
+            client.greeted = true;
+            self.send(client_id, server_message::Msg::HelloAck(pending.ack));
+        }
+    }
+
+    fn on_input_ack(&mut self, pane_id: PaneId, ack: tilr_proto::PaneInputAck) {
+        if let Some(pane) = self.panes.get_mut(&pane_id)
+            && (pane.cols != ack.cols as u16 || pane.rows != ack.rows as u16)
+        {
+            pane.cols = ack.cols as u16;
+            pane.rows = ack.rows as u16;
+            self.broadcast_pane_list();
+        }
+        let applied = tilr_proto::InputAck {
+            pane_id: pane_id.to_string(),
+            seq: ack.seq,
+        };
+        if ack.probe != 0 {
+            if let Some(client) = self.clients.get_mut(&(ack.probe - 1))
+                && client.input_identity == ack.identity
+                && let Some(pending) = &mut client.hello_pending
+                && pending.waiting.remove(&pane_id)
+            {
+                pending.ack.applied_input.push(applied);
+            }
+            self.finish_input_hello(ack.probe - 1);
+        } else {
+            let clients: Vec<_> = self
+                .clients
+                .iter()
+                .filter_map(|(&id, client)| {
+                    (client.greeted && client.input_identity == ack.identity).then_some(id)
+                })
+                .collect();
+            for id in clients {
+                self.send(id, server_message::Msg::InputAck(applied.clone()));
+            }
+        }
+    }
+
+    async fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
         // A client the supervisor has dropped may still have packets on the
         // way. Acting on them would subscribe a client nobody will ever
         // remove again.
         let Some(greeted) = self.clients.get(&client_id).map(|client| client.greeted) else {
             return;
+        };
+        let (packet, input_seq) = match tilr_proto::decode::<ClientMessage>(&packet) {
+            Ok(mut envelope) => {
+                let input_seq = envelope.input_seq;
+                envelope.input_probe = 0;
+                envelope.input_forget = false;
+                envelope.input_identity = self
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.input_identity.clone())
+                    .unwrap_or_default();
+                (tilr_proto::encode(&envelope), input_seq)
+            }
+            Err(err) => return self.send_error(client_id, &format!("bad packet: {err}")),
         };
         let msg = match tilr_proto::decode::<ClientMessage>(&packet) {
             Ok(ClientMessage { msg: Some(msg), .. }) => msg,
@@ -2149,13 +2354,60 @@ impl Supervisor {
             _ if !greeted => return self.refuse(client_id, "expected Hello first"),
             _ => {}
         }
+        if input_seq != 0
+            && self
+                .clients
+                .get(&client_id)
+                .is_some_and(|client| client.input_identity.is_empty())
+        {
+            return self.send_error(client_id, "numbered input requires a stable client_id");
+        }
+        if input_seq != 0
+            && let Some(named) = tilr_proto::input::pane(&msg)
+            && self.pane_mut(named).is_none()
+        {
+            // No future replay can apply input to this missing pane. Finish
+            // delivery without claiming application in any pane's counters.
+            self.send_no_pane(client_id, named);
+            self.send(
+                client_id,
+                server_message::Msg::InputAck(tilr_proto::InputAck {
+                    pane_id: named.to_owned(),
+                    seq: input_seq,
+                }),
+            );
+            return;
+        }
         match msg {
             Msg::Hello(hello) => {
+                self.expire_input(Instant::now());
                 self.supersede(client_id, &hello.client_id, &hello.token);
                 if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.greeted = true;
+                    client.greeted = false;
+                    // Length-prefix each identity component before hashing: neither
+                    // the token nor another transport's identity reaches a pane.
+                    use sha2::{Digest, Sha256};
+                    let previous_identity = std::mem::take(&mut client.input_identity);
+                    if !hello.client_id.is_empty() {
+                        let mut digest = Sha256::new();
+                        digest.update([u8::from(client.local)]);
+                        digest.update((hello.token.len() as u64).to_le_bytes());
+                        digest.update(hello.token.as_bytes());
+                        digest.update(hello.client_id.as_bytes());
+                        client.input_identity = digest
+                            .finalize()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                    }
+                    if previous_identity != client.input_identity {
+                        self.input_retention
+                            .disconnect(previous_identity, Instant::now());
+                    }
                     client.host_events = hello.features.iter().any(|f| f == FEATURE_HOST_EVENTS);
                     client.agent = hello.features.iter().any(|f| f == FEATURE_AGENT);
+                    client.clipboard_write =
+                        hello.features.iter().any(|f| f == FEATURE_CLIPBOARD_WRITE);
                     tracing::info!(
                         client = client_id,
                         client_id = hello.client_id,
@@ -2177,22 +2429,57 @@ impl Supervisor {
                     (FEATURE_AGENT, self.agent.is_some()),
                     (FEATURE_EXEC, self.exec),
                 ];
-                self.send(
-                    client_id,
-                    server_message::Msg::HelloAck(HelloAck {
-                        protocol_version: PROTOCOL_VERSION,
-                        server_version: crate::VERSION.into(),
-                        features: features
-                            .into_iter()
-                            .filter(|(_, on)| *on)
-                            .map(|(name, _)| name.to_owned())
-                            .collect(),
-                        clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
-                        server_id: self.server_id.to_string(),
-                        fs_max_bytes: fs_max_bytes.unwrap_or(0),
-                        seq_base: seq_base(client_id),
-                    }),
+                let ack = HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    server_version: crate::VERSION.into(),
+                    features: features
+                        .into_iter()
+                        .filter(|(_, on)| *on)
+                        .map(|(name, _)| name.to_owned())
+                        .collect(),
+                    clipboard_max_bytes: clipboard_max_bytes.unwrap_or(0),
+                    server_id: self.server_id.to_string(),
+                    fs_max_bytes: fs_max_bytes.unwrap_or(0),
+                    seq_base: seq_base(client_id),
+                    applied_input: Vec::new(),
+                };
+                let identity = self.clients[&client_id].input_identity.clone();
+                self.input_retention.reconnect(&identity);
+                let waiting: HashSet<_> = if identity.is_empty() {
+                    HashSet::new()
+                } else {
+                    self.panes.keys().copied().collect()
+                };
+                for pane_id in &waiting {
+                    let query = ClientMessage {
+                        input_identity: identity.clone(),
+                        input_probe: client_id + 1,
+                        ..Default::default()
+                    };
+                    let _ = self.panes[pane_id]
+                        .to_pane
+                        .send((tilr_proto::encode(&query), None));
+                }
+                self.clients
+                    .get_mut(&client_id)
+                    .expect("connected")
+                    .hello_pending = Some(PendingHello {
+                    ack,
+                    waiting,
+                    started: Instant::now(),
+                });
+                self.finish_input_hello(client_id);
+            }
+            Msg::FinalizeInput(_) => {
+                let identity = std::mem::take(
+                    &mut self
+                        .clients
+                        .get_mut(&client_id)
+                        .expect("connected")
+                        .input_identity,
                 );
+                self.input_retention.reconnect(&identity);
+                self.forget_input(&identity);
             }
             Msg::CreatePane(create) => {
                 if let Err(err) = self.create_pane(client_id, &create) {
@@ -2209,12 +2496,24 @@ impl Supervisor {
                 let Some((pane_id, pane)) = self.pane_mut(&named) else {
                     return self.send_no_pane(client_id, &named);
                 };
+                // reconnect-subscribe:<pane>: before registering the viewer or asking for full.
+                #[cfg(feature = "failpoints")]
+                crate::fail::point_async(format!("reconnect-subscribe:{pane_id}")).await;
                 pane.subscribers.insert(client_id);
                 pane.used_at_ms = now_ms();
-                // The pane answers with a full frame.
+                // The pane answers with a full frame, which serves the
+                // clients that lag too.
                 let _ = pane.to_pane.send((packet, None));
+                pane.full_asked = true;
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.subscriptions.insert(pane_id);
+                    // A delta may already be in flight before the pane handles
+                    // Subscribe. Use full-frame recovery to skip it and retain
+                    // this client's own input echoes until the full frame.
+                    client.lagging.entry(pane_id).or_insert(Lag {
+                        own_seq: 0,
+                        subscribed: true,
+                    });
                 }
                 if let Some(agent) = &mut self.agent {
                     agent.subscribed(pane_id, client_id);
@@ -2238,8 +2537,10 @@ impl Supervisor {
                 let Some((_, pane)) = self.pane_mut(&resize.pane_id) else {
                     return self.send_no_pane(client_id, &resize.pane_id);
                 };
-                pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
-                pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
+                if input_seq == 0 {
+                    pane.cols = resize.cols.clamp(1, u32::from(u16::MAX)) as u16;
+                    pane.rows = resize.rows.clamp(1, u32::from(u16::MAX)) as u16;
+                }
                 let _ = pane.to_pane.send((packet, None));
                 self.broadcast_pane_list();
             }
@@ -2416,6 +2717,104 @@ impl Supervisor {
         Ok(delivered)
     }
 
+    /// A copy the program in a pane made by OSC 52: it becomes the clipboard
+    /// and goes to the clients watching the pane. Dropped while the
+    /// clipboard is off.
+    fn on_pane_copy(&mut self, pane_id: PaneId, copy: ClipboardWrite) {
+        let Some(clipboard) = &self.clipboard else {
+            return;
+        };
+        if copy.data.len() as u64 > clipboard.max_bytes() {
+            tracing::warn!(
+                pane = %pane_id,
+                size = copy.data.len(),
+                "clipboard: a copy over the limit was dropped"
+            );
+            return;
+        }
+        if let Err(err) = clipboard.publish(&copy.mime, &copy.data) {
+            tracing::warn!(pane = %pane_id, "clipboard: store a copy: {err}");
+        }
+        self.send_copy(pane_id, copy.mime, copy.data);
+    }
+
+    /// The server's `xclip` or `wl-copy` in a pane put a copy in the store:
+    /// it goes to the clients watching the pane. Returns how many those are.
+    fn on_shim_copy(&mut self, named: &str, copy_id: Option<u64>) -> Result<usize, String> {
+        let pane_id = self.pane_mut(named).map(|(pane_id, _)| pane_id);
+        let Some(clipboard) = &self.clipboard else {
+            return Err("the clipboard is turned off on this server".into());
+        };
+        let Some(pane_id) = pane_id else {
+            return Err(format!("no such pane: {named}"));
+        };
+        let Some(copy_id) = copy_id else {
+            return Err("clipboard-write needs the copy_id of the copy".into());
+        };
+        let Some(content) = clipboard.take_copied(copy_id)? else {
+            // Replaced (or expired) before the server heard of it: what
+            // replaced it goes its own way.
+            return Ok(0);
+        };
+        Ok(self.send_copy(pane_id, content.mime, content.data.into()))
+    }
+
+    /// Send a copy made in `pane_id` to each client watching it that takes
+    /// copies, in chunks on its bulk lane, ending a copy still being sent to
+    /// it. Returns how many clients it goes to.
+    fn send_copy(&mut self, pane_id: PaneId, mime: String, data: Bytes) -> usize {
+        let Some(pane) = self.panes.get(&pane_id) else {
+            return 0;
+        };
+        self.last_copy += 1;
+        let transfer_id = self.last_copy;
+        let mut sent = 0;
+        for &client_id in &pane.subscribers {
+            let Some(client) = self.clients.get(&client_id) else {
+                continue;
+            };
+            if !client.clipboard_write {
+                continue;
+            }
+            // The older copy ends before the newer starts. A chunk of it
+            // under way on another thread may still be queued after the
+            // newer one's first: the client drops chunks of a transfer
+            // older than the one it has.
+            if let Some(older) = self.copies.remove(&client_id) {
+                older.abort();
+            }
+            let to_client = client.tx.clone();
+            let (pane_id, mime, data) = (pane_id.to_string(), mime.clone(), data.clone());
+            let task = tokio::spawn(async move {
+                let total_size = data.len() as u64;
+                let mut offset = 0;
+                loop {
+                    let end = data.len().min(offset + files::CHUNK);
+                    let last = end == data.len();
+                    let chunk = ClipboardWrite {
+                        transfer_id,
+                        pane_id: pane_id.clone(),
+                        mime: mime.clone(),
+                        total_size,
+                        data: data.slice(offset..end),
+                        last,
+                    };
+                    let packet = tilr_proto::encode(&ServerMessage::from(
+                        server_message::Msg::ClipboardWrite(chunk),
+                    ));
+                    if to_client.send_bulk(packet).await.is_err() || last {
+                        return;
+                    }
+                    offset = end;
+                }
+            });
+            self.copies.insert(client_id, task.abort_handle());
+            sent += 1;
+        }
+        tracing::info!(pane = %pane_id, clients = sent, size = data.len(), "clipboard: copied in a pane");
+        sent
+    }
+
     fn on_clipboard_put(&mut self, client_id: ClientId, put: ClipboardPut) {
         let ack = match &mut self.clipboard {
             Some(clipboard) => clipboard.on_chunk(client_id, put),
@@ -2506,6 +2905,7 @@ impl Supervisor {
             link,
             counters: metrics::PaneCounters::default(),
             full_asked: false,
+            probe_killed: false,
         };
         self.starting.insert(
             pane_id,
@@ -2550,7 +2950,7 @@ impl Supervisor {
     /// gets no more frames of the pane until a full one, asked of the pane
     /// once its queue is written out, brings it the screen as it is then.
     /// Its own input echoed in the frames it missed is carried by that one.
-    fn on_pane_output(
+    async fn on_pane_output(
         &mut self,
         pane_id: PaneId,
         packet: Bytes,
@@ -2560,6 +2960,11 @@ impl Supervisor {
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
+        // reconnect-unwatched-output:<pane>: frame received with no viewers, before forwarding.
+        #[cfg(feature = "failpoints")]
+        if head.is_some() && pane.subscribers.is_empty() {
+            crate::fail::point_async(format!("reconnect-unwatched-output:{pane_id}")).await;
+        }
         // What a pane process relays is its frames.
         pane.counters.frames += 1;
         pane.counters.frame_bytes += packet.len() as u64;
@@ -2578,7 +2983,13 @@ impl Supervisor {
                 match client.lagging.get_mut(&pane_id) {
                     Some(lag) if !head.full => {
                         lag.own_seq = lag.own_seq.max(own.unwrap_or(0));
-                        pane.counters.frames_skipped += 1;
+                        if lag.subscribed && client.tx.lagging() {
+                            lag.subscribed = false;
+                            client.tx.want_drained();
+                        }
+                        if !lag.subscribed {
+                            pane.counters.frames_skipped += 1;
+                        }
                         ask_full |= client.tx.drained();
                         continue;
                     }
@@ -2590,11 +3001,16 @@ impl Supervisor {
                         }
                     }
                     None if !head.full && client.tx.lagging() => {
+                        // reconnect-client-lagging:<pane>: lag detected, before skipping this frame.
+                        #[cfg(feature = "failpoints")]
+                        crate::fail::point_async(format!("reconnect-client-lagging:{pane_id}"))
+                            .await;
                         tracing::debug!(client = client_id, pane = %pane_id, "client lags, skipping frames");
                         client.lagging.insert(
                             pane_id,
                             Lag {
                                 own_seq: own.unwrap_or(0),
+                                subscribed: false,
                             },
                         );
                         client.tx.want_drained();
@@ -2606,6 +3022,11 @@ impl Supervisor {
                     }
                     None => {}
                 }
+            }
+            // reconnect-full-frame:<pane>: before enqueueing a full frame for each viewer.
+            #[cfg(feature = "failpoints")]
+            if head.is_some_and(|head| head.full) {
+                crate::fail::point_async(format!("reconnect-full-frame:{pane_id}")).await;
             }
             let outgoing = Outgoing::new(packet, Some(read_at));
             if client.tx.try_send(outgoing).is_ok() {
@@ -2637,18 +3058,49 @@ impl Supervisor {
         }
     }
 
+    /// A pane that cannot report its applied counters must exit before Hello
+    /// can omit it. Never invent counters for a live, unresponsive pane.
+    fn close_unresponsive_hello_panes(&mut self) {
+        let expired: HashSet<_> = self
+            .clients
+            .values()
+            .filter_map(|client| client.hello_pending.as_ref())
+            .filter(|pending| pending.started.elapsed() >= HELLO_PROBE_TIMEOUT)
+            .flat_map(|pending| pending.waiting.iter().copied())
+            .collect();
+        for pane_id in expired {
+            if let Some(pane) = self.panes.get_mut(&pane_id)
+                && !pane.probe_killed
+            {
+                pane.probe_killed = true;
+                tracing::error!(pane = %pane_id, "pane process did not answer Hello probe, closing it");
+                // The reader reaps it and reports PaneLinkClosed, which releases
+                // all waiting Hellos only after the pane is actually gone.
+                // SAFETY: kill has no memory-safety preconditions.
+                unsafe {
+                    libc::kill(pane.pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
     /// Every tick: a connection that has not said `Hello` within
     /// [`HELLO_TIMEOUT`] of its WebSocket opening is closed, whatever the
-    /// client timeout, so an un-greeted one is held 20 s at most.
+    /// client timeout, so a connection without Hello is held at most that
+    /// long plus one tick.
     fn close_ungreeted(&mut self) {
         let late: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, client)| !client.greeted && client.connected.elapsed() >= HELLO_TIMEOUT)
+            .filter(|(_, client)| {
+                !client.greeted
+                    && client.hello_pending.is_none()
+                    && client.connected.elapsed() >= HELLO_TIMEOUT
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in late {
-            self.drop_client(id, Gone::NoHello);
+            self.drop_client(id, Gone::Dropped(ClientDrop::NoHello));
         }
     }
 
@@ -2693,6 +3145,19 @@ impl Supervisor {
         });
 
         self.panes.remove(&pane_id);
+        let waiting: Vec<_> = self
+            .clients
+            .iter_mut()
+            .filter_map(|(&id, client)| {
+                client
+                    .hello_pending
+                    .as_mut()
+                    .and_then(|pending| pending.waiting.remove(&pane_id).then_some(id))
+            })
+            .collect();
+        for id in waiting {
+            self.finish_input_hello(id);
+        }
         tracing::info!(pane = %pane_id, exit_code, "pane exited");
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneExited(
             PaneExited {
@@ -2708,11 +3173,40 @@ impl Supervisor {
         self.broadcast_pane_list();
     }
 
+    fn forget_input(&self, identity: &str) {
+        if identity.is_empty() {
+            return;
+        }
+        let command = ClientMessage {
+            input_identity: identity.to_owned(),
+            input_forget: true,
+            ..Default::default()
+        };
+        let packet = tilr_proto::encode(&command);
+        for pane in self.panes.values() {
+            let _ = pane.to_pane.send((packet.clone(), None));
+        }
+    }
+
+    fn expire_input(&mut self, now: Instant) {
+        // Tests can expire disconnected identities without waiting an hour.
+        let retention = if crate::fail::point("input-retention").is_err() {
+            Duration::ZERO
+        } else {
+            INPUT_RETENTION
+        };
+        for identity in self.input_retention.expire(now, retention) {
+            self.forget_input(&identity);
+        }
+    }
+
     /// Forget a client and end its connection, saying why.
     fn drop_client(&mut self, client_id: ClientId, why: Gone) {
         let Some(client) = self.clients.remove(&client_id) else {
             return;
         };
+        self.input_retention
+            .disconnect(client.input_identity.clone(), Instant::now());
         let (id, addr) = (client.client_id.as_str(), client.addr);
         let closing = match why {
             Gone::Disconnected => {
@@ -2720,15 +3214,6 @@ impl Supervisor {
                 None
             }
             Gone::Refused => Some(Closing::Flush),
-            Gone::NoHello => {
-                tracing::warn!(
-                    client = client_id,
-                    %addr,
-                    "client sent no Hello in {}s, dropping",
-                    HELLO_TIMEOUT.as_secs()
-                );
-                Some(Closing::Now(close::TIMEOUT, close::TIMEOUT_REASON))
-            }
             Gone::Dropped(drop) => {
                 self.metrics.count_drop(drop);
                 let (code, reason) = match drop {
@@ -2758,6 +3243,15 @@ impl Supervisor {
                         );
                         (close::TIMEOUT, close::TIMEOUT_REASON)
                     }
+                    ClientDrop::NoHello => {
+                        tracing::warn!(
+                            client = client_id,
+                            %addr,
+                            "client sent no Hello in {}s, dropping",
+                            HELLO_TIMEOUT.as_secs()
+                        );
+                        (close::TIMEOUT, close::TIMEOUT_REASON)
+                    }
                 };
                 Some(Closing::Now(code, reason))
             }
@@ -2769,6 +3263,9 @@ impl Supervisor {
         }
         if let Some(clipboard) = &mut self.clipboard {
             clipboard.drop_client(client_id);
+        }
+        if let Some(copy) = self.copies.remove(&client_id) {
+            copy.abort();
         }
         if let Some(files) = &mut self.files {
             files.drop_client(client_id);
@@ -2821,7 +3318,7 @@ impl Supervisor {
             .iter()
             .filter(|&(&id, client)| {
                 id != new
-                    && client.greeted
+                    && (client.greeted || client.hello_pending.is_some())
                     && client.local == local
                     && client.client_id == client_id
                     && auth::matches(&client.token, token)
@@ -2890,9 +3387,15 @@ impl Supervisor {
     /// current without polling. A client that has not said hello yet is left
     /// out: the first thing it hears is the answer to its hello.
     fn broadcast_pane_list(&mut self) {
-        let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::PaneList(
-            self.pane_list(0),
-        )));
+        self.broadcast_to_greeted(server_message::Msg::PaneList(self.pane_list(0)));
+    }
+
+    fn broadcast_activity(&mut self, activity: tilr_proto::PaneActivity) {
+        self.broadcast_to_greeted(server_message::Msg::PaneActivity(activity));
+    }
+
+    fn broadcast_to_greeted(&mut self, msg: server_message::Msg) {
+        let packet = tilr_proto::encode(&ServerMessage::from(msg));
         let stuck: Vec<ClientId> = self
             .clients
             .iter()
@@ -3160,6 +3663,22 @@ async fn read_pane(
                     Ok(status) => Event::PaneStatus { pane_id, status },
                     Err(_) => continue,
                 },
+                link::kind::CLIPBOARD => match tilr_proto::decode::<ClipboardWrite>(&packet) {
+                    Ok(copy) => Event::PaneCopy { pane_id, copy },
+                    Err(_) => continue,
+                },
+                link::kind::ACTIVITY => {
+                    match tilr_proto::decode::<tilr_proto::PaneActivity>(&packet) {
+                        Ok(activity) => Event::PaneActivity { pane_id, activity },
+                        Err(_) => continue,
+                    }
+                }
+                link::kind::INPUT_ACK => {
+                    match tilr_proto::decode::<tilr_proto::PaneInputAck>(&packet) {
+                        Ok(ack) => Event::PaneInputAck { pane_id, ack },
+                        Err(_) => continue,
+                    }
+                }
                 link::kind::STARTED => Event::PaneStarted { pane_id },
                 link::kind::EXITED => {
                     exit_code = tilr_proto::decode::<PaneExited>(&packet)
@@ -3205,6 +3724,197 @@ async fn read_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+    #[test]
+    fn input_retention_expires_at_one_hour_and_reconnect_cancels_it() {
+        let now = Instant::now();
+        let mut history = InputRetention::default();
+        history.disconnect("expired".into(), now);
+        history.disconnect("reconnected".into(), now);
+        assert!(
+            history
+                .expire(
+                    now + INPUT_RETENTION - Duration::from_nanos(1),
+                    INPUT_RETENTION
+                )
+                .is_empty()
+        );
+        history.reconnect("reconnected");
+        assert_eq!(
+            history.expire(now + INPUT_RETENTION, INPUT_RETENTION),
+            ["expired"]
+        );
+        assert!(
+            history
+                .expire(now + INPUT_RETENTION * 2, INPUT_RETENTION)
+                .is_empty()
+        );
+        history.disconnect("reconnected".into(), now + INPUT_RETENTION * 2);
+        assert!(
+            history
+                .expire(
+                    now + INPUT_RETENTION * 3 - Duration::from_nanos(1),
+                    INPUT_RETENTION
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            history.expire(now + INPUT_RETENTION * 3, INPUT_RETENTION),
+            ["reconnected"]
+        );
+    }
+
+    /// The fake pane lets the test supply old delta after observing Subscribe.
+    #[tokio::test]
+    async fn a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo() {
+        let (events, _) = mpsc::unbounded_channel();
+        let mut supervisor = Supervisor {
+            events,
+            listener: None,
+            local: None,
+            clients: HashMap::new(),
+            input_retention: InputRetention::default(),
+            panes: HashMap::new(),
+            starting: HashMap::new(),
+            server_id: Uuid::new_v4(),
+            token: None,
+            tunnel: cloud::Tunnel::off(),
+            clipboard: None,
+            pane_env: Vec::new(),
+            files: None,
+            host_events: false,
+            agent: None,
+            execs: None,
+            exec: false,
+            metrics: Arc::default(),
+            next_client_id: Arc::new(AtomicU64::new(3)),
+            copies: HashMap::new(),
+            last_copy: 0,
+        };
+        let pane_id = PaneId::new_v4();
+        let (to_pane, mut commands) = mpsc::unbounded_channel();
+        supervisor.panes.insert(
+            pane_id,
+            Pane {
+                command: Vec::new(),
+                title: String::new(),
+                cwd: String::new(),
+                created_at_ms: 0,
+                used_at_ms: 0,
+                cols: 80,
+                rows: 24,
+                subscribers: HashSet::new(),
+                pid: 0,
+                to_pane,
+                link: Link {
+                    writer: tokio::spawn(async { None }),
+                    reader: tokio::spawn(async { None }),
+                    stop_reader: Arc::new(Notify::new()),
+                    fds: (-1, -1),
+                },
+                counters: metrics::PaneCounters::default(),
+                full_asked: false,
+                probe_killed: false,
+            },
+        );
+        let mut viewers = Vec::new();
+        for id in [1, 2] {
+            let (tx, rx) = outbox::channel();
+            let (close, _) = mpsc::unbounded_channel();
+            supervisor
+                .on_event(Event::ClientConnected {
+                    id,
+                    addr: Peer::Unix(None),
+                    local: true,
+                    tx,
+                    close,
+                })
+                .await;
+            supervisor.clients.get_mut(&id).unwrap().greeted = true;
+            viewers.push(rx);
+        }
+        let subscribe = tilr_proto::encode(&ClientMessage::from(Msg::Subscribe(Subscribe {
+            pane_id: pane_id.to_string(),
+        })));
+        let frame = async |supervisor: &mut Supervisor, full, last_input_seq| {
+            let message = ServerMessage::from(server_message::Msg::Frame(Frame {
+                pane_id: pane_id.to_string(),
+                full,
+                last_input_seq,
+                ..Default::default()
+            }));
+            supervisor
+                .on_pane_output(
+                    pane_id,
+                    tilr_proto::encode(&message),
+                    Instant::now(),
+                    Some(FrameHead {
+                        full,
+                        last_input_seq,
+                    }),
+                )
+                .await;
+        };
+        // Reads the outbox as the connection's writer does, so it drains.
+        fn frames(outbox: &mut outbox::Outbox) -> Vec<Frame> {
+            let mut frames = Vec::new();
+            while let Some(outgoing) = outbox.try_recv() {
+                let msg = tilr_proto::decode::<ServerMessage>(&outgoing.packet)
+                    .unwrap()
+                    .msg;
+                outbox.written(outgoing);
+                if let Some(server_message::Msg::Frame(frame)) = msg {
+                    frames.push(frame);
+                }
+            }
+            frames
+        }
+        supervisor
+            .on_client_packet(1, subscribe.clone(), Instant::now())
+            .await;
+        assert_eq!(commands.try_recv().unwrap().0, subscribe);
+        frame(&mut supervisor, true, 0).await;
+        assert!(frames(&mut viewers[0])[0].full);
+        // Registration precedes the pane handling Subscribe. Existing viewers
+        // still receive the old delta; the new viewer must wait for full.
+        supervisor
+            .on_client_packet(2, subscribe.clone(), Instant::now())
+            .await;
+        assert_eq!(commands.try_recv().unwrap().0, subscribe);
+        frames(&mut viewers[1]);
+        let own_seq = seq_base(2) + 7;
+        frame(&mut supervisor, false, own_seq).await;
+        assert!(
+            frames(&mut viewers[1]).is_empty(),
+            "delta arrived before full"
+        );
+        // Waiting for the first full frame is not lag, and the full frame
+        // Subscribe asked for is not asked again.
+        assert_eq!(supervisor.panes[&pane_id].counters.frames_skipped, 0);
+        assert!(commands.try_recv().is_err(), "full frame asked twice");
+        assert_eq!(frames(&mut viewers[0])[0].last_input_seq, own_seq);
+        // A repeated Subscribe preserves the own input echo already saved.
+        supervisor
+            .on_client_packet(2, subscribe.clone(), Instant::now())
+            .await;
+        frame(&mut supervisor, false, seq_base(1) + 9).await;
+        assert!(frames(&mut viewers[1]).is_empty());
+        assert!(!frames(&mut viewers[0])[0].full);
+        frame(&mut supervisor, true, seq_base(1) + 10).await;
+        let initial = frames(&mut viewers[1]);
+        assert_eq!(initial.len(), 1);
+        assert!(initial[0].full);
+        assert_eq!(initial[0].last_input_seq, own_seq);
+        assert_eq!(frames(&mut viewers[0])[0].last_input_seq, seq_base(1) + 10);
+        frame(&mut supervisor, false, seq_base(1) + 11).await;
+        for viewer in &mut viewers {
+            let following = frames(viewer);
+            assert_eq!(following.len(), 1);
+            assert!(!following[0].full);
+            assert_eq!(following[0].last_input_seq, seq_base(1) + 11);
+        }
+    }
 
     #[test]
     fn a_client_is_judged_silent_or_deaf_by_what_it_sends_and_answers() {

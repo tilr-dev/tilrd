@@ -16,7 +16,7 @@ the line.
   cargo fmt --all --check
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings
-  cargo test --workspace --features tilrd/failpoints --locked
+  cargo nextest run --workspace --features tilrd/failpoints --locked
   cargo deny check
   gitleaks git --redact --no-banner --exit-code 1 .
   ```
@@ -37,8 +37,10 @@ the line.
 
 - Rust (stable; MSRV in `rust-version`), [Zig](https://ziglang.org) 0.15.2 (libghostty-vt-sys
   builds Ghostty with it) and `protoc` (tilr-proto's build.rs). `scripts/install-tools.sh DIR`
-  installs the pinned Zig and protoc, as CI does.
-- The first build needs network access: libghostty-vt-sys clones Ghostty at a pinned commit.
+  installs the pinned Zig, protoc and cargo-nextest (which runs the tests), as CI does.
+- Without a shared package, the first build needs network access: libghostty-vt-sys clones
+  Ghostty at a pinned commit. `scripts/build-ghostty-vt.sh` builds a shared package once;
+  set PKG_CONFIG_PATH to its share/pkgconfig directory (README, "Build").
 - macOS (checked 2026-10-19): Zig 0.15.2 fails with the macOS 27.0 SDK on this
   Mac; the tracked `.cargo/config.toml` selects CLT MacOSX15.4.sdk. Check it with
   `DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --sdk macosx15.4 --show-sdk-path`.
@@ -58,9 +60,12 @@ the line.
 - release-please (`.github/workflows/release.yml`): `feat` / `fix` commits open or update the
   release PR; merging it tags `vX.Y.Z`, builds the binaries for the GitHub release and
   publishes the Linux ones to the CDN (`scripts/release.sh --upload-only`).
-- `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported (by
-  hand e.g. via `infisical run --path /cloudflare`; in CI the `cdn` environment's variable)
-  besides wrangler credentials; the script fails without it.
+- `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported
+  (in CI the `cdn` environment's variable), plus AWS keys scoped to objects in tilr-cdn.
+  For manual publishing, Infisical `/cloudflare` in `prod` supplies `CF_ACCOUNT_ID` and
+  `R2_CDN_TOKEN`: export `CLOUDFLARE_ACCOUNT_ID` from `CF_ACCOUNT_ID`, use the token ID
+  as `AWS_ACCESS_KEY_ID`, and the lowercase hex SHA-256 of the token value (without a
+  newline) as `AWS_SECRET_ACCESS_KEY`. README's Releases section has a runnable example.
 - Do not edit versions (`[workspace.package] version`, Cargo.lock) or CHANGELOG.md by hand.
 - The `aarch64-unknown-linux-gnu` release build (on `ubuntu-24.04-arm`, free only for public
   repos) is off by default: set repo variable RELEASE_LINUX_ARM64=true once the repo is
@@ -69,7 +74,7 @@ the line.
 - The CDN layout (`releases/<platform>/latest`,
   `releases/<version>/tilr-<version>-<platform>.tar.gz` holding `tilrd` and `tilr`, with its
   `.sha256`) is what `tilrd update` (`crates/tilrd/src/update.rs`, run by `tilr update`) and
-  the installer (`itests/installer/install.sh` is the copy the black-box tests use) read: do
+  the installer (`scripts/install.sh`, which `tilr.sh` serves and the black-box tests run) read: do
   not change one without the others.
 
 ## Secrets
@@ -91,4 +96,7 @@ the line.
   without it.
 - The protocol schema is `crates/tilr-proto/proto/tilr.proto`; clients copy it from here
   (the `server` plugin's `npm run proto`, the test client), so a change there is a protocol
-  change: bump `PROTOCOL_VERSION` or add a feature flag as the README's "Protocol" says.
+  change. Before the first public release, keep `PROTOCOL_VERSION` at 1 for all changes.
+  Afterward, bump only for incompatibility with a client or server of the previous public
+  release, once per release as a separate step in its release milestone. Feature flags
+  name only capabilities a server can be run without; see README "Protocol".

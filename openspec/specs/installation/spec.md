@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Covers the installer (`curl -fsSL https://tilr.sh | sh`, whose copy in this repo is `itests/installer/install.sh`) and the manual install the README describes: which files it fetches and verifies, where it puts `tilrd` and `tilr`, what it does when a release cannot be installed, running it again over an installation, that it sets up no service, and the first run. Updating with `tilrd update` is the `update` spec; `tilr service install` and the daemon's directories are the `tilr-cli` and `daemon-lifecycle` specs.
+Covers the installer (`curl -fsSL https://tilr.sh | sh`, which serves `scripts/install.sh`) and the manual install the README describes: which files it fetches and verifies, where it puts `tilrd` and `tilr`, what it does when a release cannot be installed, running it again over an installation, that it sets up no service, and the first run. Updating with `tilrd update` is the `update` spec; `tilr service install` and the daemon's directories are the `tilr-cli` and `daemon-lifecycle` specs.
 
 ## Requirements
 
@@ -78,7 +78,7 @@ When the installed `tilrd` and `tilr` both report the version `latest` names (`-
 - **THEN** no archive is requested, both files keep their inode and mtime, the server pid is the same and its log has no `reloading`
 
 ### Requirement: A new release reloads the running server
-Run with a new release, the installer SHALL rename the new `tilr` into place first and the new `tilrd` over the old one last, so that the running server reloads into it in place (same pid, panes, shells and their state; see the `reload` spec), and SHALL say `the running tilrd reloads itself and keeps its shells` when a `tilrd` of the user runs.
+Run with a new release, the installer SHALL rename the new `tilr` into place first and the new `tilrd` over the old one last, then SHALL explicitly request reload from the running server so it reloads into it in place (same pid, panes, shells and their state; see the `reload` spec), and SHALL say `the running tilrd reloads itself and keeps its shells` when a `tilrd` of the user runs.
 
 **Verified by**: itests `UC-003` (`uc_003.py::installing_a_new_release_reloads_the_running_server_and_keeps_its_shells`).
 
@@ -134,13 +134,24 @@ After an install on a clean system (no `$XDG_RUNTIME_DIR`, no `~/.config`), the 
 ### Requirement: Manual install from the CDN
 A manual install SHALL need only the CDN layout: read `releases/<platform>/latest`, download `releases/<version>/tilr-<version>-<platform>.tar.gz`, unpack `tilrd` and `tilr` from it into `~/.local/bin`, and run `tilr`.
 
+**Verified by**: itests `UC-007` (`uc_007.py::a_manual_install_from_the_cdn_layout_runs`).
+
 #### Scenario: By hand
 - **WHEN** a user fetches `latest` for `linux-aarch64` and unpacks `tilrd` and `tilr` of that version's archive into `~/.local/bin`
 - **THEN** `tilr` starts the unpacked `tilrd` and attaches
 
+### Requirement: A failed reload request keeps the installed release
+After both programs are installed, a reload request failure SHALL leave the new programs installed, exit non-zero and report that installation succeeded but reload could not be requested. It SHALL NOT report reload success. Some servers may already have received the request.
+
+**Verified by**: itests `UC-004` (`uc_004.py::a_failed_reload_request_keeps_the_installed_release`).
+
+#### Scenario: Request cannot be sent
+- **WHEN** installation succeeds but the subsequent reload request fails
+- **THEN** both new programs remain installed, temporary files are removed, and the command exits non-zero with an explicit reload request error
+
 ## Notes
 
-- Requirements without a test: Manual install from the CDN; the old-`tilr` restore of "A failed update leaves the installation and its server alone" (no case makes the `tilrd` rename fail).
+- Requirements without a test: the old-`tilr` restore of "A failed update leaves the installation and its server alone" (no case makes the `tilrd` rename fail).
 - Since 3ba0e93 the installer checks the whole release in a temporary directory before it makes `~/.local/bin`; UC-004 (all its cases) is green. The earlier installer's service setup (`tilr.service`, linger, `TILR_NO_SERVICE`), its move of a `tilr-server` install to `tilrd` and its client-less releases are gone with it, along with the loose per-program files of the CDN (2a8b425).
-- The real installer is served from R2 (`https://cdn.tilr.dev/install.sh`, behind `tilr.sh`) and lives in the `sh` repository; this repo holds only the copy the itests use.
+- The installer is `scripts/install.sh`, the one the itests run; `scripts/release.sh` uploads it to R2 (`https://cdn.tilr.dev/install.sh`, served by `tilr.sh`) after a release's `latest` (`release-process` spec). The `tilr.sh` Worker lives outside this repo.
 - No known red itests case for installation.

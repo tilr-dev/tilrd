@@ -12,7 +12,7 @@ Checked at 1163abd: still not done. `Run` has `style`, `text`, `wide`, `cluster`
 - The pane process reads a cell's URI only in rows that have links, so screens without links cost nothing more.
 - A URI longer than 8 KiB is not sent (its cells go as plain text).
 - `tilr attach` shows the links in the local terminal (OSC 8 around the run), so terminals that support them make them clickable.
-- No feature flag and no PROTOCOL_VERSION bump (protocol-v3 rule): new fields a client may ignore, which a server cannot be run without; a client that ignores them shows the text without links.
+- No feature flag: the new fields cannot be disabled on the server; a client that ignores them shows the text without links. The protocol version policy in `openspec/config.yaml` keeps version 1 without a bump before the first public release.
 - Across a reload, links on the screen and in history become plain text (the snapshot has no per-cell links, see Why); output after the reload has links again. Recorded as a known limit; a fix belongs upstream (libghostty's VT formatter emitting OSC 8 per cell).
 
 ## Capabilities
@@ -36,4 +36,3 @@ Not breaking: additive messages and fields only, no PROTOCOL_VERSION bump, no cl
 ## Implemented by
 
 - a585eca — OSC 8 frame fields, URI extraction, attach drawing and tests.
-- Verification blockers and pending manual check are recorded in tasks.md.

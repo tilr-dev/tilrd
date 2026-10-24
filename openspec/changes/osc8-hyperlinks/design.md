@@ -16,7 +16,7 @@ For a dirty row, `Row::has_hyperlink()` is asked first; only then is each cell's
 A URI over 8 KiB is not put in the table and its cells go without a link; the frame is otherwise unchanged. The number of links per frame is bounded by the cells of the frame. URIs are passed as the program gave them (any scheme); the client decides what a click does.
 
 ### D4. No flag, no version bump
-Per protocol-v3 D1: the fields are new, have a harmless default, and no server can be run without them. A v3 client that ignores them shows plain text.
+Per the protocol version policy in `openspec/config.yaml`, version 1 remains unchanged before the first public release. The fields have a harmless default, and no server can be run without them, so they need no feature flag. A v1 client that ignores them shows plain text.
 
 ### D5. tilr attach
 `draw` (`crates/tilr/src/attach.rs:318`) writes `ESC ] 8 ; ; <uri> ESC \` before a run with a link and `ESC ] 8 ; ; ESC \` after it, so the local terminal's own link handling applies.

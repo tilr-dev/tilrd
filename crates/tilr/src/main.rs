@@ -5,6 +5,7 @@
 mod attach;
 mod conn;
 mod daemon;
+mod deploy;
 mod host;
 mod service;
 mod target;
@@ -97,6 +98,8 @@ enum Command {
         #[arg(long, env = "TILR_CDN")]
         cdn: Option<String>,
     },
+    /// Install and start tilrd over SSH, then print how to connect.
+    Deploy(deploy::Args),
     /// Start tilrd at boot, as a service of yours (systemd user unit, else
     /// a crontab @reboot line; launchd on macOS), or stop doing so. Nothing
     /// starts it at boot otherwise.
@@ -136,8 +139,13 @@ enum CloudCommand {
     /// Link this machine to your account: shows a code to confirm in a
     /// browser.
     Login {
-        /// Where tilr Cloud is.
-        #[arg(long, env = "TILR_CLOUD")]
+        // Not given, tilrd applies its default (and its own TILR_CLOUD);
+        // named here for help, a test keeps it tilrd's `cloud::DEFAULT_URL`.
+        #[arg(
+            long,
+            env = "TILR_CLOUD",
+            help = "Where tilr Cloud is [default: https://wss.tilr.dev]"
+        )]
         url: Option<String>,
         /// What to call this machine there. The host name, if not given.
         #[arg(long)]
@@ -153,6 +161,15 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     // Requests from inside a pane need no server connection of their own.
     match &cli.command {
+        Some(Command::Deploy(args)) => {
+            return match deploy::run(args) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("tilr: {err:#}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Some(Command::Edit { path }) => {
             return host::open(Some("file".into()), &path.to_string_lossy(), &[]);
         }
@@ -326,7 +343,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         | Command::Update { .. }
         | Command::Edit { .. }
         | Command::Open { .. }
-        | Command::Service { .. } => unreachable!(),
+        | Command::Service { .. }
+        | Command::Deploy(_) => unreachable!(),
     }
 }
 

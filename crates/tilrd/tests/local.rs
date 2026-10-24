@@ -12,6 +12,7 @@ use tokio::net::UnixStream;
 /// A server started as `tilr` starts one: the Unix socket, with or without
 /// a TCP port.
 struct Daemon {
+    owner: Owner,
     child: Child,
     dir: PathBuf,
     socket: PathBuf,
@@ -48,12 +49,14 @@ impl Daemon {
             command.env("NOTIFY_SOCKET", &path);
             Some(socket)
         };
-        command.args(args).envs(env.iter().copied());
         Server::environment(&mut command, dir, "");
+        command.args(args).envs(env.iter().copied());
         // The TCP port a server has by default: not the one of the machine.
         command.env("TILR_LISTEN", "127.0.0.1:0");
         command.stdin(Stdio::null()).stderr(Stdio::piped());
         // The executable may be a copy the test just made.
+        let owner = Owner::new(dir);
+        owner.configure(&mut command);
         let mut child = spawn_copied(&mut command);
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -71,6 +74,7 @@ impl Daemon {
             None => dir.join("runtime/tilrd.sock"),
         };
         Self {
+            owner,
             child,
             dir: dir.to_owned(),
             socket,
@@ -91,17 +95,8 @@ impl Daemon {
     /// the way: its socket takes connections before that (and before its
     /// token is written), and they are served only once it has.
     fn wait_ready(&mut self) {
-        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
-        notify
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .unwrap();
         let deadline = std::time::Instant::now() + TIMEOUT;
-        let mut message = [0; 64];
-        loop {
-            if let Ok(n) = notify.recv(&mut message) {
-                assert_eq!(&message[..n], b"READY=1");
-                return;
-            }
+        while !self.said_ready() {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!("tilrd exited {status}: {}", self.log_text());
             }
@@ -110,6 +105,22 @@ impl Daemon {
                 "tilrd not ready within {TIMEOUT:?}: {}",
                 self.log_text()
             );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Whether `READY=1` has come since the last look, without waiting.
+    fn said_ready(&self) -> bool {
+        let notify = self.notify.as_ref().expect("a NOTIFY_SOCKET of the test");
+        notify.set_nonblocking(true).unwrap();
+        let mut message = [0; 64];
+        match notify.recv(&mut message) {
+            Ok(n) => {
+                assert_eq!(&message[..n], b"READY=1");
+                true
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(err) => panic!("NOTIFY_SOCKET: {err}"),
         }
     }
 
@@ -187,16 +198,7 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if self.running() {
-            self.signal(libc::SIGTERM);
-            for _ in 0..100 {
-                if !self.running() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        let _ = self.child.kill();
+        self.owner.close();
         let _ = self.child.wait();
         if std::thread::panicking() {
             eprintln!("--- server log ---\n{}", self.log_text());
@@ -342,6 +344,62 @@ fn a_service_manager_is_told_when_the_server_is_ready() {
     let n = manager.recv(&mut message).expect("READY=1");
     assert_eq!(&message[..n], b"READY=1");
     daemon.wait_listening();
+}
+
+/// What a server logs with `RUST_LOG` set to `filter` (none if `None`)
+/// when a connection to its Unix socket is not a WebSocket: all of it, read
+/// to the end after the server has stopped. With `logged`, once that line
+/// is there.
+fn log_of_a_failed_handshake(filter: Option<&str>, logged: bool) -> String {
+    use std::io::{Read, Write};
+    let scratch = Scratch::new();
+    let env: Vec<(&str, &Path)> = filter
+        .map(|f| ("RUST_LOG", Path::new(f)))
+        .into_iter()
+        .collect();
+    let exe = Path::new(env!("CARGO_BIN_EXE_tilrd"));
+    let mut daemon = Daemon::spawn_env(exe, &scratch.0, &["--no-listen"], &env);
+    daemon.wait_ready();
+    let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
+    stream.write_all(b"not a handshake\r\n\r\n").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    // The server closes the connection as the handshake fails, and logs it
+    // right after, in the same poll of the connection's task.
+    let _ = stream.read_to_end(&mut Vec::new());
+    if logged {
+        wait_logged(&daemon, "websocket handshake failed");
+    }
+    daemon.signal(libc::SIGTERM);
+    let (status, log) = daemon.exit();
+    assert!(status.success(), "{status}: {log}");
+    log
+}
+
+#[test]
+fn rust_log_sets_the_log_level() {
+    let debug = log_of_a_failed_handshake(Some("debug"), true);
+    assert!(
+        debug
+            .lines()
+            .any(|line| line.contains("DEBUG") && line.contains("websocket handshake failed")),
+        "{debug}"
+    );
+    assert!(!debug.contains("RUST_LOG ignored"), "{debug}");
+
+    for unset in [None, Some("")] {
+        let info = log_of_a_failed_handshake(unset, false);
+        assert!(info.contains("Unix socket for local clients"), "{info}");
+        assert!(!info.contains("websocket handshake failed"), "{info}");
+        assert!(!info.contains("RUST_LOG ignored"), "{info}");
+    }
+
+    let invalid = log_of_a_failed_handshake(Some("tilrd=[bad"), false);
+    assert_eq!(invalid.matches("RUST_LOG ignored:").count(), 1, "{invalid}");
+    assert!(
+        invalid.contains("Unix socket for local clients"),
+        "{invalid}"
+    );
+    assert!(!invalid.contains("websocket handshake failed"), "{invalid}");
 }
 
 #[test]
@@ -497,7 +555,27 @@ fn of_servers_started_at_once_one_serves_the_socket() {
     let mut daemons: Vec<Daemon> = (0..8)
         .map(|_| Daemon::spawn(&scratch.0, &["--no-listen"]))
         .collect();
-    std::thread::sleep(Duration::from_millis(1500));
+    // Each one either says it is ready, having the socket, or exits; looked
+    // at every 20 ms.
+    let mut ready = vec![false; daemons.len()];
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let mut settled = 0;
+        for (daemon, ready) in daemons.iter_mut().zip(&mut ready) {
+            *ready = *ready || daemon.said_ready();
+            if *ready || !daemon.running() {
+                settled += 1;
+            }
+        }
+        if settled == daemons.len() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not all settled within {TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let running: Vec<usize> = (0..daemons.len())
         .filter(|&i| daemons[i].running())
         .collect();
@@ -683,6 +761,7 @@ async fn server_commands_run_for_local_clients_only() {
         .find_map(|line| line.split("listening on ").nth(1).map(str::to_owned))
         .unwrap();
     let mut client = Client::try_connect(&Server {
+        owner: Owner::new(&scratch.0),
         child: Command::new("true").spawn().unwrap(),
         addr: addr.trim().to_owned(),
         dir: scratch.0.clone(),
@@ -715,7 +794,11 @@ async fn server_commands_run_for_local_clients_only() {
 /// An executable that reads the state but not the socket (no `unix-socket
 /// 1`) in place of `exe`.
 fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
-    let formats = Command::new(exe).arg("state-formats").output().unwrap();
+    let formats = Command::new(exe)
+        .env_remove("RUST_LOG")
+        .arg("state-formats")
+        .output()
+        .unwrap();
     let formats = String::from_utf8(formats.stdout).unwrap();
     let older: String = formats
         .lines()
@@ -725,7 +808,10 @@ fn replace_with_one_that_cannot_take_the_socket(scratch: &Scratch, exe: &Path) {
     let staged = scratch.0.join("tilrd.new");
     std::fs::write(
         &staged,
-        format!("#!/bin/sh\nprintf '{}'\n", older.replace('\n', "\\n")),
+        format!(
+            "#!/bin/sh\n{STATE_FORMATS_STARTUP}printf '{}'\n",
+            older.replace('\n', "\\n")
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -753,9 +839,23 @@ fn a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &["--no-listen"]);
+    let mut daemon = Daemon::spawn_env(
+        &exe,
+        &scratch.0,
+        &["--no-listen"],
+        &[("TILR_TEST_STATE_FORMATS_STARTUP", Path::new("1"))],
+    );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    assert!(
+        Command::new("kill")
+            .args(["-USR1", &daemon.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    #[cfg(feature = "failpoints")]
+    wait_logged(&daemon, "state-formats successor started");
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",
@@ -772,9 +872,23 @@ fn a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket() {
     let scratch = Scratch::new();
     let exe = scratch.0.join("tilrd");
     std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut daemon = Daemon::spawn_exe(&exe, &scratch.0, &[]);
+    let mut daemon = Daemon::spawn_env(
+        &exe,
+        &scratch.0,
+        &[],
+        &[("TILR_TEST_STATE_FORMATS_STARTUP", Path::new("1"))],
+    );
     daemon.wait_ready();
     replace_with_one_that_cannot_take_the_socket(&scratch, &exe);
+    assert!(
+        Command::new("kill")
+            .args(["-USR1", &daemon.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    #[cfg(feature = "failpoints")]
+    wait_logged(&daemon, "state-formats successor started");
     wait_logged(
         &daemon,
         "cannot take over the Unix socket this server serves",

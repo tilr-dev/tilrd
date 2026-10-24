@@ -62,22 +62,19 @@ Both sides SHALL ignore a message whose type they do not know (a `ClientMessage`
 - **AND** the input never reaches the pane's shell
 
 ### Requirement: Protocol version check
-`Hello.protocol_version` SHALL be the `PROTOCOL_VERSION` the client was built against (currently `3`). A server receiving any other value (older, newer, or 0 for none) MUST answer `Error { message: "unsupported protocol version <N>: this server speaks <PROTOCOL_VERSION>" }` and close the connection, and MUST go on serving clients of its own version.
+`Hello.protocol_version` SHALL be the `PROTOCOL_VERSION` the client was built against (currently `1`). A server receiving any other value (older, newer, or 0 for none) MUST answer `Error { message: "unsupported protocol version <N>: this server speaks <PROTOCOL_VERSION>" }` and close the connection, and MUST go on serving clients of its own version.
 
 **Verified by**: `panes::a_client_built_for_another_protocol_version_is_turned_away`.
 
-#### Scenario: Older client
-- **WHEN** a client sends `Hello` with `protocol_version` 2 to a server speaking 3
-- **THEN** the first message it receives is `Error` "unsupported protocol version 2: this server speaks 3"
-- **AND** nothing else follows: the connection is closed
-
 #### Scenario: Newer client
-- **WHEN** a client sends `Hello` with `protocol_version` 4 to a server speaking 3
-- **THEN** it is refused the same way, naming version 4
+- **WHEN** a client sends `Hello` with `protocol_version` 2 to a server speaking 1
+- **THEN** the first message it receives is `Error` "unsupported protocol version 2: this server speaks 1"
+- **AND** nothing else follows: the connection is closed
 
 #### Scenario: No version
 - **WHEN** a client sends `Hello` without `protocol_version` (0)
-- **THEN** it is refused the same way, naming version 0
+- **THEN** the first message it receives is `Error` "unsupported protocol version 0: this server speaks 1"
+- **AND** nothing else follows: the connection is closed
 
 ### Requirement: HelloAck is the first thing a client hears
 The server SHALL send nothing to a connection before its `HelloAck`: `PaneList` pushes and other broadcasts MUST skip a connection that has not said `Hello`. After `HelloAck` the connection receives pushes like every other client.
@@ -141,20 +138,101 @@ The server SHALL echo a client-chosen `request_id`: `CreatePane`'s in `PaneCreat
 - **WHEN** a pane appears, goes away or changes
 - **THEN** every greeted client receives `PaneList` with `request_id` 0
 
-### Requirement: Version 3 is one contract
-A server speaking version 3 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, and `PaneInfo.viewed_by` / `used_at_ms`; none of them SHALL appear in `HelloAck.features`.
+### Requirement: Version 1 is one contract
+A server speaking version 1 SHALL implement, without a feature flag, `Ping`, `Hello.client_id` with superseding and close code 4000, close codes 4001 and 4002, the bulk window paced by pongs, `KeyInput.code`, the `*_bytes` twins of file paths, `PaneInfo.viewed_by` / `used_at_ms`, and acknowledged input with replay; none of them SHALL appear in `HelloAck.features`.
 
-**Verified by**: `panes::hello_announces_the_clipboard_and_its_limit` (no `ping` in the list); each part is verified by the requirement that specifies it (`client-liveness`, `files`, `screen-frames`, `panes`).
+**Verified by**: `panes::hello_announces_the_clipboard_and_its_limit`; each part is verified by the requirement that specifies it.
 
-#### Scenario: A v3 client relies on the twins
-- **WHEN** a client greeted with `protocol_version` 3 names a file by `path_bytes`
-- **THEN** the server goes by the bytes, and `HelloAck.features` never lists `path-bytes`, `client-id`, `key-code` or `ping`
+#### Scenario: A v1 client relies on the twins
+- **WHEN** a client greeted with `protocol_version` 1 names a file by `path_bytes`
+- **THEN** the server goes by the bytes, and `HelloAck.features` never lists `path-bytes`, `client-id`, `key-code`, `ping` or input delivery
+
+### Requirement: Input is acknowledged after application
+Clients SHALL number input per identity and pane and retain it until ACK for ordered replay. The server SHALL ACK completed PTY writes independently of output, deduplicate accepted sequences and report applied counters in Hello. Deduplication ends at finalization, one hour without reconnect after disconnect, or pane exec; later replay MAY duplicate input. Delivery and latency numbering SHALL be independent. Outboxes SHALL reject overflow before sending or advancing counters.
+
+**Verified by**: `input_delivery::numbered_input_requires_a_stable_client_id`, `input_delivery::disconnect_before_application_replays_one_copy`, `input_delivery::applied_input_with_a_lost_ack_is_not_applied_twice`, `input::tests::overflow_is_atomic_and_ack_reclaims_capacity`, `client::attach_replays_a_key_when_the_connection_ends_without_an_ack`, `session::input_delivery_tests::reconnect_replays_only_unacknowledged_input_in_order`.
+
+#### Scenario: Application without screen output
+- **WHEN** input is written to a PTY whose program emits no output
+- **THEN** the client receives an InputAck and can remove that input from its queue
+
+#### Scenario: Lost acknowledgement
+- **WHEN** a connection ends after input is applied but before its acknowledgement arrives, reconnects within one hour, and no pane exec occurred
+- **THEN** HelloAck reports the applied sequence and replay cannot apply the input again
+
+#### Scenario: Pending duplicate
+- **WHEN** a frame is replayed while some of its bytes are still pending
+- **THEN** only the original pending bytes are written and the frame is acknowledged after their final byte
+
+#### Scenario: Numbered input without a stable identity
+- **WHEN** a greeted client without `Hello.client_id` sends input with a nonzero `input_seq`
+- **THEN** the server returns `Error "numbered input requires a stable client_id"` and does not apply that input
+
+#### Scenario: Full outbox
+- **WHEN** another input would exceed 4 MiB or 4096 queued frames
+- **THEN** admission fails visibly, the frame is not sent and existing queued input remains available for replay
+
+### Requirement: Missing-pane input receives a terminal acknowledgement
+Numbered input from a greeted client with a stable identity naming no running pane SHALL receive `Error { message: "no such pane: <name as sent>" }` then `InputAck { pane_id: <name as sent>, seq: <input_seq> }`. Clients SHALL reclaim that exact pane string's queued input through the acknowledged sequence. Rejection MUST NOT change applied counters. Unnumbered requests SHALL receive only the error.
+
+**Verified by**: `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect`.
+
+#### Scenario: Rejected numbered input
+- **WHEN** a stable identified client sends numbered key, mouse, paste, raw, scroll or resize input naming an absent UUID or malformed pane name
+- **THEN** it receives the error and terminal acknowledgement, can reclaim that pane's queued input and keeps other panes' pending input
+- **AND** the acknowledgement terminates delivery without reporting application to a PTY or changing a live pane's applied counter
+
+#### Scenario: Lost rejection acknowledgement
+- **WHEN** the rejection acknowledgement is lost and the client replays after reconnect or reload while the pane remains absent
+- **THEN** the server returns the same error and acknowledgement without adding an applied counter to HelloAck
+
+#### Scenario: Acknowledged rejection does not replay
+- **WHEN** the client reconnects after consuming the rejection acknowledgement
+- **THEN** its outbox no longer replays that rejected input
+
+### Requirement: Hello input probes are bounded
+The server SHALL give pane processes five seconds to answer Hello input probes,
+checked on each supervisor tick. A pane process that has not answered within that
+bound SHALL be killed and its pane closed. Hello SHALL complete after those pane
+links close, retaining the applied input counters from responsive panes. A client
+that has sent a valid Hello SHALL NOT be closed by the timeout for missing Hello
+while its probes are pending.
+
+**Verified by**: `input_delivery::a_stuck_pane_does_not_block_other_panes_hello`.
+
+#### Scenario: A pane stops reading its input pipe
+- **WHEN** two stable clients send Hello while a pane process is stopped before
+  answering its input probe
+- **THEN** the unresponsive pane is closed within the probe bound
+- **AND** both clients receive HelloAck with applied counters for responsive panes
+- **AND** input on responsive panes continues without duplicate application
+
+### Requirement: Input delivery identities have a bounded lifetime
+Clients SHALL finalize only after all admitted input is acknowledged. The server SHALL remove finalized identities immediately and disconnected identities after one hour without reconnect. Reconnect before expiry SHALL cancel the deadline. Cleanup SHALL preserve queued PTY bytes. Neither delivery counters nor disconnect deadlines SHALL survive exec. Protocol version SHALL remain 1.
+
+**Verified by**: `input_delivery::finalized_sessions_do_not_accumulate_delivery_history`, `input_delivery::expired_sessions_are_removed_but_active_sessions_are_retained`, `input_delivery::expiry_preserves_pending_bytes_without_stale_ack_markers`, `input_delivery::clients_cannot_forge_internal_delivery_cleanup`, `supervisor::tests::input_retention_expires_at_one_hour_and_reconnect_cancels_it`, `client::normal_detach_finalizes_its_acknowledged_input`, `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing`.
+
+#### Scenario: Many completed client sessions
+- **WHEN** successive identities stop admitting input, receive all acknowledgements, send `FinalizeInput` and close
+- **THEN** their delivery records SHALL be removed immediately, further numbered input on the finalized connection SHALL be refused, and later Hello SHALL report no applied input for them
+
+#### Scenario: Disconnect retention and expiry
+- **WHEN** an identity disconnects without finalizing
+- **THEN** reconnect before one hour retains its applied counter and cancels expiry; reconnect after an uninterrupted hour starts with no applied counter and may replay already applied input
+
+#### Scenario: Pending bytes outlive history
+- **WHEN** an expired identity has bytes still queued for its PTY
+- **THEN** cleanup preserves the bytes and the pane keeps running when they are written
+
+#### Scenario: Client cannot request another identity's cleanup
+- **WHEN** a client supplies internal cleanup fields
+- **THEN** ingress SHALL clear them and SHALL NOT remove any other identity
 
 ## Notes
 
 - Requirements without a test: none. Partly untested: the 64 MiB decompression cap of "Compression of large bodies".
 - Unit tests in crates/tilr-proto/src/lib.rs are cited by bare name (they are not in a `tests/` file).
 - `"agent"` in `HelloAck.features` is listed whenever forwarding is on, whatever the client's `Hello.features`; what the client's `"agent"` gates is `StreamOpen` (see `ssh-agent-forwarding`).
-- The rule for later changes (README "Protocol", the tilr.proto header, openspec/config.yaml): a change a peer cannot ignore bumps `PROTOCOL_VERSION`; a feature names only a capability a server can be run without; a change a peer may ignore needs neither. A process rule, not an observable behavior.
+- The rule for later changes (README "Protocol", the tilr.proto header, openspec/config.yaml): before the first public release, all protocol changes use version 1 without a bump. Afterward, bump `PROTOCOL_VERSION` only for a change incompatible with a client or server of the previous public release, once per release as a separate step in its release milestone. A feature names only a capability a server can be run without; a change a peer may ignore needs neither a bump nor a feature. A process rule, not an observable behavior.
 - File names that are not UTF-8 (`*_bytes` twins) are a rule of the files protocol only: see the `files` spec.
 - The supervisor-to-pane-process framing (u32 LE length, kind byte; crates/tilrd/src/link.rs) is internal and not part of the client protocol.

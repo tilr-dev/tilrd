@@ -39,8 +39,11 @@ TARGET = "/target"
 # Version string of the "next release" the update scenarios install.
 NEXT_PACKAGE_VERSION = "0.1.1"
 
-SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "crates/*/target/", "!rustfmt.toml",
-                 "!.rustfmt.toml", "!clippy.toml"]
+# Rust integration tests also execute repository scripts and inspect release config.
+SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crates/*/target/", "!rustfmt.toml",
+                 "!.rustfmt.toml", "!clippy.toml", "!scripts/", "!.github/workflows/ci.yml",
+                 "!.github/workflows/release.yml", "!.cargo/config.toml", "!.gitignore",
+                 "!release-please-config.json", "!AGENTS.md", "!README.md", "!USE_CASES.md"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
 # Runs one test command and writes a single JSON result, so the module reads one file
@@ -93,8 +96,9 @@ with open("/tt-result.json", "w") as f:
 # older than the last build of another tree (another commit, worktree or run) would be
 # taken as built and tested as the other tree, down to code generated from another
 # tilr.proto. The digests of the tree a target dir was last given are in
-# DIR/.tt-sources.json, written before CMD runs: a build that fails halfway has still
-# been given that tree.
+# DIR/.tt-sources.json. Invalidate the records before CMD can change any artifacts,
+# and publish them only after success: a failed or interrupted multi-target build
+# may leave any target partially built, or never reach the next-release target.
 FRESH = r'''#!/usr/bin/env python3
 import fcntl, hashlib, json, os, subprocess, sys
 split = sys.argv.index("--")
@@ -127,10 +131,17 @@ for d in sorted(dirs):
         os.utime(path)
     print(f"[tt-fresh] {d}: {len(changed)} of {len(now)} source files changed since its last build",
           file=sys.stderr, flush=True)
+    try:
+        os.unlink(f"{d}/.tt-sources.json")
+    except FileNotFoundError:
+        pass
+code = subprocess.run(argv).returncode
+if code:
+    sys.exit(code)
+for d in sorted(dirs):
     with open(f"{d}/.tt-sources.json.tmp", "w") as f:
         json.dump(now, f)
     os.replace(f"{d}/.tt-sources.json.tmp", f"{d}/.tt-sources.json")
-sys.exit(subprocess.run(argv).returncode)
 '''
 
 # Builds everything once: the server and the driver, the test executables (with
@@ -139,7 +150,7 @@ sys.exit(subprocess.run(argv).returncode)
 BUILD = r'''#!/usr/bin/env python3
 import json, os, shutil, subprocess
 out = "/out"
-for d in ("tests", "bin"):
+for d in ("tests", "bin", "rust-target"):
     os.makedirs(f"{out}/{d}")
 # build.rs watches .git/logs/HEAD; without it the build script reruns on every cargo call.
 os.makedirs(".git/logs", exist_ok=True)
@@ -165,6 +176,15 @@ for line in p.stdout.splitlines():
     if not line.startswith("{"):
         continue
     m = json.loads(line)
+    if m.get("reason") == "build-script-executed":
+        # Tests bake OUT_DIR into their executable and read Cargo's saved stdout
+        # beside it. Snapshot only this test build's results, including cached ones,
+        # before the next build can change the shared target cache.
+        output = os.path.join(os.path.dirname(m["out_dir"]), "output")
+        dest = f"{out}/rust-target/{os.path.relpath(output, '/target')}"
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(output, dest)
+        continue
     if m.get("reason") != "compiler-artifact" or not m.get("executable") or not m["profile"]["test"]:
         continue
     package = os.path.basename(os.path.dirname(m["manifest_path"]))
@@ -253,6 +273,7 @@ class TilrItests:
                       Ignore(SOURCE_IGNORE)]
     itests: Annotated[dagger.Directory, Doc("tt helper, fixtures and scenarios"), DefaultPath("/itests"),
                       Ignore(ITESTS_IGNORE)]
+    installer: Annotated[dagger.File, Doc("the installer tilr.sh serves"), DefaultPath("/scripts/install.sh")]
     commit: Annotated[str, Doc("commit baked into the version string (TILR_BUILD_COMMIT)")] = "itest"
     distro: Annotated[str, Doc(f"runtime image of the scenarios: {', '.join(DISTROS)}")] = "ubuntu"
 
@@ -300,7 +321,7 @@ class TilrItests:
     @function
     def build(self) -> dagger.Directory:
         """bin/ (tilrd, tilr, tilrd-failpoints, tilr-tests, tilrd-next, tilr-next, tilr-driver), tests/ and
-        manifest.json (test suites, versions, platform)."""
+        rust-target/ (build-script stdout) and manifest.json (test suites, versions, platform)."""
         return (
             self._rust("tt-target")
             .with_mounted_cache("/target-next", dag.cache_volume("tt-target-next"))
@@ -352,6 +373,7 @@ class TilrItests:
             self.runtime()
             .with_directory(SRC, self.source)
             .with_directory("/out/tests", out.directory("tests"))
+            .with_directory(TARGET, out.directory("rust-target"))
             .with_file(f"{TARGET}/debug/tilrd", out.file("bin/tilrd-failpoints"))
             .with_file(f"{TARGET}/debug/tilr", out.file("bin/tilr-tests"))
         )
@@ -515,7 +537,7 @@ class TilrItests:
                 except Exception:
                     return Result(rid, "scenario", "BLOCKED", 0, f"fixture {c['fixture']} failed to build")
             ctr = (self._with_binaries(self._tt(self.runtime(), c["module"]))
-                   .with_file("/opt/tt/install.sh", self.itests.file("installer/install.sh"))
+                   .with_file("/opt/tt/install.sh", self.installer)
                    .with_directory("/fx", fx)
                    .with_env_variable("TT_RUN", f"{run_id}-{k}")
                    .with_env_variable("TT_TIMEOUT", str(c["timeout"])))

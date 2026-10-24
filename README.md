@@ -22,7 +22,7 @@ itests/                   black-box tests: real installs and servers in containe
 scripts/release.sh        the Linux release archive in the CDN layout; --publish uploads it
 scripts/package.sh        GitHub release archive of built binaries (release.yml)
 scripts/linux.sh          a command (the test suite by default) in the Linux build container
-scripts/install-tools.sh  the pinned Zig and protoc the build needs (CI, the container)
+scripts/install-tools.sh  the pinned Zig, protoc and cargo-nextest (CI, the container)
 scripts/update-test.sh    live check of `tilrd update` on a real machine
 ```
 
@@ -39,7 +39,7 @@ environment lacks them (an inherited `HOME` wins); launchd's `XPC_SERVICE_NAME` 
 `LISTEN_FDNAMES`, `LISTEN_PID`, `WATCHDOG_USEC`, `WATCHDOG_PID`) are dropped. A pane with a
 command runs it as given, without a shell.
 
-The server's tools for the panes (`xclip`, `wl-paste`, `tilr`; their directory is
+The server's tools for the panes (`xclip`, `wl-paste`, `wl-copy`, `tilr`; their directory is
 `$TILR_SHIMS`) come first on `PATH`, also when a startup file sets `PATH` from scratch: zsh,
 bash and fish start through small wrappers in `<runtime dir>/shell/` that run the user's
 files as that login shell would and then put `$TILR_SHIMS` first (zsh: `ZDOTDIR` pointed
@@ -69,9 +69,12 @@ cargo install --path crates/tilr --locked
 **Linux, from the CDN.** The Linux releases are also on `https://cdn.tilr.dev`, where the
 installer and `tilr update` look for them: one archive per platform,
 `tilr-<version>-<platform>.tar.gz`, holding the server `tilrd` and its client `tilr`, with
-its `.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`) downloads it into a
+its `.sha256`. The installer (`curl -fsSL https://tilr.sh | sh`; `tilr.sh` serves
+`scripts/install.sh`, uploaded with each release) downloads it into a
 temporary directory, checks it, unpacks it there and runs both programs, and only then puts
-both in `~/.local/bin`; anything that fails installs nothing. It sets up no service and
+both in `~/.local/bin`; a failed check installs nothing. After installation it explicitly
+requests reload. If that request fails, both new programs remain installed and the command
+exits non-zero with an error saying reload could not be requested. It sets up no service and
 edits no profile: it prints what to type next (`tilr`, `tilr service install` to start
 tilrd at boot, `tilr token`, `tilr cloud login`) and, if `~/.local/bin` is not on `PATH`,
 the line to add to `~/.profile`. By hand:
@@ -109,7 +112,9 @@ both programs run, and renames them over the installed ones: `tilr` (next to `ti
 synced to disk before the renames and the directory after them, so `updated …` means the
 release is on disk (a power loss after it does not leave an empty executable). A running server
 then [reloads itself](#reloading-without-closing-shells) and keeps every shell. `--cdn URL`
-(or `TILR_CDN`) names another place to fetch releases from.
+(or `TILR_CDN`) names another place to fetch releases from. If the reload request fails
+after installation, the new programs remain installed, the command exits non-zero and
+reports the request failure without claiming reload succeeded.
 
 `tilr version` prints what builds the client and the running server are: the package
 version, the commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)` (`tilr
@@ -141,9 +146,22 @@ tilr kill-server            # stop the server: shells end, socket and lock go
 tilr ps                     # the panes with the pids of their processes
 tilr version                # the client's and the server's builds
 tilr token | update | cloud login|status|logout   # run in the server, see below
+tilr deploy [--service] [--archive FILE] [--cdn URL] user@host  # install over SSH
 tilr service install|uninstall                    # start tilrd at boot, see below
 tilr edit FILE | open URL   # inside a pane: ask the clients watching it to open it
 ```
+
+`tilr deploy user@host` uses your SSH config and agent to install both programs in
+`~/.local/bin` on the remote and start tilrd. It prints `ssh -t user@host '~/.local/bin/tilr'`
+for a terminal, `ssh -N -L 7890:127.0.0.1:7890 user@host` for the app, and the remote
+access token. `--service` also installs the remote user's boot service. Releases
+come from `--cdn URL`, `TILR_CDN`, or `https://cdn.tilr.dev`; `--archive FILE` uses a
+local `tilr-<version>-<platform>.tar.gz` with its `.sha256` alongside it. Supported
+hosts are Linux x86_64/aarch64 and macOS arm64 (macOS requires a local archive).
+An existing server reloads into the new release and keeps its panes. Failures before
+installation and startup complete restore the previous remote files. If the subsequent
+reload request fails, deploy keeps both new programs, exits non-zero with an explicit
+request error and prints no connection instructions or token.
 
 **The tmux model.** `tilr` talks to the server of this user on this machine over a Unix
 socket. With no server running it starts one: `tilrd` next to the `tilr` executable, else on
@@ -168,8 +186,10 @@ latest `PaneInfo.used_at_ms` (a subscribe, or input).
 **Disconnects.** The client has one `Hello.client_id` (a UUID) for as long as it runs. A
 connection that drops (a reload of the server, the network) is made again with it 0.1 s
 after the loss, then after waits from 0.1 s doubling to 2 s; the bottom row says
-`disconnected …, reconnecting…` meanwhile, and what is typed then is dropped, not sent
-later. An attempt that connects but loses the connection (or gets no answer) before the pane
+`disconnected …, reconnecting…` meanwhile. Input stays queued until the pane acknowledges
+application to its PTY and is replayed after reconnect without applying duplicates. The
+queue holds at most 4 MiB or 4096 messages; a full queue rejects new input with a visible
+`input buffer full` error. An attempt that connects but loses the connection (or gets no answer) before the pane
 is listed and subscribed is a failed attempt like a refused one, and Ctrl+] d detaches at
 once also while an attempt waits. It pings every 5 s, on the Unix socket as over TCP, and
 takes 15 s of silence as a dropped connection. A pane gone after the reconnect, or a local
@@ -180,6 +200,11 @@ another connection of this client]` and exits 0, rather than take the pane back 
 other in a loop. SIGTERM, SIGHUP or SIGINT (`kill -INT`; Ctrl+C is a key for the pane)
 restore the terminal (cooked mode, cursor, main screen) and end `tilr` by that signal,
 printing nothing; the pane goes on.
+
+**Copies.** `tilr` lists `clipboard-write` in `Hello.features`: text a program in the
+attached pane copies (see [Copying from a pane](#copying-from-a-pane)) is written to the
+terminal as `ESC ] 52 ; c ; <base64> ESC \`, for the terminal to put on the clipboard
+of the user's machine as its settings allow; other types (an image) are not passed on.
 
 **Which server.** `--socket PATH` / `TILR_SOCKET`, or `--connect ws://HOST:PORT` /
 `TILR_CONNECT` with `--token` / `TILR_TOKEN` for a server's TCP port (not started from
@@ -218,6 +243,13 @@ tilrd                                 # the Unix socket and TCP 127.0.0.1:7890
 tilrd --listen 0.0.0.0:7890           # TCP on every address (the token is still asked)
 tilrd --no-listen                     # the Unix socket only
 ```
+
+**Log level.** `RUST_LOG` sets the log filter in tracing's directive syntax: `debug`,
+`tilrd=debug,info`, `tilrd::supervisor=trace`. Unset or empty, the server logs at `info`; a
+value that does not parse is ignored with one line `RUST_LOG ignored: <reason>` and the
+server logs at `info`. It applies to the supervisor and the pane processes alike. `RUST_LOG`
+stays in the server's environment, so a reload keeps the level and the shells in panes
+inherit the variable like any other.
 
 **TCP.** On by default, on loopback: `127.0.0.1:7890` (`--listen ADDR` or `TILR_LISTEN`),
 where the Tilr app, an SSH tunnel (`ssh -L 7890:127.0.0.1:7890`) and the
@@ -282,7 +314,6 @@ cannot listen there.
 | `--clipboard-max SIZE` | `20MB` | Largest clipboard upload (`512K`, `20MB`, `1G`) |
 | `--clipboard-ttl SECS` | `300` | How long uploaded content stays; `0` = until replaced |
 | `--client-timeout SECS` | `30` | Drop a client that stays silent, or does not answer the server's pings, this long; `0` = never |
-| `--no-auto-reload` | | Do not reload when the executable changes |
 | `--socks` | the configuration file's `socks`, else off | Serve the [SOCKS proxy](#socks-proxy) on the same port |
 | `--no-files` | | Do not offer the [files of this machine](#files-and-tilr-edit) (also `[files] enabled = false`) |
 | `--no-agent` | | Turn [SSH agent forwarding](#ssh-agent-forwarding) off (also `agent = false`) |
@@ -433,7 +464,7 @@ What Cloud can and cannot do:
 
 The link (`cloud.json`, next to the token) holds a token of the machine's own for Cloud; it
 is not the access token. `--url` or `TILR_CLOUD` names another Cloud than
-`https://cloud.tilr.dev`.
+`https://wss.tilr.dev`.
 
 ## SOCKS proxy
 
@@ -604,8 +635,13 @@ The id is the same everywhere a pane shows up:
 
 - in the protocol, as `pane_id`;
 - in the process list: the pane process runs as `tilrd pane --id <id>`, followed by how the
-  pane was started (`--cols` and `--rows` unless 80×24, `--cwd`, the command), and the shell
-  is its child;
+  pane was started (`--cols` and `--rows` unless 80×24, `--cwd`, the command), then
+  ` [shell <pid> in <cwd>]`. While another process group is in the foreground, the suffix
+  is ` [shell <pid> in <cwd>: <command>]` (up to 80 bytes of the command line).
+  The directory follows OSC 7; foreground changes appear within a second, including after
+  reload. A title longer than the available argument/environment area is cut. If that
+  area cannot hold the start arguments and the start of the suffix, the original arguments
+  remain and the pane logs `pane title: no room` once. The shell is the pane's child;
 - inside the pane, as `$TILR_PANE`;
 - in `tilr ps`, which asks the running server for its panes (`tilr ls` shows the first 8
   characters, which `tilr attach` and `tilr kill` take):
@@ -622,6 +658,22 @@ d88b738a-fb48-41a5-bd4c-2050fdf33538     8219   120x40        0  /tmp  htop
 A server has an id of its own too, in `HelloAck.server_id`: a UUID made the first time it
 runs on a machine and kept in `$XDG_STATE_HOME/tilr/server-id` (`~/.local/state/tilr`), so
 it is the same after a restart.
+
+## Pane activity
+
+Every greeted client receives `PaneActivity { pane_id, kind, at_ms }`, whether
+or not it watches the pane. `kind` is `BELL` or `COMMAND_FINISHED`; `at_ms` is
+Unix time in milliseconds. The client decides whether to notify.
+
+Bells come from the terminal parser: a BEL ending an OSC sequence is not a bell.
+A pane reports at most one bell per second; extra bells are dropped, not deferred.
+Command completion follows the pty foreground process group returning to the
+shell's, checked after output reads and once a second. It needs a shell with job
+control. A command that runs and ends between checks without output can be missed.
+
+A command still in the foreground after a reload remains tracked. The bell window
+restarts after a reload. Reconnecting clients receive later events only; there is
+no replay.
 
 ## Pasting images: the shared clipboard
 
@@ -656,8 +708,8 @@ Rules:
   user.
 - Content expires after `--clipboard-ttl`.
 - While the clipboard is empty, the server's `xclip` and `wl-paste` hand over to the real
-  tools further down the `PATH`, if any. They also do for anything they do not serve:
-  copying, the primary selection.
+  tools further down the `PATH`, if any. They also do for anything they do not serve: the
+  primary selection, `wl-paste --watch`, `wl-copy --clear`.
 
 Limits of this approach:
 
@@ -672,14 +724,48 @@ Files live in `$XDG_RUNTIME_DIR/tilr` (or `tilr-<uid>` under the temp directory)
 by the user only. To use the clipboard from a shell outside tilr, say an SSH session on the
 same machine, put the `bin` directory there first on its `PATH`.
 
+### Copying from a pane
+
+The other way works too: what a program in a pane copies reaches the clipboard of the user's
+computer, as it does over ssh in a terminal that takes OSC 52, and as in tmux.
+
+1. The program copies: it prints OSC 52 (or OSC 1337 Copy), as vim, neovim, tmux and most
+   terminal programs do over ssh; or it runs `xclip -selection clipboard -i [-t TYPE]
+   [FILE…]` or `wl-copy [-t TYPE] [TEXT…]`, which are the server's (`wl-copy` too is first
+   on the pane's `PATH`).
+2. The copy becomes the server's clipboard, the one `xclip -o` / `wl-paste` in any pane
+   read, until `--clipboard-ttl`.
+3. The server sends it as `ClipboardWrite` (chunks of 256 KB on the bulk lane) to every
+   client watching the pane that lists `clipboard-write` in `Hello.features`. `tilr`
+   writes text to its terminal as OSC 52, so the user's terminal puts it on their clipboard
+   (if it allows programs to: iTerm2, kitty, WezTerm, Ghostty, Alacritty, Windows Terminal
+   do, some only once allowed).
+
+Rules:
+
+- A copy nobody takes (no client that takes copies watches the pane) stays only in the
+  server's clipboard: it is not handed to a real `xclip` / `wl-copy`, and a client that
+  attaches later is not sent it. The shim exits 0 either way.
+- A copy over `--clipboard-max` is refused: the shim exits 1 with `too large: …, the
+  clipboard takes at most …` and the clipboard keeps what it held; an OSC 52 copy over it
+  is dropped, with `clipboard: a copy over the limit was dropped` in the log. The panes
+  have the limit in `TILR_CLIPBOARD_MAX` (bytes).
+- A newer copy ends one still being sent to a client: a program copying in a loop holds one
+  copy per client in the server, the last.
+- OSC 52 reads (`?`) are never answered: a program in a pane cannot read the user's
+  clipboard. OSC 52 to the primary selection, and `xclip -selection primary`, are not
+  passed on.
+- `--no-clipboard` turns copying off with the rest: no `wl-copy`, nothing sent.
+
 ## Reloading without closing shells
 
-The server picks up a new executable without ending any shell:
-
-- on its own, one to two seconds after the file it was started from is replaced (it is
-  checked every second and taken once it looks the same on two checks in a row, so a build
-  still writing it is not picked up half-done);
-- on `SIGUSR1`.
+The server picks up a new executable without ending any shell only when explicitly
+requested with `SIGUSR1`. The internal `tilrd reload` command signals only this
+user's supervisors from its own installation and starts nothing if none is running.
+`tilr update` and the installer request reload after atomically
+installing the release. Replacing the executable alone leaves the running server alone.
+The server checks the executable at its installation path and execs that path; a
+replacement between the check and exec is an accepted risk.
 
 The supervisor execs the new executable in place, keeping its pid, the listening sockets
 (TCP, and the Unix socket with its lock) and the pane processes, then has every pane process
@@ -757,15 +843,17 @@ packet is one binary WebSocket message: a flag byte (0 = plain, 1 = zstd) follow
 protobuf `ClientMessage` or `ServerMessage`.
 
 Both sides ignore message types and fields they do not know. The protocol version
-(`PROTOCOL_VERSION`, now 3) is the contract: a client and a server of a version implement
+(`PROTOCOL_VERSION`, now 1) is the contract: a client and a server of a version implement
 every message and field of it, and a server refuses every other version, older or newer.
-A change a peer cannot ignore (a request a client relies on, a changed meaning, a new close
-code) bumps the version, with no compatibility for older clients or servers. A change a peer
-may ignore (a new push, a new field with a harmless default) needs neither a new version nor
-a feature. `Hello.client_id`, `KeyInput.code`, the `bytes` twins of file paths, `Ping`, the
-bulk window paced by pongs, `PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002
-are all part of version 3. The Tilr app's `server` plugin and tilr-mac need version 3 to
-talk to this server; `tilr` and `tilr-driver` are built with it.
+Before the first public release, all protocol changes use version 1 without a bump.
+Afterward, bump the version only for a change incompatible with a client or server of the
+previous public release. The bump is a separate release step, once per release, in its
+release milestone. A change a peer may ignore (a new push, a new field with a harmless
+default) needs neither a new version nor a feature. `Hello.client_id`, `KeyInput.code`,
+the `bytes` twins of file paths, `Ping`, the bulk window paced by pongs,
+`PaneInfo.viewed_by` / `used_at_ms` and close codes 4000-4002 are all part of version 1.
+The Tilr app's `server` plugin and tilr-mac need version 1 to talk to this server;
+`tilr` and `tilr-driver` are built with it.
 
 `Frame.links` is a table of hyperlink URIs used by its changed rows, deduplicated within
 the frame. `Run.link` is the URI's index plus one, or 0 for plain text; runs split when
@@ -779,13 +867,18 @@ before sending that capability's requests, in this order:
 
 | feature | messages | off with |
 |---|---|---|
-| `clipboard` | `ClipboardPut` | `--no-clipboard` |
+| `clipboard` | `ClipboardPut`; `ClipboardWrite` to clients that list `clipboard-write` | `--no-clipboard` |
 | `files` | `FsList`, `FsStat`, `FsRead`, `FsWrite`, `FsMkdir`, `FsRename`, `FsDelete`, `FsWatch`, `FsUnwatch` | `--no-files`, `[files] enabled = false` |
 | `host-events` | `HostEvent` | the host-events socket not up |
 | `agent` | SSH agent forwarding (`StreamOpen` with kind `ssh-agent`) | `--no-agent`, `agent = false` |
 | `exec` | `ExecStart`, `ExecInput`, `ExecSignal`, `ExecCancel` | `--no-exec`, `exec = false` |
 
-`Hello.features` says what the client can serve (`host-events`, `agent`).
+`PaneActivity` is an additive server push to every greeted client and needs no
+feature negotiation. See [Pane activity](#pane-activity).
+
+`Hello.features` says what the client can serve: `host-events` (it takes `HostEvent`),
+`agent` (it serves the SSH agent), `clipboard-write` (it takes `ClipboardWrite`, the copies
+programs in its panes make; see [Copying from a pane](#copying-from-a-pane)).
 
 A connection starts with `Hello`, which carries the protocol version of the client and the
 [access token](#who-may-connect). A server that speaks another version, or is sent another
@@ -812,12 +905,31 @@ access token and on the same transport (the Unix socket, or TCP: neither speaks 
 other), the server closes that older connection at once with close code 4000
 (`superseded`): it is the same client come back (from another network, after a reload of
 its page), and the old connection is what the network it left still holds, a ghost viewer
-otherwise until the client timeout. The new connection starts afresh and subscribes itself;
-nothing is carried over and no input is replayed (input sent into the old connection may be
-lost, never doubled). A client does not reconnect a connection closed as superseded
+otherwise until the client timeout. The new connection subscribes again and receives a
+full screen. Its stable identity keeps the input delivery sequence: after Hello reports applied counters, the client replays
+unacknowledged input in order, and the pane deduplicates it. Admitted input reaches the
+pane exactly once while delivery history is retained, even if the old connection revives.
+A normal client exit drains acknowledgements and sends `FinalizeInput`, which removes
+its history immediately. Disconnected identities expire after one hour without
+reconnecting. Pane exec starts with empty delivery history while queued PTY bytes
+remain. Replaying unacknowledged input after expiry or reload can therefore duplicate
+previously applied bytes (including a partially written frame's prefix). A client does not reconnect a
+connection closed as superseded
 (`tilr` ends its attach). Another token, or the other transport, with the same id
 supersedes nobody; an empty `client_id` neither supersedes
-nor is superseded. `PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
+nor is superseded. Numbered input without a stable `client_id` returns
+`Error "numbered input requires a stable client_id"` and is not applied.
+Numbered input naming no running pane receives `Error "no such pane: <name as sent>"`
+followed by `InputAck` for that exact pane string and delivery sequence. This is a
+terminal rejection: the client reclaims that pane's queued input through that sequence,
+and a lost acknowledgement is returned again on replay. It does not change any pane's
+applied counter or add a missing pane to `HelloAck.applied_input`. Unnumbered requests
+receive only the error.
+Hello probes each pane for applied counters. A pane that does not answer within
+five seconds (checked on each supervisor tick) is killed and closed; HelloAck
+waits for its link to close and retains counters from responsive panes. Pending
+probes are governed by this bound rather than the timeout for missing Hello.
+`PaneInfo.viewed_by` lists each viewer's `client_id`, name and address,
 and the log has them on connect, hello, supersede and drop.
 
 The server does not hoard frames for a client that cannot keep up. Unsent data the kernel
@@ -965,29 +1077,49 @@ curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 | `tilrd_info{version,server_id}` | gauge | Always 1 |
 | `tilrd_clients` | gauge | Connected clients |
 | `tilrd_panes` | gauge | Running panes |
-| `tilr_pane_frames_total{pane}` | counter | Frames the pane produced |
-| `tilr_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
-| `tilr_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
-| `tilr_pane_frames_skipped_total{pane}` | counter | Frames not sent to a client that lagged (it got the whole screen later), one per frame and client |
-| `tilr_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings) |
-| `tilr_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
-| `tilr_pane_input_bytes_total{pane}` | counter | Their bytes |
-| `tilr_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
-| `tilr_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
-| `tilr_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |
-| `tilr_process_cpu_seconds_total{role,pid,pane}` | counter | User and system CPU time of the supervisor (`role="supervisor"`, no `pane`) and of each pane process (`role="pane"`) |
-| `tilr_process_memory_bytes{role,pid,pane}` | gauge | Their memory: resident set on Linux, physical footprint on macOS |
+| `tilrd_pane_frames_total{pane}` | counter | Frames the pane produced |
+| `tilrd_pane_frame_bytes_total{pane}` | counter | Their bytes as routed, once per frame whatever the number of clients |
+| `tilrd_pane_frames_sent_total{pane}` | counter | Frames handed to clients, one per frame and client |
+| `tilrd_pane_frames_skipped_total{pane}` | counter | Frames not sent to a client that lagged (it got the whole screen later), one per frame and client |
+| `tilrd_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings), `no_hello` (no Hello before the handshake deadline) |
+| `tilrd_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
+| `tilrd_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilrd_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
+| `tilrd_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
+| `tilrd_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |
+| `tilrd_process_cpu_seconds_total{role,pid,pane}` | counter | User and system CPU time of the supervisor (`role="supervisor"`, no `pane`) and of each pane process (`role="pane"`) |
+| `tilrd_process_memory_bytes{role,pid,pane}` | gauge | Their memory: resident set on Linux, physical footprint on macOS |
 
 The histograms have buckets from 50 µs to 100 ms (0.00005, 0.0001, 0.00025, 0.0005, 0.001,
 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, +Inf). The pane counters start from zero when the
 supervisor does, a reload included. CPU and memory are read when scraped. The pane process
 (the shell is its child) is what is measured, not the programs in the pane.
 
+**Breaking change:** the following metric families were renamed. Replace the old names in
+Prometheus queries and alerts; the server emits only the new names.
+
+| Old | New |
+|---|---|
+| `tilr_pane_frames_total` | `tilrd_pane_frames_total` |
+| `tilr_pane_frame_bytes_total` | `tilrd_pane_frame_bytes_total` |
+| `tilr_pane_frames_sent_total` | `tilrd_pane_frames_sent_total` |
+| `tilr_pane_frames_skipped_total` | `tilrd_pane_frames_skipped_total` |
+| `tilr_pane_input_total` | `tilrd_pane_input_total` |
+| `tilr_pane_input_bytes_total` | `tilrd_pane_input_bytes_total` |
+| `tilr_client_drops_total` | `tilrd_client_drops_total` |
+| `tilr_route_seconds` | `tilrd_route_seconds` |
+| `tilr_route_input_seconds` | `tilrd_route_input_seconds` |
+| `tilr_supervisor_loop_lag_seconds` | `tilrd_supervisor_loop_lag_seconds` |
+| `tilr_process_cpu_seconds_total` | `tilrd_process_cpu_seconds_total` |
+| `tilr_process_memory_bytes` | `tilrd_process_memory_bytes` |
+
 ## Tests
 
 ```sh
-cargo test --workspace --features tilrd/failpoints --locked
+cargo nextest run --workspace --features tilrd/failpoints --locked
 scripts/linux.sh                  # the same suite in the Linux build container
+python3 scripts/test_server_cleanup_stand_selftest.py  # check the stand itself
+python3 scripts/test_server_cleanup_stand.py           # signal/timeout cleanup diagnostic
 ```
 
 The tests in `crates/tilrd/tests/` start the real server and drive it as a client would;
@@ -997,6 +1129,37 @@ cover — connecting, the Unix socket, the client, reconnecting, scrolling, relo
 updating, the clipboard, files, the SOCKS proxy, the SSH agent, exec, metrics — and what is
 not covered yet. They need `/bin/sh`, `ps` and `kill`; no network.
 
+The shared `open_pane` and `open_pane_with` helpers wait for the isolated shell's
+first `$ ` prompt before returning, so a first command's PTY echo cannot precede
+shell startup and leave its output prefixed by that prompt. Tests that deliberately
+exercise input before startup use `pane_before_shell_prompt` and explicitly release
+its FIFO; custom-command panes keep their own readiness protocol. Independent
+startup and output gates use named `activity_fifo` paths.
+
+Integration test servers use an internal ownership connection
+(`TILR_TEST_OWNER_SOCKET`) independent of their command socket. The harness registers
+a process exit watcher before acknowledging startup. Closing ownership, including
+when the test process receives SIGTERM or SIGKILL, requests normal shutdown of the
+server and its panes. Executable reloads reconnect to the same owner.
+
+The normal `cleanup_stand` integration test runs panic, startup panic, signal and
+controlled timeout cases against both original and copied executables. To select
+cases manually, use `python3 scripts/test_server_cleanup_stand.py --cases panic
+panic-startup signal timeout`; add `--copied` to exercise a private executable copy.
+The stand checks pane and shell exit events as well as the supervisor.
+
+The cleanup stand owns a temporary directory for each case and removes it, including
+notification and runtime sockets, after cleaning its processes. It runs an ignored
+test fixture outside the normal suite. It waits for
+the server's ready notification before interrupting the test process, checks the
+server PID (and `pgrep` on macOS), and removes its own processes even when a check
+fails. Success requires an exit event for that exact PID (kqueue on macOS,
+pidfd on Linux); an unavailable watcher is an error. SIGTERM to the stand itself
+also runs cleanup and exits with status 143. A 30-second deadline bounds
+reporting a surviving server. It exits nonzero when an interrupted test leaves its
+server running. The pgrep-failure selftest runs only on macOS, matching the stand's
+platform check.
+
 The `failpoints` feature compiles in the places where a test can make an update or a reload
 go wrong halfway: fail a step, crash or kill the process there (`crates/tilrd/src/fail.rs`).
 Tests can also hold a point with `name=pause`: bind `TILR_FAILPOINTS_SOCKET` before
@@ -1004,12 +1167,31 @@ triggering the operation, receive the point name plus newline, and send `r` to r
 that hit. `TILR_FAILPOINTS_FILE` supports names learned at runtime. The harness provides
 `PauseController::wait` and `PausedPoint::release`; `fail.rs` documents the protocol,
 error handling and how to call a blocking point from a Tokio task.
+Reconnect controls in `supervisor.rs` are `reconnect-client-accepted` (after the
+WebSocket handshake, before registration), `reconnect-unwatched-output:<pane id>`
+(a frame received without viewers), `reconnect-subscribe:<pane id>` (before
+registration and the full-frame request), `reconnect-full-frame:<pane id>`
+(before enqueueing a full frame for each viewer), and
+`reconnect-client-lagging:<pane id>` (before the first skipped delta). The latter
+four hold supervisor event processing; socket tasks keep running. Configure only
+the hits needed and release each before awaiting another supervisor response.
+The test client's `pause_reads` acknowledges the pause on return; its handle's
+`resume` permits reads again, while sending remains possible throughout.
 Without it those tests are left out and the rest runs. A release is built without it.
 Tests can also set `TILR_TEST_TIME_FILE` to a file containing Unix microseconds and replace
 that file atomically between protocol events. The supervisor reads it for pane timestamps,
 and pane processes use it for frame timing. Raw SOCKS sessions use the same clock for their
 ten-second negotiation deadline; each publishes a local wake-up port beside the clock file,
 named for its client's TCP port. These controls exist only in `failpoints` builds.
+
+With that clock held fixed, `TILR_TEST_FRAME_STAGE_TIME_FILE` can name another file
+containing three positive microsecond durations, e.g. `11 23 37` for parse, build and
+encode. Each operation advances only the measurement clock, giving exact per-read
+parse durations, per-frame build durations, and the previous frame's encode duration.
+Atomically replace the stage file between acknowledged frames to change the values.
+Scheduling and deadlines continue to use their existing clocks. The
+`frame-stage-no-frame=pause` failpoint acknowledges a build that emitted no frame,
+so a test can accumulate invisible output across separate reads without a timing race.
 
 The black-box tests in `itests/` ([itests/README.md](itests/README.md),
 [itests/USE_CASES.md](itests/USE_CASES.md)) install and run the real binaries in containers:
@@ -1024,11 +1206,49 @@ CDN: it installs an older release there, opens panes and updates them to the lat
 
 Needs Rust 1.90+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network access on the
 first build (libghostty-vt fetches the Ghostty source). `scripts/install-tools.sh DIR`
-downloads the pinned Zig and protoc into `DIR` and checks their SHA-256 sums.
+downloads the pinned Zig, protoc and cargo-nextest (the tests run with it) into `DIR` and
+checks their SHA-256 sums.
 
 ```sh
 cargo build --release --locked -p tilrd -p tilr
 ```
+
+**Shared Ghostty VT development build.** Install `pkg-config` and Python 3, then build once per
+machine and export the printed prefix's package directory:
+
+```sh
+prefix=$(scripts/build-ghostty-vt.sh)
+export PKG_CONFIG_PATH="$prefix/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+cargo build --tests --locked
+```
+
+The script prints only the prefix to stdout. Its default cache is
+`~/.cache/tilr/ghostty-vt/<ghostty-commit>/<identity-hash>/`; override the cache root
+with `TILR_GHOSTTY_VT_CACHE`. The identity includes the Ghostty commit, actual Zig
+version, OS/architecture, SDK/developer paths and ReleaseFast/baseline settings.
+It selects the same default macOS SDK as Cargo, respecting `SDKROOT` and
+`DEVELOPER_DIR`. Completed prefixes are reused; failed builds are removed.
+Concurrent invocations for the same prefix report the active build; rerun after
+it finishes. The lock records the owner's PID. If that process has exited, the
+next invocation removes the abandoned lock and temporary build directories and
+builds again automatically, including when no PID was written. An advisory lock
+serializes recovery; its empty `.guard` file remains in the cache and must not be
+removed while a build is running. Incomplete destination prefixes are replaced before
+the completed installation is published.
+
+`tilr-screen` enables `libghostty-vt-sys`'s pkg-config feature directly. With this
+package discoverable, clean targets link the shared static library without cloning
+or building Ghostty. Without a discoverable package, the existing Zig source build
+remains available. `GHOSTTY_SOURCE_DIR` bypasses pkg-config, so unset it when using
+the shared library. Linux containers retain their source-build path because
+`scripts/linux.sh` does not forward the host package path.
+
+When upgrading `libghostty-vt`, keep the direct sys dependency at the matching exact
+version. Read that version's `build.rs`, update this script's Ghostty revision and
+build flags, and rerun the script. A Zig or SDK change also selects a new prefix;
+export its package path again. To rebuild identical inputs, unset `PKG_CONFIG_PATH`,
+remove only the previously printed prefix, and rerun the script. Old prefixes may
+be removed when no builds use them.
 
 **macOS (checked 2026-10-19).** On this Mac, Zig 0.15.2 and the default macOS
 27.0 SDK make `libghostty-vt-sys` 0.2.2 fail while building libc++ (`INFINITY`
@@ -1058,6 +1278,27 @@ scripts/linux-build.sh            # release binaries into dist/<platform>/
 TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh
 ```
 
+Each physical worktree has its own persistent target cache, named
+`tilr-linux-target-<path hash><platform suffix>`. The hash is Git's hash-object of
+the physical absolute checkout path plus a newline; the platform suffix replaces
+each non-lowercase-alphanumeric character with `-` (e.g. `linux-amd64`). Separate
+worktrees can build concurrently, even with identical directory names. Serialize
+runs within one worktree. The cargo registry remains shared per platform.
+`linux-build.sh` builds and copies from the same worktree's target.
+The container builds the dev profile with line-tables-only debuginfo, since the
+host's `~/.cargo/config.toml` is not visible there; export `CARGO_PROFILE_DEV_DEBUG`
+to override it (e.g. `CARGO_PROFILE_DEV_DEBUG=full scripts/linux.sh ...` for gdb with locals).
+
+To clear a worktree's target, stop its containers, then run from its root:
+
+```sh
+docker volume rm "tilr-linux-target-$(pwd -P | git hash-object --stdin)"
+# For TILR_LINUX_PLATFORM=linux/amd64, append linux-amd64 to that volume name.
+```
+
+The old shared `tilr-linux-target` (or its platform-suffixed variant) is no longer
+used and can also be removed once all older runs have stopped.
+
 ## Releases
 
 Releases are made by [release-please](https://github.com/googleapis/release-please)
@@ -1083,10 +1324,32 @@ releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
 `linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
-hand, from a clean checkout: `scripts/release.sh --publish linux-aarch64 linux-x86_64`
-builds in the Linux container and uploads with `wrangler` (see the script); export
-`CLOUDFLARE_ACCOUNT_ID` first, e.g. via `infisical run --path /cloudflare`. Versions and
-CHANGELOG.md are not edited by hand.
+hand, from a clean checkout, `scripts/release.sh --publish linux-aarch64 linux-x86_64`
+builds in the Linux container and uploads with AWS CLI. Install AWS CLI and OpenSSL
+first. Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
+`R2_CDN_TOKEN`; it does not hold the derived AWS keys. `AWS_ACCESS_KEY_ID` is that
+API token's **ID** (the `id` returned when creating the Cloudflare Account API token),
+and `AWS_SECRET_ACCESS_KEY` is the lowercase hexadecimal SHA-256 of the token value,
+with no trailing newline included in the hash. See [Cloudflare's credential derivation](https://developers.cloudflare.com/r2/api/tokens/#get-s3-api-credentials-from-an-api-token).
+
+Replace `YOUR_R2_CDN_TOKEN_ID` below with the ID belonging to `R2_CDN_TOKEN` (after
+rotation, use the new token's ID). Run from the checkout with your Infisical project
+selected and access to `prod`:
+
+```sh
+infisical run --env prod --path /cloudflare -- sh -eu <<'SH'
+export CLOUDFLARE_ACCOUNT_ID="$CF_ACCOUNT_ID"
+export AWS_ACCESS_KEY_ID='YOUR_R2_CDN_TOKEN_ID'
+AWS_SECRET_ACCESS_KEY=$(printf '%s' "$R2_CDN_TOKEN" | openssl dgst -sha256 -r | cut -d ' ' -f 1)
+export AWS_SECRET_ACCESS_KEY
+scripts/release.sh --publish linux-aarch64 linux-x86_64
+SH
+```
+
+The keys are passed through the process environment; keep shell tracing off and do
+not save their values in the checkout. `--upload-only` uses the same credentials.
+In CI, the `cdn` environment supplies both AWS secrets and the
+`CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
 
 ## License
 

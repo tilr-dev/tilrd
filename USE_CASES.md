@@ -6,19 +6,43 @@ in `crates/tilrd/tests/`, the shared harness in `tests/common/mod.rs`; the tests
 of the client `tilr` live in `crates/tilr/tests/` (they run `tilr`, which starts
 the `tilrd` built next to it).
 
-Run: `cargo test --workspace --features tilrd/failpoints --locked`; on Linux from
+Run: `cargo nextest run --workspace --features tilrd/failpoints --locked`; on Linux from
 another OS, `scripts/linux.sh`. Use cases with a failure halfway through
 (marked †) make something go wrong at a given place in the code through
 failpoints (`src/fail.rs`) and are compiled only with that feature.
 
 The test's name is the statement of the use case.
 
+## Linux build scripts — `tests/linux_script.rs`
+
+| Use case | Test |
+|---|---|
+| Two worktrees with the same basename overlap builds without replacing each other's binaries; targets are reused through symlinks, separated by platform, and used by release copying; commands use their own built image and a failed build starts no command | `parallel_worktrees_keep_their_linux_build_outputs` |
+
+The script integration fixture uses a Docker stand-in in the cargo suite. Run
+`python3 scripts/test-linux.py --docker` to compile the two fixture binaries in
+real Linux containers with the same FIFO barrier.
+
+## Test harness — `tests/harness.rs`
+
+| Use case | Test |
+|---|---|
+| A failed async or blocking log wait, or a panic with a poisoned log, preserves diagnostics and cleans up the server without aborting the test process | `a_failed_log_wait_unwinds_and_cleans_up_the_server` |
+
 ## Connection and panes — `tests/panes.rs`
 
 | Use case | Test |
 |---|---|
-| The client says hello, the server reports its protocol version (3), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
-| A client with another protocol version (newer, older, none) gets an error naming both versions ("this server speaks 3"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
+| A pane whose command does not exist reports a create-pane error only to its creator, stays out of pane lists and allows another creation | `a_pane_whose_command_cannot_start_is_reported_to_its_creator` |
+| A bell reaches greeted clients that do not watch the pane | `a_bell_in_an_unwatched_pane_is_reported` |
+| Bells within a second are dropped, and the next second permits a bell | `bells_are_reported_once_a_second` (`failpoints`) |
+| BEL ending an OSC title sequence is not reported as activity | `a_bel_ending_an_osc_is_not_reported` |
+| Shell readiness ignores a prompt frame from another subscribed pane and waits for the intended pane | `reconnect::shell_readiness_ignores_prompts_from_other_panes` |
+| Opening a fresh test pane waits for the first shell prompt, even when startup is explicitly held; the first command produces an exact output row | `reconnect::opening_a_fresh_pane_waits_for_the_first_shell_prompt` |
+| A foreground job returning control to its shell reports command completion | `a_finished_foreground_command_is_reported` |
+| Typing at the prompt reports no activity | `typing_at_the_prompt_reports_nothing` |
+| The client says hello, the server reports its protocol version (1), the features it can be run without (`clipboard`, `files`, `host-events`, `agent`, `exec`) and its clipboard limit | `hello_announces_the_clipboard_and_its_limit` |
+| A client with another protocol version (newer: 2, none: 0) gets an error naming both versions ("this server speaks 1"), and the connection is closed | `a_client_built_for_another_protocol_version_is_turned_away` |
 | The first thing a client gets is the answer to its `Hello`: pane lists are not sent to it before, and after that it gets them like everyone else | `the_first_thing_a_client_hears_is_the_answer_to_its_hello` |
 | A client that does not start with `Hello` gets an error and is disconnected; its input never reaches the shell | `a_client_that_skips_hello_is_turned_away` |
 | A browser page connects only from an allowed origin; programs without `Origin` get through | `a_browser_page_connects_only_from_an_allowed_origin` |
@@ -40,9 +64,16 @@ The test's name is the statement of the use case.
 | A malformed packet gets an error, the connection stays | `a_malformed_packet_gets_an_error_and_the_connection_stays` |
 | Asking for a pane that does not exist gets an error; so does a name that is not a UUID | `asking_for_a_pane_that_does_not_exist_gets_an_error` |
 | A pane has its own UUID: the shell sees it in `$TILR_PANE`, the pane process on its command line (`pane --id <uuid>`), where the size is given only if it is not 80×24 | `a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps` |
+| A pane's process title follows its shell pid, OSC 7 directory and foreground command, then returns to the shell after Ctrl+C | `the_pane_process_title_follows_the_directory_and_the_command` (`failpoints`) |
+| A silent exec in the foreground group updates the process title without changing the leader pid | `the_pane_process_title_follows_exec_in_the_same_foreground_group` (`failpoints`) |
+| Reload preserves start arguments and restores the pane process title with the same shell and directory | `the_pane_process_title_is_set_again_after_a_reload` (`failpoints`) |
+| Titles are cut to the available area and moving the environment preserves its values | `title::tests::a_title_is_cut_to_the_area`, `title::tests::the_environment_is_unchanged_after_the_move`, `title::tests::a_moved_environment_entry_keeps_the_contiguous_prefix` |
+| A foreground leader whose command line cannot be read is shown by its process name, or `?` once it is gone | `title::tests::a_leader_that_is_gone_is_shown_as_a_placeholder`, `title::tests::a_zombie_leader_is_named_by_its_process` (Linux), `title::tests::another_users_leader_is_named_by_its_process` (macOS) |
 | `tilrd ps` (for users, `tilr ps`) shows the panes of a running server: id, pid, size, command | `ps_lists_the_panes_of_a_running_server` |
+| The Tilr app's health check `tilrd ps --url <url> --server-version` against a stopped server: exits non-zero within 5 s and prints no version | `ps_server_version_fails_when_nothing_listens` |
 | A server has its own id, the same after a restart; another server has another one | `a_server_keeps_its_id_when_it_restarts` |
 | A server started by a service manager (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*` set) still says `READY=1`, but its panes do not get those variables | `a_pane_does_not_get_the_service_managers_variables` |
+| A test holds the outer login shell in its SIGHUP trap after terminal hang-up, checks the server while held, releases it and awaits its exit before reconnecting | `a_test_holds_the_login_shell_after_hangup_and_releases_its_exit` (`failpoints`) |
 
 ## Unix socket for local clients — `tests/local.rs`
 
@@ -62,6 +93,7 @@ The test's name is the statement of the use case.
 | With TCP, a socket in use is only a warning, the server works over TCP (as the Tilr app's does); a socket named with `--socket` must work | `with_a_tcp_port_a_socket_in_use_is_only_a_warning` |
 | A reload keeps the socket and the lock (the same pid, the panes in place, a second server does not get the socket) | `a_reload_keeps_the_socket_and_its_lock` |
 | Stopping removes the socket and the lock | `a_server_that_stops_removes_its_socket_and_lock` |
+| `RUST_LOG` is the log filter: with `debug` a connection to the socket that is not a WebSocket logs a DEBUG `websocket handshake failed`; unset or empty, `info` and no such line; an invalid value, `info` and one `RUST_LOG ignored:` | `rust_log_sets_the_log_level` |
 | † SIGTERM between the socket being served and the signal handlers being installed (failpoint `supervisor-before-signals`): a clean stop (exit 0, `shutting down`), socket and lock removed | `a_sigterm_while_the_server_starts_stops_it_cleanly` |
 | † The same with SIGINT (Ctrl+C on a foreground `tilrd`) | `a_sigint_while_the_server_starts_stops_it_cleanly` |
 | † SIGHUP in that window: ignored, the server serves a client afterwards | `a_sighup_while_the_server_starts_is_ignored` |
@@ -69,11 +101,31 @@ The test's name is the statement of the use case.
 | A server on its socket alone (`--no-listen`) does not reload into an executable that cannot take the socket (`state-formats` without `unix-socket 1`) | `a_server_on_its_socket_alone_does_not_reload_into_one_that_cannot_take_it` |
 | Nor does a server with a TCP port and its socket: the socket would be left with nobody serving it | `a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` |
 | † A reload refused by the check of the successor: the same connection, new connections through the socket, the lock still held | `a_refused_reload_keeps_the_socket_and_its_lock` |
+| Private test installations share warmed inodes; repeated replacements alternate them and consume the staged path | `warm_executable_links_reuse_inodes_and_replace_repeatedly` |
+
+## Acknowledged input — `tests/input_delivery.rs`
+
+| Use case | Test |
+| --- | --- |
+| A numbered Resize publishes its applied dimensions while earlier PTY input is blocked; cumulative delivery stays pending until the program reads | `input_delivery::a_numbered_resize_updates_the_pane_list_while_pty_input_waits` |
+| Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
+| Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
+| All six numbered input variants naming an absent UUID or malformed pane name receive an error and terminal acknowledgement; lost acknowledgements are repeated after reconnect, reclaiming entries without discarding another pane's pending input, while unnumbered input and controls receive only errors | `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect` |
+| A pane held before its Hello probe is killed; concurrent handshakes retain healthy counters and input applies once | `input_delivery::a_stuck_pane_does_not_block_other_panes_hello` |
+| Completed identities finalize and lose their counters, refusing further numbered input on the old connection | `finalized_sessions_do_not_accumulate_delivery_history` |
+| Expired disconnected sessions lose counters; active sessions retain them | `expired_sessions_are_removed_but_active_sessions_are_retained` |
+| Internal cleanup fields cannot be forged at client ingress | `clients_cannot_forge_internal_delivery_cleanup` |
+| Exec resets delivery history but preserves queued PTY bytes | `exec_resets_delivery_history_and_preserves_pending_bytes` |
+| The driver drains pending input before normal disconnect finalizes its session | `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing` |
+| Expiry removes delivery markers without discarding pending PTY bytes | `expiry_preserves_pending_bytes_without_stale_ack_markers` |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
 | Use case | Test |
 |---|---|
+| Normal detach finalizes acknowledged input | `normal_detach_finalizes_its_acknowledged_input` |
+| Detach with pending input while disconnected exits promptly without finalizing | `detach_with_unacknowledged_input_while_disconnected` |
+| Detach while a connected server withholds input ACKs exits promptly without finalizing | `detach_with_unacknowledged_input_while_connected` |
 | The first `tilr` starts a detached server (a session of its own, not its child, with TCP on loopback), the next one connects to the same; `ls`, `ps`, `version` | `the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it` |
 | The TCP port is taken (the Tilr app, another user): a server started by `tilr` starts anyway, with a warning in the log, on the socket only | `a_server_tilr_starts_goes_on_without_tcp_when_the_port_is_taken` |
 | Six `tilr` at once on an empty machine: one server, a second is not even started | `tilr_started_many_times_at_once_starts_one_server` |
@@ -84,15 +136,24 @@ The test's name is the statement of the use case.
 | A runtime directory open to group or others (0755, 0770) or a symbolic link to a private one: `new`, `ls`, `kill-server` refuse naming it and what is wrong, no server is started, nothing is made there; private again, it works (another user's directory: itests UC-03A) | `a_runtime_directory_open_to_others_or_a_link_is_refused_and_nothing_started` |
 | The lock file or `tilrd.log` is a symbolic link: `tilr new` refuses, the link is not followed and its target is intact | `a_symlinked_lock_file_is_refused` |
 | `tilr token`, `tilr cloud status` run in the server; through `--connect` they are refused | `server_commands_run_in_the_server` |
+| Deploy validates a release, installs both programs over SSH and prints connection commands and the remote token; unsupported platforms and damaged archives change nothing | `deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect`, `deploy_names_a_platform_without_a_release`, `deploy_refuses_a_damaged_archive_before_sending_it` |
+| Deploy requests reload even without a default-socket server; a request that fails after installation keeps both new programs and exits non-zero | `deploy_requests_reload_without_a_default_server_and_keeps_a_refused_installation`, `deploy_reloads_a_server_on_a_custom_socket` |
+| Deploy obtains the persistent token before replacing an installed client whose protocol differs from the new release; a failed service install restores its previous configuration | `deploy_gets_the_token_before_replacing_an_old_protocol_client`, `deploy_restores_service_configuration_when_the_manager_refuses_it`, `deploy_restores_the_crontab_after_a_service_failure`, `deploy_does_not_start_a_daemon_before_a_failing_service_install` |
+| Fetch-release checks a foreign-platform archive and rejects a bad checksum without executing its programs | `fetch_release_writes_a_checked_archive`, `fetch_release_refuses_a_bad_checksum` |
+| Copying a private installation keeps destination writers out of unrelated forked children (FIFO-controlled Linux regression) | `copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork` |
 | `tilr update --cdn` runs in the local server against a loopback release feed, updates an isolated installation, and waits for a connection after reload | `tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload` |
+| The client requests no update execution timeout and keeps waiting through a day of virtual time until the command exits successfully | `conn::update_wait_tests::update_waits_for_command_exit_after_a_long_launch_delay` |
 | `tilr edit` in a pane sends the request to `$TILR_SOCK` with an absolute path | `tilr_edit_in_a_pane_asks_the_server_of_the_pane` |
 | In a terminal (a pty): input gets through, after a server reload the client comes back on its own, Ctrl+] d detaches, the pane stays | `attached_in_a_terminal_it_types_reconnects_after_a_reload_and_detaches` |
+| On initial attach and reconnect, a terminal sends its current size before Subscribe, restoring a pane resized by another client | `reconnect_restores_terminal_size_before_subscribing` |
 | An attached `tilr` uses the same client id in `PaneInfo.viewed_by` before and after a server reload | `reconnects_say_the_same_client_id` |
 | `tilr kill` closes a pane by id or via `$TILR_PANE`, waits for each to disappear, and reports `no panes` when none remain | `kill_closes_the_named_pane_and_the_current_one` |
 | A second connection says `Hello` with an attached `tilr`'s client id (read from `PaneInfo.viewed_by`) on the same socket: `tilr` is closed as superseded (4000), prints `[superseded by another connection of this client]`, restores the terminal and exits 0 without reconnecting; the pane stays | `an_attach_superseded_by_its_own_client_id_ends` |
 | `kill -TERM` of an attached `tilr`: it ends by SIGTERM, the terminal back in cooked mode (`icanon`, `echo`), cursor shown, main screen, nothing printed; the pane stays | `a_terminated_attach_restores_the_terminal` |
 | A reconnect that connects but loses the connection before the pane list comes (a stand-in server on a TCP port): a failed attempt on the status line, the next one attaches and typing gets through | `an_error_right_after_a_reconnect_is_retried` |
 | Ctrl+] d while a reconnect attempt waits on a server that accepts and never answers: detached at once, not after the 5 s connect timeout | `detach_works_while_a_reconnect_attempt_hangs` |
+| Unit: a text copy made in the attached pane goes to the terminal as `ESC ] 52 ; c ; <base64> ESC \`, once its last chunk came; a copy cut short by a newer one, an image, and one with more data than announced are not (`src/attach.rs`) | `attach::tests::copied_text_goes_to_the_terminal_as_osc_52` |
+| `tilr cloud login --help` names the same default Cloud as tilrd, `https://wss.tilr.dev` | `cloud_login_help_names_the_default_of_tilrd` |
 
 ## Access — `tests/auth.rs`
 
@@ -102,7 +163,20 @@ The test's name is the statement of the use case.
 | The token is kept in a file readable by the user only (the state directory is 0700) and survives a restart; `tilrd token` prints the same one | `the_token_is_kept_for_the_user_only_and_across_restarts` |
 | A state directory left 0755 with an id and a token in it is set to 0700 at start; the server keeps that id and token | `an_existing_state_directory_is_made_private` |
 | A server with `--no-auth` asks for no token and warns about it in the log | `a_server_started_without_authentication_asks_for_no_token` |
-| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays | `a_connection_that_never_says_hello_is_closed_after_10_s` |
+| A connection that opens its WebSocket and never says `Hello` is closed with 4002 `timeout` about 10 s later, even with `--client-timeout 0`, and the log says so; one that says `Hello` after a second stays; only `tilrd_client_drops_total{reason="no_hello"}` goes up | `a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_no_hello` |
+
+## Outgoing WebSocket TLS — shared by Cloud control, tilrd ps, tilr --connect and tilr-driver
+
+Unit tests in `crates/tilr-websocket/src/lib.rs`; all clients use the same explicit connector, including when built separately.
+
+| Use case | Test |
+|---|---|
+| Only patched bundled roots and certificate verifier releases remain in the lock file | `websocket_dependencies_use_only_patched_bundled_roots` |
+| The trust store contains exactly the bundled Mozilla roots | `the_trust_store_is_exactly_the_bundled_mozilla_roots` |
+| Plain WebSockets retain request headers | `plain_websockets_keep_request_headers` |
+| An explicit trusted root permits a TLS WebSocket handshake | `an_explicit_root_allows_a_verified_secure_websocket` |
+| Bundled roots reject an untrusted issuer | `bundled_roots_reject_an_untrusted_issuer` |
+| A trusted certificate for another hostname is rejected | `an_explicit_root_does_not_allow_a_wrong_hostname` |
 
 ## tilr Cloud — `tests/cloud.rs`
 
@@ -112,7 +186,15 @@ Cloud repository.
 
 | Use case | Test |
 |---|---|
-| A linked server connects to Cloud with its own token; given a tunnel, it starts `cloudflared` pointed at its own port only; tunnel revoked: `cloudflared` stopped, secret removed | `a_linked_server_gets_its_tunnel_from_cloud` |
+| Login sends an enrollment request, prints the verification link and code, and polls through pending until approved | `login_prints_the_code_and_polls_until_confirmed` |
+| An approved login saves a private link file; an expired code leaves no link | `login_keeps_the_link_once_confirmed_and_an_expired_code_links_nothing` |
+| Logout without a link reports it; with a link it calls Cloud and removes local state even when Cloud rejects the request | `logout_unlinks_the_machine_whether_or_not_cloud_hears` |
+| Cloud revokes a link by close 4001 or HTTP 401; the tunnel stops and a new link reconnects | `a_link_cloud_revokes_stops_the_tunnel_until_linked_again` |
+| When the control connection drops, the server reconnects while the same `cloudflared` keeps running | `the_control_connection_is_retried_and_the_tunnel_kept_meanwhile` |
+| A failed `cloudflared` reports failure and is started again | `a_cloudflared_that_exits_is_reported_and_started_again` |
+| A linked server without a TCP port logs that Cloud is disabled and makes no Cloud connection | `a_server_without_a_tcp_port_does_not_connect_to_cloud` |
+| Cloud login help names `https://wss.tilr.dev` as the default API host | `cloud_login_help_names_the_default_api_host` |
+| A linked server keeps its saved Cloud URL and connects to Cloud with its own token; given a tunnel, it starts `cloudflared` pointed at its own port only; tunnel revoked: `cloudflared` stopped, secret removed | `a_linked_server_gets_its_tunnel_from_cloud` |
 | A server with `--no-auth` refuses the tunnel | `a_server_without_authentication_takes_no_tunnel` |
 | A tunnel description that would extend the `cloudflared` config (another service) is rejected | `a_tunnel_that_would_lead_elsewhere_is_refused` |
 | On a server reload the old `cloudflared` is stopped and the successor starts its own | `a_reload_replaces_cloudflared_with_one_of_the_new_server` |
@@ -129,7 +211,11 @@ Cloud repository.
 |---|---|
 | A client came back: the pane is there, the first frame is the whole screen, the shell is the same | `a_client_that_reconnects_finds_its_pane_as_it_left_it` |
 | What was printed while nobody watched is visible after coming back | `output_printed_while_nobody_watched_is_there_on_reconnect` |
+| Input echoed before the shell starts does not attach the expected output to its initial prompt | `reconnect_output_when_input_precedes_the_shell_prompt` |
+| Explicit pauses order unwatched output, accepted reconnect, subscription and full-frame enqueue | `a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect` (`failpoints`) |
+| A reconnected client's reads stay paused while it can send; continuous output reaches the lag decision, then explicit resume receives full-frame recovery | `a_test_pauses_socket_reads_until_reconnected_client_lags` (`failpoints`) |
 | Subscribing again sends the whole screen again | `subscribing_again_sends_the_whole_screen_again` |
+| Dropping a read-pause handle without resume fails the next read | `a_dropped_read_pause_fails_the_next_read` |
 | Many reconnects leave no "ghost" viewers | `many_reconnects_leave_no_viewers_behind` |
 | A client vanished silently (connection open, no answer to pings): the server drops it on its own, the others get an updated list; once back, the client reconnects to its pane | `a_client_that_vanishes_without_closing_is_dropped` |
 | A client still sends (its own `Ping`s) but no longer hears the server: it does not read and does not answer the server's pings (the direction to the client is cut); the server drops it as unresponsive, not as silent | `a_client_that_still_sends_but_no_longer_hears_the_server_is_dropped` |
@@ -139,6 +225,7 @@ Cloud repository.
 | The same client (`Hello.client_id`, the same token) comes on a new connection while its old one is still open: the old one is closed at once, with code 4000 `superseded`, before the new one's `HelloAck`, without waiting for a timeout; two tabs (different `client_id`s) both live; `PaneInfo.viewed_by` holds the `client_id` and address of each viewer | `a_client_back_on_a_new_connection_supersedes_its_old_one_at_once` |
 | The same `client_id` with another token: on a server with a token, refused, the old connection alive; on a server without one (`--no-auth`) another token is another user, nobody is superseded | `the_same_client_id_under_another_token_supersedes_nobody` |
 | A client lags under heavy output (a small receive buffer, not reading) and the pane then goes quiet: once it reads again it gets a full frame and ends up with the pane's last screen, with nothing more printed | `a_lagging_client_gets_the_last_screen_without_new_output` |
+| Unit: a delta already on its way when a client subscribes is not sent to it: its first frame is full and carries its own input echo, a second Subscribe meanwhile keeps that echo, other viewers keep getting frames; the wait is not counted as skipped frames and does not ask the pane for a second full frame (`src/supervisor.rs`) | `supervisor::tests::a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo` |
 | A server started from an SSH session (`tilrd &`) whose connection dropped: the terminal is closed and the process group got SIGHUP; the server, the pane processes and the shells live on, the client connects to the same pane; stopping the server still ends the shells | `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` |
 
 ## Scrolling — `tests/scroll.rs`
@@ -157,11 +244,36 @@ Cloud repository.
 | A scrolled view stays scrolled after a reload | `a_scrolled_view_stays_scrolled_through_a_reload` |
 | A line soft-wrapped from the last history row into the first screen row is still one line after a reload (made wider, it is one row) | `a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload` |
 
+## Building and publishing a release — `tests/release.rs`
+
+| Use case | Test |
+|---|---|
+| A dirty tree cannot build a release; a clean release is named after the package version and commit | `a_dirty_tree_builds_no_release`, `a_release_is_named_after_the_package_version_and_the_commit` |
+| Each requested platform gets its own archive and `latest`; an unknown platform is refused | `each_platform_given_is_built_with_its_own_latest`, `an_unknown_platform_is_refused` |
+| Publishing requires an account ID before building, and uploads archive and checksum before `latest` with the right metadata | `publishing_without_the_account_id_does_nothing`, `publishing_uploads_the_archive_and_its_checksum_before_latest` |
+| Upload-only checks each requested platform and leaves other platforms alone | `upload_only_checks_what_was_built_and_leaves_other_platforms_alone` |
+| The installer (`scripts/install.sh`) is uploaded after every platform's `latest`, and not at all after a failed upload | `the_installer_is_uploaded_after_latest` |
+| The updater finds and installs the archive built by `release.sh` through a local CDN | `the_layout_release_sh_writes_is_what_tilrd_update_reads` |
+| Linux builds use the pinned Debian 12 image; build tools (Zig, protoc, cargo-nextest) are checksum pinned and used in CI, release builds and the container | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
+| The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
+| CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
+| AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
+| Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
+| Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
+| The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
+| The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
+
+## Version baked at build time — `tests/build_script.rs`, `crates/tilr/tests/build_script.rs`
+
+| Use case | Test |
+|---|---|
+| The build script watches only files that exist, and `HEAD` and `logs/HEAD` of the real git directory when git names them: a repeated build in a git worktree compiles nothing, a checkout still rebuilds with the new commit | `build_script::every_watched_file_exists_and_the_git_head_is_watched` (tilrd and tilr) |
+
 ## Updating from the CDN — `tests/update.rs`
 
 | Use case | Test |
 |---|---|
-| `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; a running server reloads on its own, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
+| `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; an explicit reload request tells a running server to reload, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
 | The latest release is already installed: nothing is downloaded, the file is untouched | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
 | The archive does not match its checksum, does not unpack (not an archive, cut short), lacks `tilrd` or `tilr`, one of them does not run, or there is no release for the platform: nothing is installed, nothing is left next to it | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
 | The CDN misbehaves: the download breaks off halfway, a release is named but its files are not there yet, someone else's page answers instead of the CDN, nobody answers: nothing is installed | `update_installs_nothing_when_the_cdn_misbehaves` |
@@ -204,11 +316,18 @@ state format; platforms other than `linux-aarch64`.
 | Use case | Test |
 |---|---|
 | Hyperlinks become plain text after reload; newly printed links work | `hyperlinks_are_plain_text_after_a_reload_and_new_ones_work` |
+
+| Startup and reload sweep state files and temporary state files older than one hour, preserving recent files and unrelated old files | `stale_state_files_are_swept_at_start` |
+| Unit: a controlled launch hold exceeding ten virtual seconds does not consume an opted-in compatibility probe’s execution deadline; a hold after startup still times out; ordinary and release probes include startup in the deadline | `reload::tests::delayed_state_formats_obeys_the_selected_policy` |
+| A foreground command held across a reload reports completion after it is released | `a_command_running_across_a_reload_is_reported_when_it_ends` |
 | Reload on a signal: the shell is the same, the screen intact, the server keeps running | `panes_survive_a_reload_asked_for_with_a_signal` |
-| The executable is replaced on disk: the server notices on its own and reloads | `panes_survive_the_executable_being_replaced_on_disk` |
-| With `--no-auto-reload` a replaced executable is ignored | `a_replaced_executable_is_ignored_when_auto_reload_is_off` |
+| Replacing the executable keeps the connection until an explicit reload request; the shells survive | `replacement_waits_for_an_explicit_request_and_keeps_the_shells` |
+| Explicit reload selects only its installation, including TCP-only servers, renamed binaries and paths with spaces; Linux needs no ps | `an_explicit_request_selects_only_its_installation_without_a_socket` |
+| Explicit reload with no server starts nothing, including on Linux without ps | `an_explicit_request_with_no_server_starts_nothing` |
+| The obsolete auto-reload option is rejected | `the_obsolete_auto_reload_option_is_rejected` |
 | A broken new executable: no reload, the server carries on with the old code | `a_broken_executable_is_not_reloaded_into` |
-| The new executable reads another state format (supervisor's or pane's), or cannot show it can resume (no `reload-check 1`): no reload, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| `state-formats` prints this build's formats; a new executable that reads another pane state format is not reloaded into, shells intact; a suitable executable is picked up after that | `an_executable_that_reads_another_state_format_is_not_reloaded_into` |
+| Unit: a successor that reads another supervisor or pane state format, cannot show it can resume (no `reload-check 1`), names no format or an unparseable one is refused with that reason; one with the same formats is accepted (`src/reload.rs`) | `reload::tests::check_formats_rejects_every_format_mismatch`, `reload::tests::an_executable_reading_the_same_formats_can_take_over` |
 | After a reload the server and pane processes look the same in `ps` as before; the files with the handed-over state are read and removed | `a_reload_shows_in_no_command_line_and_leaves_no_file_behind` |
 | A reload with no panes | `a_reload_with_no_panes_open_works` |
 | A second server of the same user (on `<server_id>-<pid>.sock`) keeps its host socket across a reload: `tilr edit` in a pane from before reaches its clients | `a_second_server_keeps_its_host_socket_across_a_reload` |
@@ -227,7 +346,7 @@ state format; platforms other than `linux-aarch64`.
 | † A pane process crashed while taking over: that pane is lost (its shell ended), the others are intact | `a_pane_that_crashes_taking_over_is_lost_and_the_others_carry_on` |
 | † The new version crashed after taking over: the server and all shells are lost (the limit of reloading, there is no way back); no orphaned shells are left | `a_version_that_crashes_taking_over_ends_the_server_and_its_shells` |
 | † The server killed in the middle of a reload: the shells end, no orphans are left | `a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind` |
-| † The executable replaced again while a reload was under way: no shell is lost | `an_executable_replaced_again_during_a_reload_costs_no_shell` |
+| † The executable replaced again while a reload was under way: no shell is lost | `a_second_atomic_replacement_before_exec_keeps_the_shells` |
 | † The new version panics resuming in its check run: no exec, the same pid, connection and shell, no state or check file left | `a_successor_that_panics_resuming_is_not_reloaded_into` |
 | The new version rejects the server's command line (`--socket`): no exec, the log names the argument, the socket stays | `a_successor_that_rejects_the_command_line_is_not_reloaded_into` |
 | The configuration file has a key the new version refuses: no exec; with the key gone the next reload goes through | `a_successor_that_refuses_the_configuration_is_not_reloaded_into` |
@@ -253,6 +372,16 @@ state format; platforms other than `linux-aarch64`.
 | An upload that is too large is refused, and no old image comes back | `an_upload_over_the_limit_is_refused_and_leaves_no_stale_content` |
 | A flag turns the clipboard off | `the_clipboard_can_be_turned_off` |
 | Clipboard content expires | `pasted_content_expires` |
+| OSC 52 printed in a pane reaches the client watching it that takes copies (`"clipboard-write"`) with the pane, `text/plain;charset=utf-8` and the text, and becomes the clipboard another pane pastes; a watcher without `"clipboard-write"` and a client watching another pane get nothing | `osc_52_in_a_pane_reaches_the_watching_client` |
+| `xclip -selection clipboard -t image/png -i` in a pane: the client gets the image byte for byte, `wl-paste -t image/png` in another pane prints it; `wl-copy TEXT` and `wl-copy` from stdin copy | `xclip_in_a_pane_reaches_the_watching_client` |
+| A 1 MiB copy comes in 4 chunks of one transfer; an 8 MiB copy to a client that reads nothing is cut short by the next copy and never gets its last chunk (a 9 MiB read taking turns with it in the bulk lane ends first) | `a_large_copy_comes_in_chunks_and_a_newer_one_replaces_it` |
+| `--no-clipboard`: OSC 52 in a pane is not sent to a client that takes copies | `nothing_is_copied_to_clients_with_the_clipboard_turned_off` |
+| `--clipboard-max 1K`: `TILR_CLIPBOARD_MAX` is 1024 in the pane; `xclip -i` of 2 KiB exits 1 with `too large: 2 KB, the clipboard takes at most 1 KB` and the clipboard keeps what it held; an OSC 52 copy of 2 KiB is dropped with a log line and not sent | `a_copy_over_the_limit_is_refused` |
+| A copy no client takes: `xclip -i` exits 0 without running a real `xclip` later on `PATH`, the copy is the clipboard until `--clipboard-ttl`, and a client that subscribes later is not sent it | `a_copy_nobody_takes_stays_in_the_shared_buffer` |
+| Unit: `xclip` copy requests (`-i` or no `-o`, `-t`, files, `-rmlastnl`; the primary selection is not ours) (`src/clipboard.rs`) | `clipboard::tests::xclip_copy_requests` |
+| Unit: `wl-copy` requests (`-t`, `--type=`, `-n`, text arguments, `--`; `--primary` and `--clear` are not ours) (`src/clipboard.rs`) | `clipboard::tests::wl_copy_requests` |
+| Unit: a copy over the limit is refused with its whole size, from text or files (`src/clipboard.rs`) | `clipboard::tests::copies_over_the_limit_are_refused` |
+| Unit: OSC 52 (BEL and ST) and OSC 1337 Copy to the clipboard are reported as copies of `text/plain;charset=utf-8`; the primary selection, reads and clearing are not (`crates/tilr-screen/src/ghostty.rs`) | `ghostty::tests::osc_52_is_reported_as_a_clipboard_write` |
 
 ## Files and `tilr edit` — `tests/files.rs`
 
@@ -269,6 +398,7 @@ through the server's socket.
 | A client that answers only the latest of the pings it has read (as RFC 6455 allows), with `--client-timeout 1` so liveness pings come between the bulk window's marks: a 16 MiB file still arrives whole, the bulk window does not stall | `a_client_answering_only_the_latest_ping_gets_the_whole_file` |
 | A directory is created; renaming a file and a directory, over an existing one: refused; deleting a link does not touch its target; a non-empty directory is deleted only with `recursive` | `directories_are_made_entries_renamed_and_deleted` |
 | Watching a directory: creation, change and deletion arrive as `FsChanged`; a save through the protocol is one change of the file, the temporary file is not seen; subdirectories are not watched; after `FsUnwatch` no changes | `a_watched_directory_reports_what_changes_in_it` |
+| A watched save is held after its durable rename until the watcher queues MODIFY: the test retains that notification while awaiting the later write acknowledgement | `a_watched_save_can_be_reported_before_its_ack` (`failpoints`) |
 | Nothing outside `roots`: `..`, a link leading out (listing, reading, writing, watching), a foreign path: "outside", not even existence outside is revealed; a root cannot be deleted or moved; a link inside itself can | `nothing_outside_the_shared_directories_is_served` |
 | `readonly = true`: looking and reading are allowed; write, mkdir, rename, delete are refused, nothing changes on disk | `a_read_only_server_shows_files_but_changes_nothing` |
 | `--no-files` and `[files] enabled = false`: no feature, `fs_max_bytes` 0, requests get no answer and have no effect, the connection is alive | `files_can_be_turned_off` |
@@ -282,6 +412,7 @@ through the server's socket.
 
 | Use case | Test |
 |---|---|
+| The Unix socket refuses the SOCKS WebSocket path with HTTP 404 both with the proxy enabled and disabled; TCP still serves SOCKS when enabled | `the_socks_path_is_not_served_on_the_unix_socket` |
 | A page over the WebSocket `/socks` with the token in `Authorization: Bearer` reaches a service on the server's loopback (IPv4), there and back, more than one message included | `a_page_reaches_a_loopback_service_through_the_socks_websocket` |
 | The token in `?token=`; the name `localhost` is resolved on the server | `a_page_that_cannot_set_headers_gives_the_token_in_the_query` |
 | `pb.localhost`, `nonexistent.LocalHost`: the server's loopback, no DNS | `any_name_under_localhost_is_the_servers_loopback` |
@@ -304,6 +435,7 @@ client's side in a `StreamOpen` / `StreamData` / `StreamClose` stream.
 
 | Use case | Test |
 |---|---|
+| With 64 agent streams open, a 65th socket closes without a StreamOpen; freeing one slot restores forwarding | `a_65th_stream_is_refused` |
 | The server announces the `agent` feature; with `--no-agent` and `agent = false` it does not, there is no socket, `SSH_AUTH_SOCK` in the pane is empty | `the_agent_is_forwarded_unless_turned_off` |
 | In a pane `SSH_AUTH_SOCK` points at its own socket (`agent/<pid>/<pane>.sock`, 0600, directory 0700); every pane has its own; the pane closed: no socket | `a_pane_has_ssh_auth_sock_pointing_at_its_own_socket` |
 | A program connected: the client gets `StreamOpen` (`ssh-agent`, the pane); bytes go both ways, more than one message too; the program closed: `StreamClose`; the client closed: the program reads what was sent and gets the end; data for a closed or foreign stream is ignored | `a_program_talks_to_the_agent_of_the_client_through_the_panes_socket` |
@@ -324,6 +456,7 @@ nothing in the group outlives the exec.
 
 | Use case | Test |
 |---|---|
+| Input after EOF, without stdin enabled, or from another client is ignored while the exec continues and the owner can still supply input | `input_that_is_not_wanted_is_ignored` |
 | The server announces the `exec` feature; with `--no-exec` and `exec = false` it does not, `ExecStart` is answered with `ExecStarted` `exec_id` 0 and error `exec is turned off`, the connection is alive | `exec_is_offered_unless_turned_off` |
 | stdout and stderr apart, the exit code; arguments as given (`$HOME`, `*`, `` `id` ``, a space are not expanded); the directory and the environment, without a directory the home one; without stdin the program reads the end; no program, an empty `argv`, no directory, an environment entry that is not `NAME=value`: refused in `ExecStarted.error`; the start, the end and the refusal are logged | `a_program_runs_without_a_shell_and_its_outputs_come_apart` |
 | An exec does not get the service manager's variables (`NOTIFY_SOCKET`, `LISTEN_*`, `WATCHDOG_*`) the server was started with; its own `env` may still set them | `an_exec_does_not_get_the_service_managers_variables` |
@@ -350,8 +483,11 @@ pane process. The server's counters are at `GET /metrics`.
 
 | Use case | Test |
 |---|---|
+| Exact controlled durations distinguish parse, build and previous-frame encode; invisible output accumulates reads, bytes and wait time, while ignored clicks have zero output and wait | `the_timing_fields_measure_what_they_say` (`failpoints`) |
+| A fixed test clock assigns distinct parse/build/encode durations; parse accumulates across two invisible reads and a visible read, and changing the configuration leaves encode reporting the previous frame | `frame_stage_durations_are_controlled_per_operation` |
 | Before any input `last_input_seq` = 0; frames after input with `seq` carry it, `timing` is always there, `build_us` > 0, a frame with output has `output_bytes` and `reads`; input without `seq` does not disturb the number; a `Scroll` with `seq` that moved nothing gets its own frame; a client numbering from 1 without `seq_base` works | `a_frame_names_the_input_it_shows_and_how_it_was_made` |
-| Input that changed nothing on screen (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
+| A no-op scroll while output is accumulated: one frame carries the scroll seq and the changed output; after the final prompt, another no-op scroll gets an empty frame | `a_no_op_scroll_frame_includes_accumulated_output` |
+| Input that changed nothing on screen with no pending output (a click without mouse tracking, an empty `RawInput`): a frame with no rows carrying its `seq`, the same cursor, size and modes; input without `seq` gives no frame | `input_that_changes_nothing_is_answered_with_an_empty_frame` |
 | Reconnecting (a page reload): the new `seq_base` is greater than the old one; the full frame carries the old connection's number, not its own; input of the new one carries its number | `a_client_that_reconnects_tells_its_input_from_before` |
 | Two clients on one pane: each has its own `seq_base`, both see the numbers of both, in order | `two_clients_on_one_pane_each_see_their_own_input` |
 | `Scroll` is credited at once, although keyboard input is still waiting for the pty (1 MiB in a pty with no reader) | `a_scroll_is_credited_while_key_input_waits_for_the_pty` |
@@ -361,8 +497,17 @@ pane process. The server's counters are at `GET /metrics`.
 | Without a token: `Sec-Fetch-Site: cross-site`, a foreign `Host` (DNS rebinding) or no `Host`: 403; with a token, the token decides | `without_a_token_metrics_are_for_this_machine_only` |
 | A request that arrives in pieces (the request line and the empty line split) | `a_metrics_request_may_come_in_pieces` |
 | After input and frames: the pane's frame, byte and input counters, the routing and loop-lag histograms, CPU and memory of the supervisor and the pane process | `metrics_count_frames_input_and_routing` |
-| An old connection superseded by the same client is counted in `tilr_client_drops_total{reason="superseded"}` | `metrics_count_the_clients_let_go_and_why` |
-| A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilr_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
+| An old connection superseded by the same client is counted in `tilrd_client_drops_total{reason="superseded"}` | `metrics_count_the_clients_let_go_and_why` |
+| A wrong-token Hello is refused without a drop | `metrics_count_the_clients_let_go_and_why` |
+| A lagging client (a small receive buffer, not reading, a stream of output in the pane): its frames are skipped (`tilrd_pane_frames_skipped_total`); once it has read up it gets a full frame and the end of the output; its input, whose echo was in a skipped frame, arrives in the full frame's `last_input_seq`; it is not dropped | `a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` |
+
+## Test infrastructure — `tests/cleanup_stand.rs`
+
+| Case | Check |
+|---|---|
+| After a test-owned server sends `READY=1`, interrupt its test by SIGTERM and by a controlled timeout; check its exact PID and macOS `pgrep`, report survivors, and clean the owned process group even on failure | `cleanup_stand::server_ready_then_wait_for_interruption` (ignored; run by `scripts/test_server_cleanup_stand.py`), `scripts/test_server_cleanup_stand_selftest.py` |
+| Test-process panic (including before startup output is parsed), SIGTERM and forced timeout stop owned supervisors, panes and shells, for original and copied executables | `cleanup_stand::owned_servers_exit_after_panic_signal_and_timeout` |
+| A panicking client test stops its copied daemon even after its command socket is removed | `client::a_panicking_test_stops_its_copied_daemon_without_a_command_socket` |
 
 ## Not covered
 
@@ -402,9 +547,8 @@ pane process. The server's counters are at `GET /metrics`.
   themselves, Dvorak and AZERTY, where the Latin character decides, and the
   base key in the kitty protocol); end-to-end use cases are itests UC-079.
 - Scrolling while the pane is resized.
-- tilr Cloud: `tilr cloud login` / `logout` are checked by hand only,
-  against a local Cloud (`wrangler dev`). A real `cloudflared` and a real
-  Cloudflare tunnel have never been tested.
+- tilr Cloud: automated tests play Cloud and `cloudflared`. A real
+  `cloudflared` and a real Cloudflare tunnel have never been tested.
 - A `cloudflared` left behind after the server crashed (SIGKILL) is not
   cleaned up by anyone.
 - Files: the temporary file of a write cut short by a reload is removed by
@@ -452,3 +596,7 @@ pane process. The server's counters are at `GET /metrics`.
 | URIs longer than 8 KiB remain plain text | `tilr-screen`: `ghostty::tests::an_overlong_hyperlink_is_left_out` |
 | Attach opens and closes OSC 8 around a linked run | `tilr`: `attach::tests::a_linked_run_is_drawn_inside_osc_8` |
 | A URI containing invalid UTF-8 leaves its text intact | `tilr-screen`: `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` |
+
+Shared Ghostty build tooling: `ghostty_script::shared_ghostty_build_reuses_complete_toolchain_prefixes`
+checks pinned build flags, package relocation, reuse, Zig/SDK identity changes, Linux
+SDK independence and explicit recovery after failure through deterministic tool fixtures.

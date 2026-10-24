@@ -394,7 +394,10 @@ async fn a_large_output_arrives_whole_in_order_and_holds_up_a_slow_client() {
         done.display()
     );
     let (exec_id, _) = start(&mut client, argv(&["sh", "-c", &script])).await;
-    // The client reads nothing for a while: the program waits for it.
+    // The client reads nothing for a while: the program waits for it. The
+    // window rules out output buffered without bound: `cat` of a file
+    // writes 32 MiB in milliseconds when nothing holds it up, so it would
+    // be done well within a second.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
         !done.exists(),
@@ -579,12 +582,15 @@ async fn an_exec_given_up_at_a_reload_ends_with_its_exec_exit() {
     // Output that does not compress, so that it fills the lane.
     let (exec_id, _) = start(&mut client, argv(&["cat", "/dev/urandom"])).await;
     // The client reads nothing: its bulk lane fills, and the exec's readers
-    // wait for room.
+    // wait for room. The second only sets the scene: /dev/urandom fills the
+    // lane in milliseconds, and were it not full yet, the exec would still
+    // be running at the reload and end the same way; nothing below passes
+    // because of the window.
     tokio::time::sleep(Duration::from_secs(1)).await;
     server.signal("-USR1");
     // The reload gives up waiting for the exec after a second, and waits a
     // second more for the clients to read what they were sent.
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    server.wait_logged("exec ended without its status").await;
     let mut last = None;
     while let Some(msg) = client.next().await {
         match msg {
@@ -631,4 +637,101 @@ async fn an_exec_does_not_get_the_service_managers_variables() {
     )
     .await;
     assert!(ran.stdout().lines().any(|line| line == "NOTIFY_SOCKET=/x"));
+}
+
+async fn nothing_before_pong(client: &mut Client, nonce: u64) {
+    client.ping(nonce).await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Pong(pong) if pong.nonce == nonce => Some(()),
+            server_message::Msg::Error(_)
+            | server_message::Msg::ExecInputAck(_)
+            | server_message::Msg::ExecExit(_) => panic!("unwanted input was not ignored: {msg:?}"),
+            _ => None,
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn input_that_is_not_wanted_is_ignored() {
+    let server = Server::start(&[]);
+    let mut owner = Client::connect(&server).await;
+    let mut stranger = Client::connect(&server).await;
+    owner.hello().await;
+    stranger.hello().await;
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
+    let captured = server.dir.join("captured-input");
+    let script = format!(
+        "cat > '{}'; read -r go < '{}'; printf done; cat '{}'",
+        captured.display(),
+        fifo.display(),
+        captured.display()
+    );
+    for stdin in [false, true] {
+        let (exec_id, _) = start(
+            &mut owner,
+            ExecStart {
+                stdin,
+                ..argv(&["/bin/sh", "-c", &script])
+            },
+        )
+        .await;
+        if stdin {
+            owner
+                .send(Msg::ExecInput(ExecInput {
+                    exec_id,
+                    eof: true,
+                    ..Default::default()
+                }))
+                .await;
+        }
+        owner
+            .send(Msg::ExecInput(ExecInput {
+                exec_id,
+                data: Bytes::from_static(b"unwanted"),
+                eof: false,
+            }))
+            .await;
+        owner
+            .send(Msg::ExecInput(ExecInput {
+                exec_id,
+                eof: true,
+                ..Default::default()
+            }))
+            .await;
+        nothing_before_pong(&mut owner, 101).await;
+        release_activity_fifo(&mut release);
+        let ran = finish(&mut owner, exec_id).await;
+        assert_eq!(ran.stdout(), "done");
+        assert!(ran.stderr.is_empty());
+        assert_eq!(ran.exit.code, 0);
+        assert_eq!(ran.exit.signal, 0);
+    }
+    let (exec_id, _) = start(
+        &mut owner,
+        ExecStart {
+            stdin: true,
+            ..argv(&["wc", "-c"])
+        },
+    )
+    .await;
+    stranger
+        .send(Msg::ExecInput(ExecInput {
+            exec_id,
+            data: Bytes::from_static(b"stranger"),
+            eof: true,
+        }))
+        .await;
+    nothing_before_pong(&mut stranger, 102).await;
+    owner
+        .send(Msg::ExecInput(ExecInput {
+            exec_id,
+            data: Bytes::from_static(b"owner"),
+            eof: true,
+        }))
+        .await;
+    let ran = finish(&mut owner, exec_id).await;
+    assert_eq!(ran.stdout().trim(), "5");
+    assert_eq!(ran.exit.code, 0);
+    assert_eq!(ran.exit.signal, 0);
 }

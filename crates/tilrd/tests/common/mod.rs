@@ -13,12 +13,25 @@ pub use std::sync::atomic::{AtomicU32, Ordering};
 pub use std::sync::{Arc, Mutex};
 pub use std::time::Duration;
 
+#[path = "../../../../tests/support/server_owner.rs"]
+pub mod server_owner;
+pub use server_owner::Owner;
+
+pub mod scrape;
+pub use scrape::{http_get, http_request, sample, wait_sample_above};
+
+#[cfg(feature = "failpoints")]
+pub mod time;
+#[cfg(feature = "failpoints")]
+pub use time::{hello_deadline, set_test_time, signal_before_deadline, signal_deadline};
+
 pub use bytes::Bytes;
 pub use futures_util::{SinkExt, StreamExt};
 pub use tilr_proto::{
-    ClientMessage, ClipboardAck, ClipboardPut, ClosePane, CreatePane, Frame, Hello, HelloAck,
-    HostEvent, KeyInput, ListPanes, PROTOCOL_VERSION, PaneInfo, Ping, RawInput, Resize, Scroll,
-    ServerMessage, Subscribe, Unsubscribe, client_message::Msg, server_message,
+    ClientMessage, ClipboardAck, ClipboardPut, ClipboardWrite, ClosePane, CreatePane, Frame,
+    FsRead, Hello, HelloAck, HostEvent, KeyInput, ListPanes, PROTOCOL_VERSION, PaneInfo, Ping,
+    RawInput, Resize, Scroll, ServerMessage, Subscribe, Unsubscribe, client_message::Msg,
+    server_message,
 };
 pub use tokio::net::TcpStream;
 pub use tokio_tungstenite::tungstenite::Message;
@@ -30,6 +43,97 @@ pub type PaneId = uuid::Uuid;
 
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 pub const CHUNK: usize = 256 * 1024;
+
+/// Hold the outer login shell's exit after terminal hang-up, rather than
+/// pausing tilrd's unrelated pane shutdown path. Install TRAP before starting
+/// tilrd. Stopping inside the HUP trap matters: terminal hang-up can itself
+/// send SIGCONT, so stopping the shell before closing the pty is insufficient.
+/// Only the test helper is feature-gated; production signal handling is untouched.
+#[cfg(feature = "failpoints")]
+pub struct HangupExitPause {
+    pid: libc::pid_t,
+    armed: bool,
+}
+
+#[cfg(feature = "failpoints")]
+impl HangupExitPause {
+    // Ignore duplicate HUPs from the pty close and the explicit sshd-style send.
+    pub const TRAP: &'static str = "trap 'trap \"\" HUP; kill -STOP $$; exit 129' HUP; ";
+
+    pub fn new(pid: u32) -> Self {
+        Self {
+            pid: pid as libc::pid_t,
+            armed: true,
+        }
+    }
+
+    /// The kernel's child-stop event proves the HUP trap reached its hold.
+    /// The caller must own this child and must not wait on it concurrently.
+    pub async fn wait_stopped(&mut self) {
+        use tokio::signal::unix::{SignalKind, signal};
+        // Register before checking state so a child transition cannot be lost.
+        let mut changed = signal(SignalKind::child()).unwrap();
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let mut status = 0;
+                // SAFETY: status is valid and pid names the owned child.
+                let result = unsafe {
+                    libc::waitpid(self.pid, &mut status, libc::WUNTRACED | libc::WNOHANG)
+                };
+                if result == -1
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                {
+                    continue;
+                }
+                assert!(result >= 0, "waitpid: {}", std::io::Error::last_os_error());
+                if result == self.pid {
+                    if !libc::WIFSTOPPED(status) {
+                        // waitpid already reaped the unexpected exit.
+                        self.armed = false;
+                        panic!("login shell exited before the hold: {status}");
+                    }
+                    assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+                    break;
+                }
+                changed.recv().await.expect("SIGCHLD stream closed");
+            }
+        })
+        .await
+        .expect("login shell did not stop after SIGHUP");
+    }
+
+    pub async fn release_and_wait(mut self, child: &mut Child) -> std::process::ExitStatus {
+        use tokio::signal::unix::{SignalKind, signal};
+        assert_eq!(child.id() as libc::pid_t, self.pid);
+        let mut changed = signal(SignalKind::child()).unwrap();
+        // SAFETY: kill has no memory-safety preconditions.
+        assert_eq!(unsafe { libc::kill(self.pid, libc::SIGCONT) }, 0);
+        let status = tokio::time::timeout(TIMEOUT, async {
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    return status;
+                }
+                changed.recv().await.expect("SIGCHLD stream closed");
+            }
+        })
+        .await
+        .expect("login shell did not exit after release");
+        self.armed = false;
+        status
+    }
+}
+
+#[cfg(feature = "failpoints")]
+impl Drop for HangupExitPause {
+    fn drop(&mut self) {
+        if self.armed {
+            // An assertion or timeout must not strand a stopped child.
+            // The owner still reaps the child.
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        }
+    }
+}
 
 /// Event-driven control of `pause` failpoints. Bind before triggering the
 /// operation; keep each returned hit until it is time for that hit to proceed.
@@ -74,6 +178,7 @@ impl PausedPoint {
 
 /// A running server with a scratch directory of its own.
 pub struct Server {
+    pub owner: Owner,
     pub child: Child,
     pub addr: String,
     /// Scratch directory: the server's runtime directory lives in it, and
@@ -81,6 +186,12 @@ pub struct Server {
     pub dir: PathBuf,
     pub log: Arc<Mutex<Vec<String>>>,
     pub log_changed: Arc<tokio::sync::Notify>,
+}
+
+/// Copy diagnostics before panicking: no log guard may survive into unwinding.
+/// Cleanup must also work if another user of the shared log poisoned its lock.
+fn log_text(log: &Mutex<Vec<String>>) -> String {
+    log.lock().unwrap_or_else(|err| err.into_inner()).join("\n")
 }
 
 /// Spawn `command`, whose executable may be a copy made a moment ago. On
@@ -99,6 +210,102 @@ pub fn spawn_copied(command: &mut Command) -> Child {
             Err(err) => panic!("spawn {:?}: {err}", command.get_program()),
         }
     }
+}
+
+/// Shell successors implement the same test-only startup handshake as tilrd.
+pub const STATE_FORMATS_STARTUP: &str = r#"if [ "$TILR_TEST_STATE_FORMATS_STARTUP" = child ]; then
+printf 'tilrd-state-formats-started\n'
+read ack || exit 1
+[ "$ack" = continue ] || exit 1
+fi
+"#;
+
+/// Reclaim pairs left by exited test processes, including aborted runs. A live
+/// process still needs its source paths for subsequent hardlink installations.
+fn warm_executable_dir() -> PathBuf {
+    let root = std::env::temp_dir();
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("tilr-warm-"))
+            .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+            .filter(|pid| *pid > 0)
+        else {
+            continue;
+        };
+        // SAFETY: signal zero only checks existence; it sends no signal.
+        let exited = unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if exited {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                // Another test binary may have reclaimed the same dead pair.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => panic!("remove {}: {err}", entry.path().display()),
+            }
+        }
+    }
+    let dir = root.join(format!("tilr-warm-{}", std::process::id()));
+    // A reused PID can have left a directory in an earlier run.
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
+/// Two warmed inodes shared by this integration-test binary. Keep both source
+/// paths alive: private installations may be renamed or removed by their tests.
+fn warm_executables() -> &'static [PathBuf; 2] {
+    static EXECUTABLES: std::sync::OnceLock<[PathBuf; 2]> = std::sync::OnceLock::new();
+    EXECUTABLES.get_or_init(|| {
+        let original = PathBuf::from(env!("CARGO_BIN_EXE_tilrd"));
+        let dir = warm_executable_dir();
+        let first = dir.join("tilrd-warm-a");
+        let alternate = dir.join("tilrd-warm-b");
+        let warm = |exe: &Path| {
+            let status = spawn_copied(Command::new(exe).arg("--version"))
+                .wait()
+                .unwrap();
+            assert!(status.success(), "warm {}: {status}", exe.display());
+        };
+        warm(&original);
+        match std::fs::hard_link(&original, &first) {
+            Ok(()) => {}
+            // Linux containers put Cargo's target directory on a separate
+            // volume. Copy once into the tests' filesystem, never per test.
+            Err(err) if err.raw_os_error() == Some(libc::EXDEV) => {
+                std::fs::copy(&original, &first).unwrap();
+                warm(&first);
+            }
+            Err(err) => panic!("link {} to {}: {err}", original.display(), first.display()),
+        }
+        std::fs::copy(&original, &alternate).unwrap();
+        warm(&alternate);
+        [first, alternate]
+    })
+}
+
+/// Install a private path without triggering assessment of a fresh executable.
+/// Callers must replace/unlink this path rather than modify its shared inode.
+pub fn link_executable(destination: &Path) {
+    std::fs::hard_link(&warm_executables()[0], destination).unwrap();
+}
+
+/// Stage a different warmed inode, including when replacing the same path again.
+pub fn link_replacement(current: &Path, staged: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let sources = warm_executables();
+    let current = std::fs::metadata(current).unwrap();
+    let first = std::fs::metadata(&sources[0]).unwrap();
+    let source = if (current.dev(), current.ino()) == (first.dev(), first.ino()) {
+        &sources[1]
+    } else {
+        &sources[0]
+    };
+    std::fs::hard_link(source, staged).unwrap();
 }
 
 impl Server {
@@ -126,6 +333,19 @@ impl Server {
         Self::start_failing(dir, exe, args, "")
     }
 
+    /// Wait for successor startup before the bounded compatibility check.
+    /// Only failpoints builds honor this opt-in; the
+    /// harness still bounds its waits for logs and client messages.
+    pub fn start_awaiting_formats(dir: PathBuf, exe: &Path, args: &[&str]) -> Self {
+        Self::start_full(
+            dir,
+            exe,
+            args,
+            "",
+            &[("TILR_TEST_STATE_FORMATS_STARTUP", "1")],
+        )
+    }
+
     /// Start a server in which things go wrong where `failpoints` says, see
     /// `src/fail.rs`. It hands them on to what it reloads into.
     pub fn start_failing(dir: PathBuf, exe: &Path, args: &[&str], failpoints: &str) -> Self {
@@ -138,7 +358,7 @@ impl Server {
         Self::start_full(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), args, "", env)
     }
 
-    fn start_full(
+    pub fn start_full(
         dir: PathBuf,
         exe: &Path,
         args: &[&str],
@@ -150,11 +370,10 @@ impl Server {
         Self::environment(&mut command, &dir, failpoints);
         command.envs(env.iter().copied());
         command.stdin(Stdio::null()).stderr(Stdio::piped());
-        let mut child = spawn_copied(&mut command);
-
-        let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let log_changed = Arc::new(tokio::sync::Notify::new());
+        let mut server = Self::spawn_owned(command, dir);
+        let mut lines = BufReader::new(server.child.stderr.take().unwrap()).lines();
+        let log = Arc::clone(&server.log);
+        let log_changed = Arc::clone(&server.log_changed);
         let mut addr = None;
         for line in lines.by_ref() {
             let line = line.unwrap();
@@ -168,23 +387,34 @@ impl Server {
                 break;
             }
         }
-        let addr =
-            addr.unwrap_or_else(|| panic!("server did not start: {:?}", log.lock().unwrap()));
+        let addr = addr.unwrap_or_else(|| panic!("server did not start: {}", log_text(&log)));
         // Keep draining the log so the server never blocks on it.
         let sink = Arc::clone(&log);
         let changed = Arc::clone(&log_changed);
         std::thread::spawn(move || {
             for line in lines.map_while(Result::ok) {
-                sink.lock().unwrap().push(line);
+                sink.lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(line);
                 changed.notify_waiters();
             }
         });
+        server.addr = addr;
+        server
+    }
+
+    /// Own the process before reading any startup output that may panic.
+    pub fn spawn_owned(mut command: Command, dir: PathBuf) -> Self {
+        let owner = Owner::new(&dir);
+        owner.configure(&mut command);
+        let child = spawn_copied(&mut command);
         Self {
+            owner,
             child,
-            addr,
+            addr: String::new(),
             dir,
-            log,
-            log_changed,
+            log: Arc::default(),
+            log_changed: Arc::default(),
         }
     }
 
@@ -204,6 +434,8 @@ impl Server {
             .env("PS1", "$ ")
             // Each test opts into its own clock through `start_with_env`.
             .env_remove("TILR_TEST_TIME_FILE")
+            .env_remove("TILR_TEST_FRAME_STAGE_TIME_FILE")
+            .env_remove("TILR_TEST_STATE_FORMATS_STARTUP")
             // No real clipboard for the shims to fall back to, and no shell
             // startup file.
             .env_remove("DISPLAY")
@@ -215,7 +447,10 @@ impl Server {
             .env_remove("TILR_CLIPBOARD_DIR")
             // Nor the Unix socket of the server whose pane the tests may
             // run in: each server's goes in its own runtime directory.
-            .env_remove("TILR_SOCKET");
+            .env_remove("TILR_SOCKET")
+            // Nor the log filter of the shell running the tests: what a
+            // server under test logs is the default.
+            .env_remove("RUST_LOG");
     }
 
     /// Whether the server has logged a line with `needle` so far, as far as
@@ -225,9 +460,41 @@ impl Server {
     pub fn logged(&self, needle: &str) -> bool {
         self.log
             .lock()
-            .unwrap()
+            .unwrap_or_else(|err| err.into_inner())
             .iter()
             .any(|line| line.contains(needle))
+    }
+
+    /// Count accepted startup events so a second replacement cannot reuse
+    /// the first probe's event.
+    pub fn formats_started(&self) -> usize {
+        self.log
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .iter()
+            .filter(|line| line.contains("state-formats successor started"))
+            .count()
+    }
+
+    /// Startup gets the ordinary harness bound. Verdict/client waits begin
+    /// only after this event, separately from launch admission.
+    pub async fn wait_formats_started(&self, after: usize) {
+        #[cfg(feature = "failpoints")]
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let changed = self.log_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.formats_started() > after {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("successor did not start\n{}", log_text(&self.log)));
+        #[cfg(not(feature = "failpoints"))]
+        let _ = after;
     }
 
     /// Wait up to [`TIMEOUT`] for the server to log a line with `needle`.
@@ -237,12 +504,39 @@ impl Server {
 
     /// Wait up to `within` for the server to log a line with `needle`.
     pub async fn wait_logged_within(&self, needle: &str, within: Duration) {
+        let what = format!("not logged within {within:?}: {needle}");
+        self.wait_log_within(&what, within, |log| {
+            log.iter().any(|line| line.contains(needle))
+        })
+        .await;
+    }
+
+    /// Wait up to [`TIMEOUT`] for the server's log so far to satisfy `done`;
+    /// fails with `what` and the log if it does not.
+    pub async fn wait_log(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+        self.wait_log_within(what, TIMEOUT, done).await;
+    }
+
+    /// [`Server::wait_log`] with a caller-provided deadline: the log is
+    /// looked at every 20 ms.
+    pub async fn wait_log_within(
+        &self,
+        what: &str,
+        within: Duration,
+        done: impl Fn(&[String]) -> bool,
+    ) {
         let deadline = tokio::time::Instant::now() + within;
-        while !self.logged(needle) {
+        loop {
+            // The guard ends here: a failed wait panics with none held, so
+            // the log is left unpoisoned for the cleanup that follows.
+            let met = done(&self.log.lock().unwrap_or_else(|err| err.into_inner()));
+            if met {
+                return;
+            }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "not logged within {within:?}: {needle}\n{}",
-                self.log.lock().unwrap().join("\n")
+                "{what}\n{}",
+                log_text(&self.log)
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -250,12 +544,17 @@ impl Server {
 
     /// [`Server::wait_logged`] outside of an async context.
     pub fn wait_logged_blocking(&self, needle: &str) {
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        self.wait_logged_blocking_within(needle, TIMEOUT);
+    }
+
+    /// The blocking log wait with a caller-provided deadline.
+    pub fn wait_logged_blocking_within(&self, needle: &str, within: Duration) {
+        let deadline = std::time::Instant::now() + within;
         while !self.logged(needle) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "not logged within {TIMEOUT:?}: {needle}\n{}",
-                self.log.lock().unwrap().join("\n")
+                "not logged within {within:?}: {needle}\n{}",
+                log_text(&self.log)
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -284,22 +583,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // Asked to stop, a server removes its sockets: the panes' agent
-        // sockets, under /tmp where the scratch directory's path is too long
-        // for a socket (macOS), are not found otherwise.
-        if self.is_running() {
-            // SAFETY: kill has no memory-safety preconditions.
-            unsafe {
-                libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
-            }
-            for _ in 0..100 {
-                if !self.is_running() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        let _ = self.child.kill();
+        self.owner.close();
         let _ = self.child.wait();
         // A server killed outright leaves its host socket behind. Where the
         // scratch directory's path is too long for a socket (macOS), that
@@ -314,10 +598,7 @@ impl Drop for Server {
             let _ = std::fs::remove_file(sock);
         }
         if std::thread::panicking() {
-            eprintln!(
-                "--- server log ---\n{}",
-                self.log.lock().unwrap().join("\n")
-            );
+            eprintln!("--- server log ---\n{}", log_text(&self.log));
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -347,6 +628,16 @@ impl Screen {
     }
 }
 
+/// An explicit release for socket reads. Dropping it without resuming fails
+/// the next read; it never silently resumes a paused client.
+pub struct ReadPause(tokio::sync::oneshot::Sender<()>);
+
+impl ReadPause {
+    pub fn resume(self) {
+        self.0.send(()).expect("paused client disappeared");
+    }
+}
+
 pub struct Client {
     pub ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     pub screen: Screen,
@@ -356,10 +647,15 @@ pub struct Client {
     pub acks: VecDeque<ClipboardAck>,
     /// Host events seen while waiting for something else.
     pub host_events: VecDeque<HostEvent>,
+    /// `ClipboardWrite` chunks seen while waiting for something else.
+    pub copies: VecDeque<ClipboardWrite>,
+    /// Pane activity seen while waiting for another message.
+    pub activities: VecDeque<tilr_proto::PaneActivity>,
     /// The server's access token, as `tilrd token` prints it.
     pub token: String,
     /// What `hello` says as `Hello.client_id`; empty: none.
     pub client_id: String,
+    reads_paused: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Client {
@@ -380,15 +676,32 @@ impl Client {
 
     async fn try_connect_silent(server: &Server) -> Option<Self> {
         let (ws, _) = tokio_tungstenite::connect_async(&server.addr).await.ok()?;
-        Some(Self {
+        Some(Self::from_socket(server, ws))
+    }
+
+    pub fn from_socket(server: &Server, ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+        Self {
             ws,
             screen: Screen::default(),
             frame: None,
             acks: VecDeque::new(),
             host_events: VecDeque::new(),
+            copies: VecDeque::new(),
+            activities: VecDeque::new(),
             token: server.token(),
             client_id: String::new(),
-        })
+            reads_paused: None,
+        }
+    }
+
+    /// Acknowledged on return: this client has no background reader, and
+    /// every subsequent `next` waits for the returned handle's `resume`.
+    /// Sending messages remains available while reads are paused.
+    pub fn pause_reads(&mut self) -> ReadPause {
+        assert!(self.reads_paused.is_none(), "reads already paused");
+        let (release, paused) = tokio::sync::oneshot::channel();
+        self.reads_paused = Some(paused);
+        ReadPause(release)
     }
 
     pub async fn send(&mut self, msg: Msg) {
@@ -400,6 +713,10 @@ impl Client {
     /// Fails if none comes within [`TIMEOUT`]: the server's pings, which come
     /// all the time, do not count.
     pub async fn next(&mut self) -> Option<server_message::Msg> {
+        if let Some(paused) = &mut self.reads_paused {
+            paused.await.expect("read pause dropped without resume");
+            self.reads_paused = None;
+        }
         let deadline = tokio::time::Instant::now() + TIMEOUT;
         loop {
             let message = tokio::time::timeout_at(deadline, self.ws.next())
@@ -429,6 +746,12 @@ impl Client {
                         }
                         Some(server_message::Msg::HostEvent(event)) => {
                             self.host_events.push_back(event.clone());
+                        }
+                        Some(server_message::Msg::ClipboardWrite(chunk)) => {
+                            self.copies.push_back(chunk.clone());
+                        }
+                        Some(server_message::Msg::PaneActivity(activity)) => {
+                            self.activities.push_back(activity.clone());
                         }
                         _ => {}
                     }
@@ -495,7 +818,7 @@ impl Client {
         .await
     }
 
-    /// Start a shell in a new pane and watch it.
+    /// Start a shell in a new pane and watch it, waiting for its first prompt.
     pub async fn open_pane(&mut self) -> PaneId {
         self.open_pane_with(100, 30, "").await
     }
@@ -504,7 +827,12 @@ impl Client {
         self.send(Msg::CreatePane(CreatePane {
             cols,
             rows,
-            command: vec!["/bin/sh".into()],
+            // An intermediate shell (e.g. the hangup fixture) may reset PS1.
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "PS1='$ ' exec /bin/sh".into(),
+            ],
             cwd: cwd.into(),
             request_id: 5,
         }))
@@ -519,7 +847,31 @@ impl Client {
             })
             .await;
         self.subscribe(pane_id).await;
+        self.wait_shell_prompt(pane_id).await;
         pane_id
+    }
+
+    /// Await the isolated shell's first prompt on this pane's frame stream.
+    pub async fn wait_shell_prompt(&mut self, pane_id: PaneId) {
+        // Creation and PTY echo do not prove startup. Only this pane's prompt
+        // counts: frames from earlier subscribed panes can still arrive.
+        self.wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame)
+                if frame.pane_id == pane_id.to_string()
+                    && frame.changed.iter().any(|row| {
+                        row.runs
+                            .iter()
+                            .map(|run| run.text.as_str())
+                            .collect::<String>()
+                            .trim_end()
+                            == "$"
+                    }) =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
     }
 
     pub async fn subscribe(&mut self, pane_id: PaneId) {
@@ -588,6 +940,83 @@ impl Client {
         }
     }
 
+    /// Say hello as a client that takes the copies made in its panes
+    /// (`"clipboard-write"`).
+    pub async fn hello_copying(&mut self) -> HelloAck {
+        self.hello_with(
+            PROTOCOL_VERSION,
+            &["clipboard", "host-events", "clipboard-write"],
+        )
+        .await;
+        self.wait_for(|msg| match msg {
+            server_message::Msg::HelloAck(ack) => Some(ack.clone()),
+            _ => None,
+        })
+        .await
+    }
+
+    /// The oldest copy not yet asked about that came whole, with the
+    /// transfers before it that ended without their last chunk.
+    pub async fn copied(&mut self) -> Copied {
+        let mut copied: Option<Copied> = None;
+        let mut abandoned = Vec::new();
+        loop {
+            while let Some(chunk) = self.copies.pop_front() {
+                match &mut copied {
+                    Some(copy) if copy.transfer_id == chunk.transfer_id => {
+                        copy.data.extend_from_slice(&chunk.data);
+                        copy.chunks += 1;
+                    }
+                    _ => {
+                        if let Some(older) = copied.take() {
+                            abandoned.push(older.transfer_id);
+                        }
+                        copied = Some(Copied {
+                            transfer_id: chunk.transfer_id,
+                            pane_id: chunk.pane_id.clone(),
+                            mime: chunk.mime.clone(),
+                            total_size: chunk.total_size,
+                            data: chunk.data.to_vec(),
+                            chunks: 1,
+                            abandoned: Vec::new(),
+                        });
+                    }
+                }
+                if chunk.last {
+                    let mut copy = copied.take().unwrap();
+                    copy.abandoned = abandoned;
+                    return copy;
+                }
+            }
+            self.next().await.expect("connection closed");
+        }
+    }
+
+    /// Read a small file through the files protocol: its answer comes on
+    /// the bulk lane, behind whatever the server queued there before.
+    pub async fn sync_bulk(&mut self, server: &Server) {
+        self.read_through_bulk(server, 4).await;
+    }
+
+    /// Read a file of `len` bytes through the files protocol, to its last
+    /// chunk: the bulk lane gives room to its chunks and to those of other
+    /// senders waiting for it in turn.
+    pub async fn read_through_bulk(&mut self, server: &Server, len: usize) {
+        let path = server.dir.join("bulk-sync");
+        std::fs::write(&path, vec![b's'; len]).unwrap();
+        self.send(Msg::FsRead(FsRead {
+            request_id: 4242,
+            path: path.to_str().unwrap().into(),
+            ..Default::default()
+        }))
+        .await;
+        self.wait_for(|msg| match msg {
+            server_message::Msg::FsData(data) if data.request_id == 4242 && data.last => Some(()),
+            _ => None,
+        })
+        .await;
+    }
+
     /// The outcome of the oldest upload not yet asked about.
     pub async fn clipboard_ack(&mut self) -> ClipboardAck {
         loop {
@@ -600,6 +1029,19 @@ impl Client {
 }
 
 /// Bytes that look like nothing in particular, newlines and zeros included.
+/// A copy made in a pane, as a client got it.
+#[derive(Debug)]
+pub struct Copied {
+    pub transfer_id: u64,
+    pub pane_id: String,
+    pub mime: String,
+    pub total_size: u64,
+    pub data: Vec<u8>,
+    pub chunks: usize,
+    /// Transfers that came before it and ended without their last chunk.
+    pub abandoned: Vec<u64>,
+}
+
 pub fn image(len: usize) -> Vec<u8> {
     let mut state = 0x2545_f491_4f6c_dd1du64;
     let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -629,6 +1071,71 @@ pub fn script(server: &Server, name: &str, script: &str) -> String {
     let path = server.dir.join(name);
     std::fs::write(&path, script).unwrap();
     format!("sh '{}'", path.display())
+}
+
+/// Return a subscribed pane whose first shell prompt is held behind a FIFO.
+pub async fn pane_before_shell_prompt(
+    server: &Server,
+    client: &mut Client,
+    cols: u32,
+    rows: u32,
+) -> (PaneId, std::fs::File) {
+    // PTY echo can precede the shell's first prompt. Disable line editing so
+    // the shell consumes that queued line without redrawing it after the prompt.
+    let (startup_fifo, release) = activity_fifo(server, "shell-startup-release");
+    let startup = server.dir.join("shell-startup");
+    std::fs::write(&startup, "set +o emacs; set +o vi\n").unwrap();
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols,
+            rows,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "read -r release < '{}'; PS1='startup> ' ENV='{}' exec /bin/sh",
+                    startup_fifo.display(),
+                    startup.display()
+                ),
+            ],
+            request_id: 83,
+            ..Default::default()
+        }))
+        .await;
+    let pane = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(p) if p.request_id == 83 => {
+                Some(p.pane.as_ref().unwrap().pane_id.parse().unwrap())
+            }
+            _ => None,
+        })
+        .await;
+    client.subscribe(pane).await;
+    (pane, release)
+}
+
+/// A FIFO kept open at both ends so sending a short release never waits for
+/// a reader. The command under test still blocks until we write a line.
+pub fn activity_fifo(server: &Server, name: &str) -> (PathBuf, std::fs::File) {
+    let fifo = server.dir.join(name);
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let release = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fifo)
+        .unwrap();
+    (fifo, release)
+}
+
+pub fn release_activity_fifo(release: &mut std::fs::File) {
+    use std::io::Write;
+    release.write_all(b"continue\n").unwrap();
 }
 
 /// Start a second server in the scratch directory of `first`, a running
@@ -724,8 +1231,11 @@ impl Client {
                 frame: None,
                 acks: VecDeque::new(),
                 host_events: VecDeque::new(),
+                copies: VecDeque::new(),
+                activities: VecDeque::new(),
                 token: server.token(),
                 client_id: String::new(),
+                reads_paused: None,
             }),
             Err(err) => Err(err.to_string()),
         }
@@ -850,6 +1360,67 @@ pub fn process_args(pid: u32) -> String {
         .output()
         .unwrap();
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// A running pane with a title-refresh pause hook ready for inspection.
+#[cfg(feature = "failpoints")]
+pub struct TitleTest {
+    pub server: Server,
+    pub controller: PauseController,
+    pub client: Client,
+    pub pane: PaneId,
+    pub shell: u32,
+    pub pid: u32,
+    pub hook: String,
+    pub points: PathBuf,
+}
+
+#[cfg(feature = "failpoints")]
+impl TitleTest {
+    pub async fn start() -> Self {
+        let server = Server::start(&[]);
+        let controller = PauseController::bind(&server.dir);
+        let mut client = Client::connect(&server).await;
+        let pane = client.open_pane_with(100, 30, "").await;
+        let shell = shell_pid(&server, &mut client, pane).await;
+        let pid = client.list_panes().await[0].pid;
+        let hook = format!("pane-title-polled:{pane}");
+        let points = server.dir.join("failpoints");
+        std::fs::write(&points, format!("{hook}=pause")).unwrap();
+        Self {
+            server,
+            controller,
+            client,
+            pane,
+            shell,
+            pid,
+            hook,
+            points,
+        }
+    }
+}
+
+/// Read ps after a concrete title refresh, keeping the pane paused for inspection.
+#[cfg(feature = "failpoints")]
+pub async fn wait_process_title(
+    controller: &PauseController,
+    hook: &str,
+    pid: u32,
+    suffix: &str,
+) -> PausedPoint {
+    let mut last = String::new();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let point = controller.wait(hook).await;
+            last = process_args(pid);
+            if last.ends_with(suffix) {
+                return point;
+            }
+            point.release().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("process {pid} did not show {suffix:?}; last title: {last:?}"))
 }
 
 /// The pid of the shell in the pane, which the shell itself writes to a file.

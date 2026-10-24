@@ -29,7 +29,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Output, Stdio};
 use std::time::Duration;
@@ -41,41 +41,22 @@ use uuid::Uuid;
 
 use crate::clipboard;
 
-/// How often the executable on disk is checked for a change.
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// How long `state-formats` and the check of a successor may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Only explicitly selected compatibility tests separate OS launch admission
+/// from execution. Production always includes both in the ten-second limit.
+#[cfg(feature = "failpoints")]
+fn await_state_formats_startup() -> bool {
+    std::env::var_os("TILR_TEST_STATE_FORMATS_STARTUP").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
 /// Set for a process that only checks it could resume: the path of the copy
 /// of the state it reads.
 pub const CHECK_ENV: &str = "TILR_RELOAD_CHECK";
 /// How old a state file must be to count as left behind.
 const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
-
-/// Identity of a file's current content, as far as a stat can tell.
-fn signature(path: &Path) -> Option<(u64, u64, i64, i64)> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.ino(), meta.size(), meta.mtime(), meta.mtime_nsec()))
-}
-
-/// Call `changed` whenever the executable at `exe` is replaced. A change
-/// counts once the file has looked the same on two checks in a row, so a
-/// build still writing it is not picked up half-done.
-pub async fn watch_executable(exe: &Path, mut changed: impl FnMut() -> bool) {
-    let mut running = signature(exe);
-    let mut seen = running;
-    let mut ticks = tokio::time::interval(WATCH_INTERVAL);
-    loop {
-        ticks.tick().await;
-        let now = signature(exe);
-        if now.is_some() && now == seen && now != running {
-            running = now;
-            if !changed() {
-                return;
-            }
-        }
-        seen = now;
-    }
-}
 
 /// Version of what a supervisor leaves its successor ([`SupervisorState`]).
 /// Raise it with any change an older or newer supervisor would misread.
@@ -150,17 +131,70 @@ pub async fn check_executable(exe: &Path) -> Result<bool> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    #[cfg(feature = "failpoints")]
+    if await_state_formats_startup() {
+        return check_started_executable(command, exe).await;
+    }
     let output = async {
         spawn_unblocked(|| command.spawn())?
             .wait_with_output()
             .await
     };
-    match tokio::time::timeout(CHECK_TIMEOUT, output).await {
+    let result = check_timeout("check-formats", output).await;
+    match result {
         Ok(Ok(output)) if output.status.success() => {
             check_formats(&String::from_utf8_lossy(&output.stdout))
                 .with_context(|| format!("{} cannot take over", exe.display()))
         }
         Ok(Ok(output)) => bail!("{} state-formats: {}", exe.display(), output.status),
+        Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
+        Err(_) => bail!("{} state-formats did not finish", exe.display()),
+    }
+}
+
+/// The opt-in handshake uses the existing pipes. Keep the buffered reader
+/// through output collection: it may already contain formats after the marker.
+#[cfg(feature = "failpoints")]
+async fn check_started_executable(
+    mut command: tokio::process::Command,
+    exe: &Path,
+) -> Result<bool> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    command
+        .env("TILR_TEST_STATE_FORMATS_STARTUP", "child")
+        .stdin(Stdio::piped());
+    let mut child =
+        spawn_unblocked(|| command.spawn()).with_context(|| format!("run {}", exe.display()))?;
+    let mut stdout = BufReader::new(child.stdout.take().context("state-formats stdout")?);
+    let mut marker = String::new();
+    stdout
+        .read_line(&mut marker)
+        .await
+        .context("read successor startup")?;
+    if marker != "tilrd-state-formats-started\n" {
+        bail!("{} state-formats did not signal startup", exe.display());
+    }
+    tracing::info!("state-formats successor started");
+    let execution = async {
+        // This acknowledgment is inside the execution deadline. A child can
+        // start its work only after the parent has installed that deadline.
+        child
+            .stdin
+            .take()
+            .context("state-formats stdin")?
+            .write_all(b"continue\n")
+            .await?;
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).await?;
+        let status = child.wait().await?;
+        anyhow::Ok((status, output))
+    };
+    match check_timeout("check-formats", execution).await {
+        Ok(Ok((status, output))) if status.success() => {
+            check_formats(&String::from_utf8_lossy(&output))
+                .with_context(|| format!("{} cannot take over", exe.display()))
+        }
+        Ok(Ok((status, _))) => bail!("{} state-formats: {}", exe.display(), status),
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
         Err(_) => bail!("{} state-formats did not finish", exe.display()),
     }
@@ -188,7 +222,7 @@ pub async fn check_successor(
         .kill_on_drop(true);
     let child =
         spawn_unblocked(|| command.spawn()).with_context(|| format!("run {}", exe.display()))?;
-    match tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await {
+    match check_timeout("check-successor", child.wait_with_output()).await {
         Ok(Ok(output)) => verdict(&output),
         Ok(Err(err)) => Err(err).with_context(|| format!("run {}", exe.display())),
         Err(_) => bail!("it did not answer within {} s", CHECK_TIMEOUT.as_secs()),
@@ -789,36 +823,270 @@ pub fn sweep_stale() {
     }
 }
 
+/// Test-clock expiry is an additional path; the production upper bound is
+/// always active, including while the test listener is being prepared.
+async fn check_timeout<F: std::future::Future>(
+    name: &str,
+    operation: F,
+) -> std::result::Result<F::Output, ()> {
+    #[cfg(not(feature = "failpoints"))]
+    let _ = name;
+    tokio::time::timeout(CHECK_TIMEOUT, async {
+        #[cfg(feature = "failpoints")]
+        if let Some(deadline) = crate::time::TestDeadline::new(name, CHECK_TIMEOUT).await {
+            return tokio::select! {
+                result = operation => Ok(result),
+                signal = deadline.expired() => {
+                    crate::time::TestDeadline::acknowledge(signal).await;
+                    Err(())
+                }
+            };
+        }
+        Ok(operation.await)
+    })
+    .await
+    .unwrap_or(Err(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn delayed_state_formats_obeys_the_selected_policy() {
+        for setting in [None, Some("true"), Some("1")] {
+            let startup = cfg!(feature = "failpoints") && setting == Some("1");
+            for outcome in ["complete", "stall"] {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "reload::tests::delayed_formats_fixture",
+                        "--nocapture",
+                    ])
+                    .env(
+                        "TILR_DELAYED_FORMATS_FIXTURE",
+                        if startup { outcome } else { "bounded" },
+                    )
+                    .env_remove("TILR_TEST_STATE_FORMATS_STARTUP");
+                if let Some(setting) = setting {
+                    command.env("TILR_TEST_STATE_FORMATS_STARTUP", setting);
+                }
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "setting={setting:?}, {outcome}: {output:?}"
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                    "the controlled-delay fixture must actually run: {output:?}"
+                );
+            }
+        }
+    }
+
+    /// Nonblocking FIFO reads can be canceled by select without leaving a
+    /// filesystem worker stranded when a probe unexpectedly fails.
+    async fn read_fifo_event(path: &Path, expected: &[u8]) {
+        use std::io::Read;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap();
+        // SAFETY: this owned nonblocking FIFO stays open and registered
+        // until AsyncFd is dropped; no other code closes its descriptor.
+        let file = unsafe { tokio::io::unix::AsyncFd::register(file) }.unwrap();
+        let mut bytes = vec![0; expected.len()];
+        let mut at = 0;
+        while at < bytes.len() {
+            let mut ready = file.readable().await.unwrap();
+            if let Ok(result) = ready.try_io(|fd| fd.get_ref().read(&mut bytes[at..])) {
+                let count = result.unwrap();
+                assert_ne!(count, 0, "FIFO closed before its event");
+                at += count;
+            }
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    #[tokio::test]
+    async fn delayed_formats_fixture() {
+        use std::future::Future;
+        use std::os::unix::fs::PermissionsExt;
+        use std::task::Poll;
+        let Ok(policy) = std::env::var("TILR_DELAYED_FORMATS_FIXTURE") else {
+            return;
+        };
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(scratch("delayed-formats"));
+        let dir = &scratch.0;
+        let arrived = dir.join("arrived");
+        let start = dir.join("start");
+        let executing = dir.join("executing");
+        let finish = dir.join("finish");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .args([&arrived, &start, &executing, &finish])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let writer = |path: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .unwrap()
+        };
+        let mut start_writer = writer(&start);
+        let mut finish_writer = writer(&finish);
+        let exe = dir.join("successor");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\nprintf arrived > '{}'\nread start < '{}'\n\
+             if [ \"$TILR_TEST_STATE_FORMATS_STARTUP\" = child ]; then\n\
+             printf 'tilrd-state-formats-started\\n'\nread ack || exit 1\nfi\n\
+             printf executing > '{}'\nread finish < '{}'\nprintf '%s' '{}'\n",
+                arrived.display(),
+                start.display(),
+                executing.display(),
+                finish.display(),
+                formats()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut probe = Box::pin(check_executable(&exe));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        // Hold before the readiness event to reproduce launch admission.
+        read_fifo_event(&arrived, b"arrived").await;
+        tokio::time::pause();
+        tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
+        let verdict = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
+        if policy == "bounded" {
+            let Poll::Ready(Err(err)) = verdict else {
+                panic!("a held successor must time out: {verdict:?}");
+            };
+            assert!(
+                err.to_string().contains("state-formats did not finish"),
+                "{err:#}"
+            );
+            return;
+        }
+        assert!(
+            verdict.is_pending(),
+            "launch admission consumed the execution deadline: {verdict:?}"
+        );
+        tokio::time::resume();
+        start_writer.write_all(b"start\n").unwrap();
+        // The acknowledgment proves the execution timer has started before
+        // the child announces this second controlled hold.
+        tokio::select! {
+            result = &mut probe => panic!("probe finished before execution release: {result:?}"),
+            () = read_fifo_event(&executing, b"executing") => {},
+        }
+        if policy == "complete" {
+            finish_writer.write_all(b"finish\n").unwrap();
+            assert!(probe.await.unwrap());
+        } else {
+            tokio::time::pause();
+            tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
+            let verdict = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
+            let Poll::Ready(Err(err)) = verdict else {
+                panic!("execution must still time out: {verdict:?}");
+            };
+            assert!(
+                err.to_string().contains("state-formats did not finish"),
+                "{err:#}"
+            );
+        }
+    }
 
     #[test]
     fn an_executable_reading_the_same_formats_can_take_over() {
-        assert!(check_formats(&formats()).is_ok());
+        assert!(
+            check_formats(&formats()).unwrap(),
+            "it takes over the Unix socket"
+        );
     }
 
     #[test]
-    fn an_executable_reading_another_format_cannot_take_over() {
-        let pane = crate::pane::STATE_FORMAT;
-        let newer = format!("supervisor-state {}\npane-state {pane}\n", STATE_FORMAT + 1);
-        let err = check_formats(&newer).unwrap_err().to_string();
-        assert!(err.contains("reads supervisor-state format"), "{err}");
-
-        let newer = format!("supervisor-state {STATE_FORMAT}\npane-state {}\n", pane + 1);
-        let err = check_formats(&newer).unwrap_err().to_string();
-        assert!(err.contains("reads pane-state format"), "{err}");
-    }
-
-    #[test]
-    fn an_executable_that_cannot_run_the_check_cannot_take_over() {
-        let without: String = formats()
-            .lines()
-            .filter(|line| !line.starts_with(RELOAD_CHECK))
-            .map(|line| format!("{line}\n"))
-            .collect();
-        let err = check_formats(&without).unwrap_err().to_string();
-        assert!(err.contains("no `reload-check 1`"), "{err}");
+    fn check_formats_rejects_every_format_mismatch() {
+        // What a successor prints for `state-formats`: this server's own
+        // formats with one thing changed, or nothing usable at all.
+        let with = |from: &str, to: &str| {
+            let printed = formats().replace(from, to);
+            assert_ne!(printed, formats(), "`{from}` is not in the formats");
+            printed
+        };
+        let supervisor = format!("{SUPERVISOR_STATE} {STATE_FORMAT}");
+        let (pane_written, pane_read) = (crate::pane::STATE_FORMAT, crate::pane::STATE_FORMAT + 1);
+        let supervisor_read = STATE_FORMAT + 1;
+        let cases = [
+            (
+                "another supervisor state",
+                with(
+                    &supervisor,
+                    &format!("{SUPERVISOR_STATE} {supervisor_read}"),
+                ),
+                format!(
+                    "reads supervisor-state format {supervisor_read}, this server writes {STATE_FORMAT}"
+                ),
+            ),
+            (
+                "another pane state",
+                with(
+                    &format!("{PANE_STATE} {pane_written}"),
+                    &format!("{PANE_STATE} {pane_read}"),
+                ),
+                format!("reads pane-state format {pane_read}, this server writes {pane_written}"),
+            ),
+            (
+                "a release before the reload check",
+                with("reload-check 1\n", ""),
+                "cannot show that it can resume (no `reload-check 1`)".to_string(),
+            ),
+            (
+                "no formats at all",
+                String::new(),
+                "does not say which supervisor-state format it reads".to_string(),
+            ),
+            (
+                "something else than formats",
+                "tilrd 0.1.0\n".to_string(),
+                "does not say which supervisor-state format it reads".to_string(),
+            ),
+            (
+                "no pane state",
+                with(&format!("{PANE_STATE} {pane_written}\n"), ""),
+                "does not say which pane-state format it reads".to_string(),
+            ),
+            (
+                "a format that is not a number",
+                with(&supervisor, &format!("{SUPERVISOR_STATE} one")),
+                "supervisor-state format: invalid digit".to_string(),
+            ),
+        ];
+        for (case, printed, refusal) in cases {
+            let err = match check_formats(&printed) {
+                Ok(_) => panic!("{case}: taken over from {printed:?}"),
+                Err(err) => format!("{err:#}"),
+            };
+            assert!(err.contains(&refusal), "{case}: {err}");
+        }
     }
 
     fn output(code: i32, stdout: &str, stderr: &str) -> Output {
@@ -850,14 +1118,6 @@ mod tests {
         assert!(!err.contains("zero"), "only the last lines: {err}");
         let err = verdict(&output(2, "", "")).unwrap_err().to_string();
         assert!(err.ends_with("without answering"), "{err}");
-    }
-
-    #[test]
-    fn an_executable_that_names_no_formats_cannot_take_over() {
-        assert!(check_formats("").is_err());
-        assert!(check_formats("tilrd 0.1.0\n").is_err());
-        assert!(check_formats("supervisor-state 1\n").is_err());
-        assert!(check_formats("supervisor-state one\npane-state 1\n").is_err());
     }
 
     fn state(format: u32) -> Vec<u8> {

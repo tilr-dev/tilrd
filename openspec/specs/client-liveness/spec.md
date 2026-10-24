@@ -102,17 +102,21 @@ A `Hello` whose token differs from the older connection's SHALL NOT supersede it
 - **THEN** both stay connected, the pane counts 2 viewers and the log has no "superseded"
 
 ### Requirement: A new connection starts afresh
-A connection SHALL carry nothing over from an earlier one of the same client: it subscribes again like any other, its first frame of a pane after `Subscribe` is full, and no input is replayed. Input sent into a connection that broke MAY be lost and MUST never arrive twice. A client whose connection was closed with 4000 `superseded` MUST NOT reconnect that connection.
+A new connection SHALL subscribe again and receive a full first pane frame. Stable clients SHALL retain admitted numbered input, reconcile HelloAck counters and replay in order, exactly once while history survives. History ends at finalization, one hour without reconnect after disconnect, or pane exec; later replay MAY duplicate input. A connection closed with 4000 `superseded` MUST NOT reconnect.
 
-**Verified by**: `reconnect::a_client_that_reconnects_finds_its_pane_as_it_left_it`, `reconnect::subscribing_again_sends_the_whole_screen_again` and itests UC-048 (`uc_048.py::input_cut_by_a_reset_mid_burst_is_lost_or_kept_in_order_but_never_doubled`, `uc_048.py::input_typed_into_a_silent_connection_is_lost_but_never_doubled`, `uc_048.py::input_held_in_a_connection_that_revives_arrives_once_at_most`) and UC-052 (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`); for `tilr`, `client::an_attach_superseded_by_its_own_client_id_ends`.
+**Verified by**: `reconnect::a_client_that_reconnects_finds_its_pane_as_it_left_it`, `reconnect::subscribing_again_sends_the_whole_screen_again`, `input_delivery::disconnect_before_application_replays_one_copy`, `input_delivery::applied_input_with_a_lost_ack_is_not_applied_twice` and itests UC-048 (`uc_048.py`) and UC-052 (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`); for `tilr`, `client::an_attach_superseded_by_its_own_client_id_ends`.
 
 #### Scenario: Reconnect
 - **WHEN** a client reconnects and subscribes to the pane it watched
 - **THEN** its first frame is full and the shell is the same process as before
 
 #### Scenario: Input at the moment of a cut
-- **WHEN** a burst of input lines is cut by a reset and the client reconnects
-- **THEN** each line has run at most once, in order
+- **WHEN** a burst of input lines is cut by a reset and the client reconnects within one hour without a pane exec
+- **THEN** each line admitted to its delivery queue reaches the pane exactly once, in order
+
+#### Scenario: An old connection revives
+- **WHEN** a client replays unacknowledged input on a new connection within the retention period without pane exec and its old connection revives
+- **THEN** accepted delivery sequences are deduplicated and every admitted input is applied exactly once
 
 ### Requirement: Panes say who watches them
 `PaneInfo.viewers` SHALL be the number of connections subscribed to the pane, and `PaneInfo.viewed_by` one `Viewer` per such connection, in no particular order: `client_id` (`Hello.client_id`, empty if none), `client_name` (`Hello.client_name`) and `address` (the peer as the server sees it, `ip:port` on TCP, `unix` or `unix (pid N)` on the Unix socket). The log MUST name a client's `client_id` and address on hello, supersede and drop.

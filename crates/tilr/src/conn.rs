@@ -34,6 +34,7 @@ pub struct Conn {
     pub heard: Instant,
     /// What the server said it is, in `HelloAck`.
     pub server_version: String,
+    pub applied_input: Vec<tilr_proto::InputAck>,
 }
 
 /// How a server command ended.
@@ -110,6 +111,7 @@ impl Conn {
                 next_request: 0,
                 heard: Instant::now(),
                 server_version: String::new(),
+                applied_input: Vec::new(),
             };
             conn.hello(client_id, token)
                 .await
@@ -126,7 +128,9 @@ impl Conn {
         self.send(Msg::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
             client_name: "tilr".into(),
-            features: Vec::new(),
+            // `tilr attach` writes the copies made in its pane to its
+            // terminal; other commands watch no pane, so get none.
+            features: vec![crate::attach::FEATURE_CLIPBOARD_WRITE.into()],
             token,
             client_id: client_id.to_owned(),
         }))
@@ -134,6 +138,7 @@ impl Conn {
         match self.recv().await? {
             server_message::Msg::HelloAck(ack) if ack.protocol_version == PROTOCOL_VERSION => {
                 self.server_version = ack.server_version;
+                self.applied_input = ack.applied_input;
                 Ok(())
             }
             server_message::Msg::HelloAck(ack) => bail!(
@@ -146,7 +151,11 @@ impl Conn {
     }
 
     pub async fn send(&mut self, msg: Msg) -> Result<()> {
-        let message = Message::Binary(tilr_proto::encode(&ClientMessage::from(msg)));
+        self.send_message(ClientMessage::from(msg)).await
+    }
+
+    pub async fn send_message(&mut self, msg: ClientMessage) -> Result<()> {
+        let message = Message::Binary(tilr_proto::encode(&msg));
         match &mut self.ws {
             Ws::Unix(ws) => ws.send(message).await,
             Ws::Tcp(ws) => ws.send(message).await,
@@ -389,7 +398,7 @@ fn check_peer(stream: &UnixStream, path: &Path) -> Result<(), ConnectError> {
 async fn open_remote(
     url: &str,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, ConnectError> {
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.map_err(|err| {
+    let (ws, _) = tilr_websocket::connect(url).await.map_err(|err| {
         use tokio_tungstenite::tungstenite::Error;
         match err {
             Error::Io(err) => ConnectError::NoServer(err),
@@ -402,4 +411,82 @@ async fn open_remote(
         let _ = stream.set_nodelay(true);
     }
     Ok(ws)
+}
+
+#[cfg(test)]
+#[path = "../../tilr-websocket/tests/support/mod.rs"]
+mod tls_test_peer;
+
+#[cfg(test)]
+mod bundled_tls_tests {
+    #[tokio::test]
+    async fn client_uses_the_bundled_trust_anchors() {
+        let (url, server) = super::tls_test_peer::peer_with_bundled_issuer_name().await;
+        let error = super::open_remote(&url).await.unwrap_err();
+        server.await.unwrap();
+        super::tls_test_peer::assert_bundled_root_was_used(error);
+    }
+}
+
+#[cfg(test)]
+mod update_wait_tests {
+    use super::*;
+    use tilr_proto::{ExecExit, ExecStarted};
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    #[tokio::test]
+    async fn update_waits_for_command_exit_after_a_long_launch_delay() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let ws = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut peer = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let mut conn = Conn {
+            ws: Ws::Unix(Box::new(ws)),
+            next_request: 0,
+            heard: Instant::now(),
+            server_version: "test".into(),
+            applied_input: Vec::new(),
+        };
+        let task = tokio::spawn(async move { conn.server_command(&["update".into()]).await });
+        let packet = peer.next().await.unwrap().unwrap().into_data();
+        let request = tilr_proto::decode::<ClientMessage>(&packet).unwrap();
+        let Some(Msg::ExecStart(start)) = request.msg else {
+            panic!("expected update start")
+        };
+        assert_eq!(start.argv, ["update"]);
+        assert!(start.server_command);
+        assert_eq!(start.timeout_ms, 0);
+        peer.send(Message::Binary(tilr_proto::encode(&ServerMessage {
+            msg: Some(server_message::Msg::ExecStarted(ExecStarted {
+                request_id: start.request_id,
+                exec_id: 1,
+                ..Default::default()
+            })),
+        })))
+        .await
+        .unwrap();
+        // A pong proves the client consumed ExecStarted and is waiting for exit.
+        peer.send(Message::Ping(vec![1].into())).await.unwrap();
+        assert!(matches!(
+            peer.next().await.unwrap().unwrap(),
+            Message::Pong(_)
+        ));
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(86_400)).await;
+        assert!(
+            !task.is_finished(),
+            "first launch must not consume the reconnect window"
+        );
+        peer.send(Message::Binary(tilr_proto::encode(&ServerMessage {
+            msg: Some(server_message::Msg::ExecExit(ExecExit {
+                exec_id: 1,
+                code: 0,
+                ..Default::default()
+            })),
+        })))
+        .await
+        .unwrap();
+        let exit = task.await.unwrap().unwrap();
+        assert_eq!(exit.code, 0);
+        assert!(exit.reason.is_empty());
+    }
 }

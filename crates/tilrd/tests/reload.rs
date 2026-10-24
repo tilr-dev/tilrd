@@ -4,6 +4,130 @@ mod common;
 
 use common::*;
 
+#[test]
+fn warm_executable_process_fixture() {
+    if std::env::var_os("TILR_WARM_PROCESS_FIXTURE").is_none() {
+        return;
+    }
+    let exe = std::env::temp_dir().join("installed");
+    link_executable(&exe);
+    std::fs::remove_file(exe).unwrap();
+}
+
+#[test]
+fn warm_executables_do_not_accumulate_between_processes() {
+    let root = Server::scratch_dir();
+    let live = root.join(format!("tilr-warm-{}", std::process::id()));
+    std::fs::create_dir(&live).unwrap();
+    let sentinel = live.join("tilrd-warm-b");
+    std::fs::write(&sentinel, b"live process's pair").unwrap();
+    let run = || {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "warm_executable_process_fixture", "--nocapture"])
+            .env("TILR_WARM_PROCESS_FIXTURE", "1")
+            .env("TMPDIR", &root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &live)
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(first.len(), 1);
+    assert!(first[0].join("tilrd-warm-b").is_file());
+    let second = run();
+    assert_eq!(
+        second.len(),
+        1,
+        "a second process must reclaim the dead pair"
+    );
+    assert!(!first[0].exists(), "the exited process's pair was removed");
+    assert!(second[0].join("tilrd-warm-b").is_file());
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"live process's pair");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn warm_executable_links_reuse_inodes_and_replace_repeatedly() {
+    use std::os::unix::fs::MetadataExt;
+    fn identity(path: &Path) -> (u64, u64) {
+        let metadata = std::fs::metadata(path).unwrap();
+        (metadata.dev(), metadata.ino())
+    }
+
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    let peer = dir.join("tilrd-peer");
+    let staged = dir.join("tilrd.new");
+    link_executable(&exe);
+    link_executable(&peer);
+    let original = identity(&exe);
+    assert_eq!(identity(&peer), original);
+    let built = identity(Path::new(env!("CARGO_BIN_EXE_tilrd")));
+    if built.0 == original.0 {
+        assert_eq!(built, original, "reuse the original on the same filesystem");
+    }
+
+    let mut identities = Vec::new();
+    for _ in 0..3 {
+        link_replacement(&exe, &staged);
+        let next = identity(&staged);
+        assert_ne!(next, identity(&exe));
+        std::fs::rename(&staged, &exe).unwrap();
+        assert!(!staged.exists(), "rename must consume the staged path");
+        assert_eq!(identity(&exe), next);
+        assert_eq!(identity(&peer), original, "other installations stay intact");
+        identities.push(next);
+    }
+    assert_eq!(identities[1], original);
+    assert_eq!(identities[0], identities[2]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_command_running_across_a_reload_is_reported_when_it_ends() {
+    let server = Server::start(&[]);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
+    let command = script(
+        &server,
+        "foreground.sh",
+        &format!(
+            "printf 'foreground-ready\\n'\nread -r _ < '{}'\n",
+            fifo.display()
+        ),
+    );
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &command).await;
+    client.wait_screen("foreground-ready").await;
+    client = reload(&server, client).await;
+    client.hello().await;
+    client.subscribe(pane).await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) if frame.pane_id == pane.to_string() => Some(()),
+            _ => None,
+        })
+        .await;
+    client.activities.clear();
+    release_activity_fifo(&mut release);
+    let activity = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneActivity(a)
+                if a.kind == tilr_proto::PaneActivityKind::CommandFinished as i32 =>
+            {
+                Some(a.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(activity.pane_id, pane.to_string());
+    assert!(activity.at_ms > 0);
+}
+
 #[tokio::test]
 async fn hyperlinks_are_plain_text_after_a_reload_and_new_ones_work() {
     let server = Server::start(&[]);
@@ -155,65 +279,95 @@ async fn panes_survive_a_reload_asked_for_with_a_signal() {
 }
 
 #[tokio::test]
-async fn panes_survive_the_executable_being_replaced_on_disk() {
-    // Run a copy of the server, then install a "new version" over it the
-    // way an upgrade does: write next to it, rename into place.
+async fn replacement_waits_for_an_explicit_request_and_keeps_the_shells() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    link_executable(&exe);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     let staged = dir.join("tilrd.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
+    link_replacement(&exe, &staged);
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(!server.logged("reloading"));
 
-    // Nobody tells the server: it notices on its own.
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    server.wait_formats_started(startup).await;
     let client = reconnect(&server, client).await;
-    server.wait_logged("executable changed on disk").await;
+    server.wait_logged("SIGUSR1 came: reload requested").await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
 
 #[tokio::test]
-async fn a_replaced_executable_is_ignored_when_auto_reload_is_off() {
-    let dir = Server::scratch_dir();
-    let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let server = Server::start_in(dir.clone(), &exe, &["--no-auto-reload"]);
+async fn an_explicit_request_selects_only_its_installation_without_a_socket() {
+    let root = Server::scratch_dir();
+    let first = root.join("first installation");
+    let second = root.join("second installation");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    let exe = first.join("renamed-server");
+    let other_exe = second.join("tilrd");
+    link_executable(&exe);
+    link_executable(&other_exe);
+    let mut server = Server::start_in(first, &exe, &["--no-socket"]);
+    let other = Server::start_in(second, &other_exe, &[]);
     let mut client = Client::connect(&server).await;
-    let pane_id = client.open_pane().await;
-
-    let staged = dir.join("tilrd.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
-    std::fs::rename(&staged, &exe).unwrap();
-
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    // Still the same connection, still the same server.
-    assert_eq!(client.run(pane_id, "true").await, 0);
-    assert!(!server.logged("reloading"));
+    let mut other_client = Client::connect(&other).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let other_pane = other_client.open_pane().await;
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let client = reconnect(&server, client).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+    assert_eq!(other_client.run(other_pane, "true").await, 0);
+    assert!(!other.logged("reload requested"));
 }
 
-/// How often the server looks at its executable on disk, and how long it
-/// gives a new one to answer `state-formats` (`WATCH_INTERVAL` and
-/// `CHECK_TIMEOUT` in src/reload.rs).
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
-const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-/// By when a server has logged what it makes of a new executable on disk:
-/// it sees the file within two looks at it and gives it up to
-/// `CHECK_TIMEOUT` to say what it reads, which under load the shell that
-/// runs it can take most of. Waiting less gives up on a server still within
-/// its bounds.
-const JUDGED: Duration = WATCH_INTERVAL
-    .saturating_mul(2)
-    .saturating_add(CHECK_TIMEOUT)
-    .saturating_add(Duration::from_secs(5));
+#[test]
+fn an_explicit_request_with_no_server_starts_nothing() {
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    link_executable(&exe);
+    let mut request = Command::new(&exe);
+    request.arg("reload");
+    // Linux installations need no external process-listing tools.
+    #[cfg(target_os = "linux")]
+    request.env("PATH", exe.parent().unwrap().join("no-process-tools"));
+    let output = request.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1);
+}
+
+#[test]
+fn the_obsolete_auto_reload_option_is_rejected() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .arg("--no-auto-reload")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+}
 
 #[tokio::test]
 async fn a_broken_executable_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let mut server = Server::start_in(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
@@ -226,7 +380,8 @@ async fn a_broken_executable_is_not_reloaded_into() {
     std::fs::set_permissions(&staged, mode).unwrap();
     std::fs::rename(&staged, &exe).unwrap();
 
-    server.wait_logged_within("not reloading", JUDGED).await;
+    server.signal("-USR1");
+    server.wait_logged("not reloading").await;
     // The server carries on with the code it has.
     assert!(server.is_running());
     assert_eq!(client.run(pane_id, "true").await, 0);
@@ -236,54 +391,57 @@ async fn a_broken_executable_is_not_reloaded_into() {
 async fn an_executable_that_reads_another_state_format_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    let mut server = Server::start_in(dir.clone(), &exe, &[]);
+    link_executable(&exe);
+    // Retain the running inode after a rejected script replaces its pathname.
+    let running_exe = dir.join("tilrd-running");
+    std::fs::hard_link(&exe, &running_exe).unwrap();
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &[]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     // The formats the running server writes, as it reports them itself.
-    let formats = Command::new(&exe).arg("state-formats").output().unwrap();
+    let formats = Command::new(&exe)
+        .env_remove("RUST_LOG")
+        .arg("state-formats")
+        .output()
+        .unwrap();
     assert_eq!(
         String::from_utf8(formats.stdout).unwrap(),
         "supervisor-state 2\npane-state 3\nunix-socket 1\nreload-check 1\n"
     );
 
-    // A version that runs fine but keeps its state differently, first for
-    // the supervisor, then for the panes. Taking over, it would misread what
-    // it is left and lose the shells.
-    for (formats, refusal) in [
-        (
-            "supervisor-state 1\npane-state 3",
-            "reads supervisor-state format 1, this server writes 2",
-        ),
-        (
-            "supervisor-state 2\npane-state 2",
-            "reads pane-state format 2, this server writes 3",
-        ),
-        // The same formats, from a release before the reload check: started
-        // for the check, it would run as a server of its own.
-        (
-            "supervisor-state 2\npane-state 3\nunix-socket 1",
-            "cannot show that it can resume (no `reload-check 1`)",
-        ),
-    ] {
-        let staged = dir.join("tilrd.new");
-        std::fs::write(&staged, format!("#!/bin/sh\necho '{formats}'\n")).unwrap();
-        let mut mode = std::fs::metadata(&staged).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
-        std::fs::set_permissions(&staged, mode).unwrap();
-        std::fs::rename(&staged, &exe).unwrap();
-
-        server.wait_logged_within(refusal, JUDGED).await;
-        // Same server, same connection, same shell.
-        assert!(server.is_running());
-        assert_eq!(client.run(pane_id, "true").await, 0);
-    }
+    // A version that runs fine but keeps the panes' state differently.
+    // Taking over, it would misread what it is left and lose the shells.
+    // Every other way a successor can disagree on formats is in the unit
+    // test `reload::tests::check_formats_rejects_every_format_mismatch`.
+    let staged = dir.join("tilrd.new");
+    std::fs::write(
+        &staged,
+        format!("#!/bin/sh\n{STATE_FORMATS_STARTUP}echo 'supervisor-state 2\npane-state 2'\n"),
+    )
+    .unwrap();
+    let mut mode = std::fs::metadata(&staged).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    std::fs::set_permissions(&staged, mode).unwrap();
+    let startup = server.formats_started();
+    std::fs::rename(&staged, &exe).unwrap();
+    server.signal("-USR1");
+    server.wait_formats_started(startup).await;
+    server
+        .wait_logged("reads pane-state format 2, this server writes 3")
+        .await;
+    // Same server, same connection, same shell.
+    assert!(server.is_running());
+    assert_eq!(client.run(pane_id, "true").await, 0);
 
     // A version that reads this server's state is then reloaded into.
+    // Differ from the running original, not just the rejected script on disk.
     let staged = dir.join("tilrd.new");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &staged).unwrap();
+    link_replacement(&running_exe, &staged);
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
+    server.signal("-USR1");
+    server.wait_formats_started(startup).await;
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }
@@ -580,6 +738,43 @@ async fn the_title_and_directory_of_a_pane_are_kept_across_a_reload() {
     assert_eq!(after.command, before.command);
 }
 
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn the_pane_process_title_is_set_again_after_a_reload() {
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
+    client
+        .type_line(pane, "cd /tmp; printf '\\033]7;file://localhost/tmp\\007'")
+        .await;
+    let suffix = format!("[shell {shell} in /tmp]");
+    let point = wait_process_title(&controller, &hook, pid, &suffix).await;
+    let before = process_args(pid);
+    assert!(before.contains("--cols 100 --rows 30"));
+    let resumed = format!("pane-resume-live:{pane}");
+    std::fs::write(&points, format!("{resumed}=pause")).unwrap();
+    point.release().await;
+
+    let mut client = reload(&server, client).await;
+    let live = controller.wait(&resumed).await;
+    let after_pid = client.list_panes().await[0].pid;
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    live.release().await;
+    let point = wait_process_title(&controller, &hook, after_pid, &suffix).await;
+    assert_eq!(process_args(after_pid), before);
+    std::fs::remove_file(points).unwrap();
+    point.release().await;
+    client.subscribe(pane).await;
+    assert_eq!(client.run(pane, "test \"$PWD\" = /tmp").await, 0);
+}
+
 #[tokio::test]
 async fn stopping_the_server_ends_the_shells() {
     let server = Server::start(&[]);
@@ -616,7 +811,7 @@ async fn stopping_the_server_after_a_reload_ends_the_shells() {
 fn failing_server(failpoints: &str) -> (Server, PathBuf) {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     (Server::start_failing(dir, &exe, &[], failpoints), exe)
 }
 
@@ -625,11 +820,7 @@ fn failing_server(failpoints: &str) -> (Server, PathBuf) {
 #[cfg(feature = "failpoints")]
 fn replace(exe: &Path) {
     let staged = exe.with_extension("new");
-    let mut bytes = std::fs::read(exe).unwrap();
-    bytes.push(0);
-    std::fs::write(&staged, bytes).unwrap();
-    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
-    std::fs::set_permissions(&staged, mode).unwrap();
+    link_replacement(exe, &staged);
     std::fs::rename(&staged, exe).unwrap();
 }
 
@@ -734,30 +925,20 @@ async fn a_server_killed_in_the_middle_of_a_reload_leaves_no_shell_behind() {
 
 #[cfg(feature = "failpoints")]
 #[tokio::test]
-async fn an_executable_replaced_again_during_a_reload_costs_no_shell() {
-    // The reload takes a second and a half, so the second replacement lands
-    // in the middle of it.
-    let (mut server, exe) = failing_server("reload-before-exec=sleep:1500");
+async fn a_second_atomic_replacement_before_exec_keeps_the_shells() {
+    let (mut server, exe) = failing_server("reload-before-exec=pause");
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
 
     replace(&exe);
-    // The server first runs the new file to ask what it reads, which takes
-    // macOS seconds for a file it has not seen before.
-    let started = tokio::time::Instant::now();
-    while !server.logged("reloading") {
-        assert!(started.elapsed() < TIMEOUT, "the reload did not start");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    server.signal("-USR1");
+    let paused = pauses.wait("reload-before-exec").await;
     replace(&exe);
+    paused.release().await;
 
     let client = reconnect(&server, client).await;
     assert_pane_survived(&mut server, client, pane_id).await;
-    // Whatever the server makes of the second file, it stays up with its
-    // panes.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    let mut client = Client::connect(&server).await;
-    assert_eq!(client.list_panes().await.len(), 2);
     assert!(!server.logged("pane process died"));
 }
 
@@ -821,8 +1002,8 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
     let real = dir.join("tilrd-real");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &real).unwrap();
+    link_executable(&exe);
+    link_executable(&real);
     // A short path: a socket's is limited to about a hundred bytes.
     let socket = PathBuf::from(format!(
         "/tmp/tilr-rc-{}-{}.sock",
@@ -835,7 +1016,7 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
             .unwrap()
     ));
     let socket_arg = socket.display().to_string();
-    let mut server = Server::start_in(dir.clone(), &exe, &["--socket", &socket_arg]);
+    let mut server = Server::start_awaiting_formats(dir.clone(), &exe, &["--socket", &socket_arg]);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let pid = shell_pid(&server, &mut client, pane_id).await;
@@ -857,9 +1038,11 @@ async fn a_successor_that_rejects_the_command_line_is_not_reloaded_into() {
     .unwrap();
     let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(&staged, mode).unwrap();
+    let startup = server.formats_started();
     std::fs::rename(&staged, &exe).unwrap();
 
     server.signal("-USR1");
+    server.wait_formats_started(startup).await;
     server.wait_logged(REFUSED).await;
     // The log names the argument.
     server.wait_logged("unexpected argument '--socket'").await;
@@ -902,19 +1085,37 @@ async fn a_successor_that_refuses_the_configuration_is_not_reloaded_into() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_successor_that_never_answers_the_check_is_not_reloaded_into() {
-    let (mut server, _) = failing_server("supervisor-resume=sleep:20000");
+    let dir = Server::scratch_dir();
+    let exe = dir.join("tilrd");
+    link_executable(&exe);
+    let clock = dir.join("clock");
+    const START_US: u64 = 1_700_000_000_000_000;
+    set_test_time(&clock, START_US);
+    let mut server = Server::start_full(
+        dir,
+        &exe,
+        &[],
+        "supervisor-resume=pause",
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let pid = shell_pid(&server, &mut client, pane_id).await;
 
     server.signal("-USR1");
-    // The server serves while it waits for the answer.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let _paused = pauses.wait("supervisor-resume").await;
+    server
+        .wait_logged("test deadline ready: check-successor")
+        .await;
+    // The server serves while the successor is deterministically paused.
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
     assert!(!server.logged(REFUSED));
-    server
-        .wait_logged_within("did not answer within 10 s", Duration::from_secs(30))
-        .await;
+    set_test_time(&clock, START_US + 9_999_999);
+    signal_before_deadline(&clock, "check-successor").await;
+    set_test_time(&clock, START_US + 10_000_000);
+    signal_deadline(&clock, "check-successor").await;
+    server.wait_logged("did not answer within 10 s").await;
     server.wait_logged(REFUSED).await;
     assert_nothing_changed(&mut server, &mut client, pane_id, pid).await;
 }
@@ -1220,13 +1421,13 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
     // itself, and stops reading it once the reload failed.
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let mut command = Command::new(&exe);
     command.args(["--listen", "127.0.0.1:0"]);
     Server::environment(&mut command, &dir, "reload-exec-missing=error");
     command.stdin(Stdio::null()).stderr(Stdio::piped());
-    let mut child = spawn_copied(&mut command);
-    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut server = Server::spawn_owned(command, dir);
+    let mut lines = BufReader::new(server.child.stderr.take().unwrap()).lines();
     let log = Arc::new(Mutex::new(Vec::new()));
     let addr = loop {
         let line = lines.next().expect("the server did not start").unwrap();
@@ -1250,13 +1451,8 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
             }
         }
     });
-    let mut server = Server {
-        child,
-        addr,
-        dir,
-        log,
-        log_changed: Arc::default(),
-    };
+    server.addr = addr;
+    server.log = log;
     let mut client = Client::connect(&server).await;
     let pane_id = client.open_pane().await;
     let pid = shell_pid(&server, &mut client, pane_id).await;
@@ -1290,16 +1486,55 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
         unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Let the last reloads finish.
-    let mut seen = count_logged(&server, "resumed after reload with");
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let now = count_logged(&server, "resumed after reload with");
-        if now == seen {
-            break;
-        }
-        seen = now;
-    }
+    // Let the last reloads finish. Each SIGUSR1 leaves a "SIGUSR1 came"
+    // line: logged by the handler as it comes (a line the server writes for
+    // this test to wait on), or, held across an exec, by the successor as it
+    // starts. A sentinel signal sent after the storm is delivered after
+    // every storm signal (or merged with one still pending). `index` counts
+    // the lines read from the server's stderr so far, not the lines it has
+    // written: the receipt waited for here is the first one read after the
+    // storm receipts already read, the sentinel's or a storm one still in
+    // the pipe. The wait for "resumed after reload" below, after whichever
+    // receipt was read last, covers the latter.
+    let index = server.log.lock().unwrap().len();
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
+    server
+        .wait_log("no receipt of the sentinel", |log| {
+            log[index..]
+                .iter()
+                .any(|line| line.contains("SIGUSR1 came"))
+        })
+        .await;
+    // The reload of the last receipt ends with a resume. A handler's receipt
+    // is followed by its reload, or comes during one already under way,
+    // whose exec drops it; either way the next resume ends it. A held one is
+    // logged before its own server resumes and reloads after that, so it
+    // takes a reload logged after it, then a resume.
+    server
+        .wait_log("the last reload did not finish", |log| {
+            let last = log
+                .iter()
+                .rposition(|line| line.contains("SIGUSR1 came"))
+                .unwrap();
+            let after = &log[last + 1..];
+            let after = if log[last].contains("SIGUSR1 came: reload requested") {
+                after
+            } else {
+                match after
+                    .iter()
+                    .position(|line| line.contains("reloading exe="))
+                {
+                    Some(at) => &after[at + 1..],
+                    None => return false,
+                }
+            };
+            after
+                .iter()
+                .any(|line| line.contains("resumed after reload with"))
+        })
+        .await;
+    let seen = count_logged(&server, "resumed after reload with");
     assert!(server.is_running());
     assert_eq!(server.child.id(), server_pid);
     assert!(seen >= 2, "reloads: {seen}");
@@ -1340,4 +1575,65 @@ async fn a_second_server_keeps_its_host_socket_across_a_reload() {
     assert_eq!(event.pane_id, pane_id.to_string());
     assert!(sock.exists());
     second.wait_logged("reload").await;
+}
+
+fn age(path: &Path) {
+    assert!(
+        Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[tokio::test]
+async fn stale_state_files_are_swept_at_start() {
+    let dir = Server::scratch_dir();
+    let runtime = dir.join("runtime");
+    std::fs::create_dir_all(runtime.join("panes")).unwrap();
+    let old = [
+        "server-1234.state",
+        ".server-1234.state.tmp",
+        "panes/old.state",
+        "panes/.old.state.tmp",
+    ];
+    let fresh = [
+        "server-5678.state",
+        ".server-5678.state.tmp",
+        "panes/new.state",
+        "panes/.new.state.tmp",
+    ];
+    let unrelated = ["unrelated.state", ".unrelated.state.tmp", "panes/keep.txt"];
+    for name in old.iter().chain(&fresh).chain(&unrelated) {
+        std::fs::write(runtime.join(name), "fixture").unwrap();
+    }
+    for name in old.iter().chain(&unrelated) {
+        age(&runtime.join(name));
+    }
+    let server = Server::start_in(dir, Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+    let mut client = Client::connect(&server).await;
+    client.hello().await;
+    for name in old {
+        assert!(!runtime.join(name).exists(), "not swept: {name}");
+    }
+    for name in fresh.iter().chain(&unrelated) {
+        assert!(runtime.join(name).exists(), "removed: {name}");
+    }
+    // The same sweep runs when a supervisor has just reloaded.
+    for name in old {
+        std::fs::write(runtime.join(name), "fixture").unwrap();
+        age(&runtime.join(name));
+    }
+    let _client = reload(&server, client).await;
+    for name in old {
+        assert!(
+            !runtime.join(name).exists(),
+            "not swept after reload: {name}"
+        );
+    }
+    for name in fresh.iter().chain(&unrelated) {
+        assert!(runtime.join(name).exists(), "removed after reload: {name}");
+    }
 }

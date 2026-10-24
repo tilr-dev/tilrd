@@ -17,7 +17,7 @@ Layout of a container (backend `dagger`, see src/tilr_itests/main.py):
     /opt/tt/tilrd-next     the same source built as the next version
     /opt/tt/tilr-next      its client, built so too
     /opt/tt/manifest.json  versions and platform of both builds
-    /opt/tt/install.sh     the installer (itests/installer/install.sh)
+    /opt/tt/install.sh     the installer (scripts/install.sh)
     $TT_SERVICE_<NAME>     URL of a service container the case asked for (cdn)
 """
 
@@ -46,7 +46,7 @@ CLIENT_EXE = os.environ.get("TT_CLIENT", "tilr")
 NEXT_EXE = os.environ.get("TT_SERVER_NEXT", "/opt/tt/tilrd-next")
 CLIENT_NEXT_EXE = os.environ.get("TT_CLIENT_NEXT", "/opt/tt/tilr-next")
 MANIFEST = Path(os.environ.get("TT_MANIFEST", "/opt/tt/manifest.json"))
-# The installer (`curl tilr.sh | sh`), a copy of the sh repository's (itests/installer).
+# The installer (`curl tilr.sh | sh`), scripts/install.sh.
 INSTALLER = Path(os.environ.get("TT_INSTALLER", "/opt/tt/install.sh"))
 # PATH of a login on Ubuntu, without ~/.local/bin.
 USER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

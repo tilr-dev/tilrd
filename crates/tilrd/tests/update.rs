@@ -2,8 +2,9 @@
 
 mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
+#[path = "common/cdn.rs"]
+mod cdn;
+use cdn::serve_files;
 
 use common::*;
 use sha2::{Digest, Sha256};
@@ -15,55 +16,11 @@ fn twin(file: &Path, extension: &str) -> PathBuf {
     name.into()
 }
 
-/// A CDN in a directory: serves the files under `root` on a loopback port.
-/// A file that has a twin named `<file>.cut` breaks off halfway. Returns the
-/// base URL.
-fn serve_files(root: PathBuf) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let mut request = Vec::new();
-            let mut byte = [0];
-            while !request.ends_with(b"\r\n\r\n") && stream.read_exact(&mut byte).is_ok() {
-                request.push(byte[0]);
-            }
-            let request = String::from_utf8_lossy(&request);
-            let path = request.split(' ').nth(1).unwrap_or("/");
-            let file = root.join(path.trim_start_matches('/'));
-            let cut = twin(&file, "cut").exists();
-            let _ = match std::fs::read(file) {
-                Ok(body) if cut => stream.write_all(
-                    &[
-                        format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len())
-                            .as_bytes(),
-                        &body[..body.len() / 2],
-                    ]
-                    .concat(),
-                ),
-                Ok(body) => stream
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                            body.len()
-                        )
-                        .as_bytes(),
-                    )
-                    .and_then(|()| stream.write_all(&body)),
-                Err(_) => stream.write_all(
-                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                ),
-            };
-        }
-    });
-    format!("http://{addr}")
-}
-
 /// Version and platform of the executable under test, as `--version` prints
 /// them: `tilrd 0.1.0-26449dd (linux-aarch64)`.
 fn version_and_platform() -> (String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .arg("--version")
         .output()
         .unwrap();
@@ -93,6 +50,14 @@ fn archive(members: &[(&str, &[u8])]) -> Vec<u8> {
 
 /// What stands in for the client in a release: it runs.
 const CLIENT: &[u8] = b"#!/bin/sh\necho tilr\n";
+
+/// What stands in for the server in a release no test reloads into: the
+/// update only checks that `--version` exits 0, so a stub spares packing
+/// the real binary.
+const STUB: &[u8] = b"#!/bin/sh\nexit 0\n";
+
+/// A program that runs but fails.
+const BROKEN: &[u8] = b"#!/bin/sh\nexit 1\n";
 
 /// A release of the server `server` and the stand-in client.
 fn release(server: &[u8]) -> Vec<u8> {
@@ -127,7 +92,7 @@ fn publish(cdn: &Path, platform: &str, version: &str, archive: &[u8], checksum_o
 fn installed() -> (PathBuf, PathBuf) {
     let dir = Server::scratch_dir();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     (dir, exe)
 }
 
@@ -150,6 +115,7 @@ fn update(exe: &Path, cdn: &str) -> std::process::Output {
 fn update_failing(exe: &Path, cdn: &str, failpoints: &str) -> Child {
     spawn_copied(
         Command::new(exe)
+            .env_remove("RUST_LOG")
             .args(["update", "--cdn", cdn])
             .env("TILR_FAILPOINTS", failpoints)
             .stdout(Stdio::piped())
@@ -194,9 +160,9 @@ async fn update_installs_the_latest_release_and_the_running_server_keeps_its_she
     assert_eq!(std::fs::read(&exe).unwrap(), server);
     assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
 
-    // Nobody tells the server: it notices the new file and reloads.
+    // The updater explicitly requests reload after the final rename.
     let mut client = reconnect(&running, client).await;
-    running.wait_logged("executable changed on disk").await;
+    running.wait_logged("SIGUSR1 came: reload requested").await;
     client.subscribe(pane_id).await;
     assert_eq!(client.run(pane_id, "test \"$KEPT\" = yes").await, 0);
 }
@@ -226,7 +192,7 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let server = new_version(&exe);
+    let good = release(STUB);
     let cdn = dir.join("cdn");
     let url = serve_files(cdn.clone());
     let fails = |archive: &[u8], checksum_of: &[u8], said: &str| {
@@ -238,30 +204,25 @@ async fn update_installs_nothing_that_fails_its_checksum_or_does_not_run() {
     };
 
     // Not the file the checksum was made of.
-    fails(
-        &release(&server),
-        b"released",
-        "does not match its checksum",
-    );
+    fails(&good, b"released", "does not match its checksum");
     // Intact, but not an archive.
     fails(b"not an archive", b"not an archive", "unpack");
     // An archive cut short, its checksum made of what is left.
-    let whole = release(&server);
-    let cut = &whole[..whole.len() / 2];
+    let cut = &good[..good.len() / 2];
     fails(cut, cut, "unpack");
     // Either program missing.
-    let only_server = archive(&[("tilrd", &server)]);
+    let only_server = archive(&[("tilrd", STUB)]);
     fails(&only_server, &only_server, "the archive has no tilr");
     let only_client = archive(&[("tilr", CLIENT)]);
     fails(&only_client, &only_client, "the archive has no tilrd");
-    // Either program not a program.
-    let broken = release(b"not a program");
+    // Either program does not run: one fails, the other is not a program at all.
+    let broken = release(BROKEN);
     fails(
         &broken,
         &broken,
         "tilrd 9.9.9-test does not run on this system",
     );
-    let broken = archive(&[("tilrd", &server), ("tilr", b"not a program")]);
+    let broken = archive(&[("tilrd", STUB), ("tilr", b"not a program")]);
     fails(
         &broken,
         &broken,
@@ -282,7 +243,7 @@ async fn update_installs_nothing_when_the_cdn_misbehaves() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let archive = release(&new_version(&exe));
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     let url = serve_files(cdn.clone());
     let latest = cdn.join("releases").join(&platform).join("latest");
@@ -328,10 +289,10 @@ async fn update_installs_nothing_when_it_cannot_write_next_to_the_executable() {
     let dir = scratch.join("bin");
     std::fs::create_dir(&dir).unwrap();
     let exe = dir.join("tilrd");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilrd"), &exe).unwrap();
+    link_executable(&exe);
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let archive = release(&new_version(&exe));
+    let archive = release(STUB);
     let cdn = scratch.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -352,8 +313,7 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let original = std::fs::read(&exe).unwrap();
-    let server = new_version(&exe);
-    let archive = release(&server);
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -372,7 +332,7 @@ async fn an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidie
 
     let output = update(&exe, &url);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
     assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
 }
 
@@ -384,7 +344,7 @@ async fn a_server_that_cannot_be_put_in_place_puts_the_old_client_back() {
     let original = std::fs::read(&exe).unwrap();
     let old_client = b"#!/bin/sh\necho old tilr\n";
     std::fs::write(dir.join("tilr"), old_client).unwrap();
-    let archive = release(&new_version(&exe));
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -413,8 +373,7 @@ async fn a_server_that_cannot_be_put_in_place_puts_the_old_client_back() {
 async fn two_updates_at_once_install_the_release_once() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
-    let server = new_version(&exe);
-    let archive = release(&server);
+    let archive = release(STUB);
     let cdn = dir.join("cdn");
     publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
     let url = serve_files(cdn);
@@ -437,6 +396,103 @@ async fn two_updates_at_once_install_the_release_once() {
     );
     assert_eq!(said("-> 9.9.9-test"), 1, "{outputs:?}");
     assert_eq!(said("is already installed"), 1, "{outputs:?}");
-    assert_eq!(std::fs::read(&exe).unwrap(), server);
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
     assert_eq!(files_in(&dir), ["cdn", "tilr", "tilrd"]);
+}
+
+#[test]
+fn fetch_release_writes_a_checked_archive() {
+    let dir = Server::scratch_dir();
+    // Foreign platform programs must be validated as archive members, never run.
+    let bytes = archive(&[("tilr", b"foreign client"), ("tilrd", b"foreign server")]);
+    publish(&dir.join("cdn"), "linux-aarch64", "9.9.9", &bytes, &bytes);
+    let cdn = serve_files(dir.join("cdn"));
+    let out = dir.join("out");
+    let result = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args([
+            "fetch-release",
+            "--platform",
+            "linux-aarch64",
+            "--cdn",
+            &cdn,
+            "--out",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read(out.join("tilr-9.9.9-linux-aarch64.tar.gz")).unwrap(),
+        bytes
+    );
+    assert_eq!(std::fs::read_dir(out).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn fetch_release_refuses_a_bad_checksum() {
+    let dir = Server::scratch_dir();
+    publish(
+        &dir.join("cdn"),
+        "linux-aarch64",
+        "9.9.9",
+        &release(b"foreign"),
+        b"wrong",
+    );
+    let cdn = serve_files(dir.join("cdn"));
+    let out = dir.join("out");
+    let result = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args([
+            "fetch-release",
+            "--platform",
+            "linux-aarch64",
+            "--cdn",
+            &cdn,
+            "--out",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(err.contains("checksum"), "{err}");
+    assert!(!err.contains("no release"), "{err}");
+    assert!(!err.contains("--archive"), "{err}");
+    assert!(!out.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_failed_reload_request_keeps_the_installed_release() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let cdn = Server::scratch_dir();
+    let archive = release(STUB);
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
+    let url = serve_files(cdn.clone());
+    let empty_path = Server::scratch_dir();
+    // macOS discovery cannot start ps, so the request fails before signalling.
+    let output = Command::new(&exe)
+        .args(["update", "--cdn", &url])
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("release installed, but could not request reload"),
+        "{output:?}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("a running server reloads itself"));
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
+    assert_eq!(files_in(&dir), ["tilr", "tilrd"]);
+    for path in [dir, cdn, empty_path] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

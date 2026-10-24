@@ -7,14 +7,26 @@ Covers the optional link to tilr Cloud: `tilrd cloud login|status|logout` and th
 ## Requirements
 
 ### Requirement: Login links the machine through a device code
-`tilrd cloud login [--url URL] [--name NAME]` (URL: `--url`, `TILR_CLOUD`, or `https://cloud.tilr.dev`; NAME: the host name) SHALL POST `{server_id, name, platform, version}` to `<URL>/v1/enroll`, print the `verify_url` and the `user_code`, and poll `<URL>/v1/enroll/poll` with `{device_code}` every `interval` s (default 3, clamped to 1–30), through network errors. An answer without `device_code` MUST fail with `<URL> did not answer as tilr Cloud`.
+`tilrd cloud login [--url URL] [--name NAME]` (URL: `--url`, `TILR_CLOUD`, or `https://wss.tilr.dev`; NAME: the host name) SHALL POST `{server_id, name, platform, version}` to `<URL>/v1/enroll`, print the `verify_url` and the `user_code`, and poll `<URL>/v1/enroll/poll` with `{device_code}` every `interval` s (default 3, clamped to 1–30), through network errors. An answer without `device_code` MUST fail with `<URL> did not answer as tilr Cloud`.
+
+**Verified by**: `cloud::login_prints_the_code_and_polls_until_confirmed`; unit test `cloud::tests::the_default_cloud_is_the_api_host` (crates/tilrd/src/cloud.rs) for the default; unit test `tests::an_empty_cloud_url_on_the_command_line_is_the_default` (crates/tilrd/src/main.rs) for an empty URL; `cloud::cloud_login_help_names_the_default_api_host` and `client::cloud_login_help_names_the_default_of_tilrd` for help.
 
 #### Scenario: The code is shown
 - **WHEN** the user runs `tilr cloud login`
 - **THEN** it prints `To link this machine, open`, the link, `and confirm the code <user_code>`, and waits
 
+#### Scenario: The default Cloud
+- **WHEN** `tilrd cloud login` runs with `--url` and `TILR_CLOUD` each unset or empty
+- **THEN** it posts to `https://wss.tilr.dev/v1/enroll`, and once linked its control connection goes to `wss://wss.tilr.dev/v1/machine/connect`
+
+#### Scenario: Help names the default API host
+- **WHEN** `tilrd cloud login --help` or `tilr cloud login --help` runs with `TILR_CLOUD` unset
+- **THEN** it shows `[default: https://wss.tilr.dev]`
+
 ### Requirement: Login keeps the link once confirmed
 When the poll answers `status` `approved`, login SHALL write the link file `cloud.json` in the state directory (`url`, `machine_id`, `token`; mode 0600, written aside and renamed) and print `Linked. A running tilrd connects on its own.`. A 404 from the poll MUST fail with `the code expired, nothing was linked` and write nothing.
+
+**Verified by**: `cloud::login_keeps_the_link_once_confirmed_and_an_expired_code_links_nothing`; `cloud::a_linked_server_gets_its_tunnel_from_cloud` for a linked machine keeping its Cloud.
 
 #### Scenario: Confirmed in the browser
 - **WHEN** the user confirms the printed code at the printed link
@@ -23,6 +35,10 @@ When the poll answers `status` `approved`, login SHALL write the link file `clou
 #### Scenario: The code expires
 - **WHEN** the poll answers 404
 - **THEN** the command fails with `the code expired, nothing was linked` and no `cloud.json` is written
+
+#### Scenario: A linked machine keeps its Cloud
+- **WHEN** a server starts with an existing `cloud.json` naming a custom Cloud URL
+- **THEN** it connects to that Cloud and leaves `cloud.json` unchanged regardless of the login default
 
 ### Requirement: Status says whether the machine is linked
 `tilrd cloud status` SHALL print `Linked to <url> as machine <machine_id>.` when `cloud.json` is readable, else `This machine is not linked. Link it with: tilr cloud login`; it exits 0 either way. `tilr cloud status` runs it in the server.
@@ -35,6 +51,8 @@ When the poll answers `status` `approved`, login SHALL write the link file `clou
 
 ### Requirement: Logout unlinks the machine
 `tilrd cloud logout` SHALL, without a link, print `This machine is not linked.`; with one, send `DELETE <url>/v1/machine` with `Authorization: Bearer <machine token>`, remove `cloud.json`, and print `Unlinked.` when Cloud answered (a 401 counts) or `Unlinked here, but <url> could not be told (<error>): remove the machine there.` when it could not be told. The link file MUST be removed in both cases.
+
+**Verified by**: `cloud::logout_unlinks_the_machine_whether_or_not_cloud_hears`.
 
 #### Scenario: Cloud unreachable
 - **WHEN** a linked machine runs `tilr cloud logout` while Cloud cannot be reached
@@ -66,12 +84,16 @@ The server SHALL look at the link file every 3 s: a server that was not linked M
 ### Requirement: Cloud may revoke the link
 When the control connection's handshake is refused with HTTP 401, or Cloud closes it with code 4001, the server SHALL stop its tunnel, log `<url> does not know this machine; link it again with: tilr cloud login` (unless the link was removed locally), and MUST NOT connect again until the link file changes.
 
+**Verified by**: `cloud::a_link_cloud_revokes_stops_the_tunnel_until_linked_again`.
+
 #### Scenario: Machine removed in Cloud
 - **WHEN** Cloud closes the control connection with code 4001
 - **THEN** the tunnel is stopped and the server does not reconnect until `cloud.json` changes
 
 ### Requirement: The control connection is kept alive and retried
 The server SHALL send the text message `ping` every 30 s and MUST give the connection up after 100 s in which nothing came from Cloud (a `pong` or any message counts), and reconnect after a failure with a delay starting at 1 s and doubling up to 60 s (the connect itself is given 20 s). While Cloud is away the tunnel MUST stay as it is, so clients using it are not cut off.
+
+**Verified by**: `cloud::the_control_connection_is_retried_and_the_tunnel_kept_meanwhile`.
 
 #### Scenario: Cloud goes away
 - **WHEN** the control connection drops while a tunnel is up
@@ -121,6 +143,8 @@ On `tunnel_close` (and when the link goes), the server SHALL send `cloudflared` 
 ### Requirement: A cloudflared that fails is reported and restarted
 When `cloudflared` cannot be started or exits on its own while the tunnel is wanted, the server SHALL report `tunnel_status` `failed` with the reason (`start <path>: …` or `cloudflared stopped: <exit status>`) and start it again after 5 s, or at once when Cloud sends another tunnel.
 
+**Verified by**: `cloud::a_cloudflared_that_exits_is_reported_and_started_again`.
+
 #### Scenario: cloudflared not installed
 - **WHEN** Cloud sends `tunnel_open` and the `cloudflared` path does not exist
 - **THEN** Cloud receives `tunnel_status` `failed` whose detail names the path, and the server tries again 5 s later
@@ -145,6 +169,8 @@ The server SHALL act only on `hello_ack`, `tunnel_open`, `tunnel_close` and `err
 
 ### Requirement: No TCP port, no Cloud
 A server with no TCP port (`--no-listen`, or a server `tilr` started that found its port taken) SHALL NOT connect to Cloud or run a tunnel, logging `no TCP port: no tilr Cloud tunnel`.
+
+**Verified by**: `cloud::a_server_without_a_tcp_port_does_not_connect_to_cloud`.
 
 #### Scenario: --no-listen
 - **WHEN** a linked server runs with `--no-listen`
@@ -182,7 +208,7 @@ Before a reload replaces the executable, the server SHALL stop its `cloudflared`
 
 ## Notes
 
-- Requirements without a test: "Login links the machine through a device code", "Login keeps the link once confirmed", "Logout unlinks the machine", "Cloud may revoke the link", "The control connection is kept alive and retried", "A cloudflared that fails is reported and restarted", "No TCP port, no Cloud". USE_CASES.md says login/logout were checked only by hand against a local Cloud and a real `cloudflared` / Cloudflare tunnel never.
+- The integration tests play Cloud and `cloudflared`. A real Cloudflare tunnel has not been tested.
 - The unit tests in `crates/tilrd/src/cloud.rs` (`a_tunnel_that_would_rewrite_the_config_is_refused`, `the_control_address_follows_the_cloud_address`) also cover the field checks and the control URL.
 - "cloudflared does not outlive the server": the terminal-hangup scenario is covered by checking that `cloudflared` leads a process group of its own (`cloud::cloudflared_is_not_in_the_servers_process_group`); no test sends SIGHUP to a server's group, which in the test harness is the test runner's. The SIGKILL scenario on macOS (no parent-death signal) is covered by the sweep at the next start only.
 - No itests case cited here is currently red.

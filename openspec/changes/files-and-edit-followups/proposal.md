@@ -17,7 +17,7 @@ Triage, checked at 1163abd:
 - `HostEvent` gets `event_id` (a random 64-bit id); new `ClientMessage` `HostEventDone { event_id, error }`; a client that can send it lists `"host-events-wait"` in `Hello.features`.
 - Host socket: a request with `"wait": true` is sent only when at least one receiving client lists `"host-events-wait"` (else `{"ok":false,"error":"no attached client can wait for the file"}`); the reply `{"ok":true,"clients":N,"event_id":"<id>"}` is followed by `{"done":true}` or `{"done":false,"error":"..."}` when the first such client answers. A waiting `tilr` whose connection is lost (a reload) reconnects and sends `{"name":"wait","event_id":"<id>"}` to wait on.
 - With files on, a `tilr edit` (kind `file`) whose path is outside `[files] roots` is refused on the host socket with `<path>: outside the directories this server shares` and sent to no client.
-- No `HelloAck.features` entry and no PROTOCOL_VERSION bump (protocol-v3 rule): the new field and message belong to `"host-events"`; a client that does not list `"host-events-wait"` is never waited on.
+- No `HelloAck.features` entry: the new field and message belong to `"host-events"`; a client that does not list `"host-events-wait"` is never waited on. The protocol version policy in `openspec/config.yaml` keeps version 1 without a bump before the first public release.
 
 ## Capabilities
 

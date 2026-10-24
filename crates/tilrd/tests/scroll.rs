@@ -204,8 +204,19 @@ async fn a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload(
             cell_height_px: 0,
         }))
         .await;
-    client.scroll(pane_id, -1_000_000).await;
+    // Force the resize frame to arrive before the scroll request. The joined
+    // line can already be visible here, while line-2 is still in history.
     client.wait_row("abcdefghijklmnopqrst0123456789").await;
+    assert!(client.frame.as_ref().unwrap().viewport_top > 0);
+    assert!(!client.screen.has_row("line-2"));
+    client.scroll(pane_id, -1_000_000).await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) if frame.viewport_top == 0 => Some(()),
+            _ => None,
+        })
+        .await;
+    assert!(client.screen.has_row("abcdefghijklmnopqrst0123456789"));
     assert!(client.screen.has_row("line-2"));
 }
 
@@ -213,15 +224,31 @@ async fn a_line_wrapped_across_the_history_border_stays_one_line_after_a_reload(
 async fn output_arriving_while_scrolled_back_does_not_move_the_view() {
     let server = Server::start(&[]);
     let (mut client, pane_id) = pane_with_history(&server).await;
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
+    // The title the command sets after its output comes in a frame even
+    // while the view is scrolled back: by then the pane has the output.
     client
-        .type_line(pane_id, "sleep 1; echo \"new out\"\"put\"")
+        .type_line(
+            pane_id,
+            &format!(
+                "read _ < '{}'; echo \"new out\"\"put\"; printf '\\033]2;printed\\007'",
+                fifo.display()
+            ),
+        )
         .await;
-    client.wait_screen("sleep 1").await;
+    client.wait_screen("read _").await;
     client.scroll(pane_id, -100).await;
     client.wait_row("line-90").await;
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    client.list_panes().await;
+    release_activity_fifo(&mut release);
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::Frame(frame) if frame.title.as_deref() == Some("printed") => {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
     // Still reading the same lines; the new output waits at the bottom.
     assert!(client.screen.has_row("line-90"));
     assert!(!client.screen.has_row("new output"));

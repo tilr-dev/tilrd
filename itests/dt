@@ -6,7 +6,7 @@
 #   ./dt fixtures                 fixture graph
 #   ./dt fixture NAME             export one fixture snapshot to results/fixture-NAME
 #   ./dt call FUNCTION [ARGS]     any module function, e.g. ./dt call server export --path ./tilrd
-#   ./dt coverage                 write ../openspec/coverage/ from the specs and the case tags (no Dagger)
+#   ./dt coverage                 write local ignored ../openspec/coverage/ from the specs and the case tags (no Dagger)
 #   ./dt history                  open results/index.html (all runs)
 #   ./dt clear [--keep N]         delete local run reports (all, or all but the N newest)
 #

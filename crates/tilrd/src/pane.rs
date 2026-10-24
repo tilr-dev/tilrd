@@ -10,7 +10,7 @@
 //! and the rest travel in a file named after the pane, which the new process
 //! finds by the id it is started with.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,8 +20,8 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use prost::Message;
 use tilr_proto::{
-    ClientMessage, FrameTiming, PaneExited, PaneHandover, PendingInput, ServerMessage,
-    client_message::Msg, server_message,
+    ClientMessage, ClipboardWrite, FrameTiming, PaneActivity, PaneActivityKind, PaneExited,
+    PaneHandover, PendingInput, ServerMessage, client_message::Msg, server_message,
 };
 use tilr_screen::{GhosttyScreen, Screen};
 use tokio::io::Stdout;
@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::time::measurement_instant;
+use crate::time::{activity_instant, measurement_instant, now_ms};
 use crate::{link, pty, reload};
 
 /// Minimum spacing between frames. Output arriving faster is coalesced.
@@ -168,11 +168,13 @@ fn supervisor_pipe() -> std::io::Result<pipe::Receiver> {
 }
 
 pub fn run(args: Args) -> Result<()> {
+    let start_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let title = crate::title::Title::new(&start_args);
     // The screen model is not Send, so everything runs on this one thread.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(serve(args));
+    let result = runtime.block_on(serve(args, start_args, title));
     // The stdin reader may sit in a blocking read that only ends when the
     // supervisor closes the pipe; exit without waiting for it.
     runtime.shutdown_background();
@@ -180,6 +182,11 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 struct Pane {
+    start_args: Vec<std::ffi::OsString>,
+    title: crate::title::Title,
+    cwd: String,
+    foreground: Option<libc::pid_t>,
+    foreground_command: Option<Vec<u8>>,
     /// As it goes into every frame.
     id: String,
     /// Where a reload leaves the state for the process that takes over.
@@ -191,6 +198,7 @@ struct Pane {
     screen: GhosttyScreen,
     to_supervisor: Stdout,
     shell: pty::Process,
+    last_bell_at: Option<Instant>,
     /// When to kill a shell that was asked to close and has not exited.
     kill_at: Option<Instant>,
     /// The process groups hung up (the shell's, the pty's foreground one),
@@ -198,6 +206,9 @@ struct Pane {
     hung_up: Vec<libc::pid_t>,
     /// Input waiting for the pty to accept it.
     pending_input: Vec<u8>,
+    delivery: HashMap<String, tilr_proto::InputDeliveryState>,
+    pending_delivery: VecDeque<tilr_proto::PendingDelivery>,
+    delivery_acks: Vec<tilr_proto::PaneInputAck>,
     seq: u64,
     dirty: bool,
     want_full: bool,
@@ -246,9 +257,20 @@ fn micros(duration: Duration) -> u32 {
     u32::try_from(duration.as_micros()).unwrap_or(u32::MAX)
 }
 
-async fn serve(args: Args) -> Result<()> {
+async fn serve(
+    args: Args,
+    start_args: Vec<std::ffi::OsString>,
+    title: crate::title::Title,
+) -> Result<()> {
+    let cwd = if args.cwd.is_empty() {
+        std::env::current_dir()?.to_string_lossy().into_owned()
+    } else {
+        args.cwd.clone()
+    };
     let mut to_supervisor = tokio::io::stdout();
     let mut pending_input = Vec::new();
+    let delivery = HashMap::new();
+    let pending_delivery = VecDeque::new();
     let id = args.id.to_string();
     let mut last_input_seq = 0;
     let mut inputs = VecDeque::new();
@@ -334,6 +356,11 @@ async fn serve(args: Args) -> Result<()> {
     read_supervisor(packet_tx.clone());
 
     let mut pane = Pane {
+        start_args,
+        title,
+        cwd,
+        foreground: None,
+        foreground_command: None,
         id,
         state_path: reload::pane_state_path(&args.id),
         check_path: reload::pane_check_path(&args.id),
@@ -343,9 +370,13 @@ async fn serve(args: Args) -> Result<()> {
         screen,
         to_supervisor,
         shell,
+        last_bell_at: None,
         kill_at,
         hung_up,
         pending_input,
+        delivery,
+        pending_delivery,
+        delivery_acks: Vec::new(),
         seq,
         // A resumed pane redraws its clients from the restored screen.
         dirty: seq > 0,
@@ -359,9 +390,28 @@ async fn serve(args: Args) -> Result<()> {
         stats: FrameStats::default(),
         last_encode: Duration::ZERO,
     };
+    pane.poll_foreground(false).await?;
+    let mut foreground_tick = tokio::time::interval(Duration::from_secs(1));
     let mut buf = vec![0u8; READ_BUF];
 
+    // Keep the frame wait alive across other events: a test can hold frame
+    // delivery while the pane continues to read output and credit input.
+    let frame_ready = wait_for_frame(pane.last_frame + FRAME_INTERVAL);
+    tokio::pin!(frame_ready);
     loop {
+        for mut ack in std::mem::take(&mut pane.delivery_acks) {
+            let (cols, rows) = pane.screen.size();
+            ack.cols = cols.into();
+            ack.rows = rows.into();
+            crate::fail::point("input-before-ack")?;
+            link::write_tagged(
+                &mut pane.to_supervisor,
+                link::kind::INPUT_ACK,
+                &tilr_proto::encode(&ack),
+            )
+            .await
+            .context("acknowledge input")?;
+        }
         tokio::select! {
             guard = pane.pty.readable() => {
                 let read = guard?.try_io(|fd| pty::read(fd.as_raw_fd(), &mut buf));
@@ -370,7 +420,12 @@ async fn serve(args: Args) -> Result<()> {
                     // the shell is gone.
                     Ok(Ok(0)) => break,
                     Ok(Err(err)) if err.raw_os_error() == Some(libc::EIO) => break,
-                    Ok(Ok(n)) => pane.on_output(&buf[..n]),
+                    Ok(Ok(n)) => {
+                        pane.on_output(&buf[..n]).await?;
+                        pane.send_copies().await?;
+                        #[cfg(feature = "failpoints")]
+                        crate::fail::point_async("pane-output-applied".into()).await;
+                    }
                     Ok(Err(err)) => return Err(err).context("read pty"),
                     Err(_would_block) => {}
                 }
@@ -388,7 +443,11 @@ async fn serve(args: Args) -> Result<()> {
             packet = packets.recv() => match packet {
                 Some(FromSupervisor::Packet(packet)) => {
                     match tilr_proto::decode::<ClientMessage>(&packet) {
-                        Ok(msg) => pane.on_message(msg)?,
+                        Ok(msg) => {
+                            pane.on_message(msg)?;
+                            #[cfg(feature = "failpoints")]
+                            crate::fail::point_async("pane-input-applied".into()).await;
+                        }
                         Err(err) => tracing::warn!(pane = pane.id, "bad packet from supervisor: {err}"),
                     }
                 }
@@ -413,9 +472,15 @@ async fn serve(args: Args) -> Result<()> {
                     return Ok(());
                 }
             },
-            () = tokio::time::sleep_until(pane.last_frame + FRAME_INTERVAL), if pane.dirty => {
+            () = &mut frame_ready, if pane.dirty => {
                 pane.send_frame().await?;
+                frame_ready.set(wait_for_frame(pane.last_frame + FRAME_INTERVAL));
             }
+            _ = foreground_tick.tick() => {
+                // A leader can exec without changing its process group. Keep
+                // the pty-read cache, but refresh its cmdline on every tick.
+                pane.poll_foreground(true).await?;
+            },
             () = tokio::time::sleep_until(pane.kill_at.unwrap_or_else(Instant::now)), if pane.kill_at.is_some() => {
                 pane.kill_at = None;
                 pane.kill_groups();
@@ -446,17 +511,80 @@ async fn serve(args: Args) -> Result<()> {
         .context("report exit to supervisor")
 }
 
+async fn wait_for_frame(deadline: Instant) {
+    tokio::time::sleep_until(deadline).await;
+    #[cfg(feature = "failpoints")]
+    crate::fail::point_async("pane-frame-ready".into()).await;
+}
+
 impl Pane {
-    fn on_output(&mut self, bytes: &[u8]) {
+    async fn on_output(&mut self, bytes: &[u8]) -> Result<()> {
         let start = measurement_instant();
         self.screen.feed(bytes);
         self.pending_input.extend(self.screen.take_replies());
+        #[cfg(feature = "failpoints")]
+        crate::time::advance_frame_stage(crate::time::FrameStage::Parse);
         let stats = &mut self.stats;
         stats.parse += measurement_instant().saturating_duration_since(start);
         stats.first_output_at.get_or_insert(start);
         stats.output_bytes += bytes.len() as u64;
         stats.reads = stats.reads.saturating_add(1);
         self.dirty = true;
+        if self.screen.take_bells() > 0 {
+            let at = activity_instant();
+            if self
+                .last_bell_at
+                .is_none_or(|last| at.saturating_duration_since(last) >= Duration::from_secs(1))
+            {
+                self.last_bell_at = Some(at);
+                self.report_activity(PaneActivityKind::Bell, now_ms())
+                    .await?;
+            }
+        }
+        self.poll_foreground(false).await
+    }
+
+    /// Read the pty's foreground process group once: the process title
+    /// follows it, and its return from another group to the shell's is a
+    /// finished command.
+    async fn poll_foreground(&mut self, refresh_command: bool) -> Result<()> {
+        let foreground = pty::foreground_group(self.pty.as_fd());
+        let shell = self.shell.pid().unwrap_or_default() as libc::pid_t;
+        let finished = self.shell.pid().is_some()
+            && foreground == Some(shell)
+            && self.foreground.is_some_and(|old| old != shell);
+        if refresh_command || foreground != self.foreground {
+            self.foreground = foreground;
+            #[cfg(feature = "failpoints")]
+            if foreground.is_some_and(|pid| pid != shell) {
+                crate::fail::point(&format!("pane-title-read-command:{}", self.id))
+                    .expect("pane command title test synchronization");
+            }
+            self.foreground_command = foreground
+                .filter(|pid| *pid != shell)
+                .map(crate::title::foreground_command);
+        }
+        self.title
+            .set(shell, &self.cwd, self.foreground_command.as_deref());
+        #[cfg(feature = "failpoints")]
+        crate::fail::point(&format!("pane-title-polled:{}", self.id))
+            .expect("pane title test synchronization");
+        if finished {
+            self.report_activity(PaneActivityKind::CommandFinished, now_ms())
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn report_activity(&mut self, kind: PaneActivityKind, at_ms: u64) -> Result<()> {
+        let packet = tilr_proto::encode(&PaneActivity {
+            pane_id: self.id.clone(),
+            kind: kind as i32,
+            at_ms,
+        });
+        link::write_tagged(&mut self.to_supervisor, link::kind::ACTIVITY, &packet)
+            .await
+            .context("report activity to supervisor")
     }
 
     /// The pty took the first `n` bytes of the pending input.
@@ -464,6 +592,7 @@ impl Pane {
         self.pending_input.drain(..n);
         self.written += n as u64;
         self.settle_inputs();
+        self.settle_delivery();
     }
 
     /// Note an input message named by `seq`: it is credited once what is
@@ -596,6 +725,9 @@ impl Pane {
             cols: u32::from(cols),
             rows: u32::from(rows),
             pending_input: self.pending_input.clone(),
+            // Delivery history ends at exec; queued PTY bytes remain above.
+            delivery_states: Vec::new(),
+            pending_delivery: Vec::new(),
             snapshot: snapshot.to_vec(),
             cell_width_px: cell.0,
             cell_height_px: cell.1,
@@ -627,7 +759,7 @@ impl Pane {
         // The successor shows it can resume before this process is gone.
         let checked = reload::check_successor(
             exe,
-            std::env::args_os().skip(1).collect(),
+            self.start_args.iter().skip(1).cloned().collect(),
             self.check_path.clone(),
             &handover,
         )
@@ -644,7 +776,7 @@ impl Pane {
             Ok(()) => {
                 tracing::info!(pane = self.id, exe = %exe.display(), "reloading");
                 let err = std::process::Command::new(exe)
-                    .args(std::env::args_os().skip(1))
+                    .args(self.start_args.iter().skip(1))
                     .exec();
                 // First thing: `exec` left SIGPIPE at its default.
                 reload::ignore_sigpipe();
@@ -657,7 +789,77 @@ impl Pane {
         err
     }
 
+    fn settle_delivery(&mut self) {
+        while self
+            .pending_delivery
+            .front()
+            .is_some_and(|mark| mark.end <= self.written)
+        {
+            let mark = self.pending_delivery.pop_front().expect("front exists");
+            let state = self
+                .delivery
+                .get_mut(&mark.identity)
+                .expect("accepted identity");
+            state.applied = mark.seq;
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                identity: mark.identity,
+                seq: mark.seq,
+                probe: 0,
+                ..Default::default()
+            });
+        }
+    }
+
     fn on_message(&mut self, msg: ClientMessage) -> Result<()> {
+        if msg.input_forget {
+            self.delivery.remove(&msg.input_identity);
+            self.pending_delivery
+                .retain(|mark| mark.identity != msg.input_identity);
+            self.delivery_acks
+                .retain(|ack| ack.identity != msg.input_identity);
+            return Ok(());
+        }
+        if msg.input_probe != 0 {
+            crate::fail::point("input-before-probe")?;
+            crate::fail::point(&format!("input-before-probe:{}", self.id))?;
+            let seq = self
+                .delivery
+                .get(&msg.input_identity)
+                .map_or(0, |state| state.applied);
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                identity: msg.input_identity,
+                seq,
+                probe: msg.input_probe,
+                ..Default::default()
+            });
+            return Ok(());
+        }
+        let delivery_seq = msg.input_seq;
+        let identity = msg.input_identity.clone();
+        let reliable = delivery_seq != 0
+            && !identity.is_empty()
+            && msg.msg.as_ref().and_then(tilr_proto::input::pane).is_some();
+        if reliable {
+            let state = self.delivery.entry(identity.clone()).or_insert_with(|| {
+                tilr_proto::InputDeliveryState {
+                    identity: identity.clone(),
+                    accepted: 0,
+                    applied: 0,
+                }
+            });
+            if delivery_seq <= state.accepted {
+                self.delivery_acks.push(tilr_proto::PaneInputAck {
+                    identity,
+                    seq: state.applied,
+                    probe: 0,
+                    ..Default::default()
+                });
+                return Ok(());
+            }
+            // WebSocket ordering and ordered replay guarantee increasing sequences.
+            state.accepted = delivery_seq;
+            crate::fail::point("input-before-apply")?;
+        }
         /// How an input message is credited.
         enum Credit {
             /// Once its bytes are written to the pty.
@@ -674,7 +876,29 @@ impl Pane {
             Some(Msg::Scroll(_) | Msg::Resize(_)) => Some(Credit::Applied),
             _ => None,
         };
+        let resize = matches!(msg.msg, Some(Msg::Resize(_)));
         self.handle_message(msg)?;
+        if resize {
+            // Publish the applied size even when earlier PTY input keeps the
+            // cumulative delivery acknowledgement behind this resize.
+            self.delivery_acks.push(tilr_proto::PaneInputAck {
+                seq: self
+                    .delivery
+                    .get(&identity)
+                    .map_or(0, |state| state.applied),
+                identity: identity.clone(),
+                ..Default::default()
+            });
+        }
+        if reliable {
+            self.pending_delivery
+                .push_back(tilr_proto::PendingDelivery {
+                    identity,
+                    seq: delivery_seq,
+                    end: self.written + self.pending_input.len() as u64,
+                });
+            self.settle_delivery();
+        }
         match (received, credit) {
             (Some(received), Some(Credit::Written)) => self.mark_input(seq, received),
             (Some(received), Some(Credit::Applied)) => self.credit_input(seq, received),
@@ -748,10 +972,44 @@ impl Pane {
         Ok(())
     }
 
+    /// Pass what the program copied to the clipboard on to the supervisor,
+    /// which decides (the clipboard on, its limit) and gives it to the
+    /// clients.
+    async fn send_copies(&mut self) -> Result<()> {
+        for copy in self.screen.take_copies() {
+            let size = copy.data.len() as u64;
+            // The link takes no packet larger than its limit, whatever the
+            // clipboard's.
+            if copy.data.len() > link::MAX_PACKET / 2 {
+                tracing::warn!(
+                    pane = self.id,
+                    size,
+                    "clipboard: a copy over the limit was dropped"
+                );
+                continue;
+            }
+            let packet = tilr_proto::encode(&ClipboardWrite {
+                mime: copy.mime,
+                total_size: size,
+                data: copy.data.into(),
+                last: true,
+                ..Default::default()
+            });
+            link::write_tagged(&mut self.to_supervisor, link::kind::CLIPBOARD, &packet)
+                .await
+                .context("send a copy to supervisor")?;
+        }
+        Ok(())
+    }
+
     async fn send_frame(&mut self) -> Result<()> {
         self.dirty = false;
         self.last_frame = Instant::now();
         if let Some(status) = self.screen.take_status() {
+            if !status.cwd.is_empty() {
+                self.cwd.clone_from(&status.cwd);
+                self.poll_foreground(false).await?;
+            }
             let packet = tilr_proto::encode(&status);
             link::write_tagged(&mut self.to_supervisor, link::kind::STATUS, &packet)
                 .await
@@ -769,8 +1027,12 @@ impl Pane {
         let Some(mut frame) = built else {
             // The output seen so far waits for the frame that shows it, and
             // `wait_us` counts from the first of it.
+            #[cfg(feature = "failpoints")]
+            crate::fail::point("frame-stage-no-frame")?;
             return Ok(());
         };
+        #[cfg(feature = "failpoints")]
+        crate::time::advance_frame_stage(crate::time::FrameStage::Build);
         let build = measurement_instant().saturating_duration_since(build_start);
         self.input_credited = false;
         let stats = std::mem::take(&mut self.stats);
@@ -795,6 +1057,8 @@ impl Pane {
         };
         let encode_start = measurement_instant();
         let packet = tilr_proto::encode(&ServerMessage::from(server_message::Msg::Frame(frame)));
+        #[cfg(feature = "failpoints")]
+        crate::time::advance_frame_stage(crate::time::FrameStage::Encode);
         self.last_encode = measurement_instant().saturating_duration_since(encode_start);
         link::write_tagged(
             &mut self.to_supervisor,

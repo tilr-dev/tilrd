@@ -11,7 +11,7 @@ include!(concat!(env!("OUT_DIR"), "/tilr.v1.rs"));
 
 pub mod local;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// WebSocket close codes the server ends a connection with, besides the
 /// standard ones; the close frame's reason is the text given here.
@@ -121,6 +121,7 @@ impl From<client_message::Msg> for ClientMessage {
         Self {
             msg: Some(msg),
             seq: 0,
+            ..Default::default()
         }
     }
 }
@@ -131,6 +132,7 @@ impl ClientMessage {
         Self {
             msg: Some(msg),
             seq,
+            ..Default::default()
         }
     }
 }
@@ -242,3 +244,5 @@ mod tests {
         ));
     }
 }
+
+pub mod input;

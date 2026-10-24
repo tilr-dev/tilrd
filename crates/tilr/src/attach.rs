@@ -8,11 +8,15 @@
 //!
 //! A connection that drops (the network, the server reloading) is made
 //! again with the same client id; meanwhile the bottom row says so, and
-//! what is typed is dropped, not sent later, and Ctrl+] d still detaches. A
+//! input is buffered until acknowledged, and Ctrl+] d still detaches. A
 //! local server that is gone for good (its socket nobody's) ends the attach,
 //! as does a close as superseded (4000): another connection says `Hello`
 //! with this client's id, and reconnecting would take the pane back from it
 //! in a loop.
+//!
+//! Text a program in the pane copies to the clipboard (`ClipboardWrite`) is
+//! written to the terminal as OSC 52, so the user's terminal puts it on the
+//! clipboard of their machine, as it decides for a program over ssh.
 //!
 //! SIGTERM, SIGHUP and SIGINT restore the terminal, then end the process.
 
@@ -20,6 +24,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
+use base64::Engine;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
     EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton as TermButton,
@@ -36,9 +41,9 @@ use crossterm::terminal::{
 use crossterm::{cursor, execute, queue, terminal};
 use futures_util::StreamExt;
 use tilr_proto::{
-    Color, CursorShape, Frame, KeyAction, KeyInput, MouseAction, MouseButton, MouseInput, NamedKey,
-    Paste, Resize, Scroll, Style, Subscribe, Underline, attrs, client_message::Msg, color, mods,
-    server_message,
+    ClipboardWrite, Color, CursorShape, Frame, KeyAction, KeyInput, MouseAction, MouseButton,
+    MouseInput, NamedKey, Paste, Resize, Scroll, Style, Subscribe, Underline, attrs,
+    client_message::Msg, color, mods, server_message,
 };
 use tokio::time::Instant;
 
@@ -53,6 +58,8 @@ const SILENT_FOR: Duration = Duration::from_secs(15);
 /// Waits between reconnect attempts: from the first to the last, doubling.
 const RETRY_FIRST: Duration = Duration::from_millis(100);
 const RETRY_LAST: Duration = Duration::from_secs(2);
+/// Give already sent input a brief chance to finish without delaying detach.
+const DETACH_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// How an attach ended.
 pub enum Exit {
@@ -67,6 +74,10 @@ pub enum Exit {
     Superseded,
 }
 
+/// What `tilr` lists in `Hello.features` to be sent the copies made in the
+/// pane it is attached to.
+pub const FEATURE_CLIPBOARD_WRITE: &str = "clipboard-write";
+
 /// Attach to `pane_id` over `conn` until detached or the pane ends.
 pub async fn run(conn: Conn, target: &Target, client_id: &str, pane_id: &str) -> Result<Exit> {
     let guard = TerminalGuard::enter()?;
@@ -76,6 +87,7 @@ pub async fn run(conn: Conn, target: &Target, client_id: &str, pane_id: &str) ->
         pane_id,
         mouse_captured: false,
         prefix: false,
+        copy: Incoming::default(),
     };
     let outcome = attach.event_loop(conn).await;
     drop(guard);
@@ -90,6 +102,59 @@ struct Attach<'a> {
     mouse_captured: bool,
     /// Ctrl+] was pressed: the next key is a command.
     prefix: bool,
+    /// The copy coming from the pane.
+    copy: Incoming,
+}
+
+/// A copy made in the pane, as its chunks come.
+#[derive(Default)]
+struct Incoming {
+    /// The newest transfer seen; ids only grow on a connection.
+    newest: u64,
+    /// The copy under way: its type, size and what came of it.
+    under_way: Option<(String, u64, Vec<u8>)>,
+}
+
+impl Incoming {
+    /// Take a chunk. Returns what to write to the terminal once a copy of
+    /// text is whole; other types are not passed on. A transfer that another
+    /// one starts before its last chunk is dropped, as are late chunks of it.
+    fn take(&mut self, chunk: ClipboardWrite) -> Option<Vec<u8>> {
+        if chunk.transfer_id < self.newest {
+            return None;
+        }
+        if chunk.transfer_id > self.newest {
+            self.newest = chunk.transfer_id;
+            self.under_way = Some((chunk.mime, chunk.total_size, Vec::new()));
+        }
+        let (_, total_size, data) = self.under_way.as_mut()?;
+        if data.len() as u64 + chunk.data.len() as u64 > *total_size {
+            // More than announced: not a copy to trust.
+            self.under_way = None;
+            return None;
+        }
+        data.extend_from_slice(&chunk.data);
+        if !chunk.last {
+            return None;
+        }
+        let (mime, total_size, data) = self.under_way.take()?;
+        let text = mime
+            .get(..5)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("text/"));
+        (text && data.len() as u64 == total_size).then(|| osc_52(&data))
+    }
+}
+
+/// The OSC 52 sequence that puts `data` on the terminal's clipboard.
+fn osc_52(data: &[u8]) -> Vec<u8> {
+    let mut out = b"\x1b]52;c;".to_vec();
+    out.extend(
+        base64::engine::general_purpose::STANDARD
+            .encode(data)
+            .bytes(),
+    );
+    out.extend(b"\x1b\\");
+    out
 }
 
 /// What one key does.
@@ -99,9 +164,50 @@ enum Keyed {
     Nothing,
 }
 
+/// Finalize only after all ACKs, within the same short budget as draining them.
+/// Otherwise the disconnected identity expires on the server.
+async fn finish_input(
+    conn: Option<&mut Conn>,
+    delivery: &mut tilr_proto::input::Outbox,
+) -> Result<Exit> {
+    if let Some(live) = conn {
+        let _ = tokio::time::timeout(DETACH_TIMEOUT, async {
+            while delivery.pending().next().is_some() {
+                if let server_message::Msg::InputAck(ack) = live.recv().await? {
+                    delivery.acknowledge(&ack);
+                }
+            }
+            live.send(Msg::FinalizeInput(tilr_proto::FinalizeInput {}))
+                .await
+        })
+        .await;
+    }
+    Ok(Exit::Detached)
+}
+
 impl Attach<'_> {
+    fn input_event(&mut self, event: Event) -> Keyed {
+        let message = match event {
+            Event::Key(key) => return self.key(&key),
+            Event::Mouse(mouse) => mouse_message(self.pane_id, &mouse, self.mouse_captured),
+            Event::Paste(text) => Some(Msg::Paste(Paste {
+                pane_id: self.pane_id.to_owned(),
+                text,
+            })),
+            Event::Resize(cols, rows) if cols > 0 && rows > 0 => {
+                Some(resize(self.pane_id, cols, rows))
+            }
+            _ => None,
+        };
+        message.map_or(Keyed::Nothing, Keyed::Send)
+    }
+
     async fn event_loop(&mut self, conn: Conn) -> Result<Exit> {
         let mut input = EventStream::new();
+        let mut delivery = tilr_proto::input::Outbox::default();
+        for ack in &conn.applied_input {
+            delivery.acknowledge(ack);
+        }
         let mut conn = Some(conn);
         if let Some(conn) = &mut conn {
             subscribe(conn, self.pane_id).await?;
@@ -112,9 +218,7 @@ impl Attach<'_> {
         let mut next_attempt = Instant::now();
         loop {
             let Some(live) = &mut conn else {
-                // Disconnected: keys other than the prefix's are dropped,
-                // and they are read while an attempt runs, so Ctrl+] d
-                // drops the attempt.
+                // Retain input while connecting; the detach prefix remains available.
                 let (target, client_id, pane_id) = (self.target, self.client_id, self.pane_id);
                 let wait = next_attempt;
                 let mut pending = std::pin::pin!(async move {
@@ -125,19 +229,43 @@ impl Attach<'_> {
                     tokio::select! {
                         outcome = &mut pending => break outcome,
                         event = input.next() => {
-                            let Some(event) = event else { return Ok(Exit::Detached) };
-                            if let Event::Key(key) = event?
-                                && let Keyed::Detach = self.key(&key)
-                            {
-                                return Ok(Exit::Detached);
+                            let Some(event) = event else { return finish_input(None, &mut delivery).await };
+                            match self.input_event(event?) {
+                                Keyed::Detach => return finish_input(None, &mut delivery).await,
+                                Keyed::Send(msg) => {
+                                    if let Err(err) = delivery.push(msg.into()) { status(err)?; }
+                                }
+                                Keyed::Nothing => {}
                             }
                         }
                     }
                 };
                 attempts += 1;
                 match outcome {
-                    Attempt::Connected(fresh) => {
+                    Attempt::Connected(mut fresh) => {
+                        for ack in &fresh.applied_input {
+                            delivery.acknowledge(ack);
+                        }
+                        let mut failed = false;
+                        for message in delivery.pending() {
+                            if let Err(err) = fresh.send_message(message.clone()).await {
+                                status(&format!("tilr: replay interrupted: {err}"))?;
+                                failed = true;
+                                break;
+                            }
+                        }
+                        if failed {
+                            next_attempt = Instant::now() + retry;
+                            continue;
+                        }
+                        if let Err(err) = subscribe(&mut fresh, self.pane_id).await {
+                            status(&format!("tilr: disconnected ({err}), reconnecting…"))?;
+                            next_attempt = Instant::now() + retry;
+                            continue;
+                        }
                         conn = Some(fresh);
+                        // A new connection numbers its transfers afresh.
+                        self.copy = Incoming::default();
                         retry = RETRY_FIRST;
                         attempts = 0;
                     }
@@ -157,9 +285,21 @@ impl Attach<'_> {
             };
             let lost = tokio::select! {
                 msg = live.recv() => match msg {
+                    Ok(server_message::Msg::InputAck(ack)) => {
+                        delivery.acknowledge(&ack);
+                        None
+                    }
                     Ok(server_message::Msg::Frame(frame)) if frame.pane_id == self.pane_id => {
                         self.capture_mouse(frame.mouse_tracking)?;
                         draw(&frame)?;
+                        None
+                    }
+                    Ok(server_message::Msg::ClipboardWrite(chunk)) if chunk.pane_id == self.pane_id => {
+                        if let Some(osc) = self.copy.take(chunk) {
+                            let mut out = std::io::stdout().lock();
+                            out.write_all(&osc)?;
+                            out.flush()?;
+                        }
                         None
                     }
                     Ok(server_message::Msg::PaneExited(exited)) if exited.pane_id == self.pane_id => {
@@ -175,28 +315,17 @@ impl Attach<'_> {
                     Err(err) => Some(err.to_string()),
                 },
                 event = input.next() => {
-                    let Some(event) = event else { return Ok(Exit::Detached) };
-                    let msg = match event? {
-                        Event::Key(key) => match self.key(&key) {
-                            Keyed::Send(msg) => Some(msg),
-                            Keyed::Detach => return Ok(Exit::Detached),
-                            Keyed::Nothing => None,
+                    let Some(event) = event else { return finish_input(Some(live), &mut delivery).await };
+                    match self.input_event(event?) {
+                        Keyed::Detach => return finish_input(Some(live), &mut delivery).await,
+                        Keyed::Send(msg) => match delivery.push(msg.into()) {
+                            Ok(message) => live.send_message(message).await.err().map(|err| err.to_string()),
+                            Err(err) => { status(err)?; None }
                         },
-                        Event::Mouse(mouse) => mouse_message(self.pane_id, &mouse, self.mouse_captured),
-                        Event::Paste(text) => Some(Msg::Paste(Paste {
-                            pane_id: self.pane_id.to_owned(),
-                            text,
-                        })),
-                        Event::Resize(cols, rows) if cols > 0 && rows > 0 => {
-                            Some(resize(self.pane_id, cols, rows))
-                        }
-                        _ => None,
-                    };
-                    match msg {
-                        Some(msg) => live.send(msg).await.err().map(|err| err.to_string()),
-                        None => None,
+                        Keyed::Nothing => None,
                     }
                 }
+
                 _ = ping.tick() => {
                     if live.heard.elapsed() > SILENT_FOR {
                         Some(format!("nothing heard for {}s", SILENT_FOR.as_secs()))
@@ -261,7 +390,7 @@ enum Attempt {
     Failed(String),
 }
 
-/// Connect again, check the pane is still there and subscribe to it. A
+/// Connect again and check the pane is still there. A
 /// connection lost or a request unanswered on the way is a failed attempt,
 /// as a refused connect is.
 async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
@@ -280,10 +409,7 @@ async fn reconnect(target: &Target, client_id: &str, pane_id: &str) -> Attempt {
         Err(err) if superseded(&err) => return Attempt::Superseded,
         Err(err) => return Attempt::Failed(format!("{err:#}")),
     }
-    match subscribe(&mut fresh, pane_id).await {
-        Ok(()) => Attempt::Connected(fresh),
-        Err(err) => Attempt::Failed(format!("{err:#}")),
-    }
+    Attempt::Connected(fresh)
 }
 
 /// The connection was closed as superseded (4000).
@@ -294,6 +420,8 @@ fn superseded(err: &anyhow::Error) -> bool {
 /// Size the pane to this terminal and watch it; the server answers with
 /// a full frame.
 async fn subscribe(conn: &mut Conn, pane_id: &str) -> Result<()> {
+    // Refresh after replay so an older queued Resize cannot override this size.
+    // Each connection repeats this refresh, even if its previous one was lost.
     let (cols, rows) = crate::size();
     conn.send(resize(pane_id, cols, rows)).await?;
     conn.send(Msg::Subscribe(Subscribe {
@@ -735,7 +863,48 @@ mod tests {
             pane_id: "p",
             mouse_captured: false,
             prefix: false,
+            copy: Incoming::default(),
         }
+    }
+
+    fn chunk(
+        transfer_id: u64,
+        mime: &str,
+        total_size: u64,
+        data: &[u8],
+        last: bool,
+    ) -> ClipboardWrite {
+        ClipboardWrite {
+            transfer_id,
+            pane_id: "p".into(),
+            mime: mime.into(),
+            total_size,
+            data: bytes::Bytes::copy_from_slice(data),
+            last,
+        }
+    }
+
+    #[test]
+    fn copied_text_goes_to_the_terminal_as_osc_52() {
+        let mut copy = Incoming::default();
+        let text = "text/plain;charset=utf-8";
+        assert_eq!(copy.take(chunk(1, text, 2, b"h", false)), None);
+        assert_eq!(
+            copy.take(chunk(1, text, 2, b"i", true)).as_deref(),
+            Some(&b"\x1b]52;c;aGk=\x1b\\"[..])
+        );
+        // A copy cut short by a newer one is dropped, and so is a chunk of
+        // it that comes late.
+        assert_eq!(copy.take(chunk(2, text, 8, b"lost", false)), None);
+        assert_eq!(copy.take(chunk(3, text, 5, b"the", false)), None);
+        assert_eq!(copy.take(chunk(2, text, 8, b"late", false)), None);
+        assert_eq!(
+            copy.take(chunk(3, text, 5, b"re", true)).as_deref(),
+            Some(&b"\x1b]52;c;dGhlcmU=\x1b\\"[..])
+        );
+        // Not text, or more than announced: nothing.
+        assert_eq!(copy.take(chunk(4, "image/png", 3, b"png", true)), None);
+        assert_eq!(copy.take(chunk(5, text, 1, b"too much", true)), None);
     }
 
     #[test]

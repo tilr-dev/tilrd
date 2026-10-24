@@ -61,13 +61,17 @@ Each unpacked program SHALL be run as `<staged program> --version` and the relea
 - **THEN** stderr says `tilr <version> does not run on this system` and neither program is installed
 
 ### Requirement: The release is put in place by two renames, the server last
-The update SHALL rename the unpacked `tilr` over `tilr` in the executable's directory first and then the unpacked `tilrd` over the executable (under whatever file name it has), so a server started from it notices and reloads (see the `reload` spec); the update restarts nothing. On success it SHALL print `updated <old> -> <new>: <directory>` and `a running server reloads itself and keeps its shells` and exit 0, leaving only `tilrd` and `tilr` of the release.
+The update SHALL rename the staged client into place first and the server last, preserving the executable's installed name, then explicitly request reload from that installation. It SHALL NOT start a server. On success it SHALL print `updated <old> -> <new>: <directory>` and `a running server reloads itself and keeps its shells`, exit 0 and leave only the installed programs.
 
 **Verified by**: `update::update_installs_the_latest_release_and_the_running_server_keeps_its_shells`.
 
+#### Scenario: Installed destinations
+- **WHEN** the installed executable is named `custom-server`
+- **THEN** update renames the unpacked `tilr` over `tilr` in that directory first, then the unpacked `tilrd` over `custom-server`
+
 #### Scenario: Update with a pane open
 - **WHEN** a server with a pane holding `KEPT=yes` runs `tilrd update` against a CDN with a newer release
-- **THEN** stdout says `-> 9.9.9-test`, the executable and the `tilr` next to it are the release's, the server logs `executable changed on disk`, and after reconnecting `test "$KEPT" = yes` exits 0
+- **THEN** stdout says `-> 9.9.9-test`, the executable and the `tilr` next to it are the release's, the server logs an explicit reload request, and after reconnecting `test "$KEPT" = yes` exits 0
 
 ### Requirement: The installed release is on disk before success
 Both unpacked programs SHALL be synced to disk before the first rename and the executable's directory after the second, before the update prints `updated`.
@@ -185,6 +189,28 @@ When the update command exits 0, or ends with reason `reload` because the server
 #### Scenario: Update from a shell
 - **WHEN** the user runs `tilr update` and a newer release is installed
 - **THEN** the server reloads and `tilr` prints `tilrd <new version> is running` and exits 0
+
+### Requirement: Update command waiting is independent of launch latency
+The client SHALL wait for the local update command to complete even when staged executable startup takes longer than the reload reconnect window. The command SHALL have no execution timeout; reconnect observation begins after command completion or reload.
+
+**Verified by**: `conn::update_wait_tests::update_waits_for_command_exit_after_a_long_launch_delay`, `client::tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload`.
+
+#### Scenario: Staged startup outlasts the reload window
+- **WHEN** a local update command has started and a day of virtual time passes before its successful exit
+- **THEN** the client remains waiting, requests no execution timeout, and returns success only after receiving the command exit
+
+#### Scenario: Integration observation follows actual staged startup
+- **WHEN** the integration harness updates with real release executables whose staged version checks have not yet completed
+- **THEN** it waits for the updater's installation confirmation without a launch deadline before starting the unchanged reload observation window
+
+### Requirement: A failed reload request keeps the installed release
+After both programs are installed, a reload request failure SHALL leave the new programs installed, exit non-zero and report that installation succeeded but reload could not be requested. It SHALL NOT report reload success. Some servers may already have received the request.
+
+**Verified by**: `update::a_failed_reload_request_keeps_the_installed_release`.
+
+#### Scenario: Request cannot be sent
+- **WHEN** installation succeeds but the subsequent reload request fails
+- **THEN** both new programs remain installed, temporary files are removed, and the command exits non-zero with an explicit reload request error
 
 ## Notes
 

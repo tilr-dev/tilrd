@@ -47,25 +47,29 @@ Every `Frame` SHALL carry `last_input_seq`: the seq of the input the pane credit
 - **THEN** a frame carries the scroll's seq while the key input is still not credited
 
 ### Requirement: Every credited input gets a frame
-An input named by a seq SHALL be answered by a frame carrying its seq even when it changed nothing on the screen (a click the program ignores, an empty `RawInput`, a scroll that moves nothing). Input without a seq that changes nothing SHALL make no frame, and inputs credited between two frames SHALL show only the last of them.
+An input named by a seq SHALL be answered by a frame carrying its seq even when it changed nothing on the screen (a click the program ignores, an empty `RawInput`, a scroll that moves nothing). The acknowledgement SHALL include any screen changes from PTY output already read since the previous frame in the same frame, carrying the latest credited input seq. Input without a seq that changes nothing SHALL make no frame, and inputs credited between two frames SHALL show only the last of them.
 
-**Verified by**: `metrics::input_that_changes_nothing_is_answered_with_an_empty_frame` and `metrics::a_frame_names_the_input_it_shows_and_how_it_was_made`.
+**Verified by**: `metrics::input_that_changes_nothing_is_answered_with_an_empty_frame` and `metrics::a_frame_names_the_input_it_shows_and_how_it_was_made`, plus `metrics::a_no_op_scroll_frame_includes_accumulated_output`.
 
 #### Scenario: A scroll that moves nothing
-- **WHEN** a client at the live screen sends `Scroll{to_bottom: true}` with seq 8
+- **WHEN** a client at the live screen sends `Scroll{to_bottom: true}` with seq 8 and there are no accumulated screen changes or accumulated PTY output
 - **THEN** it gets a frame with `last_input_seq` 8 and no rows
 
 #### Scenario: Unnamed input that changes nothing
 - **WHEN** a client sends input that changes nothing without a seq
 - **THEN** no frame comes within 300 ms
 
+#### Scenario: A no-op scroll with pending output
+- **WHEN** PTY output has changed the screen since the previous frame and a no-op scroll with seq 8 is credited before the next frame is built
+- **THEN** the frame carries `last_input_seq` 8 and the accumulated changed rows, without a separate empty acknowledgement
+
 ### Requirement: The frame for input that changed nothing
-Such a frame SHALL have `full` false, no `changed` rows, no `styles`, no `title`, no `images`, `placements_changed` false and the pane's next `seq`, with `cols`, `rows`, `cursor`, `mouse_tracking`, `alt_screen`, the cell size and `viewport_top` as in the previous frame; its `timing` SHALL have `output_bytes` and `wait_us` 0.
+When there are no accumulated screen changes or accumulated PTY output, such a frame SHALL have `full` false, no `changed` rows, no `styles`, no `title`, no `images`, `placements_changed` false and the pane's next `seq`, with `cols`, `rows`, `cursor`, `mouse_tracking`, `alt_screen`, the cell size and `viewport_top` as in the previous frame; its `timing` SHALL have `output_bytes` and `wait_us` 0.
 
 **Verified by**: `metrics::input_that_changes_nothing_is_answered_with_an_empty_frame`.
 
 #### Scenario: A click without mouse tracking
-- **WHEN** a client sends a `MouseInput` with seq `seq_base + 1` to a shell that does not track the mouse
+- **WHEN** a client sends a `MouseInput` with seq `seq_base + 1` to a shell that does not track the mouse, with no accumulated screen changes or accumulated PTY output
 - **THEN** it gets a frame with `last_input_seq` `seq_base + 1`, no rows, `seq` one more than the last frame's, and that frame's cursor, size and `viewport_top`
 
 ### Requirement: Frames tell how the pane made them
@@ -79,6 +83,8 @@ Every frame SHALL carry `timing` (`FrameTiming`), in microseconds on the pane pr
 
 ### Requirement: What the timing fields measure
 `wait_us` SHALL be from the first pty output since the previous frame to the start of this frame's build (0 for a frame no output caused); `parse_us` feeding output into the screen model, summed; `build_us` building this frame; `encode_us` encoding and compressing the pane's previous frame (0 on its first); `output_bytes` and `reads` the pty output since the previous frame (output that changed nothing counts in the next frame) and the reads that brought it.
+
+**Verified by**: `metrics::the_timing_fields_measure_what_they_say`.
 
 #### Scenario: A frame no output caused
 - **WHEN** a frame answers a click that changed nothing
@@ -103,7 +109,7 @@ A reload SHALL keep the pane's `last_input_seq` and its input still waiting for 
 - **THEN** after the reload the full frame carries `seq_base + 1`, a later frame carries `seq_base + 2` with `input_us` over 1 s, and a new connection's `seq_base` is greater than the old one's
 
 ### Requirement: A lagging client skips to the latest screen
-For a client the server judges to lag (see `client-liveness`) the frames of a pane SHALL be skipped, each counted in `tilr_pane_frames_skipped_total`, until its queue is written out; it SHALL then get a full frame of the screen as it is (asked of the pane, so its other viewers get it too). It SHALL NOT be dropped for lagging, and other clients SHALL NOT be slowed.
+For a client the server judges to lag (see `client-liveness`) the frames of a pane SHALL be skipped, each counted in `tilrd_pane_frames_skipped_total`, until its queue is written out; it SHALL then get a full frame of the screen as it is (asked of the pane, so its other viewers get it too). It SHALL NOT be dropped for lagging, and other clients SHALL NOT be slowed.
 
 **Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo` and itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`).
 
@@ -173,16 +179,20 @@ On a server without a token (`--no-auth`) the endpoint SHALL ask for none but SH
 - **THEN** it answers `200`
 
 ### Requirement: The metric families
-There SHALL be `# HELP` and `# TYPE` for each family, even without samples: gauges `tilrd_info{version,server_id}` (always 1), `tilrd_clients`, `tilrd_panes`; the per-pane counters; `tilr_client_drops_total{reason}`; histograms `tilr_route_seconds`, `tilr_route_input_seconds`, `tilr_supervisor_loop_lag_seconds`; `tilr_process_cpu_seconds_total`, `tilr_process_memory_bytes`.
+Every family name SHALL start with `tilrd_`. There SHALL be `# HELP` and `# TYPE` for each family, even without samples: gauges `tilrd_info{version,server_id}` (always 1), `tilrd_clients`, `tilrd_panes`; the per-pane counters; `tilrd_client_drops_total{reason}`; histograms `tilrd_route_seconds`, `tilrd_route_input_seconds`, `tilrd_supervisor_loop_lag_seconds`; `tilrd_process_cpu_seconds_total`, `tilrd_process_memory_bytes`.
 
-**Verified by**: unit test `metrics::tests::exposition_lists_every_family_with_help_and_type` (crates/tilrd/src/metrics.rs).
+**Verified by**: unit test `metrics::tests::exposition_lists_every_family_with_help_and_type` (crates/tilrd/src/metrics.rs), `metrics::metrics_count_frames_input_and_routing`.
 
 #### Scenario: A fresh server
 - **WHEN** `/metrics` is scraped on a server with no panes
 - **THEN** `tilrd_panes` is 0 and a `tilrd_info{version="...",server_id="..."} 1` line is present
 
+#### Scenario: One prefix
+- **WHEN** `/metrics` is scraped on a server with one pane after some traffic
+- **THEN** every `# TYPE` line and every sample names a family starting with `tilrd_`, and none starts with `tilr_`
+
 ### Requirement: Per-pane frame counters
-For each running pane (label `pane` = its id) the server SHALL count `tilr_pane_frames_total` (frames the pane produced), `tilr_pane_frame_bytes_total` (their bytes as routed, once per frame whatever the number of clients), `tilr_pane_frames_sent_total` (one per frame and client it was handed to) and `tilr_pane_frames_skipped_total` (one per frame and lagging client it was not sent to).
+For each running pane (label `pane` = its id) the server SHALL count `tilrd_pane_frames_total` (frames the pane produced), `tilrd_pane_frame_bytes_total` (their bytes as routed, once per frame whatever the number of clients), `tilrd_pane_frames_sent_total` (one per frame and client it was handed to) and `tilrd_pane_frames_skipped_total` (one per frame and lagging client it was not sent to).
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing` and itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`).
 
@@ -191,7 +201,7 @@ For each running pane (label `pane` = its id) the server SHALL count `tilr_pane_
 - **THEN** that pane's frames, frame bytes and frames sent are each at least 1
 
 ### Requirement: Per-pane input counters
-`tilr_pane_input_total{pane}` and `tilr_pane_input_bytes_total{pane}` SHALL count the key, mouse, paste, raw and scroll packets passed to the pane and their bytes (`Resize` is not counted). All per-pane counters SHALL start from zero when the supervisor starts, a reload included, and a pane's series SHALL go when the pane does.
+`tilrd_pane_input_total{pane}` and `tilrd_pane_input_bytes_total{pane}` SHALL count the key, mouse, paste, raw and scroll packets passed to the pane and their bytes (`Resize` is not counted). All per-pane counters SHALL start from zero when the supervisor starts, a reload included, and a pane's series SHALL go when the pane does.
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing`.
 
@@ -200,26 +210,34 @@ For each running pane (label `pane` = its id) the server SHALL count `tilr_pane_
 - **THEN** that pane's input and input bytes are each at least 1
 
 ### Requirement: Clients let go, by reason
-`tilr_client_drops_total{reason}` SHALL count the clients the server let go, with a sample from 0 for each of `superseded` (by a newer connection of the same client), `too_slow` (its queue filled up), `silent` (nothing heard for the client timeout) and `no_pong` (it sent, but answered no ping for the client timeout). A client that disconnects on its own SHALL NOT be counted.
+`tilrd_client_drops_total{reason}` SHALL count the clients the server let go, with a sample from 0 for each of `superseded` (by a newer connection of the same client), `too_slow` (its queue filled up), `silent` (nothing heard for the client timeout), `no_pong` (it sent, but answered no ping for the client timeout) and `no_hello` (no `Hello` within 10 s of its WebSocket handshake). A client that disconnects on its own, or that a handshake check turns away with an `Error`, SHALL NOT be counted.
 
-**Verified by**: `metrics::metrics_count_the_clients_let_go_and_why` and itests `UC-052` (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`).
+**Verified by**: `metrics::metrics_count_the_clients_let_go_and_why`, `auth::a_connection_that_never_says_hello_is_closed_with_4002_and_counted_as_no_hello` and itests `UC-052` (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`).
 
 #### Scenario: Superseded
 - **WHEN** a second connection says hello with the `client_id` and token of an open one
-- **THEN** `tilr_client_drops_total{reason="superseded"}` goes from 0 to 1 and `too_slow` stays 0
+- **THEN** `tilrd_client_drops_total{reason="superseded"}` goes from 0 to 1 and `too_slow` stays 0
 
 #### Scenario: Superseded over the network
 - **WHEN** a client's connection is superseded (`uc_052.py::a_superseded_connection_is_closed_with_reason_superseded_and_not_reconnected`)
-- **THEN** `tilr_client_drops_total{reason="superseded"}` is 1
+- **THEN** `tilrd_client_drops_total{reason="superseded"}` is 1
+
+#### Scenario: No Hello
+- **WHEN** a client completes the WebSocket handshake, sends no `Hello`, and is closed with 4002 `timeout` about 10 s later
+- **THEN** `tilrd_client_drops_total{reason="no_hello"}` goes from 0 to 1 and the other reasons stay 0
+
+#### Scenario: A wrong token is not a drop
+- **WHEN** a TCP client says `Hello` with a wrong token and is answered with an `Error`
+- **THEN** no `tilrd_client_drops_total` sample changes
 
 ### Requirement: Routing and event-loop histograms
-`tilr_route_seconds` SHALL observe a pane's packet from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning; `tilr_route_input_seconds` a client's input from the supervisor reading it off the WebSocket to the write to the pane process returning; `tilr_supervisor_loop_lag_seconds` how late the event loop gets to a once-a-second tick.
+`tilrd_route_seconds` SHALL observe a pane's packet from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning; `tilrd_route_input_seconds` a client's input from the supervisor reading it off the WebSocket to the write to the pane process returning; `tilrd_supervisor_loop_lag_seconds` how late the event loop gets to a once-a-second tick.
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing`.
 
 #### Scenario: After some traffic
 - **WHEN** a client typed into a pane and saw output, and a second has passed
-- **THEN** `tilr_route_seconds_count`, `tilr_route_input_seconds_count` and `tilr_supervisor_loop_lag_seconds_count` are each at least 1
+- **THEN** `tilrd_route_seconds_count`, `tilrd_route_input_seconds_count` and `tilrd_supervisor_loop_lag_seconds_count` are each at least 1
 
 ### Requirement: Histogram buckets
 The histograms SHALL have the buckets 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1 and +Inf seconds, cumulative, with `_sum` and `_count`.
@@ -228,16 +246,16 @@ The histograms SHALL have the buckets 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0
 
 #### Scenario: The +Inf bucket
 - **WHEN** packets were routed
-- **THEN** `tilr_route_seconds_bucket{le="+Inf"}` equals `tilr_route_seconds_count` and is at least 1
+- **THEN** `tilrd_route_seconds_bucket{le="+Inf"}` equals `tilrd_route_seconds_count` and is at least 1
 
 ### Requirement: CPU and memory of the server's processes
-`tilr_process_cpu_seconds_total` (user plus system CPU) and `tilr_process_memory_bytes` (resident set on Linux, physical footprint on macOS) SHALL be read when scraped, for the supervisor (`role="supervisor"`, `pid`) and each pane process (`role="pane"`, `pid`, `pane`), not the programs in the panes; a process whose usage cannot be read SHALL have no sample.
+`tilrd_process_cpu_seconds_total` (user plus system CPU) and `tilrd_process_memory_bytes` (resident set on Linux, physical footprint on macOS) SHALL be read when scraped, for the supervisor (`role="supervisor"`, `pid`) and each pane process (`role="pane"`, `pid`, `pane`), not the programs in the panes; a process whose usage cannot be read SHALL have no sample.
 
 **Verified by**: `metrics::metrics_count_frames_input_and_routing` and unit test `metrics::tests::this_process_has_usage`.
 
 #### Scenario: Supervisor and pane
 - **WHEN** one pane runs and `/metrics` is scraped
-- **THEN** `tilr_process_memory_bytes{role="supervisor",pid="<server pid>"}` and `tilr_process_memory_bytes{role="pane",pid="<pane pid>",pane="<id>"}` are at least 1
+- **THEN** `tilrd_process_memory_bytes{role="supervisor",pid="<server pid>"}` and `tilrd_process_memory_bytes{role="pane",pid="<pane pid>",pane="<id>"}` are at least 1
 
 ### Requirement: Latency is measurable over a bad network
 A client SHALL be able to measure input latency on its own clock, from sending a numbered input to the first frame carrying its seq (or a later one of its own), over a lossy, slow network without the session breaking.
@@ -250,6 +268,6 @@ A client SHALL be able to measure input latency on its own clock, from sending a
 
 ## Notes
 
-- Requirements without a test: "What the timing fields measure" (only `build_us`, `output_bytes`, `reads`, and `wait_us` 0 on an empty frame are asserted). Parts without a test: the 400 for a head over 16 KiB or 10 s, the 5 s response timeout, the 503 after 5 s, the counters resetting on a reload, the `silent` and `no_pong` reasons through `/metrics` (the drops themselves are tested in `client-liveness`).
+- Parts without a test: the 400 for a head over 16 KiB or 10 s, the 5 s response timeout, the 503 after 5 s, the counters resetting on a reload, the `silent` and `no_pong` reasons through `/metrics` (the drops themselves are tested in `client-liveness`).
 - Unit tests are cited as `module::tests::name`; `metrics::tests::*` are in crates/tilrd/src/metrics.rs. Also relevant: `metrics::tests::stat_times_are_counted_from_the_name` (Linux CPU time parsing) and `supervisor::tests::metrics_without_a_token_are_for_this_machine_only` (crates/tilrd/src/supervisor.rs).
 - The "head that never ends" scenario of "Limits of a metrics request" is not tested end to end; `metrics::tests::request_head_is_parsed` checks only the parsing of a head.

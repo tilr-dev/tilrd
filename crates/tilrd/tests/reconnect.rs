@@ -4,6 +4,231 @@ mod common;
 
 use common::*;
 
+/// Walk each reconnect boundary under explicit controller release. The FIFO
+/// makes output happen only after Unsubscribe has been acknowledged. The ready
+/// marker has no trailing bytes that could produce another frame after it is seen.
+#[cfg(feature = "failpoints")]
+async fn controlled_reconnect() -> (Server, Client, PaneId, PauseController) {
+    let server = Server::start(&["--client-timeout", "0"]);
+    let controller = PauseController::bind(&server.dir);
+    let mut first = Client::connect(&server).await;
+    let (pane, mut startup) = pane_before_shell_prompt(&server, &mut first, 300, 100).await;
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
+    let command = script(
+        &server,
+        "wait-for-output.sh",
+        &format!(
+            "printf '\\nready for release'; read -r release < '{}'; printf '\\nprinted while unwatched\\n'\n",
+            fifo.display()
+        ),
+    );
+    first.type_line(pane, &command).await;
+    first.wait_screen("wait-for-output.sh").await;
+    release_activity_fifo(&mut startup);
+    first.wait_row("ready for release").await;
+    first
+        .send(Msg::Unsubscribe(Unsubscribe {
+            pane_id: pane.to_string(),
+        }))
+        .await;
+    assert_eq!(first.list_panes().await[0].viewers, 0);
+    drop(first);
+
+    let points = server.dir.join("failpoints");
+    let output = format!("reconnect-unwatched-output:{pane}");
+    std::fs::write(&points, format!("{output}=pause")).unwrap();
+    release_activity_fifo(&mut release);
+    let output_hit = controller.wait(&output).await;
+    std::fs::write(&points, "reconnect-client-accepted=pause").unwrap();
+    output_hit.release().await;
+
+    // Bound the kernel buffer so the lag variant exercises an unread socket.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let addr = server.addr.trim_start_matches("ws://").parse().unwrap();
+    let stream = socket.connect(addr).await.unwrap();
+    let (ws, _) = tokio_tungstenite::client_async(&server.addr, MaybeTlsStream::Plain(stream))
+        .await
+        .unwrap();
+    let mut client = Client::from_socket(&server, ws);
+    let accepted = controller.wait("reconnect-client-accepted").await;
+    let subscribe = format!("reconnect-subscribe:{pane}");
+    let full = format!("reconnect-full-frame:{pane}");
+    std::fs::write(&points, format!("{subscribe}=pause;{full}=pause")).unwrap();
+    accepted.release().await;
+    client.hello().await;
+    client.subscribe(pane).await;
+    let subscribed = controller.wait(&subscribe).await;
+    std::fs::write(&points, format!("{full}=pause")).unwrap();
+    subscribed.release().await;
+    let sending_full = controller.wait(&full).await;
+    std::fs::write(&points, "").unwrap();
+    sending_full.release().await;
+    assert!(next_frame(&mut client).await.full);
+    assert!(
+        client.screen.has_row("printed while unwatched"),
+        "first reconnect frame missed unwatched output:\n{}",
+        client.screen.text()
+    );
+    (server, client, pane, controller)
+}
+
+/// The startup file stops the real /bin/sh before its initial prompt. An
+/// observer watches that boundary while the normal opening helper is polled.
+#[tokio::test]
+async fn opening_a_fresh_pane_waits_for_the_first_shell_prompt() {
+    let dir = Server::scratch_dir();
+    let startup = dir.join("held-shell-startup");
+    let server = Server::start_with_env(dir, &[], &[("ENV", startup.to_str().unwrap())]);
+    let (fifo, mut release) = activity_fifo(&server, "shell-startup-release");
+    std::fs::write(
+        &startup,
+        format!(
+            "set +o emacs; set +o vi\nprintf 'shell startup held\\n'\nread -r release < '{}'\n",
+            fifo.display()
+        ),
+    )
+    .unwrap();
+    let mut observer = Client::connect(&server).await;
+    let mut client = Client::connect(&server).await;
+    let pane = {
+        let opening = client.open_pane();
+        tokio::pin!(opening);
+        let held = async {
+            let pane: PaneId = observer.pushed_pane_list().await[0]
+                .pane_id
+                .parse()
+                .unwrap();
+            observer.subscribe(pane).await;
+            let mut subscribed = false;
+            let mut startup_held = false;
+            while !subscribed || !startup_held {
+                if let Some(server_message::Msg::PaneList(list)) = observer.next().await {
+                    subscribed |= list
+                        .panes
+                        .iter()
+                        .any(|info| info.pane_id == pane.to_string() && info.viewers == 2);
+                }
+                startup_held |= observer.screen.text().contains("shell startup held");
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = &mut opening => panic!("opening returned before the first shell prompt"),
+            _ = held => {}
+        }
+        // Two viewers prove that opening passed PaneCreated and sent Subscribe.
+        // Pending now means waiting for the prompt, not for pane creation.
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(opening.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        release_activity_fifo(&mut release);
+        opening.await
+    };
+    // Split the literal so PTY echo cannot satisfy the output wait. No leading
+    // newline hides a prompt prefix: the opening helper must prevent that race.
+    client.type_line(pane, "echo first out''put").await;
+    client.wait_row("first output").await;
+}
+
+/// Ordered frames make an old pane's prompt arrive before the wanted one.
+#[tokio::test]
+async fn shell_readiness_ignores_prompts_from_other_panes() {
+    let server = Server::start(&[]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let wanted: PaneId = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+    let other: PaneId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+    let frames = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        for pane in [other, wanted] {
+            let msg = ServerMessage::from(server_message::Msg::Frame(Frame {
+                pane_id: pane.to_string(),
+                full: true,
+                cols: 100,
+                rows: 30,
+                changed: vec![tilr_proto::Row {
+                    y: 0,
+                    runs: vec![tilr_proto::Run {
+                        text: "$ ".into(),
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            }));
+            ws.send(Message::Binary(tilr_proto::encode(&msg)))
+                .await
+                .unwrap();
+        }
+    });
+    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        .await
+        .unwrap();
+    let mut client = Client::from_socket(&server, ws);
+    client.wait_shell_prompt(wanted).await;
+    assert_eq!(client.frame.as_ref().unwrap().pane_id, wanted.to_string());
+    frames.await.unwrap();
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect() {
+    let (_server, mut client, pane, _controller) = controlled_reconnect().await;
+    assert_eq!(client.run(pane, "true").await, 0);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_test_pauses_socket_reads_until_reconnected_client_lags() {
+    let (server, mut client, pane, controller) = controlled_reconnect().await;
+    let hook = format!("reconnect-client-lagging:{pane}");
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    let stop = server.dir.join("stop-output");
+    let command = script(
+        &server,
+        "produce-until-lag.sh",
+        &format!(
+            "while [ ! -e '{}' ]; do head -c 65536 /dev/urandom | base64; done\nprintf '\\nlag output stopped\\n'\n",
+            stop.display()
+        ),
+    );
+    let reads = client.pause_reads();
+    client.type_line(pane, &command).await;
+    // Keep a read in flight while output fills the socket. Without the pause,
+    // next consumes a message and this branch fails before lag is observed.
+    let lagging = tokio::select! {
+        biased;
+        message = client.next() => panic!("socket read completed while paused: {message:?}"),
+        hit = controller.wait(&hook) => hit,
+    };
+    // Stop at the observed decision, rather than guessing how many bytes fill
+    // a particular machine's buffers. The shell acknowledges the stop on screen.
+    std::fs::write(&stop, "stop").unwrap();
+    std::fs::write(&points, "").unwrap();
+    reads.resume();
+    lagging.release().await;
+    let mut recovered_full = false;
+    while !client.screen.has_row("lag output stopped") {
+        recovered_full |= next_frame(&mut client).await.full;
+    }
+    assert!(recovered_full, "lag recovery did not send a full frame");
+    assert_eq!(client.run(pane, "true").await, 0);
+}
+
+#[tokio::test]
+#[should_panic(expected = "read pause dropped without resume")]
+async fn a_dropped_read_pause_fails_the_next_read() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let reads = client.pause_reads();
+    drop(reads);
+    client.next().await;
+}
+
 #[tokio::test]
 async fn a_client_that_reconnects_finds_its_pane_as_it_left_it() {
     let server = Server::start(&[]);
@@ -42,21 +267,38 @@ async fn a_client_that_reconnects_finds_its_pane_as_it_left_it() {
 }
 
 #[tokio::test]
-async fn output_printed_while_nobody_watched_is_there_on_reconnect() {
+async fn reconnect_output_when_input_precedes_the_shell_prompt() {
     let server = Server::start(&[]);
     let mut client = Client::connect(&server).await;
-    let pane_id = client.open_pane().await;
+    let (pane, mut release) = pane_before_shell_prompt(&server, &mut client, 100, 30).await;
+    // A leading newline isolates the output from a prompt printed after echo.
     client
-        .type_line(pane_id, "sleep 1; echo \"printed la\"\"ter\"")
+        .type_line(pane, "printf '\\nprinted la''ter\\n'")
         .await;
-    // Make sure the shell has the line before leaving.
-    client.wait_screen("sleep 1").await;
+    client.wait_screen("printf").await;
+    client
+        .send(Msg::Unsubscribe(Unsubscribe {
+            pane_id: pane.to_string(),
+        }))
+        .await;
+    assert_eq!(client.list_panes().await[0].viewers, 0);
     drop(client);
-
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    release_activity_fifo(&mut release);
     let mut client = Client::connect(&server).await;
-    client.subscribe(pane_id).await;
-    client.wait_row("printed later").await;
+    client.subscribe(pane).await;
+    client.wait_screen("printed later").await;
+    assert!(
+        client.screen.has_row("printed later"),
+        "screen:\n{}",
+        client.screen.text()
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn output_printed_while_nobody_watched_is_there_on_reconnect() {
+    let (_server, client, _pane, _controller) = controlled_reconnect().await;
+    assert!(client.screen.has_row("printed while unwatched"));
 }
 
 #[tokio::test]
@@ -183,7 +425,9 @@ async fn an_idle_client_that_is_still_there_stays_connected() {
     assert_eq!(client.run(pane_id, "true").await, 0);
 
     // Nothing to say for three timeouts. Reading the connection is all it
-    // takes to answer the server's pings.
+    // takes to answer the server's pings. A window, not a bound on a wait:
+    // a client wrongly taken for silent is dropped one timeout in, so three
+    // leave room for a late check.
     let idle = async {
         loop {
             assert!(client.next().await.is_some(), "connection closed");
@@ -205,6 +449,8 @@ async fn a_silent_client_is_kept_when_the_timeout_is_off() {
         .wait_for(|msg| matches!(msg, server_message::Msg::Frame(_)).then_some(()))
         .await;
 
+    // Rules out a timeout applied though it is off: the shortest one, 1 s,
+    // taken for 0 would have dropped the silent client within 2 s.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(stays.list_panes().await[0].viewers, 2);
     assert_eq!(silent.run(pane_id, "true").await, 0);
@@ -236,37 +482,7 @@ async fn a_client_can_tell_that_the_server_vanished_without_closing() {
 
 #[tokio::test]
 async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
-    // `tilrd &` typed into an SSH login; the dir goes to `Server`,
-    // which removes it.
-    let dir = Server::scratch_dir();
-    let mut shell = Command::new("/bin/sh");
-    shell
-        .arg("-c")
-        .arg("\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait")
-        .arg(env!("CARGO_BIN_EXE_tilrd"));
-    Server::environment(&mut shell, &dir, "");
-    let mut login = Login::start(shell);
-    let addr = login.wait_output(|output| {
-        output
-            .split("listening on ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .map(str::to_owned)
-    });
-    let pid: u32 = login.wait_output(|output| {
-        output
-            .split("server pid ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .and_then(|pid| pid.parse().ok())
-    });
-    let mut server = Server {
-        child: login.shell.take().unwrap(),
-        addr,
-        dir,
-        log: Arc::default(),
-        log_changed: Arc::default(),
-    };
+    let (mut server, mut login, pid) = login_server("");
     let _stop = StopOnDrop(pid);
 
     let mut client = Client::connect(&server).await;
@@ -288,15 +504,25 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
         !server.is_running()
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(process_alive(pid), "the server is still running");
-    assert!(process_alive(pane_pid), "the pane process is still running");
-    assert!(process_alive(shell_pid), "the shell is still running");
-
+    // The SIGHUPs of the hang-up were sent by the time the login shell is
+    // gone. One that ended a process by its default action would have done
+    // so before the process runs again, so the server, the pane process and
+    // the shell each answering below shows that none of them was ended so.
     let mut client = Client::connect(&server).await;
     client.subscribe(pane_id).await;
     client.type_line(pane_id, "echo \"kept=$KEPT\"").await;
     client.wait_row("kept=yes").await;
+    // The server's own SIGHUP handler runs on a task of its own, unordered
+    // with the requests above, and what it logs went to the terminal that
+    // hung up. The window rules out that handler ending the server: by the
+    // answer above the server has run since the signal and its handler
+    // task only waits to be scheduled, which a second covers; a server
+    // shutting down would then refuse the command below.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(client.run(pane_id, "true").await, 0);
+    assert!(process_alive(pid), "the server is still running");
+    assert!(process_alive(pane_pid), "the pane process is still running");
+    assert!(process_alive(shell_pid), "the shell is still running");
 
     // Stopping it still ends the shells.
     // SAFETY: kill has no memory-safety preconditions.
@@ -307,6 +533,76 @@ async fn a_server_started_from_a_terminal_outlives_the_terminal_hanging_up() {
     eventually("the server exits", || !process_alive(pid)).await;
 }
 
+/// Start the same terminal/session topology for both hang-up tests.
+fn login_server(before_start: &str) -> (Server, Login, u32) {
+    // `tilrd &` typed into an SSH login; the dir goes to `Server`,
+    // which removes it.
+    let dir = Server::scratch_dir();
+    let mut shell = Command::new("/bin/sh");
+    shell
+        .arg("-c")
+        .arg(format!(
+            "{before_start}\"$0\" --listen 127.0.0.1:0 & echo \"server pid $!\"; wait"
+        ))
+        .arg(env!("CARGO_BIN_EXE_tilrd"));
+    Server::environment(&mut shell, &dir, "");
+    let owner = Owner::new(&dir);
+    owner.configure(&mut shell);
+    let mut login = Login::start(shell);
+    let addr = login.wait_output(|output| {
+        output
+            .split("listening on ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(str::to_owned)
+    });
+    let pid: u32 = login.wait_output(|output| {
+        output
+            .split("server pid ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|pid| pid.parse().ok())
+    });
+    let server = Server {
+        owner,
+        child: login.shell.take().unwrap(),
+        addr,
+        dir,
+        log: Arc::default(),
+        log_changed: Arc::default(),
+    };
+    (server, login, pid)
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_test_holds_the_login_shell_after_hangup_and_releases_its_exit() {
+    let (mut server, mut login, pid) = login_server(HangupExitPause::TRAP);
+    let _stop = StopOnDrop(pid);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, "KEPT=controlled").await;
+    assert_eq!(client.run(pane, "true").await, 0);
+    drop(client);
+
+    let mut held = HangupExitPause::new(server.child.id());
+    login.hang_up();
+    held.wait_stopped().await;
+    assert!(server.is_running(), "login shell is held after SIGHUP");
+    let mut client = Client::connect(&server).await;
+    assert_eq!(client.list_panes().await[0].pane_id, pane.to_string());
+    client.subscribe(pane).await;
+    assert_eq!(client.run(pane, "true").await, 0);
+    drop(client);
+
+    let status = held.release_and_wait(&mut server.child).await;
+    assert_eq!(status.code(), Some(129));
+    let mut client = Client::connect(&server).await;
+    client.subscribe(pane).await;
+    client.type_line(pane, "echo kept=$KEPT").await;
+    client.wait_row("kept=controlled").await;
+}
+
 /// An SSH login: a shell leading a session of its own, with a pty as its
 /// controlling terminal. What the terminal shows is collected until it hangs
 /// up.
@@ -314,8 +610,8 @@ struct Login {
     shell: Option<Child>,
     /// The login shell's pid, which names its session and process group.
     pgid: u32,
-    output: Arc<Mutex<String>>,
-    hang_up: Arc<std::sync::atomic::AtomicBool>,
+    output: Arc<(Mutex<String>, std::sync::Condvar)>,
+    hang_up: std::os::unix::net::UnixStream,
     reader: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -363,21 +659,48 @@ impl Login {
         let child = shell.spawn().expect("start the login shell");
         drop(shell);
 
-        let output = Arc::new(Mutex::new(String::new()));
-        let hang_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let output = Arc::new((Mutex::new(String::new()), std::sync::Condvar::new()));
+        let (hang_up, wake) = std::os::unix::net::UnixStream::pair().unwrap();
         let reader = std::thread::spawn({
             let output = Arc::clone(&output);
-            let hang_up = Arc::clone(&hang_up);
             let mut master = std::fs::File::from(master);
             move || {
                 let mut buf = [0; 4096];
-                while !hang_up.load(Ordering::Relaxed) {
+                loop {
+                    let mut fds = [
+                        libc::pollfd {
+                            fd: master.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: wake.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    // SAFETY: both descriptors and the pollfd array remain valid.
+                    let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+                    if ready < 0 {
+                        assert_eq!(
+                            std::io::Error::last_os_error().kind(),
+                            std::io::ErrorKind::Interrupted
+                        );
+                        continue;
+                    }
+                    if fds[1].revents != 0 {
+                        break;
+                    }
                     match master.read(&mut buf) {
-                        Ok(n) if n > 0 => output
-                            .lock()
-                            .unwrap()
-                            .push_str(&String::from_utf8_lossy(&buf[..n])),
-                        _ => std::thread::sleep(Duration::from_millis(20)),
+                        Ok(n) if n > 0 => {
+                            output
+                                .0
+                                .lock()
+                                .unwrap()
+                                .push_str(&String::from_utf8_lossy(&buf[..n]));
+                            output.1.notify_all();
+                        }
+                        _ => break,
                     }
                 }
                 // Closing the last descriptor of the master hangs up.
@@ -394,13 +717,16 @@ impl Login {
 
     /// Wait for the terminal to show what `pick` finds.
     fn wait_output<T>(&self, mut pick: impl FnMut(&str) -> Option<T>) -> T {
-        for _ in 0..200 {
-            if let Some(found) = pick(&self.output.lock().unwrap()) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut output = self.output.0.lock().unwrap();
+        loop {
+            if let Some(found) = pick(&output) {
                 return found;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "not on the terminal: {output}");
+            output = self.output.1.wait_timeout(output, remaining).unwrap().0;
         }
-        panic!("not on the terminal: {}", self.output.lock().unwrap());
     }
 
     /// Close the terminal, then SIGHUP the login's process group, as sshd
@@ -409,7 +735,8 @@ impl Login {
         let Some(reader) = self.reader.take() else {
             return;
         };
-        self.hang_up.store(true, Ordering::Relaxed);
+        use std::io::Write;
+        self.hang_up.write_all(b"h").unwrap();
         reader.join().unwrap();
         // SAFETY: killpg has no memory-safety preconditions.
         unsafe { libc::killpg(self.pgid as libc::pid_t, libc::SIGHUP) };
@@ -570,15 +897,15 @@ async fn a_lagging_client_gets_the_last_screen_without_new_output() {
     while !next_frame(&mut slow).await.full {}
 
     // Heavy output `slow` does not read, then the pane goes quiet.
+    // `read` keeps the shell from printing its prompt after `<done>`: the
+    // screen with `<done>` is the pane's last.
     fast.type_line(
         pane_id,
-        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"",
+        "head -c 30000000 /dev/urandom | base64; echo \"<do\"\"ne>\"; read _",
     )
     .await;
     fast.wait_screen("<done>").await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    // The pane's last screen, whole: what `fast` has read so far can stop
-    // short of it (the prompt after `<done>` comes in a frame of its own).
+    // The pane's last screen, whole.
     fast.subscribe(pane_id).await;
     while !next_frame(&mut fast).await.full {}
     let last = fast.screen.text();

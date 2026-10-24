@@ -75,7 +75,7 @@ pub struct Shared {
     pub client_drops: [AtomicU64; ClientDrop::ALL.len()],
 }
 
-/// Why the server let a client go, for `tilr_client_drops_total`.
+/// Why the server let a client go, for `tilrd_client_drops_total`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClientDrop {
     /// A newer connection of the same client took over.
@@ -87,10 +87,18 @@ pub enum ClientDrop {
     /// It still sent, but did not answer the server's pings for the client
     /// timeout: the way towards it is gone.
     NoPong,
+    /// It did not say `Hello` before the handshake deadline.
+    NoHello,
 }
 
 impl ClientDrop {
-    pub const ALL: [Self; 4] = [Self::Superseded, Self::TooSlow, Self::Silent, Self::NoPong];
+    pub const ALL: [Self; 5] = [
+        Self::Superseded,
+        Self::TooSlow,
+        Self::Silent,
+        Self::NoPong,
+        Self::NoHello,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -98,6 +106,7 @@ impl ClientDrop {
             Self::TooSlow => "too_slow",
             Self::Silent => "silent",
             Self::NoPong => "no_pong",
+            Self::NoHello => "no_hello",
         }
     }
 }
@@ -174,31 +183,33 @@ pub fn render(
 
     type Counter = fn(&PaneCounters) -> u64;
     let per_pane: [(&str, &str, Counter); 6] = [
-        ("tilr_pane_frames_total", "Frames the pane produced.", |c| {
-            c.frames
-        }),
         (
-            "tilr_pane_frame_bytes_total",
+            "tilrd_pane_frames_total",
+            "Frames the pane produced.",
+            |c| c.frames,
+        ),
+        (
+            "tilrd_pane_frame_bytes_total",
             "Bytes of the frames the pane produced, as routed (once per frame).",
             |c| c.frame_bytes,
         ),
         (
-            "tilr_pane_frames_sent_total",
+            "tilrd_pane_frames_sent_total",
             "Frames handed to clients, one per frame and client.",
             |c| c.frames_sent,
         ),
         (
-            "tilr_pane_frames_skipped_total",
+            "tilrd_pane_frames_skipped_total",
             "Frames not sent to a client that lagged (it got the whole screen later), one per frame and client.",
             |c| c.frames_skipped,
         ),
         (
-            "tilr_pane_input_total",
+            "tilrd_pane_input_total",
             "Input packets (key, mouse, paste, raw, scroll) passed to the pane.",
             |c| c.input,
         ),
         (
-            "tilr_pane_input_bytes_total",
+            "tilrd_pane_input_bytes_total",
             "Bytes of the input packets passed to the pane.",
             |c| c.input_bytes,
         ),
@@ -211,30 +222,30 @@ pub fn render(
     }
 
     out.family(
-        "tilr_client_drops_total",
+        "tilrd_client_drops_total",
         "counter",
-        "Clients the server let go: superseded by a newer connection of the same client, too slow, silent, or not answering pings.",
+        "Clients the server let go: superseded by a newer connection of the same client, too slow, silent, not answering pings, or not saying Hello before the deadline.",
     );
     for why in ClientDrop::ALL {
         out.sample(
-            "tilr_client_drops_total",
+            "tilrd_client_drops_total",
             &[("reason", why.label())],
             shared.client_drops[why as usize].load(Ordering::Relaxed),
         );
     }
 
     out.histogram(
-        "tilr_route_seconds",
+        "tilrd_route_seconds",
         "From the supervisor reading a pane's packet to its WebSocket write to a client returning.",
         &shared.route,
     );
     out.histogram(
-        "tilr_route_input_seconds",
+        "tilrd_route_input_seconds",
         "From the supervisor reading a client's input packet to its write to the pane process returning.",
         &shared.route_input,
     );
     out.histogram(
-        "tilr_supervisor_loop_lag_seconds",
+        "tilrd_supervisor_loop_lag_seconds",
         "How late the supervisor's event loop handles its once-a-second tick.",
         &shared.loop_lag,
     );
@@ -253,23 +264,23 @@ pub fn render(
         ));
     }
     out.family(
-        "tilr_process_cpu_seconds_total",
+        "tilrd_process_cpu_seconds_total",
         "counter",
         "CPU time (user and system) of a server process.",
     );
     for (usage, labels) in &processes {
         if let Some(usage) = usage {
-            out.sample("tilr_process_cpu_seconds_total", labels, usage.cpu_seconds);
+            out.sample("tilrd_process_cpu_seconds_total", labels, usage.cpu_seconds);
         }
     }
     out.family(
-        "tilr_process_memory_bytes",
+        "tilrd_process_memory_bytes",
         "gauge",
         "Memory of a server process: resident (Linux), physical footprint (macOS).",
     );
     for (usage, labels) in &processes {
         if let Some(usage) = usage {
-            out.sample("tilr_process_memory_bytes", labels, usage.memory_bytes);
+            out.sample("tilrd_process_memory_bytes", labels, usage.memory_bytes);
         }
     }
     out.text
@@ -551,18 +562,18 @@ mod tests {
             ("tilrd_info", "gauge"),
             ("tilrd_clients", "gauge"),
             ("tilrd_panes", "gauge"),
-            ("tilr_pane_frames_total", "counter"),
-            ("tilr_pane_frame_bytes_total", "counter"),
-            ("tilr_pane_frames_sent_total", "counter"),
-            ("tilr_pane_frames_skipped_total", "counter"),
-            ("tilr_pane_input_total", "counter"),
-            ("tilr_pane_input_bytes_total", "counter"),
-            ("tilr_client_drops_total", "counter"),
-            ("tilr_route_seconds", "histogram"),
-            ("tilr_route_input_seconds", "histogram"),
-            ("tilr_supervisor_loop_lag_seconds", "histogram"),
-            ("tilr_process_cpu_seconds_total", "counter"),
-            ("tilr_process_memory_bytes", "gauge"),
+            ("tilrd_pane_frames_total", "counter"),
+            ("tilrd_pane_frame_bytes_total", "counter"),
+            ("tilrd_pane_frames_sent_total", "counter"),
+            ("tilrd_pane_frames_skipped_total", "counter"),
+            ("tilrd_pane_input_total", "counter"),
+            ("tilrd_pane_input_bytes_total", "counter"),
+            ("tilrd_client_drops_total", "counter"),
+            ("tilrd_route_seconds", "histogram"),
+            ("tilrd_route_input_seconds", "histogram"),
+            ("tilrd_supervisor_loop_lag_seconds", "histogram"),
+            ("tilrd_process_cpu_seconds_total", "counter"),
+            ("tilrd_process_memory_bytes", "gauge"),
         ] {
             assert!(text.contains(&format!("# HELP {name} ")), "{name}:\n{text}");
             assert!(
@@ -574,17 +585,18 @@ mod tests {
             "tilrd_info{version=\"0.1.0-abc \\\"x\\\"\",server_id=\"s1\"} 1",
             "tilrd_clients 2",
             "tilrd_panes 1",
-            "tilr_pane_frames_total{pane=\"p1\"} 3",
-            "tilr_pane_frame_bytes_total{pane=\"p1\"} 300",
-            "tilr_pane_frames_sent_total{pane=\"p1\"} 6",
-            "tilr_pane_frames_skipped_total{pane=\"p1\"} 2",
-            "tilr_client_drops_total{reason=\"superseded\"} 1",
-            "tilr_client_drops_total{reason=\"no_pong\"} 0",
-            "tilr_pane_input_total{pane=\"p1\"} 4",
-            "tilr_pane_input_bytes_total{pane=\"p1\"} 40",
-            "tilr_process_cpu_seconds_total{role=\"supervisor\",pid=\"10\"} 5",
-            "tilr_process_cpu_seconds_total{role=\"pane\",pid=\"77\",pane=\"p1\"} 38.5",
-            "tilr_process_memory_bytes{role=\"pane\",pid=\"77\",pane=\"p1\"} 77000",
+            "tilrd_pane_frames_total{pane=\"p1\"} 3",
+            "tilrd_pane_frame_bytes_total{pane=\"p1\"} 300",
+            "tilrd_pane_frames_sent_total{pane=\"p1\"} 6",
+            "tilrd_pane_frames_skipped_total{pane=\"p1\"} 2",
+            "tilrd_client_drops_total{reason=\"superseded\"} 1",
+            "tilrd_client_drops_total{reason=\"no_pong\"} 0",
+            "tilrd_client_drops_total{reason=\"no_hello\"} 0",
+            "tilrd_pane_input_total{pane=\"p1\"} 4",
+            "tilrd_pane_input_bytes_total{pane=\"p1\"} 40",
+            "tilrd_process_cpu_seconds_total{role=\"supervisor\",pid=\"10\"} 5",
+            "tilrd_process_cpu_seconds_total{role=\"pane\",pid=\"77\",pane=\"p1\"} 38.5",
+            "tilrd_process_memory_bytes{role=\"pane\",pid=\"77\",pane=\"p1\"} 77000",
         ] {
             assert!(text.lines().any(|l| l == line), "{line}:\n{text}");
         }
@@ -598,15 +610,15 @@ mod tests {
         }
         let text = rendered(&shared);
         for line in [
-            "tilr_route_seconds_bucket{le=\"0.00005\"} 1",
-            "tilr_route_seconds_bucket{le=\"0.0001\"} 3",
-            "tilr_route_seconds_bucket{le=\"0.0025\"} 3",
-            "tilr_route_seconds_bucket{le=\"0.005\"} 4",
-            "tilr_route_seconds_bucket{le=\"0.1\"} 4",
-            "tilr_route_seconds_bucket{le=\"+Inf\"} 5",
-            "tilr_route_seconds_sum 0.50313",
-            "tilr_route_seconds_count 5",
-            "tilr_route_input_seconds_count 0",
+            "tilrd_route_seconds_bucket{le=\"0.00005\"} 1",
+            "tilrd_route_seconds_bucket{le=\"0.0001\"} 3",
+            "tilrd_route_seconds_bucket{le=\"0.0025\"} 3",
+            "tilrd_route_seconds_bucket{le=\"0.005\"} 4",
+            "tilrd_route_seconds_bucket{le=\"0.1\"} 4",
+            "tilrd_route_seconds_bucket{le=\"+Inf\"} 5",
+            "tilrd_route_seconds_sum 0.50313",
+            "tilrd_route_seconds_count 5",
+            "tilrd_route_input_seconds_count 0",
         ] {
             assert!(text.lines().any(|l| l == line), "{line}:\n{text}");
         }

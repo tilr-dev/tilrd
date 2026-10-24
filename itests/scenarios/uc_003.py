@@ -2,8 +2,8 @@
 
 The same release again changes nothing: the installed versions are asked, nothing is
 downloaded, the files stay as they are (same inode, same mtime) and the server is not
-reloaded. A new release replaces both files; the running server, which watches its
-executable, reloads into it and keeps its shells: the same pid, the same panes, a
+reloaded. A new release replaces both files; the installer explicitly asks the running server to
+reload into it and keeps its shells: the same pid, the same panes, a
 shell's variable and job. The server was started by `tilr` (no
 service); a driver reaches it over its TCP port with the user's token.
 """
@@ -58,7 +58,7 @@ def installing_the_same_release_again_changes_nothing(t: T):
 
 @case(spec=[
     "installation/a-new-release-reloads-the-running-server",
-    "reload/a-replaced-executable-is-reloaded-into-automatically",
+    "reload/installation-requests-reload-explicitly",
     "reload/the-tcp-listener-carries-over",
 ])
 def installing_a_new_release_reloads_the_running_server_and_keeps_its_shells(t: T):

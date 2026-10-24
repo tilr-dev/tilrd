@@ -8,7 +8,6 @@ mod common;
 
 use common::*;
 use tilr_proto::MouseInput;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The seqs of one connection: `seq_base` to `seq_base + 2^32`.
 fn own(seq_base: u64, seq: u64) -> bool {
@@ -75,60 +74,170 @@ async fn next_frame(client: &mut Client) -> Frame {
         .await
 }
 
-/// A plain HTTP request for `target` on the server's port, with `headers`:
-/// the status and the body.
-/// `Host` is the server's address unless `headers` name one.
-async fn http_get(server: &Server, target: &str, headers: &[(&str, &str)]) -> (u16, String) {
-    let addr = server.addr.trim_start_matches("ws://");
-    let mut request = format!("GET {target} HTTP/1.1\r\n");
-    if !headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("host"))
-    {
-        request.push_str(&format!("Host: {addr}\r\n"));
-    }
-    for (name, value) in headers {
-        request.push_str(&format!("{name}: {value}\r\n"));
-    }
-    request.push_str("\r\n");
-    http_request(server, &[&request]).await
+/// A subscribed pane with controlled stage durations and FIFO-gated output.
+#[cfg(feature = "failpoints")]
+struct TimedPane {
+    server: Server,
+    controller: PauseController,
+    release: std::fs::File,
+    client: Client,
+    base: u64,
+    pane: PaneId,
 }
 
-/// Send a request in `pieces`, a moment apart, and read the answer: the
-/// status and the body.
-async fn http_request(server: &Server, pieces: &[&str]) -> (u16, String) {
-    let addr = server.addr.trim_start_matches("ws://");
-    let mut stream = TcpStream::connect(addr).await.unwrap();
-    for (i, piece) in pieces.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        stream.write_all(piece.as_bytes()).await.unwrap();
-    }
-    let mut response = Vec::new();
-    tokio::time::timeout(TIMEOUT, stream.read_to_end(&mut response))
-        .await
-        .expect("server answered in time")
-        .unwrap();
-    let response = String::from_utf8(response).unwrap();
-    let (head, body) = response.split_once("\r\n\r\n").expect("a whole response");
-    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
-    if status == 200 {
-        assert!(
-            head.to_ascii_lowercase()
-                .contains("content-type: text/plain; version=0.0.4"),
-            "{head}"
+#[cfg(feature = "failpoints")]
+impl TimedPane {
+    async fn start(stages: &str, command: impl FnOnce(&Path) -> String) -> Self {
+        let dir = Server::scratch_dir();
+        let clock = dir.join("clock");
+        let stage_file = dir.join("stages");
+        std::fs::write(&clock, "1000000").unwrap();
+        std::fs::write(&stage_file, stages).unwrap();
+        let server = Server::start_with_env(
+            dir,
+            &[],
+            &[
+                ("TILR_TEST_TIME_FILE", clock.to_str().unwrap()),
+                (
+                    "TILR_TEST_FRAME_STAGE_TIME_FILE",
+                    stage_file.to_str().unwrap(),
+                ),
+            ],
         );
+        let controller = PauseController::bind(&server.dir);
+        let (fifo, release) = activity_fifo(&server, "activity-release");
+        let command = command(&fifo);
+        let (mut client, base) = connect_with_base(&server).await;
+        client
+            .send(Msg::CreatePane(CreatePane {
+                cols: 100,
+                rows: 30,
+                command: vec!["/bin/sh".into(), "-c".into(), command],
+                request_id: 5,
+                ..Default::default()
+            }))
+            .await;
+        let pane: PaneId = client
+            .wait_for(|msg| match msg {
+                server_message::Msg::PaneCreated(created) => {
+                    Some(created.pane.as_ref().unwrap().pane_id.parse().unwrap())
+                }
+                _ => None,
+            })
+            .await;
+        client.subscribe(pane).await;
+        Self {
+            server,
+            controller,
+            release,
+            client,
+            base,
+            pane,
+        }
     }
-    (status, body.to_owned())
+
+    async fn invisible_reads(&mut self, count: usize) {
+        let points = self.server.dir.join("failpoints");
+        std::fs::write(&points, "frame-stage-no-frame=pause").unwrap();
+        for _ in 0..count {
+            release_activity_fifo(&mut self.release);
+            self.controller
+                .wait("frame-stage-no-frame")
+                .await
+                .release()
+                .await;
+        }
+        std::fs::write(points, "").unwrap();
+    }
+
+    fn set_stages(&self, durations: &str) {
+        let stages = self.server.dir.join("stages");
+        let next = stages.with_extension("next");
+        std::fs::write(&next, durations).unwrap();
+        std::fs::rename(next, stages).unwrap();
+    }
+
+    async fn frame_after_input(&mut self, msg: Msg, seq: u64) -> Frame {
+        send_with_seq(&mut self.client, msg, seq).await;
+        frame_with_seq(&mut self.client, seq, |s| s < seq).await
+    }
 }
 
-/// The value of the sample `series` (name and labels, as written), if the
-/// scrape has it.
-fn sample(text: &str, series: &str) -> Option<f64> {
-    text.lines()
-        .find_map(|line| line.strip_prefix(series)?.strip_prefix(' '))
-        .map(|value| value.parse().unwrap())
+/// Each FIFO release produces one isolated read. Invisible output is kept
+/// across two completed no-op builds before the visible output emits a frame.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn frame_stage_durations_are_controlled_per_operation() {
+    let mut timed = TimedPane::start("11 23 37", |fifo| {
+        format!(
+            "stty -echo; read -r go < '{0}'; printf stage-ready; \
+         read -r go < '{0}'; printf '\\033[0m'; \
+         read -r go < '{0}'; printf '\\033[0m'; \
+         read -r go < '{0}'; printf stage-visible; read -r go < '{0}'",
+            fifo.display()
+        )
+    })
+    .await;
+    let initial = next_frame(&mut timed.client).await.timing.unwrap();
+    assert_eq!(
+        (initial.parse_us, initial.build_us, initial.encode_us),
+        (0, 23, 0)
+    );
+
+    release_activity_fifo(&mut timed.release);
+    timed.client.wait_screen("stage-ready").await;
+    let ready = timed
+        .client
+        .frame
+        .as_ref()
+        .unwrap()
+        .timing
+        .as_ref()
+        .unwrap();
+    assert_eq!(ready.parse_us, 11 * ready.reads);
+    assert_eq!((ready.build_us, ready.encode_us), (23, 37));
+
+    timed.invisible_reads(2).await;
+    release_activity_fifo(&mut timed.release);
+    timed.client.wait_screen("stage-visible").await;
+    let accumulated = timed
+        .client
+        .frame
+        .as_ref()
+        .unwrap()
+        .timing
+        .as_ref()
+        .unwrap();
+    assert_eq!(accumulated.reads, 3);
+    assert_eq!(accumulated.output_bytes, 8 + "stage-visible".len() as u32);
+    assert_eq!(
+        (
+            accumulated.parse_us,
+            accumulated.build_us,
+            accumulated.encode_us
+        ),
+        (33, 23, 37)
+    );
+
+    timed.set_stages("41 53 71");
+    for (seq, previous_encode) in [(timed.base + 1, 37), (timed.base + 2, 71)] {
+        let frame = timed
+            .frame_after_input(
+                Msg::Scroll(Scroll {
+                    pane_id: timed.pane.to_string(),
+                    delta: 0,
+                    to_bottom: true,
+                }),
+                seq,
+            )
+            .await;
+        let timing = frame.timing.unwrap();
+        assert_eq!(
+            (timing.parse_us, timing.reads, timing.output_bytes),
+            (0, 0, 0)
+        );
+        assert_eq!((timing.build_us, timing.encode_us), (53, previous_encode));
+    }
 }
 
 #[tokio::test]
@@ -174,7 +283,7 @@ async fn a_frame_names_the_input_it_shows_and_how_it_was_made() {
     // This client numbers from 1, ignoring its seq_base: alone on the
     // pane, that works.
     client.type_line(pane_id, "echo two").await;
-    client.wait_screen("two\n").await;
+    client.wait_screen("two\n$").await;
     assert_eq!(client.frame.as_ref().unwrap().last_input_seq, 7);
     send_with_seq(
         &mut client,
@@ -192,6 +301,74 @@ async fn a_frame_names_the_input_it_shows_and_how_it_was_made() {
     frame_with_seq(&mut client, 9, |seq| seq == 8).await;
     client.wait_screen("three\n").await;
     assert_eq!(client.frame.as_ref().unwrap().last_input_seq, 9);
+}
+
+// Hold frame delivery independently of PTY reads and input processing so
+// accumulated output cannot escape in a frame before the no-op scroll.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_no_op_scroll_frame_includes_accumulated_output() {
+    let server = Server::start(&[]);
+    let controller = PauseController::bind(&server.dir);
+    let mut client = Client::connect(&server).await;
+    let pane_id = client.open_pane().await;
+    client.wait_screen("$").await;
+    assert_eq!(
+        client
+            .run(pane_id, "stty -echo; PS1='ready-''prompt>'")
+            .await,
+        0
+    );
+    client.wait_screen("\nready-prompt>").await;
+    let points = server.dir.join("failpoints");
+    std::fs::write(&points, "pane-frame-ready=pause").unwrap();
+    send_with_seq(
+        &mut client,
+        Msg::Scroll(Scroll {
+            pane_id: pane_id.to_string(),
+            delta: 0,
+            to_bottom: true,
+        }),
+        6,
+    )
+    .await;
+    let frame_ready = controller.wait("pane-frame-ready").await;
+    std::fs::write(&points, "pane-output-applied=pause").unwrap();
+    send_with_seq(&mut client, raw(pane_id, "printf 'pending-output\\n'"), 7).await;
+    let output_applied = controller.wait("pane-output-applied").await;
+    std::fs::write(&points, "pane-input-applied=pause").unwrap();
+    output_applied.release().await;
+    send_with_seq(
+        &mut client,
+        Msg::Scroll(Scroll {
+            pane_id: pane_id.to_string(),
+            delta: 0,
+            to_bottom: true,
+        }),
+        8,
+    )
+    .await;
+    let scroll_applied = controller.wait("pane-input-applied").await;
+    std::fs::write(&points, "").unwrap();
+    scroll_applied.release().await;
+    frame_ready.release().await;
+    let frame = frame_with_seq(&mut client, 8, |seq| seq == 7).await;
+    assert!(!frame.changed.is_empty(), "{frame:?}");
+    let timing = frame.timing.unwrap();
+    assert!(timing.output_bytes > 0 && timing.reads > 0, "{timing:?}");
+    client.wait_screen("pending-output\nready-prompt>").await;
+    send_with_seq(
+        &mut client,
+        Msg::Scroll(Scroll {
+            pane_id: pane_id.to_string(),
+            delta: 0,
+            to_bottom: true,
+        }),
+        9,
+    )
+    .await;
+    let empty = frame_with_seq(&mut client, 9, |seq| seq == 8).await;
+    assert!(empty.changed.is_empty(), "{empty:?}");
 }
 
 #[tokio::test]
@@ -341,23 +518,40 @@ async fn a_scroll_is_credited_while_key_input_waits_for_the_pty() {
     frame_with_seq(&mut client, base + 2, |seq| seq == 0).await;
 }
 
+// The wait of an input is measured on the test's clock: the pane's own
+// time across a reload (a check run of the successor and an exec) is not
+// counted, so a real clock gives no bound the reload itself cannot break.
+#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn the_last_input_and_input_still_waiting_survive_a_reload() {
-    let server = Server::start(&[]);
+    const START: u64 = 1_700_000_000_000_000;
+    const SECOND: u64 = 1_000_000;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    set_test_time(&clock, START);
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
     let (mut client, base) = connect_with_base(&server).await;
     let pane_id = client.open_pane().await;
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
     send_with_seq(
         &mut client,
         raw(
             pane_id,
-            "stty raw -echo; echo \"rea\"\"dy\"; sleep 6; cat > /dev/null",
+            &format!(
+                "stty raw -echo; echo \"rea\"\"dy\"; read _ < '{}'; cat > /dev/null",
+                fifo.display()
+            ),
         ),
         base + 1,
     )
     .await;
     client.wait_screen("ready").await;
     assert_eq!(client.frame.as_ref().unwrap().last_input_seq, base + 1);
-    // Waits for the pty until the sleep is over, the reload in between.
+    // Waits for the pty until the shell is let go, the reload in between.
     send_with_seq(
         &mut client,
         Msg::Raw(RawInput {
@@ -367,8 +561,31 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
         base + 2,
     )
     .await;
+    // Passed to the pane process before the reload: the reload lets it take
+    // what is queued for it before it goes.
+    wait_sample_above(
+        &server,
+        &format!("tilrd_pane_input_total{{pane=\"{pane_id}\"}}"),
+        1.0,
+    )
+    .await;
 
+    // The input's clock starts as the pane process takes the message, which
+    // the counter above does not show. A full frame asked for after it, on
+    // the same way to the pane, does: the pane takes messages in order, so
+    // once `witness` has its frame the clock is running.
+    let mut witness = Client::connect(&server).await;
+    witness.subscribe(pane_id).await;
+    while !next_frame(&mut witness).await.full {}
+    let _ = witness.ws.close(None).await;
+
+    // A second passes before the reload, and another after it: the clock
+    // is set once the input's has started, then once the successor has
+    // taken over the input (it does before it logs that it resumed).
+    set_test_time(&clock, START + SECOND);
     let mut client = reload(&server, client).await;
+    server.wait_logged("resumed after reload pane=").await;
+    set_test_time(&clock, START + 2 * SECOND);
     let (mut other, other_base) = connect_with_base(&server).await;
     assert!(other_base > base, "ids go on after a reload");
     let _ = other.ws.close(None).await;
@@ -376,10 +593,16 @@ async fn the_last_input_and_input_still_waiting_survive_a_reload() {
     let redraw = next_frame(&mut client).await;
     assert!(redraw.full);
     assert_eq!(redraw.last_input_seq, base + 1);
+    release_activity_fifo(&mut release);
     let through = frame_with_seq(&mut client, base + 2, |seq| seq == base + 1).await;
-    // Counted from when the pane process before the reload got it.
-    let waited = through.timing.unwrap().input_us;
-    assert!(waited > 1_000_000, "{waited} µs");
+    // A clock that survives the reload counts both seconds; one restarted
+    // with the successor, only the second. Each reading also moves the
+    // clock on by a microsecond, which half a second leaves room for.
+    let waited = u64::from(through.timing.unwrap().input_us);
+    assert!(
+        (2 * SECOND - SECOND / 2..2 * SECOND + SECOND / 2).contains(&waited),
+        "{waited} µs of the two seconds held"
+    );
 }
 
 #[tokio::test]
@@ -496,27 +719,27 @@ async fn metrics_count_frames_input_and_routing() {
     };
     at_least("tilrd_panes", 1.0);
     at_least("tilrd_clients", 1.0);
-    at_least(&format!("tilr_pane_frames_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_frame_bytes_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_frames_sent_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_input_total{pane}"), 1.0);
-    at_least(&format!("tilr_pane_input_bytes_total{pane}"), 1.0);
-    at_least("tilr_route_seconds_count", 1.0);
-    at_least("tilr_route_input_seconds_count", 1.0);
-    at_least("tilr_supervisor_loop_lag_seconds_count", 1.0);
-    at_least("tilr_route_seconds_bucket{le=\"+Inf\"}", 1.0);
+    at_least(&format!("tilrd_pane_frames_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_frame_bytes_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_frames_sent_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_input_total{pane}"), 1.0);
+    at_least(&format!("tilrd_pane_input_bytes_total{pane}"), 1.0);
+    at_least("tilrd_route_seconds_count", 1.0);
+    at_least("tilrd_route_input_seconds_count", 1.0);
+    at_least("tilrd_supervisor_loop_lag_seconds_count", 1.0);
+    at_least("tilrd_route_seconds_bucket{le=\"+Inf\"}", 1.0);
     let supervisor = server.child.id();
     at_least(
-        &format!("tilr_process_memory_bytes{{role=\"supervisor\",pid=\"{supervisor}\"}}"),
+        &format!("tilrd_process_memory_bytes{{role=\"supervisor\",pid=\"{supervisor}\"}}"),
         1.0,
     );
     at_least(
-        &format!("tilr_process_memory_bytes{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"),
+        &format!("tilrd_process_memory_bytes{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"),
         1.0,
     );
     at_least(
         &format!(
-            "tilr_process_cpu_seconds_total{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"
+            "tilrd_process_cpu_seconds_total{{role=\"pane\",pid=\"{pid}\",pane=\"{pane_id}\"}}"
         ),
         0.0,
     );
@@ -524,6 +747,14 @@ async fn metrics_count_frames_input_and_routing() {
         text.lines()
             .any(|line| line.starts_with("tilrd_info{version=\"")),
         "{text}"
+    );
+    assert!(
+        text.lines().all(|line| {
+            !line.starts_with("tilr_")
+                && !line.starts_with("# HELP tilr_")
+                && !line.starts_with("# TYPE tilr_")
+        }),
+        "old metric prefix in:\n{text}"
     );
 }
 
@@ -534,11 +765,32 @@ async fn metrics_count_the_clients_let_go_and_why() {
     let drops = |text: &str, reason: &str| {
         sample(
             text,
-            &format!("tilr_client_drops_total{{reason=\"{reason}\"}}"),
+            &format!("tilrd_client_drops_total{{reason=\"{reason}\"}}"),
         )
     };
     let (_, text) = http_get(&server, &url, &[]).await;
     assert_eq!(drops(&text, "superseded"), Some(0.0), "{text}");
+
+    let mut refused = Client::connect_silent(&server).await;
+    refused.token = "wrong token".into();
+    refused.hello_as(PROTOCOL_VERSION).await;
+    assert!(matches!(
+        refused.next().await,
+        Some(server_message::Msg::Error(_))
+    ));
+    assert!(refused.next().await.is_none());
+    let (_, text) = http_get(&server, &url, &[]).await;
+    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
+        assert_eq!(drops(&text, reason), Some(0.0), "{text}");
+    }
+
+    let mut voluntary = Client::connect(&server).await;
+    voluntary.ws.close(None).await.expect("close voluntarily");
+    server.wait_logged("client disconnected").await;
+    let (_, text) = http_get(&server, &url, &[]).await;
+    for reason in ["superseded", "too_slow", "silent", "no_pong", "no_hello"] {
+        assert_eq!(drops(&text, reason), Some(0.0), "{text}");
+    }
 
     let mut old = Client::connect_silent(&server).await;
     old.client_id = "6c1d0c8e-0000-4000-8000-00000000000d".into();
@@ -579,19 +831,25 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
         "head -c 30000000 /dev/urandom | base64; sleep 1; echo \"<do\"\"ne>\"",
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(4000)).await;
+    // `slow` lags once the server skips frames for it.
+    wait_sample_above(
+        &server,
+        &format!("tilrd_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
+        0.0,
+    )
+    .await;
     // Input of both while `slow` lags: its own comes first, so the frames
-    // that echo it are among those it misses.
+    // that echo it are among those it misses. A frame carries only the
+    // latest input credited, so `fast` sends once it has seen a frame that
+    // echoes `slow`'s: the server has passed that frame by `slow` (skipped,
+    // its seq kept for the full frame that ends the lag) before `fast`'s
+    // input can be credited in one with it.
     send_with_seq(&mut slow, raw(pane_id, ""), slow_base + 1).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    while next_frame(&mut fast).await.last_input_seq != slow_base + 1 {}
     send_with_seq(&mut fast, raw(pane_id, ""), fast_base + 1).await;
-    // `fast` keeps reading meanwhile.
-    let read = async {
-        loop {
-            fast.next().await.expect("connection closed");
-        }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs(3), read).await;
+    // `fast` keeps reading meanwhile, up to the echo of its input: the pane
+    // has taken `slow`'s input before it, and nothing is credited after it.
+    while next_frame(&mut fast).await.last_input_seq != fast_base + 1 {}
 
     // `slow` reads again: frames it was behind on, then a whole screen, the
     // echo of its input, and the end of the output like everyone.
@@ -626,12 +884,12 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
     let (_, text) = http_get(&server, &url, &[]).await;
     let skipped = sample(
         &text,
-        &format!("tilr_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
+        &format!("tilrd_pane_frames_skipped_total{{pane=\"{pane_id}\"}}"),
     )
     .unwrap_or_default();
     let produced = sample(
         &text,
-        &format!("tilr_pane_frames_total{{pane=\"{pane_id}\"}}"),
+        &format!("tilrd_pane_frames_total{{pane=\"{pane_id}\"}}"),
     )
     .unwrap_or_default();
     assert!(skipped > 0.0, "nothing skipped:\n{text}");
@@ -640,7 +898,78 @@ async fn a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo()
         "{frames} frames of {produced} went to the lagging client"
     );
     assert_eq!(
-        sample(&text, "tilr_client_drops_total{reason=\"too_slow\"}"),
+        sample(&text, "tilrd_client_drops_total{reason=\"too_slow\"}"),
         Some(0.0)
     );
+}
+
+/// The test clock isolates parse, build and previous-frame encoding; a
+/// completed no-op build keeps invisible output in the next frame's totals.
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn the_timing_fields_measure_what_they_say() {
+    let mut timed = TimedPane::start("17 31 47", |fifo| format!(
+        "read -r go < '{0}'; printf '\\033[0m'; read -r go < '{0}'; printf visible; read -r go < '{0}'",
+        fifo.display()
+    )).await;
+    let first = next_frame(&mut timed.client).await.timing.unwrap();
+    assert_eq!(
+        (
+            first.wait_us,
+            first.parse_us,
+            first.build_us,
+            first.encode_us,
+            first.output_bytes,
+            first.reads
+        ),
+        (0, 0, 31, 0, 0, 0)
+    );
+    timed.invisible_reads(1).await;
+    release_activity_fifo(&mut timed.release);
+    timed.client.wait_screen("visible").await;
+    let timing = timed
+        .client
+        .frame
+        .as_ref()
+        .unwrap()
+        .timing
+        .as_ref()
+        .unwrap();
+    // Two 17 us parses, plus the measurement ticks between operations:
+    // first parse end -> no-op build -> next parse -> its build.
+    assert_eq!(
+        (
+            timing.wait_us,
+            timing.parse_us,
+            timing.build_us,
+            timing.encode_us,
+            timing.output_bytes,
+            timing.reads
+        ),
+        (37, 34, 31, 47, 11, 2)
+    );
+    timed.set_stages("59 61 73");
+    for (seq, previous_encode) in [(timed.base + 1, 47), (timed.base + 2, 73)] {
+        let frame = timed
+            .frame_after_input(
+                Msg::Mouse(MouseInput {
+                    pane_id: timed.pane.to_string(),
+                    ..Default::default()
+                }),
+                seq,
+            )
+            .await;
+        let timing = frame.timing.unwrap();
+        assert_eq!(
+            (
+                timing.wait_us,
+                timing.parse_us,
+                timing.build_us,
+                timing.encode_us,
+                timing.output_bytes,
+                timing.reads
+            ),
+            (0, 0, 61, previous_encode, 0, 0)
+        );
+    }
 }

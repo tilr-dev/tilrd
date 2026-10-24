@@ -7,7 +7,8 @@
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-const MAX_PACKET: usize = 64 << 20;
+/// Largest packet either side takes.
+pub const MAX_PACKET: usize = 64 << 20;
 
 /// Read one packet. `Ok(None)` means the peer closed the socket cleanly.
 pub async fn read_packet<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Option<Bytes>> {
@@ -66,6 +67,13 @@ pub mod kind {
     /// to know of it without decoding it. A pane process sends its frames
     /// this way; `RELAY` is what one from before it did.
     pub const FRAME: u8 = 5;
+    /// A `ClipboardWrite` packet, whole (`pane_id` and `transfer_id` left
+    /// empty): the program in the pane copied this to the clipboard.
+    pub const CLIPBOARD: u8 = 6;
+    /// A `PaneActivity` packet to broadcast to every greeted client.
+    pub const ACTIVITY: u8 = 7;
+    /// A private PaneInputAck, routed only to its authenticated identity.
+    pub const INPUT_ACK: u8 = 8;
 }
 
 /// What a `FRAME` packet says of its frame ahead of the `ServerMessage`.

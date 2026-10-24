@@ -4,13 +4,187 @@ mod common;
 
 use common::*;
 
+async fn unwatched_activity(output: &str) -> Vec<tilr_proto::PaneActivity> {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let mut observer = Client::connect(&server).await;
+    client
+        .send(Msg::CreatePane(CreatePane {
+            cols: 80,
+            rows: 24,
+            command: vec!["/bin/sh".into(), "-c".into(), output.into()],
+            cwd: String::new(),
+            request_id: 83,
+        }))
+        .await;
+    let pane = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneCreated(p) => Some(p.pane.as_ref().unwrap().pane_id.clone()),
+            _ => None,
+        })
+        .await;
+    client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneExited(p) if p.pane_id == pane => Some(()),
+            _ => None,
+        })
+        .await;
+    let activities: Vec<_> = client.activities.into_iter().collect();
+    observer
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneExited(p) if p.pane_id == pane => Some(()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(
+        observer.activities.into_iter().collect::<Vec<_>>(),
+        activities
+    );
+    let mut reconnected = Client::connect(&server).await;
+    reconnected.list_panes().await;
+    assert!(
+        reconnected.activities.is_empty(),
+        "activity must not be replayed"
+    );
+    assert!(activities.iter().all(|a| a.pane_id == pane));
+    activities
+}
+
+#[tokio::test]
+async fn a_bell_in_an_unwatched_pane_is_reported() {
+    let activities = unwatched_activity("printf '\\a'").await;
+    assert_eq!(activities.len(), 1);
+    assert_eq!(
+        activities[0].kind,
+        tilr_proto::PaneActivityKind::Bell as i32
+    );
+    assert!(activities[0].at_ms > 0);
+}
+
+#[tokio::test]
+async fn a_bel_ending_an_osc_is_not_reported() {
+    assert!(
+        unwatched_activity("printf '\\033]2;title\\007'")
+            .await
+            .is_empty()
+    );
+}
+
 #[cfg(feature = "failpoints")]
-fn set_test_time(path: &std::path::Path, us: u64) {
-    // The server and pane may read concurrently. Rename publishes one complete
-    // value and the following protocol response is the test's ordering barrier.
-    let next = path.with_extension("next");
-    std::fs::write(&next, us.to_string()).unwrap();
-    std::fs::rename(next, path).unwrap();
+#[tokio::test]
+async fn bells_are_reported_once_a_second() {
+    use tilr_proto::PaneActivityKind;
+    let dir = Server::scratch_dir();
+    let clock = dir.join("clock");
+    const START: u64 = 1_700_000_000_000_000;
+    set_test_time(&clock, START);
+    let server = Server::start_with_env(
+        dir,
+        &[],
+        &[("TILR_TEST_TIME_FILE", clock.to_str().unwrap())],
+    );
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
+    let command = script(
+        &server,
+        "bells.sh",
+        &format!(
+            "read -r _ < '{0}'\nprintf '\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a'\nprintf 'bell-phase-1\\n'\nread -r _ < '{0}'\nprintf '\\a'\nprintf 'bell-phase-2\\n'\nread -r _ < '{0}'\nprintf '\\a'\nprintf 'bell-phase-3\\n'\nread -r _ < '{0}'\n",
+            fifo.display()
+        ),
+    );
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &command).await;
+    release_activity_fifo(&mut release);
+    client.wait_screen("bell-phase-1").await;
+    let bells = |client: &Client| {
+        client
+            .activities
+            .iter()
+            .filter(|a| a.kind == PaneActivityKind::Bell as i32)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let first = bells(&client);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].pane_id, pane.to_string());
+    assert_eq!(first[0].at_ms, START / 1000);
+    set_test_time(&clock, START + 999_000);
+    release_activity_fifo(&mut release);
+    client.wait_screen("bell-phase-2").await;
+    assert_eq!(bells(&client).len(), 1);
+    set_test_time(&clock, START + 1_000_000);
+    release_activity_fifo(&mut release);
+    client.wait_screen("bell-phase-3").await;
+    let reported = bells(&client);
+    assert_eq!(reported.len(), 2);
+    assert_eq!(reported[1].at_ms, (START + 1_000_000) / 1000);
+}
+
+#[tokio::test]
+async fn a_finished_foreground_command_is_reported() {
+    let server = Server::start(&[]);
+    let (fifo, mut release) = activity_fifo(&server, "activity-release");
+    let command = script(
+        &server,
+        "foreground.sh",
+        &format!(
+            "printf 'foreground-ready\\n'\nread -r _ < '{}'\n",
+            fifo.display()
+        ),
+    );
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.type_line(pane, &command).await;
+    client.wait_screen("foreground-ready").await;
+    client.activities.clear();
+    let mut observer = Client::connect(&server).await;
+    release_activity_fifo(&mut release);
+    let activity = client
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneActivity(a)
+                if a.kind == tilr_proto::PaneActivityKind::CommandFinished as i32 =>
+            {
+                Some(a.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(activity.pane_id, pane.to_string());
+    assert!(activity.at_ms > 0);
+    let observed = observer
+        .wait_for(|msg| match msg {
+            server_message::Msg::PaneActivity(a) => Some(a.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(observed, activity);
+    // Echoed input after completion is a barrier for another foreground check.
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"typed-after-command"),
+        }))
+        .await;
+    client.wait_screen("typed-after-command").await;
+    assert_eq!(client.activities.len(), 1);
+}
+
+#[tokio::test]
+async fn typing_at_the_prompt_reports_nothing() {
+    let server = Server::start(&[]);
+    let mut client = Client::connect(&server).await;
+    let pane = client.open_pane().await;
+    client.wait_row("$").await;
+    client.activities.clear();
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"typed-at-prompt"),
+        }))
+        .await;
+    client.wait_screen("typed-at-prompt").await;
+    assert!(client.activities.is_empty());
 }
 
 #[cfg(feature = "failpoints")]
@@ -327,6 +501,7 @@ async fn the_configuration_file_names_the_allowed_origins() {
     // stops the server from starting, and says where the file is.
     let dir = configured("allow_origin = []\n");
     let output = std::process::Command::new(exe)
+        .env_remove("RUST_LOG")
         .args(["--listen", "127.0.0.1:0"])
         .env("TILR_CONFIG_DIR", dir.join("config"))
         .env("TILR_STATE_DIR", dir.join("state"))
@@ -392,6 +567,9 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
     let panes = client.list_panes().await;
     let args = |pane: &PaneInfo| {
         process_args(pane.pid)
+            .split(" [shell ")
+            .next()
+            .unwrap()
             .split_once(" pane ")
             .unwrap()
             .1
@@ -400,12 +578,138 @@ async fn a_pane_is_told_apart_by_its_id_in_its_shell_and_in_ps() {
     assert_eq!(panes[0].pane_id, pane_id.to_string());
     assert_eq!(
         args(&panes[0]),
-        format!("--id {pane_id} --cwd {home} -- /bin/sh")
+        format!("--id {pane_id} --cwd {home} -- /bin/sh -c PS1='$ ' exec /bin/sh")
     );
     assert_eq!(
         args(&panes[1]),
-        format!("--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh")
+        format!(
+            "--id {other} --cols 100 --rows 30 --cwd {home} -- /bin/sh -c PS1='$ ' exec /bin/sh"
+        )
     );
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn the_pane_process_title_follows_the_directory_and_the_command() {
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
+    let initial = format!("[shell {shell} in {}]", server.dir.display());
+    let point = wait_process_title(&controller, &hook, pid, &initial).await;
+    point.release().await;
+
+    client
+        .type_line(pane, "cd /tmp; printf '\\033]7;file://localhost/tmp\\007'")
+        .await;
+    let idle = format!("[shell {shell} in /tmp]");
+    let point = wait_process_title(&controller, &hook, pid, &idle).await;
+    point.release().await;
+    client.type_line(pane, "sleep 30").await;
+    let point = wait_process_title(
+        &controller,
+        &hook,
+        pid,
+        &format!("[shell {shell} in /tmp: sleep 30]"),
+    )
+    .await;
+    point.release().await;
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"\x03"),
+        }))
+        .await;
+    let point = wait_process_title(&controller, &hook, pid, &idle).await;
+    std::fs::remove_file(points).unwrap();
+    point.release().await;
+}
+
+#[tokio::test]
+#[cfg(feature = "failpoints")]
+async fn the_pane_process_title_follows_exec_in_the_same_foreground_group() {
+    let TitleTest {
+        server,
+        controller,
+        mut client,
+        pane,
+        shell,
+        pid,
+        hook,
+        points,
+    } = TitleTest::start().await;
+    let gate = server.dir.join("title-gate");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&gate)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let ready = server.dir.join("title-ready");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&ready)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(
+        server.dir.join("title-wrapper"),
+        "echo $$ > title-leader\necho ready > title-ready\nread go < title-gate\nexec sleep 30\n",
+    )
+    .unwrap();
+    // Finish an idle refresh first so the wrapper is a distinct foreground group.
+    let idle = format!("[shell {shell} in {}]", server.dir.display());
+    let point = wait_process_title(&controller, &hook, pid, &idle).await;
+    // Wait for the wrapper's handshake before reading the new leader's argv:
+    // a query between tcsetpgrp and exec must not cache the pre-exec shell here.
+    let query = format!("pane-title-read-command:{pane}");
+    std::fs::write(&points, format!("{query}=pause")).unwrap();
+    client.type_line(pane, "sh ./title-wrapper").await;
+    point.release().await;
+    let point = controller.wait(&query).await;
+    let handshake = tokio::time::timeout(TIMEOUT, tokio::fs::read(&ready))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(handshake, b"ready\n");
+    std::fs::write(&points, format!("{hook}=pause")).unwrap();
+    point.release().await;
+    let wrapper = format!(
+        "[shell {shell} in {}: sh ./title-wrapper]",
+        server.dir.display()
+    );
+    let point = wait_process_title(&controller, &hook, pid, &wrapper).await;
+    // The leader is blocked on the FIFO. Releasing it execs sleep without pty
+    // output or a group change, after its old cmdline has definitely been cached.
+    tokio::time::timeout(TIMEOUT, tokio::fs::write(&gate, b"go\n"))
+        .await
+        .unwrap()
+        .unwrap();
+    let leader: u32 = std::fs::read_to_string(server.dir.join("title-leader"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    point.release().await;
+    let sleeping = format!("[shell {shell} in {}: sleep 30]", server.dir.display());
+    let point = wait_process_title(&controller, &hook, pid, &sleeping).await;
+    assert_eq!(process_args(leader), "sleep 30", "exec kept the leader pid");
+    std::fs::remove_file(points).unwrap();
+    point.release().await;
+    client
+        .send(Msg::Raw(RawInput {
+            pane_id: pane.to_string(),
+            data: Bytes::from_static(b"\x03"),
+        }))
+        .await;
 }
 
 #[tokio::test]
@@ -416,6 +720,7 @@ async fn ps_lists_the_panes_of_a_running_server() {
     let pid = client.list_panes().await[0].pid;
 
     let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .args(["ps", "--url", &server.addr])
         // Where the server keeps its access token.
         .env("TILR_STATE_DIR", server.dir.join("state"))
@@ -432,6 +737,7 @@ async fn ps_lists_the_panes_of_a_running_server() {
     assert!(lines[1].ends_with("/bin/sh"), "{listed}");
 
     let version = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .env_remove("RUST_LOG")
         .args(["ps", "--url", &server.addr, "--server-version"])
         .env("TILR_STATE_DIR", server.dir.join("state"))
         .output()
@@ -441,6 +747,25 @@ async fn ps_lists_the_panes_of_a_running_server() {
         String::from_utf8(version.stdout).unwrap().trim(),
         env!("TILR_VERSION")
     );
+}
+
+#[tokio::test]
+async fn ps_server_version_fails_when_nothing_listens() {
+    // The Tilr app's health check against a server that has stopped: the
+    // port it listened on is closed.
+    let mut server = Server::start(&[]);
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
+
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args(["ps", "--url", &server.addr, "--server-version"])
+        .env("TILR_STATE_DIR", server.dir.join("state"))
+        .output()
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
 }
 
 #[tokio::test]
@@ -574,12 +899,9 @@ async fn resizing_a_pane_resizes_the_terminal_the_shell_sees() {
 #[tokio::test]
 async fn a_client_built_for_another_protocol_version_is_turned_away() {
     let server = Server::start(&[]);
-    assert_eq!(PROTOCOL_VERSION, 3);
-    // Newer than the server, older than it, and one that sent no version.
-    for version in [PROTOCOL_VERSION + 1, PROTOCOL_VERSION - 1, 0] {
-        if version == PROTOCOL_VERSION {
-            continue;
-        }
+    assert_eq!(PROTOCOL_VERSION, 1);
+    // A newer client and one that sent no version.
+    for version in [2, 0] {
         let mut client = Client::connect_silent(&server).await;
         client.hello_as(version).await;
         // The first thing it hears is why, with both versions; then nothing.
@@ -807,4 +1129,48 @@ async fn a_nohup_background_job_is_left_when_the_server_stops() {
         left,
         "a nohup job outlives the server, as a hangup leaves it"
     );
+}
+
+#[tokio::test]
+async fn a_pane_whose_command_cannot_start_is_reported_to_its_creator() {
+    let server = Server::start(&[]);
+    let mut creator = Client::connect(&server).await;
+    let mut observer = Client::connect(&server).await;
+    creator.hello().await;
+    observer.hello().await;
+    let missing = server.dir.join("no-such-program");
+    creator
+        .send(Msg::CreatePane(CreatePane {
+            command: vec![missing.to_str().unwrap().into()],
+            cols: 100,
+            rows: 30,
+            request_id: 71,
+            ..Default::default()
+        }))
+        .await;
+    let error = creator
+        .wait_for(|msg| match msg {
+            server_message::Msg::Error(error) => Some(error.message.clone()),
+            server_message::Msg::PaneCreated(_) => panic!("failed pane was created"),
+            _ => None,
+        })
+        .await;
+    assert!(error.starts_with("create pane: "), "{error}");
+    for client in [&mut creator, &mut observer] {
+        client.ping(72).await;
+        client
+            .wait_for(|msg| match msg {
+                server_message::Msg::Pong(pong) if pong.nonce == 72 => Some(()),
+                server_message::Msg::Error(_)
+                | server_message::Msg::PaneCreated(_)
+                | server_message::Msg::PaneExited(_) => {
+                    panic!("unexpected startup notification: {msg:?}")
+                }
+                _ => None,
+            })
+            .await;
+        assert!(client.list_panes().await.is_empty());
+    }
+    creator.open_pane().await;
+    assert_eq!(creator.list_panes().await.len(), 1);
 }

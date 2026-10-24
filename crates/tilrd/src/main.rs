@@ -18,10 +18,13 @@ mod pane;
 mod ps;
 mod pty;
 mod reload;
+mod reload_request;
 mod shell;
 mod socks;
 mod supervisor;
+mod test_owner;
 mod time;
+mod title;
 mod update;
 
 use std::net::SocketAddr;
@@ -141,10 +144,6 @@ struct Cli {
     #[arg(long)]
     no_exec: bool,
 
-    /// Do not reload when the executable on disk changes. SIGUSR1 still does.
-    #[arg(long)]
-    no_auto_reload: bool,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -155,12 +154,17 @@ enum Command {
     #[command(hide = true)]
     Pane(pane::Args),
     /// Internal: print the versions of the reload state this executable
-    /// reads. A running server asks before reloading into it.
+    /// reads. A running server asks before reloading into it. Kept for the
+    /// Tilr app; see the daemon-lifecycle spec.
     #[command(hide = true)]
     StateFormats,
+    /// Internal: request reload from servers running from this installation.
+    #[command(hide = true)]
+    Reload,
     /// List the panes of a running server: id, pid of the pane process,
     /// size, viewers, directory and command. For users: `tilr ps`; kept
-    /// for the Tilr app, which asks with --url and --server-version.
+    /// for the Tilr app, which asks with --url and --server-version; see the
+    /// daemon-lifecycle spec.
     #[command(hide = true)]
     Ps {
         /// Where the server listens, e.g. ws://127.0.0.1:7890. Default: its
@@ -172,7 +176,8 @@ enum Command {
         server_version: bool,
     },
     /// Print the access token clients must present. For users: `tilr
-    /// token`, which runs this in the server; kept for the Tilr app.
+    /// token`, which runs this in the server; kept for the Tilr app; see the
+    /// daemon-lifecycle spec.
     #[command(hide = true)]
     Token,
     /// Link this machine to tilr Cloud, which lists it among your machines
@@ -192,6 +197,18 @@ enum Command {
         #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
         cdn: String,
     },
+    /// Internal: fetch and validate a release for deploy.
+    #[command(hide = true)]
+    FetchRelease {
+        #[arg(long)]
+        platform: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
+        cdn: String,
+        #[arg(long)]
+        archive: Option<PathBuf>,
+    },
     /// Run in a pane: ask the tilr client watching it to open something.
     #[command(flatten)]
     Host(host::Command),
@@ -203,7 +220,12 @@ enum CloudCommand {
     /// browser.
     Login {
         /// Where tilr Cloud is.
-        #[arg(long, env = "TILR_CLOUD", default_value = cloud::DEFAULT_URL)]
+        #[arg(
+            long,
+            env = "TILR_CLOUD",
+            default_value = cloud::DEFAULT_URL,
+            value_parser = cloud::parse_url
+        )]
         url: String,
         /// What to call this machine there. The host name, if not given.
         #[arg(long)]
@@ -224,6 +246,8 @@ pub fn exe() -> &'static Path {
 }
 
 fn main() -> anyhow::Result<ExitCode> {
+    #[cfg(feature = "failpoints")]
+    fail::state_formats_started()?;
     let exe = exe();
     let mut args = std::env::args_os();
     // Started as `xclip` or `wl-paste` through the links the server puts on
@@ -257,15 +281,21 @@ fn main() -> anyhow::Result<ExitCode> {
     // Colors for a terminal only: the log of a server `tilr` started is a file.
     let colors = std::io::IsTerminal::is_terminal(&std::io::stderr())
         && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
+    let (filter, ignored) = log_filter(std::env::var_os("RUST_LOG"));
     tracing_subscriber::fmt()
+        .with_env_filter(filter)
         .with_ansi(colors)
         .with_writer(std::io::stderr)
         .log_internal_errors(false)
         .init();
+    if let Some(reason) = ignored {
+        tracing::warn!("RUST_LOG ignored: {reason}");
+    }
 
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Pane(args)) => pane::run(args)?,
+        Some(Command::Reload) => reload_request::request(exe)?,
         Some(Command::StateFormats) => print!("{}", reload::formats()),
         Some(Command::Ps {
             url,
@@ -278,6 +308,12 @@ fn main() -> anyhow::Result<ExitCode> {
             CloudCommand::Status => cloud::status()?,
         },
         Some(Command::Update { cdn }) => update::run(&cdn, exe)?,
+        Some(Command::FetchRelease {
+            platform,
+            out,
+            cdn,
+            archive,
+        }) => update::fetch_release(&cdn, &platform, &out, archive.as_deref())?,
         Some(Command::Host(command)) => return Ok(host::run(command)),
         None => {
             // Before anything is bound: a signal from here until the
@@ -287,12 +323,32 @@ fn main() -> anyhow::Result<ExitCode> {
             // From here on they are blocked on every thread but the one
             // their handlers run on, so that a reload can hold them all.
             reload::serve_signals()?;
+            test_owner::watch()?;
             let options = server_options(cli)?;
             tracing::info!(origins = ?options.allow_origins, "browser origins allowed");
             supervisor::run(options)?
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The log filter from `RUST_LOG` (tracing directives), `info` when it is
+/// unset or empty; an invalid value gives `info` and the reason to log once
+/// the logger is up.
+fn log_filter(
+    value: Option<std::ffi::OsString>,
+) -> (tracing_subscriber::EnvFilter, Option<String>) {
+    let info = || tracing_subscriber::EnvFilter::new("info");
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return (info(), None);
+    };
+    let Some(value) = value.to_str() else {
+        return (info(), Some("not valid UTF-8".to_owned()));
+    };
+    match tracing_subscriber::EnvFilter::try_new(value) {
+        Ok(filter) => (filter, None),
+        Err(err) => (info(), Some(err.to_string())),
+    }
 }
 
 /// What the command line and the configuration file make of a server.
@@ -322,7 +378,6 @@ fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
         }),
         auth: !cli.no_auth,
         cloudflared: cli.cloudflared,
-        auto_reload: !cli.no_auto_reload,
         client_timeout: (cli.client_timeout > 0).then(|| Duration::from_secs(cli.client_timeout)),
         socks: config::socks(cli.socks, &config),
         files: config::files(cli.no_files, &config)?,
@@ -347,5 +402,22 @@ fn check_resume(state: &Path) -> anyhow::Result<()> {
         None => supervisor::check(&server_options(cli)?, state),
         Some(Command::Pane(args)) => pane::check(&args, state),
         Some(_) => anyhow::bail!("not the command line of a server or a pane process"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_cloud_url_on_the_command_line_is_the_default() {
+        let cli = Cli::try_parse_from(["tilrd", "cloud", "login", "--url", ""]).unwrap();
+        let Some(Command::Cloud {
+            command: CloudCommand::Login { url, .. },
+        }) = cli.command
+        else {
+            panic!("not cloud login");
+        };
+        assert_eq!(url, cloud::DEFAULT_URL);
     }
 }

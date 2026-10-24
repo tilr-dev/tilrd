@@ -10,14 +10,16 @@ use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RowIterator}
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen as ActiveScreen};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{Style as VtStyle, StyleColor, Underline as VtUnderline};
-use libghostty_vt::terminal::{Mode, ModeKind, Point, PointCoordinate, PointSpace, ScrollViewport};
+use libghostty_vt::terminal::{
+    ClipboardLocation, Mode, ModeKind, Point, PointCoordinate, PointSpace, ScrollViewport,
+};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions, key, mouse, paste};
 use tilr_proto::{
     Color, Cursor, CursorShape, Frame, Image, KeyAction, KeyInput, MouseAction, MouseButton,
     MouseInput, NamedKey, PaneStatus, Placement, Row, Run, Style, Underline, attrs, color, mods,
 };
 
-use crate::Screen;
+use crate::{ClipboardCopy, Screen};
 
 const MAX_SCROLLBACK: usize = 10_000;
 /// The cell in pixels until a client says what its own is: image placements
@@ -43,8 +45,10 @@ pub struct GhosttyScreen {
     term: Terminal<'static, 'static>,
 
     replies: Rc<RefCell<Vec<u8>>>,
+    bells: Rc<Cell<u32>>,
     title_changed: Rc<Cell<bool>>,
     status_changed: Rc<Cell<bool>>,
+    copies: Rc<RefCell<Vec<ClipboardCopy>>>,
     last_cursor: Option<Cursor>,
     last_modes: Option<(bool, bool)>,
     last_placements: Vec<Placement>,
@@ -64,8 +68,10 @@ impl GhosttyScreen {
         let mut term = new_terminal(cols, rows, MAX_SCROLLBACK)?;
 
         let replies = Rc::new(RefCell::new(Vec::new()));
+        let bells = Rc::new(Cell::new(0u32));
         let title_changed = Rc::new(Cell::new(false));
         let status_changed = Rc::new(Cell::new(false));
+        let copies = Rc::new(RefCell::new(Vec::new()));
         {
             let replies = Rc::clone(&replies);
             term.on_pty_write(move |_term: &Terminal<'_, '_>, data: &[u8]| {
@@ -78,6 +84,32 @@ impl GhosttyScreen {
             })?;
             let status = Rc::clone(&status_changed);
             term.on_pwd_changed(move |_term: &Terminal<'_, '_>| status.set(true))?;
+            let copied = Rc::clone(&copies);
+            term.on_clipboard_write(move |_term: &Terminal<'_, '_>, write| {
+                // The primary and secondary selections are not the clipboard
+                // the user pastes from; a write without content clears, which
+                // a client is not asked to do. libghostty-vt 0.2 hands the
+                // data over as UTF-8 only, and data that is not as empty.
+                if write.location() == ClipboardLocation::Standard
+                    && let Some(content) = write.contents().next()
+                    && !content.data.is_empty()
+                {
+                    let mime = if content.mime == "text/plain" {
+                        "text/plain;charset=utf-8"
+                    } else {
+                        content.mime
+                    };
+                    copied.borrow_mut().push(ClipboardCopy {
+                        mime: mime.to_owned(),
+                        data: content.data.as_bytes().to_vec(),
+                    });
+                }
+                Ok(())
+            })?;
+            let bells = Rc::clone(&bells);
+            term.on_bell(move |_term: &Terminal<'_, '_>| {
+                bells.set(bells.get().saturating_add(1));
+            })?;
         }
 
         Ok(Self {
@@ -91,8 +123,10 @@ impl GhosttyScreen {
             mouse_event: mouse::Event::new()?,
             term,
             replies,
+            bells,
             title_changed,
             status_changed,
+            copies,
             last_cursor: None,
             last_modes: None,
             last_placements: Vec::new(),
@@ -114,6 +148,7 @@ impl GhosttyScreen {
         screen.feed(snapshot);
         // Nobody is waiting for answers to anything in a snapshot.
         screen.take_replies();
+        screen.take_bells();
         Ok(screen)
     }
 
@@ -231,6 +266,10 @@ impl Screen for GhosttyScreen {
 
     fn take_replies(&mut self) -> Vec<u8> {
         std::mem::take(&mut *self.replies.borrow_mut())
+    }
+
+    fn take_bells(&mut self) -> u32 {
+        self.bells.replace(0)
     }
 
     fn resize(&mut self, cols: u16, rows: u16, cell: (u32, u32)) -> Result<()> {
@@ -476,6 +515,10 @@ impl Screen for GhosttyScreen {
             title: self.term.title().unwrap_or_default().to_owned(),
             cwd: path_from_pwd(self.term.pwd().unwrap_or_default()),
         })
+    }
+
+    fn take_copies(&mut self) -> Vec<ClipboardCopy> {
+        std::mem::take(&mut *self.copies.borrow_mut())
     }
 
     fn encode_key(&mut self, input: &KeyInput, out: &mut Vec<u8>) -> Result<()> {
@@ -1717,6 +1760,21 @@ fn map_key(input: &KeyInput) -> (key::Key, Option<char>) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_bell_is_counted() {
+        let mut screen = screen();
+        screen.feed(b"\x07\x07");
+        assert_eq!(screen.take_bells(), 2);
+        assert_eq!(screen.take_bells(), 0);
+    }
+
+    #[test]
+    fn a_bel_ending_an_osc_is_not_a_bell() {
+        let mut screen = screen();
+        screen.feed(b"\x1b]0;title\x07");
+        assert_eq!(screen.take_bells(), 0);
+    }
+
     fn screen() -> GhosttyScreen {
         GhosttyScreen::new(20, 4).unwrap()
     }
@@ -2107,6 +2165,27 @@ mod tests {
         screen.feed(b"\x1b]2;hi\x07");
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(frame.title.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn osc_52_is_reported_as_a_clipboard_write() {
+        let mut screen = screen();
+        assert!(screen.take_copies().is_empty());
+        // OSC 52 to the clipboard, with BEL and with ST; OSC 1337 Copy.
+        screen.feed(b"\x1b]52;c;aGk=\x07\x1b]52;c;dGhlcmU=\x1b\\\x1b]1337;Copy=:b2s=\x07");
+        let copies = screen.take_copies();
+        let text: Vec<_> = copies.iter().map(|copy| copy.data.as_slice()).collect();
+        assert_eq!(text, [&b"hi"[..], b"there", b"ok"]);
+        assert!(
+            copies
+                .iter()
+                .all(|copy| copy.mime == "text/plain;charset=utf-8"),
+            "{copies:?}"
+        );
+        assert!(screen.take_copies().is_empty());
+        // Not the clipboard: the primary selection; a read; clearing.
+        screen.feed(b"\x1b]52;p;aGk=\x07\x1b]52;c;?\x07\x1b]52;c;\x07");
+        assert_eq!(screen.take_copies(), []);
     }
 
     #[test]

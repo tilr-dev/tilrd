@@ -53,7 +53,6 @@ All of phase 2 is done (see "Done").
 |---|---|---|---|---|---|
 | cloud-tunnels-tests | tests for the 7 untested `cloud-tunnels` requirements (TILR-147) | M | - | no | ready |
 | server-requirement-tests | tests for 8 untested server requirements: exec, metrics, panes, reload, socks-proxy, ssh-agent-forwarding (TILR-148) | M | - | no | ready |
-| manual-install-itest | itests UC-007, the manual install from the CDN (TILR-150) | S | - | no | ready |
 | files-root-flake | the `files::nothing_outside_the_shared_directories_is_served` flake (TILR-151) | S | - | no | ready |
 | uc-043-flake | the itests `uc_043` flake (TILR-152) | S | - | no | ready |
 | test-server-leftovers | no `target/debug` test servers left running after `cargo test` (TILR-153) | S | - | no | ready |
@@ -97,6 +96,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | multi-server | the client joins several machines (no tilrd change) | L | - | - | design first |
 | port-forwarding | `ssh -R` / `-L` style forwards; waits for the transport decision (iroh vs quinn); when built, off by default like SOCKS | L | the transport decision | no | design first |
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | the phase 3 changes | - | design first |
+| multi-user-sessions | `tilrd --system` as root runs each session as its user (per-user tokens, per-user sockets); options for the owner in design.md (TILR-138) | L | - | yes | needs owner |
 
 ## Deferred
 
@@ -113,7 +113,11 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 
 | change | commit |
 |---|---|
+| linux-container-debuginfo | [PR #41](https://github.com/tilr-dev/tilrd/pull/41) |
+| build-script-git-dir | - |
+| test-server-cleanup-stand | [PR #13](https://github.com/tilr-dev/tilrd/pull/13) |
 | test-controlled-time | 7e63724 |
+| manual-install-itest | - |
 | openspec-setup | 27be1ea, 40d6057, 552dcd9 |
 | reload-rollback | 4298b15 |
 | reload-signals-and-socket | a0f1ae9 |

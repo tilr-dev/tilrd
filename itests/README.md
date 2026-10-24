@@ -27,7 +27,7 @@ cd itests
 ./dt fixtures                          # fixture graph and how many cases use each
 ./dt fixture server_state              # export a snapshot to results/fixture-server_state
 ./dt call server export --path ./tilrd   # the Linux binary (also: driver, build)
-./dt coverage                          # write ../openspec/coverage/ (no Dagger)
+./dt coverage                          # write local ignored ../openspec/coverage/ (no Dagger)
 ```
 
 Results go to `results/<timestamp>-<pid>/` (`results/latest` links the last run):
@@ -73,6 +73,37 @@ docker run --rm --network none -v "$PWD":/src:ro -w /src python:3.12-slim \
   python3 -m unittest discover -s itests/tests -v
 ```
 
+## Controlled UC-043 echo delay
+
+Run the fixed-delay threshold check once:
+
+```sh
+./dt --only scenarios --filter uc_043:fixed_network_delay_moves_echo_p90_across_five_seconds
+```
+
+The case uses its own existing TCP proxy. It sets
+`proxy.set(dir="both", delay_ms=3000, jitter_ms=0, loss_pct=0)` after setup:
+3000 ms per direction gives at least 6000 ms input-to-frame echo latency, above
+the 5000 ms p90 threshold. Baseline and recovery use the same setting with
+`delay_ms=0` and assert p90 below 5000 ms. Each phase collects ten sequential
+inputs, waits for each distinct echo on the screen and checks that all inputs
+were measured. The report records each phase's count, pending, unanswered and
+p90 metrics. There are no sleeps, repeats or increased timeouts.
+
+This case asserts the expected threshold crossing and therefore passes with the
+delay enabled. The random-loss proxy and netem cases report degradation metrics
+and assert recovery after healing. Their random backoff supplies no absolute echo,
+screen-stall or disconnect-count guarantee. In particular, server silence can
+expire while the client still receives frames; neither side observes the other's
+timeout immediately.
+
+Two additional UC-043 regressions exercise the old false oracles directly:
+`fixed_delay_does_not_fail_the_lossy_proxy_recovery_case` runs the proxy recovery
+case with fixed 3000 ms each-way delay, and
+`uplink_silence_can_drop_a_client_that_still_receives_frames` freezes uplink while
+delaying downlink. The latter waits for viewer removal, checks the silence reason
+before the delayed close arrives, then resumes and verifies recovery.
+
 ## What a run does
 
 `src/tilr_itests/main.py`:
@@ -90,6 +121,17 @@ docker run --rm --network none -v "$PWD":/src:ro -w /src python:3.12-slim \
    `/target/debug/tilrd` and `tilr` next to it (`crates/tilr/tests` run that `tilr`,
    which starts that `tilrd`): the paths the tests baked in at compile time. They run as
    root, so `crates/tilrd/tests/local.rs` also acts as another user (uid 65534).
+   The filtered source snapshot also includes `scripts/`, the CI and release
+   workflows, `release-please-config.json`, `.cargo/config.toml` and `.gitignore`
+   for the release and Linux script regression fixtures. The runtime gets `shasum`
+   from `perl`, a dependency of `git` (verified 2026-10-21 with
+   `docker run --rm ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y --no-install-recommends git >/dev/null && dpkg -S /usr/bin/shasum'`).
+   Those fixtures use substitutes for Docker and upload tools and need no release
+   credentials.
+   Cargo's `build-script-executed` messages also select the saved build-script
+   stdout files exported in `rust-target/`. Rust runtimes restore these files at
+   their compiled `/target/.../output` paths, so both `build_script` suites can
+   inspect the actual test build's output without access to the shared Cargo cache.
 3. **fixtures** — each fixture is a Dagger layer: parents' `/fx` merged, then
    `python3 -m tt fixture MODULE:NAME` (build, then its mandatory check). *Source tier*
    fixtures have no binaries in the container and survive any code change; *tilr tier*
@@ -120,11 +162,18 @@ a tree could fail to compile against it.
 `tt-fresh DIR... -- CMD` (main.py `FRESH`) wraps every cargo call on a shared target
 dir (`build`, the next release, clippy and fmt): it takes the
 dir's lock (concurrent runs of other trees wait), compares the sha256 of every source
-file with `DIR/.tt-sources.json` (the tree the dir was last given), sets the mtime of
-each file that differs to now, records the new tree and runs CMD. A changed file is
+file with `DIR/.tt-sources.json` (the last successfully built tree), sets the mtime of
+each file that differs to now, invalidates the records and runs CMD. A changed file is
 then always newer than anything built before it; an unchanged one is rebuilt only if
-cargo thinks so. The record is written before CMD, so a build that fails halfway still
-counts as given that tree.
+cargo thinks so. Records are published only after CMD succeeds. A failed or interrupted
+command leaves no successful record, so the next run refreshes all sources even if it
+sees identical bytes with old mtimes. This also covers a build that never reaches
+`/target-next`, whose generated protocol may still belong to the previous tree.
+
+The deterministic regression in `tests/test_fresh.py` uses a dependency-free Cargo
+build script to generate Rust from a schema, fails between the two target builds,
+then restores old source mtimes to model a new mount. Run it with
+`python3 -m unittest discover -s itests/tests -p test_fresh.py` from the repo root.
 
 Checked by building three trees in a row with `./dt call --commit X --source DIR server`:
 A, then B (A with one more value in `enum FsChange` of tilr.proto and nothing else),
@@ -146,7 +195,6 @@ itests/
     live.py              live software in panes for the update and reload cases (group F)
     cloud.py             tilr Cloud played by a case, the stand-in cloudflared
   fixtures/*.py          prepared states shared by cases
-  installer/install.sh   a copy of the installer of the sh repository (not edited here)
   scenarios/uc_NNN.py    the cases of one use case
   tools/                 report.html, the history page and the spec coverage (coverage.py)
 ```
@@ -159,7 +207,7 @@ itests/
 tilrd, tilr, tilr-driver  on PATH (tilr next to tilrd); root's login shell is bash with PS1='$ '
 /opt/tt/tilrd-next        the next release; /opt/tt/manifest.json its version and platform
 /opt/tt/tilr-next         its client
-/opt/tt/install.sh        the installer (installer/install.sh), group A
+/opt/tt/install.sh        the installer (scripts/install.sh), group A
 $TT_SERVICE_CDN           http://cdn:8080, the fake CDN, for cases with services=["cdn"]
 ```
 
@@ -213,7 +261,10 @@ silence), `reconnected` / `reconnect_failed` (auto reconnect; resubscribes), `pa
 `server_error`, `protocol_error`, `stream_open` / `stream_closed` (with `sha256_in`) /
 `stream_lost` (agent streams; a stream is lost with its connection), `host_event` (`pane`,
 `name`, `kind`, `path`, `args`: `tilr edit` / `tilr open` in a pane, to a client with
-"host-events"), `fs_done` (a background transfer ended), `exec_exit` (a background exec). Screens go stale when the connection is
+"host-events"), `clipboard_write` (`pane`, `mime`, `total_size`, `size`, `chunks`, `sha256`,
+`text` when UTF-8: a copy made in a pane came whole, to a client with "clipboard-write") /
+`clipboard_write_cut` (`transfer`, `received`: a newer copy ended one before its last chunk),
+`fs_done` (a background transfer ended), `exec_exit` (a background exec). Screens go stale when the connection is
 lost: `screen` and `wait_for` wait for the full frame of the next connection.
 
 ## Writing a case
@@ -357,7 +408,9 @@ installer read them. `echo` is a TCP echo service on port
 the cases tagged for it, the cargo tests the spec text names ("Verified by …"), and each
 case's status in `results/latest` when there is one; requirements with neither are listed
 under "Uncovered". It exits 1 on an invalid registry. Run it after changing a requirement
-or a case's tags.
+or a case's tags. These reports are generated locally on demand, ignored by git, and
+are not committed. A fresh checkout has no report until you run the command.
+Without a local report, it preserves the last run from the current `coverage.json`; use `./dt coverage --report PATH` to read another `report.json` explicitly. A missing `--report PATH` or an unreadable previous `coverage.json` is an error (exit 2) that leaves the existing coverage files untouched: delete the file or pass `--report`.
 
 ## Gotchas
 

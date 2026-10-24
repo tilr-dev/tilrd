@@ -17,11 +17,120 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
+#[path = "../../../tests/support/server_owner.rs"]
+mod server_owner;
+
 const TILR: &str = env!("CARGO_BIN_EXE_tilr");
+
+/// Keep destination writers out of this multithreaded test process. A
+/// concurrent fork (e.g. a terminal test's pre_exec) otherwise inherits the
+/// writer until exec, making a freshly copied executable ETXTBSY on Linux.
+fn copy_program(source: &Path, destination: &Path) {
+    let output = Command::new("/bin/cp")
+        .arg(source)
+        .arg(destination)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "copy {} to {}: {}",
+        source.display(),
+        destination.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copying_a_program_does_not_leak_its_writer_into_an_unrelated_fork() {
+    use std::ffi::CString;
+    use std::os::unix::net::UnixStream;
+
+    let machine = Machine::new();
+    let fifo = machine.dir.join("copy.fifo");
+    let name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: name is a NUL-terminated path, and mkfifo retains no pointers.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let source = machine.dir.join("source");
+    // Larger than a Linux pipe's capacity; copying cannot finish after the
+    // first byte is read. The FIFO exposes the exact open-writer window.
+    let length = 4 * 1024 * 1024;
+    std::fs::write(&source, vec![b'x'; length]).unwrap();
+    let destination = fifo.clone();
+    let copier = std::thread::spawn(move || copy_program(&source, &destination));
+    let mut reader = std::fs::File::open(&fifo).unwrap();
+    // SAFETY: fcntl queries an owned FIFO descriptor.
+    let capacity = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETPIPE_SZ) };
+    assert!(capacity > 0 && (capacity as usize) < length - 1);
+    reader.read_exact(&mut [0]).unwrap();
+
+    // Positive control for the reported errno: the same inherited-writer
+    // mechanism makes a regular executable busy even after its parent closes it.
+    let executable = machine.dir.join("busy-program");
+    copy_program(Path::new("/bin/true"), &executable);
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&executable)
+        .unwrap();
+    let (release, held) = UnixStream::pair().unwrap();
+    let held_fd = held.as_raw_fd();
+    // SAFETY: the child only calls async-signal-safe read and _exit. In
+    // particular it never runs Rust destructors or touches allocator locks.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        unsafe {
+            let mut byte = 0u8;
+            libc::read(held_fd, (&raw mut byte).cast(), 1);
+            libc::_exit(0);
+        }
+    }
+    struct HeldFork(i32, UnixStream);
+    impl Drop for HeldFork {
+        fn drop(&mut self) {
+            let _ = self.1.write_all(b"r");
+            // SAFETY: this is our own child, which exits on release.
+            unsafe { libc::waitpid(self.0, std::ptr::null_mut(), 0) };
+        }
+    }
+    let _child = HeldFork(pid, release);
+    drop(held);
+    let drained = std::io::copy(
+        &mut (&mut reader).take((length - 1) as u64),
+        &mut std::io::sink(),
+    )
+    .unwrap();
+    assert_eq!(drained, (length - 1) as u64);
+    copier.join().unwrap();
+    drop(writer);
+    assert_eq!(
+        Command::new(&executable)
+            .status()
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ETXTBSY)
+    );
+    // SAFETY: set nonblocking on our reader so a leaked writer reports
+    // WouldBlock immediately instead of hanging the test waiting for EOF.
+    unsafe {
+        let flags = libc::fcntl(reader.as_raw_fd(), libc::F_GETFL);
+        assert_eq!(
+            libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
+            0
+        );
+    }
+    assert_eq!(
+        reader
+            .read(&mut [0])
+            .expect("copier left an inherited writer open"),
+        0
+    );
+}
 
 /// A machine of the test's own: the runtime, state and config directories
 /// of a user who runs nothing yet.
 struct Machine {
+    owner: server_owner::Owner,
     dir: PathBuf,
     tilr: PathBuf,
 }
@@ -42,6 +151,7 @@ impl Machine {
             "tilrd is not built next to tilr: run the tests of the workspace"
         );
         Self {
+            owner: server_owner::Owner::new(&dir),
             dir,
             tilr: PathBuf::from(TILR),
         }
@@ -53,9 +163,9 @@ impl Machine {
         let bin = self.dir.join("bin");
         std::fs::create_dir(&bin).unwrap();
         self.tilr = bin.join("tilr");
-        std::fs::copy(TILR, &self.tilr).unwrap();
+        copy_program(Path::new(TILR), &self.tilr);
         let server = bin.join("tilrd");
-        std::fs::copy(Path::new(TILR).with_file_name("tilrd"), &server).unwrap();
+        copy_program(&Path::new(TILR).with_file_name("tilrd"), &server);
         server
     }
 
@@ -92,7 +202,10 @@ impl Machine {
             .env_remove("TILR_PANE")
             .env_remove("TILR_SOCK")
             .env_remove("SSH_AUTH_SOCK")
+            // The tilrd it starts logs at its default level.
+            .env_remove("RUST_LOG")
             .stdin(Stdio::null());
+        self.owner.configure(&mut command);
         command
     }
 
@@ -130,9 +243,7 @@ impl Machine {
 
 impl Drop for Machine {
     fn drop(&mut self) {
-        if self.socket().exists() {
-            let _ = self.tilr(&["kill-server"]);
-        }
+        self.owner.close();
         if std::thread::panicking() {
             eprintln!("--- tilrd.log ---\n{}", self.log());
         }
@@ -528,6 +639,65 @@ fn server_commands_run_in_the_server() {
     assert!(!remote.status.success());
 }
 
+/// A fresh staged path can wait for macOS launch assessment before main.
+/// The updater's existing confirmation follows both staged --version checks
+/// and installation. Wait for that event without a launch deadline, then
+/// start the bounded reload observation. Preserve all stdout, including any
+/// bytes the reader buffered beyond the confirmation.
+fn observe_reload_after_install(stdout: &mut impl BufRead, observe: impl FnOnce()) -> Vec<u8> {
+    let mut captured = Vec::new();
+    loop {
+        let start = captured.len();
+        let read = stdout.read_until(b'\n', &mut captured).unwrap();
+        assert_ne!(
+            read,
+            0,
+            "updater closed stdout before installation: {}",
+            String::from_utf8_lossy(&captured)
+        );
+        if captured[start..].starts_with(b"updated ") {
+            break;
+        }
+    }
+    observe();
+    captured
+}
+
+#[test]
+fn reload_observation_waits_for_install_confirmation() {
+    use std::cell::Cell;
+
+    // Each read is a controlled updater event. No elapsed time can substitute
+    // for the second event: until it arrives the staged launch is unfinished.
+    struct UpdateOutput<'a>(&'a Cell<usize>);
+    impl Read for UpdateOutput<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let event: &[u8] = match self.0.get() {
+                0 => b"downloading tilr 9.9.9-test\n",
+                1 => b"updated old -> new: /bin\na running server reloads itself\n",
+                _ => return Ok(0),
+            };
+            assert!(buf.len() >= event.len());
+            buf[..event.len()].copy_from_slice(event);
+            self.0.set(self.0.get() + 1);
+            Ok(event.len())
+        }
+    }
+    let events = Cell::new(0);
+    let observed = Cell::new(false);
+    let mut stdout = BufReader::new(UpdateOutput(&events));
+    let mut captured = observe_reload_after_install(&mut stdout, || {
+        assert_eq!(events.get(), 2, "both staged launches must finish first");
+        observed.set(true);
+    });
+    assert!(observed.get());
+    stdout.read_to_end(&mut captured).unwrap();
+    assert_eq!(
+        captured,
+        b"downloading tilr 9.9.9-test\nupdated old -> new: /bin\na running server reloads itself\n"
+    );
+}
+
 #[test]
 fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     let mut machine = Machine::new();
@@ -535,7 +705,11 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     machine.ok(&["new", "-d"]);
     let server_pid = machine.server_pid();
 
-    let version_output = Command::new(&server_exe).arg("--version").output().unwrap();
+    let version_output = Command::new(&server_exe)
+        .env_remove("RUST_LOG")
+        .arg("--version")
+        .output()
+        .unwrap();
     assert!(version_output.status.success());
     let version_line = String::from_utf8(version_output.stdout).unwrap();
     let mut words = version_line.split_whitespace();
@@ -584,15 +758,20 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
         .expect("the local server requests the release archive");
     let mut hidden = HiddenSocket::hide(machine.socket());
     send_archive.send(()).unwrap();
-    eventually("the updated server resumes after reload", || {
-        machine.log().contains("resumed after reload with")
+    let mut stdout = BufReader::new(update.stdout.take().unwrap());
+    let mut captured_stdout = observe_reload_after_install(&mut stdout, || {
+        eventually("the updated server resumes after reload", || {
+            machine.log().contains("resumed after reload with")
+        });
     });
     assert!(
         update.try_wait().unwrap().is_none(),
         "tilr update waits for a connection to the reloaded server"
     );
     hidden.restore();
-    let output = update.wait_with_output().unwrap();
+    stdout.read_to_end(&mut captured_stdout).unwrap();
+    let mut output = update.wait_with_output().unwrap();
+    output.stdout = captured_stdout;
     assert!(
         output.status.success(),
         "tilr update: {output:?}\n--- server log ---\n{}",
@@ -971,10 +1150,14 @@ const FAKE_PANE: &str = "fake-pane-0123456789";
 enum Serve {
     /// Hello, the pane list, a frame on Subscribe; then it closes.
     ThenClose,
+    /// Close after receiving a key, before acknowledging it.
+    CloseOnKey,
     /// Hello, then it closes on `ListPanes` without answering.
     CloseOnListPanes,
     /// Accepts and says nothing, not even the WebSocket handshake.
     Silent,
+    /// Keep the connection open but never acknowledge keys.
+    WithoutKeyAck,
     /// Everything, for as long as the client stays.
     Fully,
 }
@@ -986,6 +1169,8 @@ struct FakeServer {
     accepted: std::sync::Arc<AtomicU32>,
     /// The text of the keys it was sent.
     keys: std::sync::mpsc::Receiver<String>,
+    subscriptions: std::sync::mpsc::Receiver<(usize, u32, u32)>,
+    finalized: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeServer {
@@ -994,6 +1179,8 @@ impl FakeServer {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let accepted = std::sync::Arc::new(AtomicU32::new(0));
         let (key_tx, keys) = std::sync::mpsc::channel();
+        let (size_tx, subscriptions) = std::sync::mpsc::channel();
+        let (finalize_tx, finalized) = std::sync::mpsc::channel();
         let counter = accepted.clone();
         std::thread::spawn(move || {
             for (n, stream) in listener.incoming().enumerate() {
@@ -1001,13 +1188,19 @@ impl FakeServer {
                 let serve = script[n.min(script.len() - 1)];
                 counter.fetch_add(1, Ordering::SeqCst);
                 let keys = key_tx.clone();
-                std::thread::spawn(move || fake_connection(stream, serve, n + 1, &keys));
+                let sizes = size_tx.clone();
+                let finalized = finalize_tx.clone();
+                std::thread::spawn(move || {
+                    fake_connection(stream, serve, n + 1, &keys, &sizes, &finalized)
+                });
             }
         });
         Self {
             url,
             accepted,
             keys,
+            subscriptions,
+            finalized,
         }
     }
 
@@ -1021,6 +1214,8 @@ fn fake_connection(
     serve: Serve,
     number: usize,
     keys: &std::sync::mpsc::Sender<String>,
+    sizes: &std::sync::mpsc::Sender<(usize, u32, u32)>,
+    finalized: &std::sync::mpsc::Sender<()>,
 ) {
     use tilr_proto::{
         ClientMessage, Frame, HelloAck, PaneInfo, PaneList, Row, Run, ServerMessage,
@@ -1038,11 +1233,18 @@ fn fake_connection(
             msg,
         ))))
     };
+    // Model a pane resized by another client before each connection.
+    let (mut cols, mut rows) = (132, 43);
     while let Ok(message) = ws.read() {
         let Message::Binary(packet) = message else {
             continue;
         };
-        let Ok(ClientMessage { msg: Some(msg), .. }) = tilr_proto::decode(&packet) else {
+        let Ok(ClientMessage {
+            msg: Some(msg),
+            input_seq,
+            ..
+        }) = tilr_proto::decode(&packet)
+        else {
             continue;
         };
         let sent = match msg {
@@ -1069,7 +1271,26 @@ fn fake_connection(
                     request_id: list.request_id,
                 }),
             ),
+            client_message::Msg::FinalizeInput(_) => {
+                let _ = finalized.send(());
+                Ok(())
+            }
+            client_message::Msg::Resize(size) => {
+                (cols, rows) = (size.cols, size.rows);
+                if input_seq != 0 {
+                    send(
+                        &mut ws,
+                        server_message::Msg::InputAck(tilr_proto::InputAck {
+                            pane_id: size.pane_id,
+                            seq: input_seq,
+                        }),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
             client_message::Msg::Subscribe(_) => {
+                let _ = sizes.send((number, cols, rows));
                 let frame = send(
                     &mut ws,
                     server_message::Msg::Frame(Frame {
@@ -1097,7 +1318,19 @@ fn fake_connection(
             }
             client_message::Msg::Key(key) => {
                 let _ = keys.send(key.text);
-                Ok(())
+                if matches!(serve, Serve::CloseOnKey) {
+                    return;
+                }
+                if matches!(serve, Serve::WithoutKeyAck) {
+                    continue;
+                }
+                send(
+                    &mut ws,
+                    server_message::Msg::InputAck(tilr_proto::InputAck {
+                        pane_id: key.pane_id,
+                        seq: input_seq,
+                    }),
+                )
             }
             _ => Ok(()),
         };
@@ -1121,6 +1354,25 @@ fn attach_to_fake(machine: &Machine, server: &FakeServer) -> Terminal {
     let mut terminal = Terminal::spawn(command);
     terminal.expect("fake screen 1");
     terminal
+}
+
+// @spec protocol/input-delivery-identities-have-a-bounded-lifetime
+#[test]
+fn normal_detach_finalizes_its_acknowledged_input() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x\x1dd");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    server
+        .finalized
+        .recv_timeout(Duration::from_secs(15))
+        .expect("detach did not finalize its input session");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 #[test]
@@ -1165,4 +1417,668 @@ fn detach_works_while_a_reconnect_attempt_hangs() {
     let took = start.elapsed();
     assert!(took < Duration::from_secs(1), "detached after {took:?}");
     assert!(terminal.child.wait().unwrap().success());
+}
+
+// @spec tilr-cli/reconnect-attempts
+#[test]
+fn detach_with_unacknowledged_input_while_disconnected() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Silent]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    terminal.expect("tilr: disconnected (");
+    // Both events are read while reconnecting: y enters the delivery queue first.
+    let start = Instant::now();
+    terminal.write("y\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn detach_with_unacknowledged_input_while_connected() {
+    let machine = Machine::new();
+    // Model a full PTY: the server receives the key but cannot acknowledge it.
+    let server = FakeServer::start(vec![Serve::WithoutKeyAck]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(15)).unwrap(),
+        "x"
+    );
+    let start = Instant::now();
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(terminal.child.wait().unwrap().success());
+    assert!(server.finalized.try_recv().is_err());
+}
+
+#[test]
+fn cloud_login_help_names_the_default_of_tilrd() {
+    let default = |program: &Path| {
+        let output = Command::new(program)
+            .args(["cloud", "login", "--help"])
+            .env_remove("TILR_CLOUD")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let help = String::from_utf8(output.stdout).unwrap();
+        help.lines()
+            .find_map(|line| {
+                let (_, rest) = line.split_once("[default: ")?;
+                Some(rest.split(']').next()?.to_owned())
+            })
+            .unwrap_or_else(|| panic!("no default in {help}"))
+    };
+    let tilr = default(Path::new(TILR));
+    assert_eq!(tilr, "https://wss.tilr.dev");
+    assert_eq!(tilr, default(&Path::new(TILR).with_file_name("tilrd")));
+}
+
+#[test]
+fn a_panicking_test_stops_its_copied_daemon_without_a_command_socket() {
+    let mut machine = Machine::new();
+    machine.install_copy();
+    machine.ok(&["new", "-d"]);
+    let pid = machine.server_pid();
+    let watcher = server_owner::watch(pid as u32).expect("running daemon");
+    std::fs::remove_file(machine.socket()).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _machine = machine;
+        panic!("controlled client test panic");
+    }));
+    let exited = server_owner::wait(&watcher);
+    if !exited {
+        // SAFETY: the test started this exact daemon and registered its exit.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        assert!(server_owner::wait(&watcher), "failed regression cleanup");
+    }
+    assert!(panic.is_err());
+    assert!(
+        exited,
+        "the copied daemon survived its test without a command socket"
+    );
+}
+
+/// A deterministic SSH stand-in: record every invocation and run its remote
+/// shell command locally, with this Machine's private home and server owner.
+fn deploy_ssh(machine: &Machine, uname: &str) -> PathBuf {
+    let bin = machine.dir.join("ssh-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/ssh.calls"
+case "$*" in *'-O exit'*) exit 0;; esac
+while [ "$1" != '--' ]; do shift; done
+shift
+[ "$1" = 'user@host' ] || exit 92
+shift
+if [ "$1" = 'uname -sm' ]; then echo '{uname}'; exit; fi
+exec /bin/sh -c "$1"
+"#
+    );
+    executable_script(&bin.join("ssh"), &script);
+    bin
+}
+
+fn executable_script(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn deploy_archive(machine: &Machine, client: &[u8], server: &[u8]) -> PathBuf {
+    let output = Command::new(TILR).arg("--version").output().unwrap();
+    let version = String::from_utf8(output.stdout).unwrap();
+    let platform = version
+        .split_whitespace()
+        .last()
+        .unwrap()
+        .trim_matches(['(', ')']);
+    let path = machine.dir.join(format!("tilr-9.9.9-{platform}.tar.gz"));
+    let bytes = release_archive(server, client);
+    let sum = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::write(
+        path.with_file_name(format!(
+            "{}.sha256",
+            path.file_name().unwrap().to_str().unwrap()
+        )),
+        sum,
+    )
+    .unwrap();
+    path
+}
+
+fn deploy_uname() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Darwin arm64"
+    } else if cfg!(target_arch = "aarch64") {
+        "Linux aarch64"
+    } else {
+        "Linux x86_64"
+    }
+}
+
+#[test]
+fn deploy_names_a_platform_without_a_release() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, "SunOS i86pc");
+    let output = machine
+        .command(&["deploy", "user@host"])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("user@host runs SunOS i86pc, for which there is no release"),
+        "{err}"
+    );
+    let calls = std::fs::read_to_string(machine.dir.join("ssh.calls")).unwrap();
+    assert!(!calls.contains("sh -c"));
+    assert!(!machine.socket().exists());
+}
+
+#[test]
+fn deploy_through_a_stub_ssh_installs_both_and_prints_how_to_connect() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let client = std::fs::read(TILR).unwrap();
+    let server = std::fs::read(Path::new(TILR).with_file_name("tilrd")).unwrap();
+    let archive = deploy_archive(&machine, &client, &server);
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(machine.dir.join(".local/bin/tilr")).unwrap(),
+        client
+    );
+    assert_eq!(
+        std::fs::read(machine.dir.join(".local/bin/tilrd")).unwrap(),
+        server
+    );
+    let token = std::fs::read_to_string(machine.dir.join("state/token")).unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let connect_bin = machine.dir.join("connect-bin");
+    std::fs::create_dir(&connect_bin).unwrap();
+    executable_script(
+        &connect_bin.join("ssh"),
+        "#!/bin/sh\n[ \"$1\" = -t ] && [ \"$2\" = user@host ] || exit 91\nprintf '%s\\n' \"$3\"\n",
+    );
+    let connect = Command::new("/bin/sh")
+        .args(["-c", stdout.lines().next().unwrap()])
+        .env("HOME", machine.dir.join("different-local-home"))
+        .env("PATH", &connect_bin)
+        .output()
+        .unwrap();
+    assert!(connect.status.success());
+    assert_eq!(
+        String::from_utf8(connect.stdout).unwrap(),
+        "~/.local/bin/tilr\n",
+        "the remote shell must expand the remote home"
+    );
+    assert_eq!(
+        stdout,
+        format!(
+            "ssh -t user@host '~/.local/bin/tilr'\nssh -N -L 7890:127.0.0.1:7890 user@host\n{}\n",
+            token.trim()
+        )
+    );
+    let calls = std::fs::read_to_string(machine.dir.join("ssh.calls")).unwrap();
+    assert!(calls.contains("ControlMaster=auto"));
+    assert!(calls.contains("ControlPersist=60"));
+    let control = calls
+        .split_whitespace()
+        .find(|s| s.starts_with("ControlPath="))
+        .unwrap();
+    let dir = control
+        .trim_start_matches("ControlPath=")
+        .trim_end_matches("/%C");
+    assert!(
+        !Path::new(dir).exists(),
+        "private SSH directory removed after deploy"
+    );
+}
+
+#[test]
+fn deploy_refuses_a_damaged_archive_before_sending_it() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let archive = deploy_archive(&machine, b"client", b"server");
+    std::fs::write(&archive, b"damaged").unwrap();
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
+    assert!(!machine.dir.join(".local/bin").exists());
+    assert!(
+        !std::fs::read_to_string(machine.dir.join("ssh.calls"))
+            .unwrap()
+            .contains("sh -c")
+    );
+}
+
+#[test]
+fn deploy_finds_tilrd_on_path_or_in_the_environment() {
+    for on_path in [true, false] {
+        let mut machine = Machine::new();
+        let server = machine.install_copy();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        let named = bin.join(if on_path { "tilrd" } else { "custom-daemon" });
+        std::fs::rename(server, &named).unwrap();
+        let archive = deploy_archive(&machine, b"client", b"server");
+        std::fs::write(&archive, b"damaged").unwrap();
+        let mut command = machine.command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ]);
+        command
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env_remove("TILRD");
+        if !on_path {
+            command.env("TILRD", &named);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            err.contains("checksum mismatch"),
+            "on_path={on_path}: {err}"
+        );
+        assert!(!machine.dir.join(".local/bin").exists());
+        let calls = std::fs::read_to_string(machine.dir.join("ssh.calls")).unwrap();
+        assert!(!calls.contains("sh -c"));
+    }
+}
+
+#[test]
+fn deploy_rolls_back_both_programs_when_remote_start_or_service_fails() {
+    for service in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        let installed = machine.dir.join(".local/bin");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("tilr"), b"old client").unwrap();
+        std::fs::write(installed.join("tilrd"), b"old server").unwrap();
+        let client = b"#!/bin/sh\ncase \"$1\" in --version) echo 'tilr 9.9.9';; *) echo 'remote failure' >&2; exit 1;; esac\n";
+        let archive = deploy_archive(&machine, client, b"#!/bin/sh\necho 'tilrd 9.9.9'\n");
+        let mut args = vec!["deploy", "--archive", archive.to_str().unwrap()];
+        if service {
+            args.push("--service");
+        }
+        args.push("user@host");
+        let output = machine
+            .command(&args)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("remote failure"));
+        assert_eq!(
+            std::fs::read(installed.join("tilr")).unwrap(),
+            b"old client"
+        );
+        assert_eq!(
+            std::fs::read(installed.join("tilrd")).unwrap(),
+            b"old server"
+        );
+        assert_eq!(std::fs::read_dir(installed).unwrap().count(), 2);
+        assert!(output.stdout.is_empty());
+    }
+}
+
+// @spec reload/installation-requests-reload-explicitly
+#[test]
+fn deploy_reloads_a_server_on_a_custom_socket() {
+    let mut machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let installed = machine.dir.join(".local/bin");
+    std::fs::create_dir_all(&installed).unwrap();
+    let client = std::fs::read(TILR).unwrap();
+    let server = std::fs::read(Path::new(TILR).with_file_name("tilrd")).unwrap();
+    copy_program(Path::new(TILR), &installed.join("tilr"));
+    copy_program(
+        &Path::new(TILR).with_file_name("tilrd"),
+        &installed.join("tilrd"),
+    );
+    machine.tilr = installed.join("tilr");
+    let custom = machine.dir.join("custom/tilrd.sock");
+    let custom_str = custom.to_str().unwrap();
+    let pane = machine.ok(&["--socket", custom_str, "new", "-d"]);
+    assert!(!machine.socket().exists());
+    assert!(!machine.tilr(&["ls", "--quiet"]).status.success());
+    let lock = tilr_proto::local::lock_path(&custom);
+    let pid = std::fs::read_to_string(&lock).unwrap();
+    let log = tilr_proto::local::log_path(&custom);
+    let archive = deploy_archive(&machine, &client, &server);
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    eventually("custom-socket server reloads after deploy", || {
+        std::fs::read_to_string(&log).is_ok_and(|log| log.contains("resumed after reload with"))
+    });
+    assert_eq!(std::fs::read_to_string(lock).unwrap(), pid);
+    assert_eq!(machine.ok(&["--socket", custom_str, "ls", "--quiet"]), pane);
+}
+
+#[test]
+fn deploy_requests_reload_without_a_default_server_and_keeps_a_refused_installation() {
+    for succeeds in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        let installed = machine.dir.join(".local/bin");
+        std::fs::create_dir_all(&installed).unwrap();
+        // No server answers on the default socket. Discovery must still run.
+        executable_script(&installed.join("tilr"), "#!/bin/sh\nexit 1\n");
+        std::fs::write(installed.join("tilrd"), b"old server").unwrap();
+        let client = b"#!/bin/sh\ncase \"$1\" in --version) echo 'tilr 9.9.9';; token) echo persistent-token;; esac\n";
+        let server = format!(
+            "#!/bin/sh\ncase \"$1\" in --version) echo 'tilrd 9.9.9';; reload) echo requested >\"$HOME/reload.called\"; exit {};; esac\n",
+            if succeeds { 0 } else { 1 }
+        );
+        let archive = deploy_archive(&machine, client, server.as_bytes());
+        let output = machine
+            .command(&[
+                "deploy",
+                "--archive",
+                archive.to_str().unwrap(),
+                "user@host",
+            ])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(machine.dir.join("reload.called").exists(), "{output:?}");
+        assert_eq!(output.status.success(), succeeds, "{output:?}");
+        assert_eq!(
+            std::fs::read(installed.join("tilrd")).unwrap(),
+            server.as_bytes()
+        );
+        assert_eq!(std::fs::read(installed.join("tilr")).unwrap(), client);
+        if succeeds {
+            assert!(String::from_utf8_lossy(&output.stdout).ends_with("persistent-token\n"));
+        } else {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("release installed, but could not request reload"),
+                "{output:?}"
+            );
+            assert!(output.stdout.is_empty());
+        }
+        assert_eq!(std::fs::read_dir(installed).unwrap().count(), 2);
+    }
+}
+
+#[test]
+fn deploy_gets_the_token_before_replacing_an_old_protocol_client() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    let installed = machine.dir.join(".local/bin");
+    std::fs::create_dir_all(&installed).unwrap();
+    executable_script(
+        &installed.join("tilr"),
+        "#!/bin/sh\ncase \"$1\" in ls) exit 0;; token) echo persistent-token;; *) exit 1;; esac\n",
+    );
+    std::fs::write(installed.join("tilrd"), b"old server").unwrap();
+    let archive = deploy_archive(&machine,
+        b"#!/bin/sh\ncase \"$1\" in --version) echo 'tilr 9.9.9';; *) echo 'old server protocol' >&2; exit 1;; esac\n",
+        b"#!/bin/sh\necho 'tilrd 9.9.9'\n");
+    let output = machine
+        .command(&[
+            "deploy",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).ends_with("persistent-token\n"));
+}
+
+#[test]
+fn deploy_restores_service_configuration_when_the_manager_refuses_it() {
+    for existed in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        for name in ["systemctl", "launchctl", "loginctl"] {
+            executable_script(&bin.join(name), "#!/bin/sh\nexit 1\n");
+        }
+        executable_script(
+            &bin.join("crontab"),
+            "#!/bin/sh\necho 'no crontab for test' >&2\nexit 1\n",
+        );
+        let relative = if cfg!(target_os = "macos") {
+            "Library/LaunchAgents/sh.tilr.tilrd.plist"
+        } else {
+            ".config/systemd/user/tilr.service"
+        };
+        let config = machine.dir.join(relative);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        if existed {
+            std::fs::write(&config, b"previous service configuration").unwrap();
+        }
+        let client = format!(
+            "#!/bin/sh\ncase \"$1\" in\n--version) echo 'tilr 9.9.9';;\ntoken) echo token;;\nservice) echo changed >\"$HOME/{relative}\"; echo 'manager refused' >&2; exit 1;;\nesac\n"
+        );
+        let archive = deploy_archive(
+            &machine,
+            client.as_bytes(),
+            b"#!/bin/sh\necho 'tilrd 9.9.9'\n",
+        );
+        let output = machine
+            .command(&[
+                "deploy",
+                "--service",
+                "--archive",
+                archive.to_str().unwrap(),
+                "user@host",
+            ])
+            .env("XDG_CONFIG_HOME", machine.dir.join(".config"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("manager refused"));
+        if existed {
+            assert_eq!(
+                std::fs::read(&config).unwrap(),
+                b"previous service configuration"
+            );
+        } else {
+            assert!(!config.exists(), "failed install left a new service file");
+        }
+        assert!(!machine.dir.join(".local/bin").exists());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn deploy_restores_the_crontab_after_a_service_failure() {
+    for existed in [false, true] {
+        let machine = Machine::new();
+        let bin = deploy_ssh(&machine, deploy_uname());
+        // Exercise the remote Linux fallback even when the local test is on macOS.
+        executable_script(&bin.join("uname"), "#!/bin/sh\necho Linux\n");
+        executable_script(&bin.join("systemctl"), "#!/bin/sh\nexit 1\n");
+        executable_script(
+            &bin.join("crontab"),
+            r#"#!/bin/sh
+case "$1" in
+  -l) if [ -e "$HOME/cron" ]; then cat "$HOME/cron"; else echo 'no crontab for test' >&2; exit 1; fi;;
+  -) cat > "$HOME/cron";;
+  -r) rm -f "$HOME/cron";;
+  *) cp "$1" "$HOME/cron";;
+esac
+"#,
+        );
+        let old = b"0 1 * * * existing-job\n";
+        if existed {
+            std::fs::write(machine.dir.join("cron"), old).unwrap();
+        }
+        let client = b"#!/bin/sh\ncase \"$1\" in\n--version) echo 'tilr 9.9.9';;\ntoken) echo token;;\nservice) echo '@reboot changed' | crontab -; echo 'service failed' >&2; exit 1;;\nesac\n";
+        let archive = deploy_archive(&machine, client, b"#!/bin/sh\necho 'tilrd 9.9.9'\n");
+        let output = machine
+            .command(&[
+                "deploy",
+                "--service",
+                "--archive",
+                archive.to_str().unwrap(),
+                "user@host",
+            ])
+            .env("XDG_CONFIG_HOME", machine.dir.join(".config"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("service failed"));
+        if existed {
+            assert_eq!(std::fs::read(machine.dir.join("cron")).unwrap(), old);
+        } else {
+            assert!(!machine.dir.join("cron").exists());
+        }
+        assert!(output.stdout.is_empty());
+    }
+}
+
+// @spec protocol/input-is-acknowledged-after-application
+#[test]
+fn attach_replays_a_key_when_the_connection_ends_without_an_ack() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    terminal.expect("fake screen 2");
+    terminal.write("y");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "y"
+    );
+}
+
+// @spec tilr-cli/attached-terminal
+#[test]
+fn reconnect_restores_terminal_size_before_subscribing() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::CloseOnKey, Serve::Fully]);
+    let mut terminal = attach_to_fake(&machine, &server);
+    let first = server
+        .subscriptions
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    terminal.write("x");
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
+        "x"
+    );
+    let second = server
+        .subscriptions
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(
+        second,
+        (2, 80, 24),
+        "reconnect must reclaim the terminal size before Subscribe"
+    );
+    assert_eq!(first, (1, 80, 24));
+}
+
+#[test]
+fn deploy_does_not_start_a_daemon_before_a_failing_service_install() {
+    let machine = Machine::new();
+    let bin = deploy_ssh(&machine, deploy_uname());
+    for name in ["systemctl", "launchctl", "loginctl"] {
+        executable_script(&bin.join(name), "#!/bin/sh\nexit 1\n");
+    }
+    executable_script(
+        &bin.join("crontab"),
+        "#!/bin/sh\n[ \"$1\" != -l ] || echo 'no crontab for test' >&2\nexit 1\n",
+    );
+    let archive = deploy_archive(
+        &machine,
+        &std::fs::read(TILR).unwrap(),
+        &std::fs::read(Path::new(TILR).with_file_name("tilrd")).unwrap(),
+    );
+    let output = machine
+        .command(&[
+            "deploy",
+            "--service",
+            "--archive",
+            archive.to_str().unwrap(),
+            "user@host",
+        ])
+        .env("XDG_CONFIG_HOME", machine.dir.join(".config"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "service installation must fail");
+    assert!(
+        !machine.socket().exists(),
+        "failed deploy left a daemon running"
+    );
+    assert!(
+        !machine.dir.join("state/token").exists(),
+        "failed deploy created a token"
+    );
+    assert!(!machine.dir.join(".local/bin").exists());
+    assert!(output.stdout.is_empty());
 }
