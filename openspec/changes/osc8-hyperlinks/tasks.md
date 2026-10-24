@@ -8,10 +8,10 @@
 
 ## 2. tilr attach
 
-- [ ] 2.1 `draw` wraps linked runs in OSC 8 (D5); verify with a unit test `attach::tests::a_linked_run_is_drawn_inside_osc_8` and by hand (`printf '\e]8;;https://example.com\e\\x\e]8;;\e\\'` in `tilr` inside a terminal that supports OSC 8)
+- [x] 2.1 `draw` wraps linked runs in OSC 8 (D5); verify with the unit test `attach::tests::a_linked_run_is_drawn_inside_osc_8`
 
 ## 3. Checks and archive
 
-- [ ] 3.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
+- [x] 3.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
 - [x] 3.2 `./itests/dt --only scenarios --filter uc_079` and `./itests/dt --only scenarios --filter uc_06a` (input and reload with frames) green, then `./itests/dt coverage` exits 0
-- [ ] 3.3 Archive the change; verify `openspec validate --all --strict`
+- [x] 3.3 Archive the change; verify `openspec validate --all --strict`
