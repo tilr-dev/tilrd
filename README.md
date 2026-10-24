@@ -1243,6 +1243,14 @@ remains available. `GHOSTTY_SOURCE_DIR` bypasses pkg-config, so unset it when us
 the shared library. Linux containers retain their source-build path because
 `scripts/linux.sh` does not forward the host package path.
 
+The Linux image seeds Zig's package cache with the pinned ImGui, zigimg and uucode
+archives from `codeload.github.com`, checking their hashes against Ghostty's package
+manifests. This avoids the GitHub redirect response: checked 2026-10-24, its CSP
+header alone exceeds Zig 0.15.2's 8 KiB HTTP read buffer. To recheck, run
+`curl -sSI https://github.com/ocornut/imgui/archive/refs/tags/v1.92.5-docking.tar.gz`
+and compare the response header size with Zig's `lib/std/http/Client.zig`
+`read_buffer_size`. When upgrading Ghostty, update the image's package pins too.
+
 When upgrading `libghostty-vt`, keep the direct sys dependency at the matching exact
 version. Read that version's `build.rs`, update this script's Ghostty revision and
 build flags, and rerun the script. A Zig or SDK change also selects a new prefix;
