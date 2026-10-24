@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: Hyperlinks go with their runs
-A run of cells the program printed inside an OSC 8 hyperlink SHALL carry `Run.link`, the index plus one of its URI in the frame's `links`, which SHALL list each URI the frame's rows use once; runs SHALL split where the link changes, and cells without a link SHALL have `link` 0. A URI longer than 8 KiB or containing invalid UTF-8 SHALL NOT be listed and its cells SHALL go without a link.
+A run of cells whose OSC 8 hyperlink the VT engine retained SHALL carry `Run.link`, the index plus one of its URI in the frame's `links`, which SHALL list each URI the frame's rows use once; runs SHALL split where the link changes, and cells without a link SHALL have `link` 0. A URI longer than the VT engine's OSC limit, longer than the defensive 8 KiB frame bound, or containing invalid UTF-8 SHALL NOT be listed and its cells SHALL go without a link. With libghostty-vt 0.2.2, checked 2026-10-24, a parameter-free OSC 8 retains a 2046-byte URI and drops a 2047-byte URI; recheck with `cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked`. OSC parameters also consume the engine's payload budget.
 
-**Verified by**: unit tests `ghostty::tests::a_hyperlink_goes_with_its_run` , `ghostty::tests::an_overlong_hyperlink_is_left_out` and `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` and `ghostty::tests::linked_trailing_spaces_keep_their_cells` (crates/tilr-screen/src/ghostty.rs).
+**Verified by**: unit tests `ghostty::tests::a_hyperlink_goes_with_its_run`, `ghostty::tests::an_overlong_hyperlink_is_left_out`, `ghostty::tests::the_vt_osc_limit_keeps_text_but_drops_long_links`, `ghostty::tests::an_out_of_space_uri_is_left_out`, `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` and `ghostty::tests::linked_trailing_spaces_keep_their_cells` (crates/tilr-screen/src/ghostty.rs).
 
 #### Scenario: A link between plain text
 - **WHEN** the program prints `a ESC]8;;https://example.com/ESC\ link ESC]8;;ESC\ b`
@@ -12,6 +12,14 @@ A run of cells the program printed inside an OSC 8 hyperlink SHALL carry `Run.li
 #### Scenario: Two rows, one link
 - **WHEN** the same URI is used on rows 0 and 1 of one frame
 - **THEN** `links` lists it once and both runs point at it
+
+#### Scenario: The VT engine rejects a long OSC URI
+- **WHEN** an OSC 8 URI exceeds the VT engine's OSC payload limit
+- **THEN** the label remains plain text with link 0 and the URI is absent from `links`
+
+#### Scenario: The URI read exceeds the defensive buffer
+- **WHEN** reading a cell URI returns `OutOfSpace` for the 8 KiB URI buffer
+- **THEN** the frame retains the label as plain text without listing the URI
 
 #### Scenario: No links
 - **WHEN** a frame's rows have no hyperlinks

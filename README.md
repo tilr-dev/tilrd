@@ -857,7 +857,12 @@ The Tilr app's `server` plugin and tilr-mac need version 1 to talk to this serve
 
 `Frame.links` is a table of hyperlink URIs used by its changed rows, deduplicated within
 the frame. `Run.link` is the URI's index plus one, or 0 for plain text; runs split when
-the link changes. URIs longer than 8 KiB are omitted and their cells remain plain text.
+the link changes. URIs exceeding the VT engine's OSC payload limit are omitted and
+their cells remain plain text. With libghostty-vt 0.2.2 (checked 2026-10-24), a
+parameter-free OSC 8 retains a 2046-byte URI and drops a 2047-byte URI; OSC parameters
+also use that budget. Recheck with
+`cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked`.
+The frame reader also has a defensive 8 KiB URI bound.
 `tilr attach` draws linked runs with OSC 8 in the local terminal. These fields have
 harmless defaults: clients ignoring them still show the text, with protocol version 1
 and no feature flag.

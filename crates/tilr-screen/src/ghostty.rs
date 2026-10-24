@@ -360,25 +360,13 @@ impl Screen for GhosttyScreen {
                     let x = column;
                     column += if wide { 2 } else { 1 };
                     let link = if row_has_links && raw.has_hyperlink()? {
-                        match self
+                        // Defensive bound: the current VT parser rejects long OSCs
+                        // before this read; see the_vt_osc_limit_keeps_text_but_drops_long_links.
+                        let result = self
                             .term
                             .grid_ref(Point::Viewport(PointCoordinate { x: x as u16, y }))?
-                            .hyperlink_uri(&mut uri_buf)
-                        {
-                            Ok(0) | Err(libghostty_vt::error::Error::OutOfSpace { .. }) => 0,
-                            Ok(len) => {
-                                if let Ok(uri) = std::str::from_utf8(&uri_buf[..len]) {
-                                    *link_indices.entry(uri.to_owned()).or_insert_with(|| {
-                                        links.push(uri.to_owned());
-                                        links.len() as u32
-                                    })
-                                } else {
-                                    // Protobuf strings cannot carry arbitrary OSC bytes.
-                                    0
-                                }
-                            }
-                            Err(error) => return Err(error.into()),
-                        }
+                            .hyperlink_uri(&mut uri_buf);
+                        uri_index(result, &uri_buf, &mut links, &mut link_indices)?
                     } else {
                         0
                     };
@@ -1524,6 +1512,27 @@ fn color_key(color: Option<&Color>) -> u64 {
     }
 }
 
+/// Intern a URI read from a cell, preserving plain text when the buffer is too small.
+fn uri_index(
+    result: std::result::Result<usize, libghostty_vt::Error>,
+    buffer: &[u8],
+    links: &mut Vec<String>,
+    indices: &mut std::collections::HashMap<String, u32>,
+) -> std::result::Result<u32, libghostty_vt::Error> {
+    match result {
+        Ok(0) | Err(libghostty_vt::Error::OutOfSpace { .. }) => Ok(0),
+        Ok(len) => match std::str::from_utf8(&buffer[..len]) {
+            Ok(uri) => Ok(*indices.entry(uri.to_owned()).or_insert_with(|| {
+                links.push(uri.to_owned());
+                links.len() as u32
+            })),
+            // Protobuf strings cannot carry arbitrary OSC bytes.
+            Err(_) => Ok(0),
+        },
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Default)]
 struct RunBuilder {
     runs: Vec<Run>,
@@ -2140,6 +2149,38 @@ mod tests {
         assert_eq!(row_text(&frame, 0), "link");
         assert_eq!(frame.changed[0].runs[0].link, 0);
         assert!(frame.links.is_empty());
+    }
+
+    #[test]
+    fn the_vt_osc_limit_keeps_text_but_drops_long_links() {
+        // Measured on libghostty-vt 0.2.2, 2026-10-24. No OSC parameters.
+        for (len, retained) in [(2046, true), (2047, false)] {
+            let mut screen = screen();
+            let uri = format!("https://example.com/{}", "x".repeat(len - 20));
+            assert_eq!(uri.len(), len);
+            screen.feed(format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\").as_bytes());
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 0), "link");
+            assert_eq!(frame.changed[0].runs[0].link, u32::from(retained));
+            assert_eq!(frame.links, if retained { vec![uri] } else { vec![] });
+        }
+    }
+
+    #[test]
+    fn an_out_of_space_uri_is_left_out() {
+        let mut links = Vec::new();
+        let mut indices = std::collections::HashMap::new();
+        let buffer = [0; 8192];
+        let link = uri_index(
+            Err(libghostty_vt::Error::OutOfSpace { required: 8193 }),
+            &buffer,
+            &mut links,
+            &mut indices,
+        )
+        .unwrap();
+        assert_eq!(link, 0);
+        assert!(links.is_empty());
+        assert!(indices.is_empty());
     }
 
     #[test]

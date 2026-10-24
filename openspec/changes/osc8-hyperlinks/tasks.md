@@ -15,3 +15,8 @@
 - [x] 3.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green
 - [x] 3.2 `./itests/dt --only scenarios --filter uc_079` and `./itests/dt --only scenarios --filter uc_06a` (input and reload with frames) green, then `./itests/dt coverage` exits 0
 - [x] 3.3 Archive the change; verify `openspec validate --all --strict`
+
+## 4. URI limits and exact reload output
+
+- [x] 4.1 Document and exercise the VT OSC payload boundary separately from the defensive URI buffer; test `OutOfSpace` handling directly
+- [x] 4.2 Match the complete old output run after reload so echoed shell input cannot satisfy the assertion

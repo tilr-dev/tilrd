@@ -171,13 +171,13 @@ async fn hyperlinks_are_plain_text_after_a_reload_and_new_ones_work() {
             .flat_map(|row| &row.runs)
             .all(|run| run.link == 0)
     );
-    assert!(frame.changed.iter().any(|row| {
-        row.runs
+    assert!(
+        frame
+            .changed
             .iter()
-            .map(|run| run.text.as_str())
-            .collect::<String>()
-            .contains("old-link")
-    }));
+            .flat_map(|row| &row.runs)
+            .any(|run| run.text == "old-link" && run.link == 0)
+    );
 
     client
         .type_line(
