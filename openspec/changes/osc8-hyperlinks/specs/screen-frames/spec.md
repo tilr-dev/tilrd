@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Hyperlinks go with their runs
-A run of cells whose OSC 8 hyperlink the VT engine retained SHALL carry `Run.link`, the index plus one of its URI in the frame's `links`, which SHALL list each URI the frame's rows use once; runs SHALL split where the link changes, and cells without a link SHALL have `link` 0. A URI longer than the VT engine's OSC limit, longer than the defensive 8 KiB frame bound, or containing invalid UTF-8 SHALL NOT be listed and its cells SHALL go without a link. With libghostty-vt 0.2.2, checked 2026-10-24, a parameter-free OSC 8 retains a 2046-byte URI and drops a 2047-byte URI; recheck with `cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked`. OSC parameters also consume the engine's payload budget.
+Frames SHALL list each retained OSC 8 URI once in `links`; `Run.link` SHALL be its index plus one, or 0 for plain text. Runs SHALL split where the link changes. URIs exceeding the VT engine's OSC payload limit or the defensive 8 KiB frame buffer, or containing invalid UTF-8, SHALL be omitted and their cells SHALL remain plain text.
 
 **Verified by**: unit tests `ghostty::tests::a_hyperlink_goes_with_its_run`, `ghostty::tests::an_overlong_hyperlink_is_left_out`, `ghostty::tests::the_vt_osc_limit_keeps_text_but_drops_long_links`, `ghostty::tests::an_out_of_space_uri_is_left_out`, `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` and `ghostty::tests::linked_trailing_spaces_keep_their_cells` (crates/tilr-screen/src/ghostty.rs).
 
@@ -14,6 +14,8 @@ A run of cells whose OSC 8 hyperlink the VT engine retained SHALL carry `Run.lin
 - **THEN** `links` lists it once and both runs point at it
 
 #### Scenario: The VT engine rejects a long OSC URI
+With libghostty-vt 0.2.2, checked 2026-10-24, a parameter-free OSC 8 retains a 2046-byte URI and drops a 2047-byte URI. OSC parameters also consume the engine's payload budget. Recheck with `cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked`.
+
 - **WHEN** an OSC 8 URI exceeds the VT engine's OSC payload limit
 - **THEN** the label remains plain text with link 0 and the URI is absent from `links`
 
