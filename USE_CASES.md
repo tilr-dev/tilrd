@@ -592,6 +592,7 @@ pane process. The server's counters are at `GET /metrics`.
 | Use case | Test |
 |---|---|
 | Links split runs, share a frame URI table across rows, and disappear from unlinked frames | `tilr-screen`: `ghostty::tests::a_hyperlink_goes_with_its_run` |
+| Linked trailing spaces, including an all-space label, keep their cells | `tilr-screen`: `ghostty::tests::linked_trailing_spaces_keep_their_cells` |
 | URIs longer than 8 KiB remain plain text | `tilr-screen`: `ghostty::tests::an_overlong_hyperlink_is_left_out` |
 | Attach opens and closes OSC 8 around a linked run | `tilr`: `attach::tests::a_linked_run_is_drawn_inside_osc_8` |
 | A URI containing invalid UTF-8 leaves its text intact | `tilr-screen`: `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` |

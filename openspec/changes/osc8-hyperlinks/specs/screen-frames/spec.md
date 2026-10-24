@@ -3,7 +3,7 @@
 ### Requirement: Hyperlinks go with their runs
 A run of cells the program printed inside an OSC 8 hyperlink SHALL carry `Run.link`, the index plus one of its URI in the frame's `links`, which SHALL list each URI the frame's rows use once; runs SHALL split where the link changes, and cells without a link SHALL have `link` 0. A URI longer than 8 KiB or containing invalid UTF-8 SHALL NOT be listed and its cells SHALL go without a link.
 
-**Verified by**: unit tests `ghostty::tests::a_hyperlink_goes_with_its_run` , `ghostty::tests::an_overlong_hyperlink_is_left_out` and `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` (crates/tilr-screen/src/ghostty.rs).
+**Verified by**: unit tests `ghostty::tests::a_hyperlink_goes_with_its_run` , `ghostty::tests::an_overlong_hyperlink_is_left_out` and `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` and `ghostty::tests::linked_trailing_spaces_keep_their_cells` (crates/tilr-screen/src/ghostty.rs).
 
 #### Scenario: A link between plain text
 - **WHEN** the program prints `a ESC]8;;https://example.com/ESC\ link ESC]8;;ESC\ b`
@@ -20,6 +20,10 @@ A run of cells the program printed inside an OSC 8 hyperlink SHALL carry `Run.li
 #### Scenario: Invalid UTF-8 in a URI
 - **WHEN** the program prints a hyperlink URI containing invalid UTF-8
 - **THEN** the frame still carries the text, with no hyperlink
+
+#### Scenario: Linked trailing spaces retain the hyperlink
+- **WHEN** an OSC 8 label ends with spaces or consists entirely of spaces
+- **THEN** its linked cells remain in the frame, while unlinked trailing blank cells may be omitted
 
 ### Requirement: Attach draws hyperlinks in the local terminal
 The attach client SHALL surround each linked run's text with OSC 8 opening and closing sequences using its URI from the frame table. Unlinked runs SHALL be drawn as plain text.

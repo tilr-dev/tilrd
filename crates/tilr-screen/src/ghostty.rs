@@ -1557,11 +1557,11 @@ impl RunBuilder {
         });
     }
 
-    /// Drop trailing blank default-style cells; the client clears the rest of
+    /// Drop trailing blank unlinked default-style cells; the client clears the rest of
     /// the row anyway.
     fn finish(mut self) -> Vec<Run> {
         while let Some(run) = self.runs.last_mut() {
-            if run.style != 0 || run.wide || run.cluster {
+            if run.style != 0 || run.wide || run.cluster || run.link != 0 {
                 break;
             }
             let trimmed = run.text.trim_end_matches(' ').len();
@@ -2103,6 +2103,22 @@ mod tests {
                 .flat_map(|row| &row.runs)
                 .all(|run| run.link == 0)
         );
+    }
+
+    #[test]
+    fn linked_trailing_spaces_keep_their_cells() {
+        for label in ["x ", " "] {
+            let mut screen = screen();
+            screen.feed(
+                format!("\x1b]8;;https://example.com/\x1b\\{label}\x1b]8;;\x1b\\  ").as_bytes(),
+            );
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(frame.links, ["https://example.com/"]);
+            let runs = &frame.changed[0].runs;
+            assert_eq!(runs.len(), 1, "label {label:?}");
+            assert_eq!(runs[0].text, label);
+            assert_eq!(runs[0].link, 1);
+        }
     }
 
     #[test]
