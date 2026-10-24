@@ -15,6 +15,8 @@ selected scenario id. Before invoking that case it SHALL bind and listen on
 it on success or failure. It SHALL log activation. It SHALL NOT use sleeps, retries,
 or increased timeouts to establish readiness, or change the case's result.
 
+**Verified by**: `itests/tests/test_port_stand.py::PortStandTest`.
+
 #### Scenario: Reproduce uc_033's bind failure
 - **WHEN** the stand targets `uc_033:a_tilrd_tilr_starts_goes_on_without_the_taken_port`
 - **THEN** its initial bind to 7890 fails with EADDRINUSE and the report remains FAIL
@@ -40,6 +42,8 @@ SHALL certify only successful commands. Before a command can partially change
 artifacts, prior records SHALL be invalidated. The wrapper SHALL preserve the
 command's exit status.
 
+**Verified by**: `itests/tests/test_fresh.py::FreshTest`.
+
 #### Scenario: Failed build before the next target is built
 - **GIVEN** both target directories contain artifacts from an older protocol
 - **WHEN** a changed protocol is presented with old source mtimes and the command fails before rebuilding the next target
@@ -60,6 +64,8 @@ and Linux script Rust tests in both build and runtime source snapshots at the
 compiled workspace path. The runtime SHALL provide Python, Git and `shasum` so
 these tests run without Docker or release credentials.
 
+**Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest` and `linux_script::parallel_worktrees_keep_their_linux_build_outputs` via `./itests/dt --only rust --filter release` and `./itests/dt --only rust --filter linux_script`.
+
 #### Scenario: Release fixtures run in dt
 - **WHEN** dt runs the Rust `release` suite
 - **THEN** the tests can read their scripts and repository configuration
@@ -79,7 +85,7 @@ shared Cargo target cache.
 
 **Verified by:** `tilr/build_script::every_watched_file_exists_and_the_git_head_is_watched`
 and `tilrd/build_script::every_watched_file_exists_and_the_git_head_is_watched`
-via `./itests/dt --only rust --filter build_script`.
+and `itests/tests/test_build.py::BuildTest::test_build_script_stdout_survives_without_the_build_cache` via `./itests/dt --only rust --filter build_script`.
 
 #### Scenario: Build-script tests run in a separate runtime
 - **WHEN** dt runs the `tilr` and `tilrd` build-script tests

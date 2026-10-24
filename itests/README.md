@@ -405,11 +405,17 @@ installer read them. `echo` is a TCP echo service on port
 
 `./dt coverage` (`uv run --no-project python itests/tools/coverage.py`, no Dagger) writes
 `openspec/coverage/coverage.md` and `coverage.json`: per capability, each requirement with
-the cases tagged for it, the cargo tests the spec text names ("Verified by …"), and each
-case's status in `results/latest` when there is one; requirements with neither are listed
+the cases tagged for it, the Cargo and Python tests its own text names ("Verified by …"), and each
+case's status in `results/latest` when there is one; requirements without either form of evidence are listed
 under "Uncovered". It exits 1 on an invalid registry. Run it after changing a requirement
 or a case's tags. These reports are generated locally on demand, ignored by git, and
 are not committed. A fresh checkout has no report until you run the command.
+Cargo citations use `module::test_name`, optionally prefixed with `crate/`. Python
+citations use `itests/tests/test_name.py` or `scripts/test_name.py`, optionally followed
+by `::ClassName::test_name`. The report preserves those citations in separate
+`cargo_tests` and `python_tests` JSON fields and identifies both kinds in Markdown.
+Capability-level Purpose citations do not cover individual requirements. Named
+citations record evidence; coverage generation does not run or check those tests.
 Without a local report, it preserves the last run from the current `coverage.json`; use `./dt coverage --report PATH` to read another `report.json` explicitly. A missing `--report PATH` or an unreadable previous `coverage.json` is an error (exit 2) that leaves the existing coverage files untouched: delete the file or pass `--report`.
 
 ## Gotchas

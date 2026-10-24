@@ -589,3 +589,11 @@ pane process. The server's counters are at `GET /metrics`.
 Shared Ghostty build tooling: `ghostty_script::shared_ghostty_build_reuses_complete_toolchain_prefixes`
 checks pinned build flags, package relocation, reuse, Zig/SDK identity changes, Linux
 SDK independence and explicit recovery after failure through deterministic tool fixtures.
+
+## Coverage report regression tests
+
+`itests/tests/test_coverage.py` checks requirement-local Python test evidence,
+crate-qualified Cargo citations, rejection of unrelated paths, and local JSON/Markdown
+generation with Git ignore rules. It also checks report selection and preservation of
+the last recorded run. Run with `uv run --no-project python -m unittest discover -s
+itests/tests -p test_coverage.py`.

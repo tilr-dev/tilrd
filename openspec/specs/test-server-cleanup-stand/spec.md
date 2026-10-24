@@ -11,7 +11,7 @@ The test-server cleanup stand SHALL start a test-owned tilrd and wait for its
 confirmed ready event before interrupting the test process. It SHALL provide
 separate signal and timeout cases without sleeps or repeated runs for ordering.
 
-**Verified by**: `scripts/test_server_cleanup_stand_selftest.py` and a real
+**Verified by**: `scripts/test_server_cleanup_stand_selftest.py::CleanupStandTest` and `scripts/test_server_cleanup_stand_selftest.py::ReadyEventTest` and a real
 `scripts/test_server_cleanup_stand.py` run.
 
 #### Scenario: Signal after ready
@@ -33,7 +33,7 @@ the fixture on failure, including before readiness. Success SHALL require an
 OS exit event; unavailable watchers SHALL fail explicitly. After process
 cleanup it SHALL remove its fixture directory and sockets.
 
-**Verified by**: `scripts/test_server_cleanup_stand_selftest.py` and a real
+**Verified by**: `scripts/test_server_cleanup_stand_selftest.py::CleanupStandTest` and `scripts/test_server_cleanup_stand_selftest.py::ReadyEventTest` and `scripts/test_server_cleanup_stand_selftest.py::ExitEventTest` and a real
 `scripts/test_server_cleanup_stand.py` run.
 
 #### Scenario: A test server survives interruption

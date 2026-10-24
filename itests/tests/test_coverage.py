@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,48 @@ SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "coverage.py"
 SPEC = importlib.util.spec_from_file_location("itest_coverage_tool", SCRIPT)
 coverage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coverage)
+
+
+class NamedTestsTest(unittest.TestCase):
+    def test_python_citations_cover_requirements_without_becoming_cargo_tests(self):
+        citations = ["itests/tests/test_coverage.py::CoverageRunTest",
+                     "scripts/test_server_cleanup_stand_selftest.py"]
+        text = "**Verified by**: " + " and ".join(f"`{name}`" for name in citations + citations) + "."
+        specs = {"sample": {"requirements": {"example": {
+            "title": "Python evidence", "text": text, "scenarios": {},
+        }}}}
+
+        result = coverage.build({"cases": []}, specs, {}, {})
+
+        requirement = result["capabilities"][0]["requirements"][0]
+        self.assertTrue(requirement["covered"])
+        self.assertEqual(requirement["python_tests"], citations)
+        self.assertEqual(requirement["cargo_tests"], [])
+        markdown = coverage.markdown(result)
+        self.assertIn("Python tests named in the spec:", markdown)
+        for name in citations:
+            self.assertIn(f"`{name}`", markdown)
+        self.assertNotIn("Cargo tests named in the spec:", markdown)
+
+    def test_cargo_citations_keep_crate_qualified_names(self):
+        for label in ("Verified by", "Verified by:", "**Verified by**:", "**Verified by:**"):
+            with self.subTest(label=label):
+                text = label + " `tilr/build_script::watched_files` and `module::tests::works`."
+                self.assertEqual(coverage.named_tests(text),
+                                 ["tilr/build_script::watched_files", "module::tests::works"])
+
+    def test_unrelated_paths_and_purpose_do_not_cover_a_requirement(self):
+        specs = {"sample": {"purpose": "Verified by `itests/tests/test_coverage.py`.",
+                            "requirements": {"example": {
+                                "title": "No evidence", "scenarios": {},
+                                "text": "See `itests/tests/test_coverage.py`. Verified by "
+                                        "`itests/tools/coverage.py`, `scripts/helper.py`, "
+                                        "`itests/scenarios/uc_007.py`, `uc_007::case`.",
+                            }}}}
+        requirement = coverage.build({"cases": []}, specs, {}, {})["capabilities"][0]["requirements"][0]
+        self.assertFalse(requirement["covered"])
+        self.assertEqual(requirement["python_tests"], [])
+        self.assertEqual(requirement["cargo_tests"], [])
 
 
 class CoverageRunTest(unittest.TestCase):
@@ -43,6 +86,21 @@ class CoverageRunTest(unittest.TestCase):
 
     def output(self):
         return json.loads((self.out / "coverage.json").read_text())
+
+    def test_checkout_generates_local_reports_ignored_by_git(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), "--out", str(self.out)],
+                                cwd=SCRIPT.parents[2], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.output()["capabilities"])
+        self.assertTrue((self.out / "coverage.md").read_text().startswith("# Spec coverage"))
+        paths = ["openspec/coverage/coverage.json", "openspec/coverage/coverage.md"]
+        tracked = subprocess.run(["git", "ls-files", "openspec/coverage"],
+                                 cwd=SCRIPT.parents[2], check=True, capture_output=True, text=True)
+        self.assertEqual(tracked.stdout, "")
+        ignored = subprocess.run(["git", "check-ignore", *paths], cwd=SCRIPT.parents[2],
+                                 capture_output=True, text=True)
+        self.assertEqual(ignored.returncode, 0, ignored.stderr)
+        self.assertEqual(ignored.stdout.splitlines(), paths)
 
     def test_missing_local_report_preserves_previous_run(self):
         self.out.mkdir()
