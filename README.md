@@ -1314,6 +1314,9 @@ used and can also be removed once all older runs have stopped.
 
 ## Releases
 
+Promote `dev` to `main` with a PR titled `chore: promote dev to main`, merged with
+a merge commit. Task branches are squash-merged into `dev`.
+
 Releases are made by [release-please](https://github.com/googleapis/release-please)
 (`.github/workflows/release.yml`): Conventional Commits on `main` keep a release PR open with
 the version bump (`[workspace.package] version` in Cargo.toml, and Cargo.lock; the crates
@@ -1326,6 +1329,12 @@ share it) and CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release
   `true`: its runner is free only for public repositories);
 - publishes the Linux archives to the CDN, the R2 bucket `tilr-cdn` behind
   `https://cdn.tilr.dev`, with `scripts/release.sh --upload-only`.
+
+After release creation, tilr-bot automatically opens a `main` → `dev` PR titled
+`chore: back-merge vX.Y.Z` and merges it with a merge commit, returning the version
+and changelog to `dev`. An existing open PR is reused. If the merge fails (for example,
+because of a conflict), the PR stays open for manual resolution and the release stays
+successful.
 
 The CDN layout is what the installer and `tilrd update` read:
 
