@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A created release automatically back-merges main into dev
-After release-please reports `release_created == 'true'`, the release workflow SHALL use a repository-scoped tilr-bot GitHub App token to open a PR from `main` to `dev` titled `chore: back-merge vX.Y.Z`, using the created release's tag. It SHALL reuse an existing open PR from `main` to `dev` instead of creating a duplicate, and attempt to merge the PR with `gh pr merge --merge`. If merging fails, including because of a conflict, it SHALL leave the PR open without failing the release. When no release is created, it SHALL skip the back-merge job.
+The release workflow SHALL back-merge `main` into `dev` only when release-please reports `release_created == 'true'`, using a repository-scoped tilr-bot GitHub App token. It SHALL open a PR titled `chore: back-merge vX.Y.Z` using the release tag, or reuse an existing open main-to-dev PR, and attempt `gh pr merge --merge`. A failed merge SHALL leave the PR open without failing the release.
 
 **Verified by**: `release::a_created_release_back_merges_main_into_dev` (static workflow contract), `release::back_merge_creates_or_reuses_a_pr_and_keeps_conflicts_open` (workflow shell with a stub GitHub CLI).
 
