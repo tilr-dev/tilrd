@@ -1361,6 +1361,13 @@ SH
 
 The keys are passed through the process environment; keep shell tracing off and do
 not save their values in the checkout. `--upload-only` uses the same credentials.
+
+Verified on 2026-10-25 with AWS CLI 2.38.5: `aws s3 cp` using the keys derived from
+`R2_CDN_TOKEN`, the R2 endpoint and region `auto` successfully uploaded a 20 MB file
+in three multipart parts with the AWS CLI v2 checksum defaults (`when_supported`,
+CRC64NVME). Neither `AWS_REQUEST_CHECKSUM_CALCULATION` nor
+`AWS_RESPONSE_CHECKSUM_VALIDATION` needs to be set for this upload.
+
 In CI, the `cdn` environment supplies both AWS secrets and the
 `CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
 
