@@ -27,7 +27,7 @@
 - **THEN** it builds both Apple targets and produces their separate CDN archives, checksums and latest pointers
 
 ### Requirement: Merging the release PR builds and attaches the binaries
-Merging the release PR SHALL tag `vX.Y.Z` and create the GitHub release; `tilrd` and `tilr` SHALL be built per target (`aarch64-apple-darwin`, `x86_64-apple-darwin` cross-compiled, `x86_64-unknown-linux-gnu` by `scripts/release.sh`, `aarch64-unknown-linux-gnu` only with repository variable `RELEASE_LINUX_ARM64=true`), macOS builds through `scripts/release.sh` with Developer ID signing and accepted notarization before either GitHub or CDN packaging, native builds' `--version` checked against tag and commit, and attached by `scripts/package.sh` as `tilr-<tag>-<target>.tar.gz` (`tilrd`, `tilr`, licenses, README) with `.sha256`.
+Merging the release PR SHALL tag `vX.Y.Z` and create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.
 
 **Verified by**: `release::a_release_builds_and_packages_every_target` (static: `.github/workflows/release.yml`, `scripts/package.sh`).
 
@@ -39,8 +39,14 @@ Merging the release PR SHALL tag `vX.Y.Z` and create the GitHub release; `tilrd`
 - **WHEN** signing, signature verification or notarization fails for either macOS target
 - **THEN** the build job fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
 
+#### Scenario: Release target selection and packaging
+- **WHEN** the release build matrix runs
+- **THEN** it builds `aarch64-apple-darwin` and cross-compiles `x86_64-apple-darwin` on macOS, and builds `x86_64-unknown-linux-gnu` plus `aarch64-unknown-linux-gnu` only with `RELEASE_LINUX_ARM64=true`
+- **AND** every platform is built through `scripts/release.sh`
+- **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
+
 ### Requirement: The CDN gets the release last
-After the GitHub release has its assets, the `cdn` job (environment `cdn`, restricted to `main`, holding bucket-scoped `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets and the `CLOUDFLARE_ACCOUNT_ID` variable) SHALL check every platform built carries `<tag version>-<commit>` and run `scripts/release.sh --upload-only <platforms>` on the `dist/cdn` the builds laid out; both macOS platforms are always uploaded; with Linux arm64 off `linux-x86_64` is the only Linux platform uploaded and `releases/linux-aarch64/latest` is left as it is.
+After GitHub assets are attached, the `cdn` job SHALL verify each built platform carries `<tag version>-<commit>` and upload its completed `dist/cdn` layout with `scripts/release.sh --upload-only <platforms>`. Both macOS platforms SHALL always be included; Linux arm64 SHALL remain optional.
 
 **Verified by**: `release::the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` (static: `.github/workflows/release.yml`).
 
@@ -52,10 +58,14 @@ After the GitHub release has its assets, the `cdn` job (environment `cdn`, restr
 - **WHEN** both macOS builds complete and GitHub assets are attached
 - **THEN** the CDN job uploads each macOS archive and checksum before that platform's latest, without rebuilding or re-signing
 
+#### Scenario: CDN credentials
+- **WHEN** the CDN job publishes a release
+- **THEN** it uses environment `cdn`, restricted to `main`, with bucket-scoped `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets and the `CLOUDFLARE_ACCOUNT_ID` variable
+
 ## ADDED Requirements
 
 ### Requirement: macOS releases require Developer ID and accepted notarization
-The macOS release helper SHALL require macOS, a Developer ID Application signing identity and a notarytool keychain profile before building. It SHALL sign both tilrd and tilr with hardened runtime and a secure timestamp, verify both signatures, submit a ZIP containing both executables for notarization, and require status Accepted before producing distributable artifacts. Missing credentials, failed signing or verification, malformed or non-Accepted notarization SHALL fail without publishing a new latest pointer. CI SHALL import the certificate and notary credentials into a temporary keychain in the cdn environment and remove it even on failure.
+The macOS release helper SHALL require macOS and Apple signing credentials, sign and verify both executables with Developer ID, hardened runtime and a secure timestamp, and require Accepted notarization before producing distributable artifacts. CI SHALL use a temporary keychain and remove it even on failure.
 
 #### Scenario: Signed bytes are published
 - **WHEN** both macOS executables are signed and notarization is Accepted
@@ -68,3 +78,18 @@ The macOS release helper SHALL require macOS, a Developer ID Application signing
 #### Scenario: Upload previously completed macOS builds
 - **WHEN** upload-only receives completed macOS CDN layouts
 - **THEN** it checks their versions and checksums and uploads them without requiring Apple credentials
+
+#### Scenario: Signing and notarization configuration
+- **WHEN** a macOS release is built
+- **THEN** a Developer ID Application identity and a notarytool keychain profile are required before building
+- **AND** both signed executables are submitted together in a ZIP to Apple
+
+#### Scenario: Signing or notarization fails
+- **WHEN** signing or signature verification fails, or notarization fails, returns malformed output or a status other than Accepted
+- **THEN** no distributable archive or new latest pointer is produced or published
+
+#### Scenario: CI imports Apple credentials
+- **WHEN** the macOS build job starts
+- **THEN** it imports the certificate and notary credentials from the cdn environment into a temporary keychain
+- **AND** that keychain is removed even on failure
+
