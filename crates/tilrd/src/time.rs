@@ -39,6 +39,8 @@ pub fn advance_frame_stage(stage: FrameStage) {
         durations.len() == 3 && durations.iter().all(|us| *us > 0),
         "frame stage timing requires three positive durations: parse build encode"
     );
+    // Renamed `try_update` in newer Rust, which the MSRV does not have yet.
+    #[allow(deprecated)]
     LAST_US
         .fetch_update(
             std::sync::atomic::Ordering::Relaxed,
