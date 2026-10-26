@@ -282,7 +282,7 @@ Cloud repository.
 | † The updater is killed just before the swap: the executables are the old ones; the next update goes through and cleans up the unpacked release | `an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up` |
 | † `tilr` is already in place but `tilrd` cannot be swapped: the old `tilr` is put back (or removed if there was none) | `a_server_that_cannot_be_put_in_place_puts_the_old_client_back` |
 | † Two updates at once: the release is installed once, the second waits and sees it is already there | `two_updates_at_once_install_the_release_once` |
-| A server Tilr.app manages (`app-managed.json` next to the executable): `tilrd update` fails, saying so, without contacting the CDN | `app_managed_server_never_contacts_the_standalone_update_feed` |
+| A legacy `app-managed.json` next to the executable: `tilrd update` installs the latest release normally and leaves the marker unchanged | `update_installs_the_latest_release_with_a_legacy_app_marker` |
 
 ### Live check on a machine — `scripts/update-test.sh`
 
