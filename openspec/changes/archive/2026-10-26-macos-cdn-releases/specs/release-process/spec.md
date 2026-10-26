@@ -95,4 +95,3 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **AND** the signing job performs no checkout or build, imports a non-exportable private key, signs and notarizes the binaries, and uploads signed artifacts only after Accepted notarization
 - **AND** the keychain is removed even on failure, without exporting its path, identity or notary profile through GITHUB_ENV
 - **AND** a separate packaging job consumes only signed macOS artifacts for GitHub and CDN publication
-
