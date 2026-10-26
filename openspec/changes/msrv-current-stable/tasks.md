@@ -11,4 +11,4 @@
 ## 3. Validation
 
 - [x] 3.1 Run the focused release gate test and formatting and clippy checks.
-- [ ] 3.2 Review the diff and run the full finish checks.
+- [x] 3.2 Review the diff and run the full finish checks.
