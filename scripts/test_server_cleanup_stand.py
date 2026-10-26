@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Exercise test-server cleanup after a signal and a controlled timeout.
+
+Run from anywhere: python3 scripts/test_server_cleanup_stand.py
+The command fails if either server survives. All processes it starts are cleaned up.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+
+ROOT = Path(__file__).resolve().parents[1]
+EXIT_DEADLINE = 30
+READY_DEADLINE = 30
+CHILD = re.compile(rb"TILR_STAND_CHILD pid=(\d+)\n")
+READY = re.compile(rb"TILR_STAND_READY pid=(\d+)\n")
+
+
+def build_fixture():
+    command = [
+        "cargo", "test", "-p", "tilrd", "--test", "cleanup_stand",
+        "--no-run", "--features", "tilrd/failpoints", "--locked", "--message-format=json-render-diagnostics",
+    ]
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    if result.returncode:
+        raise RuntimeError("fixture build failed:\n" + "\n".join(
+            (result.stdout + "\n" + result.stderr).splitlines()[-40:]
+        ))
+    executables = [
+        item["executable"]
+        for line in result.stdout.splitlines()
+        if (item := json.loads(line)).get("reason") == "compiler-artifact"
+        and item.get("target", {}).get("name") == "cleanup_stand"
+        and item.get("executable")
+    ]
+    if len(executables) != 1:
+        raise RuntimeError(f"expected one cleanup_stand executable, got {executables!r}")
+    return executables[0]
+
+
+def ready_pid(process):
+    """Read the fixture's confirmed-ready event; deadline only bounds a failure."""
+    deadline = time.monotonic() + READY_DEADLINE
+    output = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"fixture did not report READY within {READY_DEADLINE} seconds")
+        readable, _, _ = select.select([process.stdout], [], [], remaining)
+        if not readable:
+            raise RuntimeError(f"fixture did not report READY within {READY_DEADLINE} seconds")
+        chunk = os.read(process.stdout.fileno(), 4096)
+        if not chunk:
+            raise RuntimeError(f"fixture exited before READY: {output.decode(errors='replace')}")
+        output.extend(chunk)
+        match = READY.search(output)
+        if match:
+            pid = int(match.group(1))
+            try:
+                group = os.getpgid(pid) if pid > 0 else None
+            except ProcessLookupError as error:
+                raise RuntimeError(f"ready PID {pid} is not alive") from error
+            if group != process.pid:
+                raise RuntimeError(f"ready PID {pid} is not in the stand's process group")
+            process.owned_pids = [int(match.group(1)) for match in CHILD.finditer(output)]
+            return pid
+
+
+def server_running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def mac_pgrep_contains(pid, pattern="target/debug/tilrd"):
+    result = subprocess.run(
+        ["pgrep", "-f", pattern],
+        text=True, capture_output=True, check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"pgrep failed: {result.stderr.strip()}")
+    return str(pid) in result.stdout.split()
+
+
+def exit_watcher(pid):
+    """Watch the exact PID without polling or sleeping where the OS supports it."""
+    if sys.platform == "darwin":
+        watcher = select.kqueue()
+        try:
+            watcher.control([select.kevent(
+                pid, filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+                fflags=select.KQ_NOTE_EXIT,
+            )], 0, 0)
+        except OSError as error:
+            watcher.close()
+            raise RuntimeError(f"cannot register exit watcher for server {pid}: {error}") from error
+        return watcher
+    if sys.platform.startswith("linux") and hasattr(os, "pidfd_open"):
+        try:
+            return os.pidfd_open(pid)
+        except OSError as error:
+            raise RuntimeError(f"cannot register exit watcher for server {pid}: {error}") from error
+    raise RuntimeError("no supported server exit watcher on this platform")
+
+
+def wait_for_server_exit(watcher):
+    # The exit event decides success; this deadline only bounds a red outcome.
+    if watcher is None:
+        raise RuntimeError("server exit watcher is unavailable")
+    if isinstance(watcher, int):
+        readable, _, _ = select.select([watcher], [], [], EXIT_DEADLINE)
+        return bool(readable)
+    else:
+        return bool(watcher.control(None, 1, EXIT_DEADLINE))
+
+
+def close_watcher(watcher):
+    if isinstance(watcher, int):
+        os.close(watcher)
+    elif watcher is not None:
+        watcher.close()
+
+
+def run_case(executable, case, copied=False):
+    # Keep runtime socket paths below the macOS limit so all artifacts stay here.
+    with tempfile.TemporaryDirectory(prefix="tilr-stand-", dir="/tmp") as directory:
+        run_case_in(executable, case, directory, copied)
+
+
+def run_case_in(executable, case, directory, copied=False):
+    process = subprocess.Popen(
+        [executable, "--ignored", "--exact", "server_ready_then_wait_for_interruption", "--nocapture"],
+        cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, start_new_session=True,
+        env={**os.environ, "TILR_STAND_DIR": directory, "TILR_STAND_CASE": case,
+             "TILR_STAND_COPY": "1" if copied else ""},
+    )
+    server_pid = None
+    watcher = None
+    exited = False
+    child_watchers = []
+    try:
+        server_pid = ready_pid(process)
+        watcher = exit_watcher(server_pid)
+        child_watchers = [[pid, exit_watcher(pid), False] for pid in process.owned_pids]
+        if case == "signal":
+            process.send_signal(signal.SIGTERM)
+        elif case.startswith("panic"):
+            process.stdin.write(b"p")
+            process.stdin.flush()
+        else:
+            try:
+                process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            else:
+                raise RuntimeError("fixture exited instead of reaching the controlled timeout")
+        process.wait(timeout=EXIT_DEADLINE)
+        exited = wait_for_server_exit(watcher)
+        by_pid = not exited
+        pattern = str(Path(directory) / "tilrd") if copied else "target/debug/tilrd"
+        by_pgrep = mac_pgrep_contains(server_pid, pattern) if sys.platform == "darwin" else None
+        print(f"{case}: server PID {server_pid}, running={by_pid}, mac_pgrep={by_pgrep}", flush=True)
+        if by_pgrep is not None and by_pid != by_pgrep:
+            raise RuntimeError(f"{case}: PID and pgrep disagree for server {server_pid}")
+        if by_pid:
+            raise RuntimeError(f"{case}: test server {server_pid} survived interruption")
+        for child in child_watchers:
+            pid, child_watcher, _ = child
+            child[2] = wait_for_server_exit(child_watcher)
+            if not child[2]:
+                raise RuntimeError(f"{case}: pane or shell {pid} survived interruption")
+        if case.startswith("panic") and process.returncode == 0:
+            raise RuntimeError("panic fixture unexpectedly succeeded")
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        finally:
+            process.wait()
+            try:
+                if watcher is not None and not exited:
+                    exited = wait_for_server_exit(watcher)
+                if watcher is not None and not exited and server_running(server_pid):
+                    raise RuntimeError(f"server {server_pid} did not exit after cleanup")
+            finally:
+                close_watcher(watcher)
+                for pid, child_watcher, child_exited in child_watchers:
+                    if not child_exited and not wait_for_server_exit(child_watcher):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    close_watcher(child_watcher)
+                process.stdin.close()
+                process.stdout.close()
+
+
+def interrupt_stand(signum, frame):
+    # SystemExit unwinds run_case's finally before returning the signal status.
+    raise SystemExit(128 + signum)
+
+
+def main():
+    signal.signal(signal.SIGTERM, interrupt_stand)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--executable", help="already built cleanup_stand test executable")
+    parser.add_argument("--cases", nargs="+", choices=("signal", "timeout", "panic", "panic-startup"),
+                        default=("signal", "timeout"))
+    parser.add_argument("--copied", action="store_true", help="exercise a private executable copy")
+    args = parser.parse_args()
+    executable = args.executable or build_fixture()
+    failures = []
+    for case in args.cases:
+        try:
+            run_case(executable, case, args.copied)
+        except Exception as error:
+            failures.append(str(error))
+    if failures:
+        for failure in failures:
+            print(failure, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

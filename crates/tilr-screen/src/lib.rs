@@ -10,6 +10,13 @@ use tilr_proto::{Frame, KeyInput, MouseInput, PaneStatus};
 
 pub use ghostty::{DEFAULT_CELL_PX, GhosttyScreen};
 
+/// Content the application copied to the clipboard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardCopy {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
 pub trait Screen {
     /// Feed bytes read from the pty.
     fn feed(&mut self, bytes: &[u8]);
@@ -17,6 +24,9 @@ pub trait Screen {
     /// Bytes the terminal wants written back to the pty (replies to queries
     /// such as device attributes or cursor position reports).
     fn take_replies(&mut self) -> Vec<u8>;
+
+    /// Bells received since the previous call.
+    fn take_bells(&mut self) -> u32;
 
     /// Resize to `cols` x `rows` cells of `cell` pixels each (the cell is what
     /// image placements are measured in and what pixel size reports say).
@@ -49,6 +59,11 @@ pub trait Screen {
     /// Title and working directory as reported by the application, if either
     /// changed since the previous call.
     fn take_status(&mut self) -> Option<PaneStatus>;
+
+    /// What the application copied to the standard clipboard (OSC 52, OSC
+    /// 1337 Copy) since the previous call, oldest first. Other clipboards
+    /// (the primary selection) are not reported.
+    fn take_copies(&mut self) -> Vec<ClipboardCopy>;
 
     /// Encode input into the bytes the application in the pty expects, taking
     /// the terminal's current modes into account. Appends to `out`.

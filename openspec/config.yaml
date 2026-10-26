@@ -1,0 +1,129 @@
+schema: spec-driven
+
+# Project context: constraints an agent cannot infer from reading one file.
+# Each line was checked against the code at 47a8557 (branch dev: itests work with main
+# merged in), README.md, AGENTS.md and .github/workflows (2026-10-18).
+context: |
+  Roadmap: openspec/ROADMAP.md lists every open change in implementation order (phases,
+  size, dependencies, Блокер, status) and the release gate (what lands before dev goes to
+  main and the first release). Read it before choosing what to apply next.
+
+  Language: every OpenSpec artifact (proposal, design, specs, tasks) is written in English,
+  as are log lines, CLI output, README.md, USE_CASES.md and TODO.md. Discussions with the
+  owner may be in Russian; itests/USE_CASES.md is still in Russian.
+
+  Product boundary: tilrd is a terminal server: shells in panes on one machine, served to
+  clients over a WebSocket (TCP, default 127.0.0.1:7890) and a unix socket in the runtime
+  directory. `tilrd` is the server (a service: started by `tilr`, a service manager or the
+  Tilr app, never by hand); `tilr` (crates/tilr) is the user's command and terminal client;
+  crates/tilr-driver is a scripted client for itests only. Clients (the Tilr app, the web
+  client, `tilr`) live outside this repo except `tilr`.
+
+  Process model: one supervisor process accepts clients and routes packets; each pane is its
+  own child process that owns the pty, the shell and the screen model (crates/tilr-screen on
+  libghostty-vt). A reload execs the new executable in place (same pid, same arguments, the
+  listening sockets and the unix socket's flock lock kept) in the supervisor and then in every
+  pane process, handing state over through files in the runtime directory
+  (`server-<pid>.state`, `panes/<pane id>.state`), written to a temp file, synced and renamed,
+  readable by the user only. A change to what crosses a reload must keep `tilrd state-formats`
+  honest: a successor that does not read the state version is not reloaded into.
+
+  Protocol: the schema is crates/tilr-proto/proto/tilr.proto; clients copy it from here (the
+  Tilr app's `server` plugin via `npm run proto`, crates/tilr-driver, the test client), so any
+  change there is a protocol change. Both sides ignore message types and fields they do not
+  know. Rule (owner, 2026-10-21): PROTOCOL_VERSION
+  (crates/tilr-proto/src/lib.rs; 1 in code) is the mandatory wire contract.
+  Before the first public release, all protocol changes use version 1 without a bump.
+  Afterward, bump only for a change incompatible with a client or server of the previous
+  public release, once per release as a separate step in its release milestone.
+  HelloAck.features lists only capabilities a server can be run without
+  (clipboard, files, host-events, agent, exec), never a flag for a mandatory part. A server
+  answers a Hello with another version with an Error and closes. A packet is one binary WebSocket message: flag byte (0 plain, 1 zstd)
+  plus a protobuf ClientMessage / ServerMessage. Close codes 4000/4001/4002 are part of the
+  contract.
+
+  Compatibility across updates: a release is one archive per platform holding tilrd and
+  tilr. `tilrd update` (crates/tilrd/src/update.rs, DEFAULT_CDN https://cdn.tilr.dev) and
+  the installer (scripts/install.sh, which tilr.sh serves) read the CDN
+  layout releases/<platform>/latest and
+  releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]; scripts/release.sh writes
+  it: change all sides together or not at all. Since 2a8b425 nothing is published under the
+  old loose names (tilrd-<platform>, tilr-server-<platform>): no compatibility for updaters
+  from before the archive (owner's decision; they reinstall once).
+
+  Test-only code: the `failpoints` feature (crates/tilrd/src/fail.rs) compiles in fault
+  injection for update/reload tests; a release is built without it. Tests in
+  crates/tilrd/tests/ start the real server and drive it as a client (harness
+  tests/common/mod.rs); crates/tilr/tests/ run `tilr` against the `tilrd` built next to it.
+  A test's name states its use case, and the use case goes into USE_CASES.md with the test.
+  Black-box Dagger cases live in itests/ (UC-xxx in itests/USE_CASES.md, itests/scenarios/,
+  run with ./dt); a case for a missing feature is written first and stays red (FAIL).
+  Each case carries spec tags, `@case(spec=["<capability>/<requirement-slug>[#<scenario-
+  slug>]"])`, matching the `**Verified by**` lines of openspec/specs/;
+  `./itests/dt coverage` (itests/tools/coverage.py, offline) writes local, git-ignored reports in
+  openspec/coverage/ on demand; generated reports are not committed.
+  Python runs via `uv run`.
+
+  CI gates (.github/workflows/ci.yml): cargo fmt --all --check; cargo clippy
+  --workspace --all-targets --locked -- -D warnings, with and without
+  --features tilrd/failpoints; cargo nextest run --workspace --features tilrd/failpoints --locked
+  on ubuntu-latest and macos-15; a smoke test of `tilrd --version` and `tilr --version`
+  (`<name> X.Y.Z-<sha> (<platform>)`) and `--help`; MSRV 1.90 (`rust-version` in Cargo.toml, cargo check with the failpoints
+  feature); cargo-deny (deny.toml); gitleaks over the whole history.
+  Cargo.lock is committed and every cargo command runs with --locked. Clippy findings are
+  fixed, not silenced; an #[allow] names the lint and says why. No --no-verify.
+  Build needs Zig 0.15.2 and protoc, the tests cargo-nextest (scripts/install-tools.sh),
+  and network on the first source build (libghostty-vt-sys clones Ghostty at a pinned commit).
+  scripts/build-ghostty-vt.sh builds a reusable static package; PKG_CONFIG_PATH
+  pointing to its share/pkgconfig directory lets clean Cargo targets reuse it.
+
+  Release (.github/workflows/release.yml, release-please-config.json):
+  release-please on `main` (simple strategy, release PR opened by the GitHub App
+  tilr-bot, Conventional Commits, squash merges); merging the release PR tags vX.Y.Z,
+  builds tilrd and tilr per target into tilr-vX.Y.Z-<target>.tar.gz for the GitHub release
+  (scripts/package.sh) and publishes the Linux archives to the CDN (scripts/release.sh
+  --upload-only, needs CLOUDFLARE_ACCOUNT_ID; linux-aarch64 only with the repo variable
+  RELEASE_LINUX_ARM64=true). Versions, Cargo.lock
+  versions and CHANGELOG.md are never edited by hand. A release is a separate
+  explicit step by the owner.
+
+  Secrets: assume the repo is public: no tokens, keys, .env files or personal data in code,
+  tests, fixtures or commit messages; gitleaks scans the history.
+
+  Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
+  Nothing goes to `main` (push, merge, PR, release-PR merge) without the owner's explicit
+  word "в main" at that moment. "Merge"/"commit" without a target means `dev`. No commit or
+  push without explicit permission. Conventional Commits; no AI attribution: never add
+  "Generated with Claude Code" or an agent Co-Authored-By.
+
+rules:
+  proposal:
+    - State what is out of scope (a "Non-goals" or "Out of scope" bullet list).
+    - Mark every breaking change with **BREAKING** and name the migration; a change to tilr.proto that old clients or servers cannot ignore, to close codes, to the reload state files or to the CDN layout is breaking. State how the protocol version policy above applies and whether it adds a feature flag.
+    - Say whether the change has to survive a reload (state handed to the successor) and an update from the previous release.
+    - In Why, cite only recorded facts (commit, PR, issue, note, session); write "Rationale not recorded" when unknown.
+  specs:
+    - Every requirement uses SHALL or MUST and has at least one #### Scenario with WHEN/THEN bullets.
+    - Specs describe observable behavior (wire messages and fields from tilr.proto, close codes, CLI output and exit status, files and sockets in the runtime/state directory and their modes, pane environment, flags and config keys, metric names, log lines), not internal function names.
+    - When a requirement is backed by a test, name it in the requirement text - cargo tests as `file_stem::test_name` (crates/*/tests/*.rs) and Dagger cases as itests `UC-xxx` (`uc_xxx.py::case`); list requirements without a test in the spec's Notes.
+    - A requirement whose itests case is red states the intended behavior, and Notes say the case is currently failing.
+    - A requirement added, renamed or removed, or a `**Verified by**` line changed, updates the spec tags of the itests cases (`@case(spec=[...])` in itests/scenarios/) in the same change, and `./itests/dt coverage` is run to regenerate local, git-ignored openspec/coverage/ reports without committing them (it fails on a tag naming no requirement).
+  design:
+    - Describe what happens on a reload (supervisor and pane exec in place) and on a client reconnect for any new state or connection.
+    - Keep data in quantity on the bulk lane of the client outbox; say how backpressure bounds memory.
+  tasks:
+    - Each task names how it is verified (test name, itests UC id, command or observable output).
+    - Each task group lands its own tests, USE_CASES.md entries and README updates; no trailing "write tests" group.
+    - "Before marking a change done, run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also the Linux run via `scripts/linux.sh`."
+
+operations:
+  apply:
+    guidance:
+      - Take the next change from openspec/ROADMAP.md whose dependencies are archived and that has no Блокер; when its status, scope or dependencies change, update its row there in the same change.
+      - Work on the dev branch; do not commit, push or open PRs without explicit permission.
+      - Update README.md (the user-facing contract) and USE_CASES.md in the same change as the behavior.
+      - A tilr.proto change also updates the README "Protocol" section and follows the protocol version policy above; an incompatible change does not bump the version during pre-release development.
+  archive:
+    guidance:
+      - Move the change's row in openspec/ROADMAP.md to "Done" with its commit, and drop it from the `Зависит от:` lines of the changes that waited for it.
+      - Record the commit or PR that implemented the change in its proposal before archiving.

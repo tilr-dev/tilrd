@@ -1,0 +1,44 @@
+[package]
+name = "tilrd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Terminal server: runs shells in panes on a machine and serves them to clients over a WebSocket; panes survive disconnects and reloads"
+readme = "../../README.md"
+keywords = ["terminal", "server", "websocket", "pty", "tilr"]
+categories = ["command-line-utilities", "network-programming"]
+
+[features]
+# Fault injection for the tests, see src/fail.rs.
+failpoints = []
+
+[dependencies]
+tilr-websocket.workspace = true
+tilr-proto.workspace = true
+tilr-screen.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+flate2 = "1"
+getrandom = "0.4"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+libc = "0.2"
+notify = "8"
+prost.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tar = { version = "0.4", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "process", "signal", "time", "fs"] }
+tokio-tungstenite = "0.30"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Terminal screen model for tilr-server: a VT engine (libghostty-vt) behind a backend-neutral trait that produces frames"
+description = "Terminal screen model for tilrd: a VT engine (libghostty-vt) behind a backend-neutral trait that produces frames"
 readme = "../../README.md"
 keywords = ["terminal", "vt", "ghostty", "emulator", "tilr"]
 categories = ["command-line-interface", "text-processing"]
@@ -16,4 +16,6 @@ tilr-proto.workspace = true
 anyhow.workspace = true
 # kitty-graphics: image storage and placements; png: its PNG decoder, and our encoder for the frame.
 libghostty-vt = { version = "=0.2.2", default-features = false, features = ["kitty-graphics", "png"] }
+# Enable discovery through feature unification; libghostty-vt does not forward this feature.
+libghostty-vt-sys = { version = "=0.2.2", features = ["pkg-config"] }
 png = "0.18"

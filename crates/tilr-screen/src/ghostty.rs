@@ -10,14 +10,16 @@ use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RowIterator}
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen as ActiveScreen};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{Style as VtStyle, StyleColor, Underline as VtUnderline};
-use libghostty_vt::terminal::{Mode, ModeKind, Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::terminal::{
+    ClipboardLocation, Mode, ModeKind, Point, PointCoordinate, PointSpace, ScrollViewport,
+};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions, key, mouse, paste};
 use tilr_proto::{
     Color, Cursor, CursorShape, Frame, Image, KeyAction, KeyInput, MouseAction, MouseButton,
     MouseInput, NamedKey, PaneStatus, Placement, Row, Run, Style, Underline, attrs, color, mods,
 };
 
-use crate::Screen;
+use crate::{ClipboardCopy, Screen};
 
 const MAX_SCROLLBACK: usize = 10_000;
 /// The cell in pixels until a client says what its own is: image placements
@@ -43,8 +45,10 @@ pub struct GhosttyScreen {
     term: Terminal<'static, 'static>,
 
     replies: Rc<RefCell<Vec<u8>>>,
+    bells: Rc<Cell<u32>>,
     title_changed: Rc<Cell<bool>>,
     status_changed: Rc<Cell<bool>>,
+    copies: Rc<RefCell<Vec<ClipboardCopy>>>,
     last_cursor: Option<Cursor>,
     last_modes: Option<(bool, bool)>,
     last_placements: Vec<Placement>,
@@ -64,8 +68,10 @@ impl GhosttyScreen {
         let mut term = new_terminal(cols, rows, MAX_SCROLLBACK)?;
 
         let replies = Rc::new(RefCell::new(Vec::new()));
+        let bells = Rc::new(Cell::new(0u32));
         let title_changed = Rc::new(Cell::new(false));
         let status_changed = Rc::new(Cell::new(false));
+        let copies = Rc::new(RefCell::new(Vec::new()));
         {
             let replies = Rc::clone(&replies);
             term.on_pty_write(move |_term: &Terminal<'_, '_>, data: &[u8]| {
@@ -78,6 +84,32 @@ impl GhosttyScreen {
             })?;
             let status = Rc::clone(&status_changed);
             term.on_pwd_changed(move |_term: &Terminal<'_, '_>| status.set(true))?;
+            let copied = Rc::clone(&copies);
+            term.on_clipboard_write(move |_term: &Terminal<'_, '_>, write| {
+                // The primary and secondary selections are not the clipboard
+                // the user pastes from; a write without content clears, which
+                // a client is not asked to do. libghostty-vt 0.2 hands the
+                // data over as UTF-8 only, and data that is not as empty.
+                if write.location() == ClipboardLocation::Standard
+                    && let Some(content) = write.contents().next()
+                    && !content.data.is_empty()
+                {
+                    let mime = if content.mime == "text/plain" {
+                        "text/plain;charset=utf-8"
+                    } else {
+                        content.mime
+                    };
+                    copied.borrow_mut().push(ClipboardCopy {
+                        mime: mime.to_owned(),
+                        data: content.data.as_bytes().to_vec(),
+                    });
+                }
+                Ok(())
+            })?;
+            let bells = Rc::clone(&bells);
+            term.on_bell(move |_term: &Terminal<'_, '_>| {
+                bells.set(bells.get().saturating_add(1));
+            })?;
         }
 
         Ok(Self {
@@ -91,8 +123,10 @@ impl GhosttyScreen {
             mouse_event: mouse::Event::new()?,
             term,
             replies,
+            bells,
             title_changed,
             status_changed,
+            copies,
             last_cursor: None,
             last_modes: None,
             last_placements: Vec::new(),
@@ -114,6 +148,7 @@ impl GhosttyScreen {
         screen.feed(snapshot);
         // Nobody is waiting for answers to anything in a snapshot.
         screen.take_replies();
+        screen.take_bells();
         Ok(screen)
     }
 
@@ -233,6 +268,10 @@ impl Screen for GhosttyScreen {
         std::mem::take(&mut *self.replies.borrow_mut())
     }
 
+    fn take_bells(&mut self) -> u32 {
+        self.bells.replace(0)
+    }
+
     fn resize(&mut self, cols: u16, rows: u16, cell: (u32, u32)) -> Result<()> {
         let cell = (cell.0.max(1), cell.1.max(1));
         self.term
@@ -296,6 +335,9 @@ impl Screen for GhosttyScreen {
         };
 
         let mut styles = StyleTable::default();
+        let mut links = Vec::<String>::new();
+        let mut link_indices = std::collections::HashMap::<String, u32>::new();
+        let mut uri_buf = [0u8; 8192];
         let mut changed = Vec::new();
         self.placeholders
             .resize_with(usize::from(self.size.1), Vec::new);
@@ -303,6 +345,7 @@ impl Screen for GhosttyScreen {
         let mut y = 0u32;
         while let Some(row) = row_iter.next() {
             if all_rows || row.dirty()? {
+                let row_has_links = row.raw_row()?.has_hyperlink()?;
                 let mut runs = RunBuilder::default();
                 let mut placeholders = PlaceholderRuns::default();
                 let mut column = 0u32;
@@ -316,6 +359,17 @@ impl Screen for GhosttyScreen {
                     };
                     let x = column;
                     column += if wide { 2 } else { 1 };
+                    let link = if row_has_links && raw.has_hyperlink()? {
+                        // Defensive bound: the current VT parser rejects long OSCs
+                        // before this read; see the_vt_osc_limit_keeps_text_but_drops_long_links.
+                        let result = self
+                            .term
+                            .grid_ref(Point::Viewport(PointCoordinate { x: x as u16, y }))?
+                            .hyperlink_uri(&mut uri_buf);
+                        uri_index(result, &uri_buf, &mut links, &mut link_indices)?
+                    } else {
+                        0
+                    };
                     let styled = raw.has_styling()?;
                     let mut style = if styled {
                         style_to_proto(cell.style()?)
@@ -346,14 +400,14 @@ impl Screen for GhosttyScreen {
                             // image's row and column from the diacritics.
                             let vt_style = if styled { Some(cell.style()?) } else { None };
                             placeholders.push(x, &cps, vt_style);
-                            runs.push_char(' ', style, wide);
+                            runs.push_char(' ', style, wide, link);
                         } else {
-                            runs.push_cluster(cps.into_iter().collect(), style, wide);
+                            runs.push_cluster(cps.into_iter().collect(), style, wide, link);
                         }
                         continue;
                     }
                     placeholders.end();
-                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide);
+                    runs.push_char(if len == 0 { ' ' } else { buf[0] }, style, wide, link);
                 }
                 if let Some(slot) = self.placeholders.get_mut(y as usize) {
                     *slot = placeholders.finish();
@@ -403,6 +457,7 @@ impl Screen for GhosttyScreen {
             cols: u32::from(self.size.0),
             rows: u32::from(self.size.1),
             styles: styles.list,
+            links,
             changed,
             cursor: Some(cursor),
             title,
@@ -450,8 +505,12 @@ impl Screen for GhosttyScreen {
         })
     }
 
+    fn take_copies(&mut self) -> Vec<ClipboardCopy> {
+        std::mem::take(&mut *self.copies.borrow_mut())
+    }
+
     fn encode_key(&mut self, input: &KeyInput, out: &mut Vec<u8>) -> Result<()> {
-        let (key, unshifted) = map_key(input);
+        let (mut key, mut unshifted) = map_key(input);
         let mods = map_mods(input.mods);
         let action = match input.action() {
             KeyAction::Press => key::Action::Press,
@@ -460,8 +519,53 @@ impl Screen for GhosttyScreen {
         };
         // The encoder derives control sequences from key + mods; text must be
         // printable only.
-        let text = (!input.text.is_empty() && !input.text.chars().any(char::is_control))
-            .then_some(input.text.as_str());
+        let mut text = (!input.text.is_empty() && !input.text.chars().any(char::is_control))
+            .then(|| input.text.clone());
+        let (ctrl, alt) = (input.mods & mods::CTRL != 0, input.mods & mods::ALT != 0);
+        // ESC to put before the character: the encoder prefixes one byte only.
+        let mut esc_before_text = false;
+        if input.named() == NamedKey::Unspecified {
+            let physical = physical_key(&input.code);
+            let kitty = self
+                .term
+                .kitty_keyboard_flags()
+                .is_ok_and(|flags| flags.bits() != 0);
+            let character = unshifted.or_else(|| text.as_deref()?.chars().next());
+            let ascii = character.is_none_or(|ch| ch.is_ascii());
+            if let Some((physical, _)) = physical
+                && kitty
+            {
+                // The key as the layout has it, and where it is: the kitty
+                // protocol reports the physical key as the base layout key.
+                key = physical;
+                unshifted =
+                    unshifted.or(character.map(|ch| ch.to_lowercase().next().unwrap_or(ch)));
+            } else if let Some((physical, us)) = physical
+                && !ascii
+                && ctrl
+            {
+                // Ctrl on a layout that is not Latin: what terminals send is
+                // the key's on a US layout (Ctrl+С is ^C, Ctrl+Alt+С ESC ^C).
+                key = physical;
+                unshifted = Some(us);
+                text = None;
+            } else if !ascii && alt && !ctrl && !kitty {
+                // Alt with a character that is not ASCII: ESC and the
+                // character produced, as xterm sends it (Alt+ж is ESC ж).
+                text = text.or_else(|| {
+                    let ch = char::from_u32(input.codepoint).filter(|ch| !ch.is_control())?;
+                    Some(if input.mods & mods::SHIFT != 0 {
+                        ch.to_uppercase().collect()
+                    } else {
+                        ch.to_string()
+                    })
+                });
+                // Not a byte the encoder would put after ESC itself.
+                unshifted = None;
+                esc_before_text = text.is_some() && self.term.mode(Mode::ALT_ESC_PREFIX)?;
+            }
+        }
+        let text = text.as_deref();
         // Shift that already produced the text ("A" for Shift+a) is consumed.
         let consumed = if text.is_some() {
             mods & key::Mods::SHIFT
@@ -481,7 +585,13 @@ impl Screen for GhosttyScreen {
             // Clients report Alt as a modifier, never as macOS Option text.
             .set_macos_option_as_alt(key::OptionAsAlt::True);
         let (encoder, event) = (&mut self.key_encoder, &self.key_event);
-        encode_into(out, |buf| encoder.encode(event, buf))
+        let start = out.len();
+        encode_into(out, |buf| encoder.encode(event, buf))?;
+        // The encoder sent the text alone (not a modifyOtherKeys sequence).
+        if esc_before_text && text.is_some_and(|text| out[start..] == *text.as_bytes()) {
+            out.insert(start, 0x1b);
+        }
+        Ok(())
     }
 
     fn encode_mouse(&mut self, input: &MouseInput, out: &mut Vec<u8>) -> Result<()> {
@@ -559,7 +669,6 @@ impl Screen for GhosttyScreen {
                 modes.extend(format!("\x1b[{private}{}{set}", mode.value()).bytes());
             }
         }
-        let cursor = cursor_position(&self.term)?;
         let cursor_shape = {
             let snapshot = self.render.update(&self.term)?;
             let steady = u8::from(!snapshot.cursor_blinking()?);
@@ -577,12 +686,45 @@ impl Screen for GhosttyScreen {
             .collect();
         // The formatter only emits terminal state around some content, so it
         // is given the top-left cell, which is then printed onto itself.
-        let state = format_range(&self.term, Point::Active, (0, 0), (0, 0), true)?;
+        let mut state = Vec::new();
+        if self.term.mode(Mode::LEFT_RIGHT_MARGIN)? {
+            // Without the mode the left and right margins of the state
+            // (DECSLRM) would read as a cursor save (SCOSC).
+            state.extend(b"\x1b[?69h");
+        }
+        state.extend(format_range(
+            &self.term,
+            Point::Active,
+            (0, 0),
+            (0, 0),
+            Extras::All,
+        )?);
+        // Under origin mode the final cursor position counts from the top
+        // left corner of the margins. That corner is where turning origin
+        // mode on puts the cursor, so it is read from a terminal given the
+        // same state and modes as the restored one.
+        let origin = if self.term.mode(Mode::ORIGIN)? {
+            let mut probe = new_terminal(cols, rows, 0)?;
+            probe.vt_write(&state);
+            probe.vt_write(&modes);
+            (probe.cursor_x()?, probe.cursor_y()?)
+        } else {
+            (0, 0)
+        };
+        let cursor = cursor_position(&self.term, Extras::Pen, origin)?;
 
         let alternate = if self.term.active_screen()? == ActiveScreen::Alternate {
-            let mut content =
-                format_range(&self.term, Point::Active, (0, 0), (last.x, last.y), false)?;
-            content.extend(kitty_images(&self.term, &mut self.placements)?);
+            let mut content = format_range(
+                &self.term,
+                Point::Active,
+                (0, 0),
+                (last.x, last.y),
+                Extras::None,
+            )?;
+            // The alternate screen has no history.
+            let images = kitty_images(&self.term, &mut self.placements)?;
+            content.extend(images.transmit);
+            content.extend(images.screen);
             let mode = [Mode::ALT_SCREEN_SAVE, Mode::ALT_SCREEN]
                 .into_iter()
                 .find(|&mode| self.term.mode(mode).unwrap_or(false))
@@ -596,20 +738,19 @@ impl Screen for GhosttyScreen {
             None
         };
 
-        let mut out = Vec::new();
-        let history = self.term.scrollback_rows()?;
+        let images = kitty_images(&self.term, &mut self.placements)?;
+        let mut out = images.transmit;
+        let history = u32::try_from(self.term.scrollback_rows()?)?;
         if history > 0 {
-            let end = (last.x, history as u32 - 1);
-            out.extend(format_range(
-                &self.term,
-                Point::History,
-                (0, 0),
-                end,
-                false,
-            )?);
-            // Push the history off the screen before the screen is drawn.
+            // A line soft-wrapped from the last history row into the first
+            // screen row is replayed in one piece, so it wraps there again.
+            let joined = row_wrapped(&self.term, history - 1)?;
+            let end = if joined { history } else { history - 1 };
+            out.extend(replay_rows(&self.term, last.x, end, &images.history)?);
+            // Push the history off the screen before the screen is drawn;
+            // the second part of a joined line stays as its first row.
             out.extend(b"\x1b[0m");
-            out.extend(b"\r\n".repeat(usize::from(rows)));
+            out.extend(b"\r\n".repeat(usize::from(rows) - usize::from(joined)));
         }
         out.extend(b"\x1b[H");
         out.extend(format_range(
@@ -617,11 +758,13 @@ impl Screen for GhosttyScreen {
             Point::Active,
             (0, 0),
             (last.x, last.y),
-            false,
+            Extras::None,
         )?);
         out.extend(b"\x1b[0m");
-        out.extend(kitty_images(&self.term, &mut self.placements)?);
-        out.extend(cursor_position(&self.term)?);
+        out.extend(images.screen);
+        // The pen is left as it is: the end of the snapshot sets it.
+        // Origin mode is set at the end, after this.
+        out.extend(cursor_position(&self.term, Extras::None, (0, 0))?);
         if let Some((mode, content)) = alternate {
             out.extend(format!("\x1b[?{mode}h\x1b[H").bytes());
             out.extend(content);
@@ -998,60 +1141,80 @@ impl graphics::DecodePng for PngDecoder {
 }
 
 /// The Kitty graphics on the active screen as the commands that put them
-/// there: each image transmitted once (`a=t`, its id kept, as PNG), then
-/// every placement of it at its cell (`a=p`, the cursor left alone), or as
-/// the virtual placement its placeholder cells refer to. A placement whose
-/// top is scrolled into the history cannot be put back and is left out.
+/// back, in three parts the snapshot puts in their places.
+struct KittyImages {
+    /// Each image transmitted once (`a=t`, its id kept, as PNG).
+    transmit: Vec<u8>,
+    /// The placements whose top row is in the history: the row (in the
+    /// history), the column, and the command that places it at the cursor
+    /// (`a=p`, the cursor left alone). Sorted by row.
+    history: Vec<(u32, u16, String)>,
+    /// Every other placement at its cell, and the virtual placements their
+    /// placeholder cells refer to.
+    screen: Vec<u8>,
+}
+
 fn kitty_images(
     term: &Terminal<'_, '_>,
     iterator: &mut graphics::PlacementIterator<'_>,
-) -> Result<Vec<u8>> {
+) -> Result<KittyImages> {
     use std::fmt::Write;
 
+    let history = u32::try_from(term.scrollback_rows()?)?;
     let graphics = term.kitty_graphics()?;
-    let mut out = String::new();
-    let mut transmitted = std::collections::HashSet::new();
+    let mut transmit = String::new();
+    let mut in_history = Vec::new();
+    let mut screen = String::new();
+    // Whether each image could be transmitted.
+    let mut transmitted = HashMap::new();
     let mut placements = iterator.update(&graphics)?;
     while let Some(placement) = placements.next() {
         let id = placement.image_id()?;
         let Some(image) = graphics.image(id) else {
             continue;
         };
+        // The top-left cell, in the history and the screen together.
         let position = if placement.is_virtual()? {
             None
         } else {
-            match placement.viewport_pos(&image, term)? {
-                Some(position) if position.row >= 0 && position.col >= 0 => Some(position),
-                _ => continue,
-            }
-        };
-        if transmitted.insert(id) {
-            let Some(png) = encode_png(&image)? else {
+            let Ok(rect) = placement.rect(&image, term) else {
                 continue;
             };
-            let encoded = base64(&png);
-            let mut chunks = encoded.as_bytes().chunks(4096).peekable();
-            let mut first = true;
-            while let Some(chunk) = chunks.next() {
-                let more = u8::from(chunks.peek().is_some());
-                if first {
-                    write!(out, "\x1b_Ga=t,q=2,i={id},f=100,m={more};")?;
-                    first = false;
-                } else {
-                    write!(out, "\x1b_Gm={more};")?;
-                }
-                out.push_str(std::str::from_utf8(chunk)?);
-                out.push_str("\x1b\\");
+            match term.point_from_grid_ref(&rect.start(), PointSpace::Screen)? {
+                Some(top) => Some(top),
+                None => continue,
             }
+        };
+        let sent = match transmitted.entry(id) {
+            Entry::Occupied(sent) => *sent.get(),
+            Entry::Vacant(entry) => {
+                let png = encode_png(&image)?;
+                if let Some(png) = &png {
+                    let encoded = base64(png);
+                    let mut chunks = encoded.as_bytes().chunks(4096).peekable();
+                    let mut first = true;
+                    while let Some(chunk) = chunks.next() {
+                        let more = u8::from(chunks.peek().is_some());
+                        if first {
+                            write!(transmit, "\x1b_Ga=t,q=2,i={id},f=100,m={more};")?;
+                            first = false;
+                        } else {
+                            write!(transmit, "\x1b_Gm={more};")?;
+                        }
+                        transmit.push_str(std::str::from_utf8(chunk)?);
+                        transmit.push_str("\x1b\\");
+                    }
+                }
+                *entry.insert(png.is_some())
+            }
+        };
+        if !sent {
+            continue;
         }
+        let mut place = String::new();
         match position {
-            Some(position) => write!(
-                out,
-                "\x1b[{};{}H\x1b_Ga=p,q=2,C=1,i={id}",
-                position.row + 1,
-                position.col + 1
-            )?,
-            None => write!(out, "\x1b_Ga=p,q=2,U=1,i={id}")?,
+            Some(_) => write!(place, "\x1b_Ga=p,q=2,C=1,i={id}")?,
+            None => write!(place, "\x1b_Ga=p,q=2,U=1,i={id}")?,
         }
         for (key, value) in [
             ("p", placement.placement_id()?),
@@ -1065,16 +1228,122 @@ fn kitty_images(
             ("Y", placement.y_offset()?),
         ] {
             if value != 0 {
-                write!(out, ",{key}={value}")?;
+                write!(place, ",{key}={value}")?;
             }
         }
         let z = placement.z()?;
         if z != 0 {
-            write!(out, ",z={z}")?;
+            write!(place, ",z={z}")?;
         }
-        out.push_str(";\x1b\\");
+        place.push_str(";\x1b\\");
+        match position {
+            Some(top) if top.y < history => in_history.push((top.y, top.x, place)),
+            Some(top) => write!(screen, "\x1b[{};{}H{place}", top.y - history + 1, top.x + 1)?,
+            None => screen.push_str(&place),
+        }
     }
-    Ok(out.into_bytes())
+    in_history.sort_by_key(|&(row, _, _)| row);
+    Ok(KittyImages {
+        transmit: transmit.into_bytes(),
+        history: in_history,
+        screen: screen.into_bytes(),
+    })
+}
+
+/// Whether the row `y` of the history and the screen together is
+/// soft-wrapped into the next one.
+fn row_wrapped(term: &Terminal<'_, '_>, y: u32) -> Result<bool> {
+    let point = Point::Screen(PointCoordinate { x: 0, y });
+    Ok(term.grid_ref(point)?.row()?.is_wrapped()?)
+}
+
+/// The rows from the top of the history to `end` (of the history and the
+/// screen together) as VT sequences that print them from the home position
+/// of an empty screen, the cursor left on `end`. The placements in
+/// `images` (from [`KittyImages::history`]) are put back at their rows on
+/// the way, as the rows are printed.
+fn replay_rows(
+    term: &Terminal<'_, '_>,
+    last_x: u16,
+    end: u32,
+    images: &[(u32, u16, String)],
+) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    // Where the next range starts; the cursor is there.
+    let mut start = (0, 0);
+    let mut images = images.iter().filter(|(row, _, _)| *row <= end).peekable();
+    while let Some(&&(row, _, _)) = images.peek() {
+        if row > start.1 {
+            out.extend(rows_through(term, start, last_x, row - 1)?);
+            if row_wrapped(term, row - 1)? {
+                // The row continues the one above: its first character is
+                // printed to wrap there, and the cursor goes back.
+                let first = term
+                    .grid_ref(Point::Screen(PointCoordinate { x: 0, y: row }))?
+                    .cell()?;
+                let width = if first.wide()? == CellWide::Wide {
+                    2
+                } else {
+                    1
+                };
+                out.extend(format_range(
+                    term,
+                    Point::Screen,
+                    (0, row),
+                    (width - 1, row),
+                    Extras::None,
+                )?);
+                start = (width, row);
+            } else {
+                out.extend(b"\r\n");
+                start = (0, row);
+            }
+        }
+        while let Some((_, col, place)) = images.next_if(|(at, _, _)| *at == row) {
+            out.extend(format!("\x1b[{}G{place}", col + 1).bytes());
+        }
+        out.extend(b"\r");
+        if start.0 > 0 {
+            out.extend(format!("\x1b[{}G", start.0 + 1).bytes());
+        }
+    }
+    out.extend(rows_through(term, start, last_x, end)?);
+    Ok(out)
+}
+
+/// The cells from `start` to the end of row `end` (of the history and the
+/// screen together), the cursor left on row `end`: the formatter leaves out
+/// blank rows at the end of a range, so they are new lines here.
+fn rows_through(
+    term: &Terminal<'_, '_>,
+    start: (u16, u32),
+    last_x: u16,
+    end: u32,
+) -> Result<Vec<u8>> {
+    let mut last = end;
+    loop {
+        let from = if last == start.1 { start.0 } else { 0 };
+        let row = format_range(
+            term,
+            Point::Screen,
+            (from, last),
+            (last_x, last),
+            Extras::None,
+        )?;
+        if !row.is_empty() {
+            let mut out = if last == start.1 {
+                row
+            } else {
+                format_range(term, Point::Screen, start, (last_x, last), Extras::None)?
+            };
+            out.extend(b"\r\n".repeat((end - last) as usize));
+            return Ok(out);
+        }
+        if last == start.1 {
+            return Ok(b"\r\n".repeat((end - start.1) as usize));
+        }
+        last -= 1;
+    }
 }
 
 fn base64(data: &[u8]) -> String {
@@ -1096,22 +1365,68 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-/// The sequence that moves the cursor to where it is in `term`.
-fn cursor_position(term: &Terminal<'_, '_>) -> Result<Vec<u8>> {
+/// The sequence that puts the cursor back where it is in `term`. A cursor
+/// waiting to wrap after the last column (a character printed there) cannot
+/// be moved there: the cell is printed again, in its own style, as the
+/// program left it, followed by `extras` ([`Extras::Pen`] sets the pen as
+/// it is). The position is written relative to `origin`, the cell a cursor
+/// position of 1;1 means (the top left margin under origin mode).
+fn cursor_position(term: &Terminal<'_, '_>, extras: Extras, origin: (u16, u16)) -> Result<Vec<u8>> {
     let (x, y) = (term.cursor_x()?, term.cursor_y()?);
-    Ok(format!("\x1b[{};{}H", y + 1, x + 1).into_bytes())
+    // A cursor above or left of the margins under origin mode cannot be put
+    // back there; it goes to the margin.
+    let (col, row) = (x.saturating_sub(origin.0), y.saturating_sub(origin.1));
+    if !term.is_cursor_pending_wrap()? {
+        return Ok(format!("\x1b[{};{}H", row + 1, col + 1).into_bytes());
+    }
+    let cell = term
+        .grid_ref(Point::Active(PointCoordinate { x, y: u32::from(y) }))?
+        .cell()?;
+    // The right half of a wide character is printed from its left half.
+    let from = if x > 0 && cell.wide()? == CellWide::SpacerTail {
+        x - 1
+    } else {
+        x
+    };
+    // Printed with the default pen (the formatter leaves out a default
+    // style) and character sets (the cell is mapped already).
+    let mut out = format!(
+        "\x1b[{};{}H\x1b[0m\x1b(B\x0f",
+        row + 1,
+        from.saturating_sub(origin.0) + 1
+    )
+    .into_bytes();
+    out.extend(format_range(
+        term,
+        Point::Active,
+        (from, u32::from(y)),
+        (x, u32::from(y)),
+        extras,
+    )?);
+    Ok(out)
+}
+
+/// What [`format_range`] emits besides the cells.
+#[derive(Clone, Copy, PartialEq)]
+enum Extras {
+    None,
+    /// The cursor's pen: the current style, hyperlink, protection and
+    /// character sets.
+    Pen,
+    /// The pen and the terminal state that lives outside the cells:
+    /// palette, scrolling region, tabstops, keyboard protocols and working
+    /// directory.
+    All,
 }
 
 /// Format the cells from `start` to `end` (inclusive, as `(x, y)` in the
-/// space of `point`) as VT sequences. With `state`, the terminal state that
-/// lives outside the cells comes along: scrolling region, tabstops, keyboard
-/// protocol, charsets, working directory and the current style.
+/// space of `point`) as VT sequences, with `extras` after them.
 fn format_range(
     term: &Terminal<'_, '_>,
     point: fn(PointCoordinate) -> Point,
     start: (u16, u32),
     end: (u16, u32),
-    state: bool,
+    extras: Extras,
 ) -> Result<Vec<u8>> {
     let start = term.grid_ref(point(PointCoordinate {
         x: start.0,
@@ -1119,6 +1434,7 @@ fn format_range(
     }))?;
     let end = term.grid_ref(point(PointCoordinate { x: end.0, y: end.1 }))?;
     let selection = Selection::new(start, end, false);
+    let (pen, state) = (extras != Extras::None, extras == Extras::All);
     let options = FormatterOptions::new()
         .with_format(Format::Vt)
         .with_unwrap(true)
@@ -1129,11 +1445,11 @@ fn format_range(
         .with_tabstops(state)
         .with_pwd(state)
         .with_keyboard(state)
-        .with_style(state)
-        .with_hyperlink(state)
-        .with_protection(state)
+        .with_style(pen)
+        .with_hyperlink(pen)
+        .with_protection(pen)
         .with_kitty_keyboard(state)
-        .with_charsets(state);
+        .with_charsets(pen);
     let mut formatter = Formatter::new(term, options)?;
     Ok(formatter.format_alloc(None)?.to_vec())
 }
@@ -1196,15 +1512,38 @@ fn color_key(color: Option<&Color>) -> u64 {
     }
 }
 
+/// Intern a URI read from a cell, preserving plain text when the buffer is too small.
+fn uri_index(
+    result: std::result::Result<usize, libghostty_vt::Error>,
+    buffer: &[u8],
+    links: &mut Vec<String>,
+    indices: &mut std::collections::HashMap<String, u32>,
+) -> std::result::Result<u32, libghostty_vt::Error> {
+    match result {
+        Ok(0) | Err(libghostty_vt::Error::OutOfSpace { .. }) => Ok(0),
+        Ok(len) => match std::str::from_utf8(&buffer[..len]) {
+            Ok(uri) => Ok(*indices.entry(uri.to_owned()).or_insert_with(|| {
+                links.push(uri.to_owned());
+                links.len() as u32
+            })),
+            // Protobuf strings cannot carry arbitrary OSC bytes.
+            Err(_) => Ok(0),
+        },
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Default)]
 struct RunBuilder {
     runs: Vec<Run>,
 }
 
 impl RunBuilder {
-    fn push_char(&mut self, ch: char, style: u32, wide: bool) {
+    fn push_char(&mut self, ch: char, style: u32, wide: bool, link: u32) {
         match self.runs.last_mut() {
-            Some(run) if run.style == style && run.wide == wide && !run.cluster => {
+            Some(run)
+                if run.style == style && run.wide == wide && run.link == link && !run.cluster =>
+            {
                 run.text.push(ch);
             }
             _ => self.runs.push(Run {
@@ -1212,24 +1551,26 @@ impl RunBuilder {
                 text: ch.to_string(),
                 wide,
                 cluster: false,
+                link,
             }),
         }
     }
 
-    fn push_cluster(&mut self, text: String, style: u32, wide: bool) {
+    fn push_cluster(&mut self, text: String, style: u32, wide: bool, link: u32) {
         self.runs.push(Run {
             style,
             text,
             wide,
             cluster: true,
+            link,
         });
     }
 
-    /// Drop trailing blank default-style cells; the client clears the rest of
+    /// Drop trailing blank unlinked default-style cells; the client clears the rest of
     /// the row anyway.
     fn finish(mut self) -> Vec<Run> {
         while let Some(run) = self.runs.last_mut() {
-            if run.style != 0 || run.wide || run.cluster {
+            if run.style != 0 || run.wide || run.cluster || run.link != 0 {
                 break;
             }
             let trimmed = run.text.trim_end_matches(' ').len();
@@ -1327,6 +1668,41 @@ fn map_mods(bits: u32) -> key::Mods {
     out
 }
 
+/// The physical key `code` names (W3C `KeyboardEvent.code`, see
+/// `KeyInput.code`), with its character on a US layout: the keys that type
+/// characters.
+fn physical_key(code: &str) -> Option<(key::Key, char)> {
+    use key::Key;
+
+    if let Some(letter) = code.strip_prefix("Key")
+        && let [byte @ b'A'..=b'Z'] = letter.as_bytes()
+    {
+        let key = Key::try_from(Key::A as u32 + u32::from(byte - b'A')).ok()?;
+        return Some((key, char::from(byte.to_ascii_lowercase())));
+    }
+    if let Some(digit) = code.strip_prefix("Digit")
+        && let [byte @ b'0'..=b'9'] = digit.as_bytes()
+    {
+        let key = Key::try_from(Key::Digit0 as u32 + u32::from(byte - b'0')).ok()?;
+        return Some((key, char::from(*byte)));
+    }
+    Some(match code {
+        "Backquote" => (Key::Backquote, '`'),
+        "Backslash" => (Key::Backslash, '\\'),
+        "BracketLeft" => (Key::BracketLeft, '['),
+        "BracketRight" => (Key::BracketRight, ']'),
+        "Comma" => (Key::Comma, ','),
+        "Equal" => (Key::Equal, '='),
+        "Minus" => (Key::Minus, '-'),
+        "Period" => (Key::Period, '.'),
+        "Quote" => (Key::Quote, '\''),
+        "Semicolon" => (Key::Semicolon, ';'),
+        "Slash" => (Key::Slash, '/'),
+        "Space" => (Key::Space, ' '),
+        _ => return None,
+    })
+}
+
 /// Map a protocol key to a physical key plus its unshifted codepoint.
 fn map_key(input: &KeyInput) -> (key::Key, Option<char>) {
     use key::Key;
@@ -1393,6 +1769,21 @@ fn map_key(input: &KeyInput) -> (key::Key, Option<char>) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_bell_is_counted() {
+        let mut screen = screen();
+        screen.feed(b"\x07\x07");
+        assert_eq!(screen.take_bells(), 2);
+        assert_eq!(screen.take_bells(), 0);
+    }
+
+    #[test]
+    fn a_bel_ending_an_osc_is_not_a_bell() {
+        let mut screen = screen();
+        screen.feed(b"\x1b]0;title\x07");
+        assert_eq!(screen.take_bells(), 0);
+    }
+
     fn screen() -> GhosttyScreen {
         GhosttyScreen::new(20, 4).unwrap()
     }
@@ -1414,6 +1805,15 @@ mod tests {
             named: named as i32,
             codepoint: codepoint as u32,
             text: text.to_owned(),
+            code: String::new(),
+        }
+    }
+
+    /// A key with the physical key it is (`KeyInput.code`).
+    fn at(code: &str, codepoint: char, mods: u32, text: &str) -> KeyInput {
+        KeyInput {
+            code: code.to_owned(),
+            ..key(NamedKey::Unspecified, codepoint, mods, text)
         }
     }
 
@@ -1689,6 +2089,101 @@ mod tests {
     }
 
     #[test]
+    fn a_hyperlink_goes_with_its_run() {
+        let mut screen = screen();
+        screen.feed(b"a\x1b]8;;https://example.com/\x1b\\link\x1b]8;;\x1b\\b\r\n\x1b]8;;https://example.com/\x1b\\again\x1b]8;;\x1b\\");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(frame.links, ["https://example.com/"]);
+        let runs = &frame.changed[0].runs;
+        assert_eq!(
+            runs.iter()
+                .map(|r| (r.text.as_str(), r.link))
+                .collect::<Vec<_>>(),
+            [("a", 0), ("link", 1), ("b", 0)]
+        );
+        assert_eq!(frame.changed[1].runs[0].link, 1);
+        screen.feed(b"\x1b[2J\x1b[Hplain");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert!(frame.links.is_empty());
+        assert!(
+            frame
+                .changed
+                .iter()
+                .flat_map(|row| &row.runs)
+                .all(|run| run.link == 0)
+        );
+    }
+
+    #[test]
+    fn linked_trailing_spaces_keep_their_cells() {
+        for label in ["x ", " "] {
+            let mut screen = screen();
+            screen.feed(
+                format!("\x1b]8;;https://example.com/\x1b\\{label}\x1b]8;;\x1b\\  ").as_bytes(),
+            );
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(frame.links, ["https://example.com/"]);
+            let runs = &frame.changed[0].runs;
+            assert_eq!(runs.len(), 1, "label {label:?}");
+            assert_eq!(runs[0].text, label);
+            assert_eq!(runs[0].link, 1);
+        }
+    }
+
+    #[test]
+    fn a_non_utf8_hyperlink_is_plain_text() {
+        let mut screen = screen();
+        screen.feed(b"\x1b]8;;https://example.com/\xff\x1b\\x\x1b]8;;\x1b\\");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "x");
+        assert!(frame.links.is_empty());
+        assert_eq!(frame.changed[0].runs[0].link, 0);
+    }
+
+    #[test]
+    fn an_overlong_hyperlink_is_left_out() {
+        let mut screen = screen();
+        let uri = format!("https://example.com/{}", "x".repeat(8193));
+        screen.feed(format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\").as_bytes());
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "link");
+        assert_eq!(frame.changed[0].runs[0].link, 0);
+        assert!(frame.links.is_empty());
+    }
+
+    #[test]
+    fn the_vt_osc_limit_keeps_text_but_drops_long_links() {
+        // Measured on libghostty-vt 0.2.2, 2026-10-24. No OSC parameters.
+        for (len, retained) in [(2046, true), (2047, false)] {
+            let mut screen = screen();
+            let uri = format!("https://example.com/{}", "x".repeat(len - 20));
+            assert_eq!(uri.len(), len);
+            screen.feed(format!("\x1b]8;;{uri}\x1b\\link\x1b]8;;\x1b\\").as_bytes());
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 0), "link");
+            assert_eq!(frame.changed[0].runs[0].link, u32::from(retained));
+            assert_eq!(frame.links, if retained { vec![uri] } else { vec![] });
+        }
+    }
+
+    #[test]
+    fn an_out_of_space_uri_is_left_out() {
+        let mut links = Vec::new();
+        let mut indices = std::collections::HashMap::new();
+        let buffer = [0; 8192];
+        let link = uri_index(
+            Err(libghostty_vt::Error::OutOfSpace { required: 8193 }),
+            &buffer,
+            &mut links,
+            &mut indices,
+        )
+        .unwrap();
+        assert_eq!(link, 0);
+        assert!(links.is_empty());
+        assert!(indices.is_empty());
+    }
+
+    #[test]
     fn styles_are_split_into_runs() {
         let mut screen = screen();
         screen.feed(b"a\x1b[1;31mb\x1b[0mc");
@@ -1727,6 +2222,27 @@ mod tests {
         screen.feed(b"\x1b]2;hi\x07");
         let frame = screen.frame(false).unwrap().unwrap();
         assert_eq!(frame.title.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn osc_52_is_reported_as_a_clipboard_write() {
+        let mut screen = screen();
+        assert!(screen.take_copies().is_empty());
+        // OSC 52 to the clipboard, with BEL and with ST; OSC 1337 Copy.
+        screen.feed(b"\x1b]52;c;aGk=\x07\x1b]52;c;dGhlcmU=\x1b\\\x1b]1337;Copy=:b2s=\x07");
+        let copies = screen.take_copies();
+        let text: Vec<_> = copies.iter().map(|copy| copy.data.as_slice()).collect();
+        assert_eq!(text, [&b"hi"[..], b"there", b"ok"]);
+        assert!(
+            copies
+                .iter()
+                .all(|copy| copy.mime == "text/plain;charset=utf-8"),
+            "{copies:?}"
+        );
+        assert!(screen.take_copies().is_empty());
+        // Not the clipboard: the primary selection; a read; clearing.
+        screen.feed(b"\x1b]52;p;aGk=\x07\x1b]52;c;?\x07\x1b]52;c;\x07");
+        assert_eq!(screen.take_copies(), []);
     }
 
     #[test]
@@ -1798,6 +2314,166 @@ mod tests {
         assert_eq!(
             encoded(&mut screen, key(none, '\u{44f}', 0, "\u{44f}")),
             "\u{44f}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn ctrl_on_a_layout_that_is_not_latin_goes_by_the_physical_key() {
+        let mut screen = screen();
+        let (ctrl, alt, shift) = (mods::CTRL, mods::ALT, mods::SHIFT);
+        // Russian: the C key types "с", the Z key "я".
+        for text in ["\u{441}", ""] {
+            assert_eq!(
+                encoded(&mut screen, at("KeyC", '\u{441}', ctrl, text)),
+                b"\x03",
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            encoded(&mut screen, at("KeyZ", '\u{44f}', ctrl, "\u{44f}")),
+            b"\x1a"
+        );
+        // The ] key ("ъ"), as Ctrl+] on a US layout.
+        assert_eq!(
+            encoded(&mut screen, at("BracketRight", '\u{44a}', ctrl, "")),
+            b"\x1d"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("Digit5", '5', ctrl | alt, "")),
+            encoded(&mut screen, key(NamedKey::Unspecified, '5', ctrl | alt, ""))
+        );
+        // Greek: Ctrl+ψ is the C key.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{3c8}', ctrl, "\u{3c8}")),
+            b"\x03"
+        );
+        // Typing goes by the text, as ever.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', 0, "\u{441}")),
+            "\u{441}".as_bytes()
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', shift, "\u{421}")),
+            "\u{421}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn alt_sends_esc_and_the_character_produced() {
+        let mut screen = screen();
+        let (ctrl, alt, shift) = (mods::CTRL, mods::ALT, mods::SHIFT);
+        let esc = |text: &str| [b"\x1b", text.as_bytes()].concat();
+        // Russian: the ; key types "ж", the A key "ф".
+        assert_eq!(
+            encoded(&mut screen, at("Semicolon", '\u{436}', alt, "\u{436}")),
+            esc("\u{436}")
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyA", '\u{444}', alt | shift, "\u{424}")),
+            esc("\u{424}")
+        );
+        // No text: the character, Shift applied.
+        assert_eq!(
+            encoded(&mut screen, at("KeyA", '\u{444}', alt | shift, "")),
+            esc("\u{424}")
+        );
+        assert_eq!(
+            encoded(&mut screen, at("Digit1", '1', alt | shift, "!")),
+            b"\x1b!"
+        );
+        // Ctrl+Alt: ESC and the Ctrl code of the physical key.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', ctrl | alt, "")),
+            b"\x1b\x03"
+        );
+        // No physical key: the character all the same.
+        assert_eq!(
+            encoded(
+                &mut screen,
+                key(NamedKey::Unspecified, '\u{436}', alt, "\u{436}")
+            ),
+            esc("\u{436}")
+        );
+        // A program that turned the ESC prefix off (mode 1036) gets the text.
+        screen.feed(b"\x1b[?1036l");
+        assert_eq!(
+            encoded(&mut screen, at("Semicolon", '\u{436}', alt, "\u{436}")),
+            "\u{436}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn composed_characters_are_sent_as_themselves() {
+        let mut screen = screen();
+        // AltGr+e, AltGr+a, Option+c with Option not acting as Alt: the
+        // client sends the character without Alt.
+        for (code, text) in [
+            ("KeyE", "\u{20ac}"),
+            ("KeyA", "\u{105}"),
+            ("KeyC", "\u{e7}"),
+        ] {
+            let ch = text.chars().next().unwrap();
+            assert_eq!(encoded(&mut screen, at(code, ch, 0, text)), text.as_bytes());
+        }
+        // Option acting as Alt: the client sends Alt with the key's "c".
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", 'c', mods::ALT, "c")),
+            b"\x1bc"
+        );
+        // Alt with a composed character: ESC and it, in UTF-8.
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{e7}', mods::ALT, "\u{e7}")),
+            "\x1b\u{e7}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn a_key_without_a_physical_key_is_encoded_as_on_a_us_layout() {
+        // No `code`: synthetic input, or a character key of `tilr`.
+        let mut screen = screen();
+        let ctrl = mods::CTRL;
+        // Ctrl with a character that is not ASCII has nothing to go by.
+        assert_eq!(
+            encoded(&mut screen, key(NamedKey::Unspecified, '\u{441}', ctrl, "")),
+            b""
+        );
+        // A Latin one is itself, as on a US layout.
+        assert_eq!(
+            encoded(&mut screen, key(NamedKey::Unspecified, 'c', ctrl, "")),
+            b"\x03"
+        );
+    }
+
+    #[test]
+    fn a_latin_character_wins_over_the_physical_key() {
+        let mut screen = screen();
+        let (ctrl, alt) = (mods::CTRL, mods::ALT);
+        // Dvorak: "c" is on the I key; AZERTY: "a" is on the Q key, "w" on Z.
+        assert_eq!(encoded(&mut screen, at("KeyI", 'c', ctrl, "")), b"\x03");
+        assert_eq!(encoded(&mut screen, at("KeyI", 'c', ctrl, "c")), b"\x03");
+        assert_eq!(encoded(&mut screen, at("KeyQ", 'a', ctrl, "a")), b"\x01");
+        assert_eq!(encoded(&mut screen, at("KeyZ", 'w', ctrl, "")), b"\x17");
+        assert_eq!(encoded(&mut screen, at("KeyQ", 'a', alt, "a")), b"\x1ba");
+        assert_eq!(encoded(&mut screen, at("KeyI", 'c', 0, "c")), b"c");
+    }
+
+    #[test]
+    fn the_kitty_protocol_gets_the_physical_key_as_the_base_layout_key() {
+        let mut screen = screen();
+        // Disambiguate, report alternate keys.
+        screen.feed(b"\x1b[>5u");
+        let ctrl = mods::CTRL;
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", '\u{441}', ctrl, "\u{441}")),
+            b"\x1b[1089::99;5u"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyI", 'c', ctrl, "")),
+            b"\x1b[99::105;5u"
+        );
+        assert_eq!(
+            encoded(&mut screen, at("KeyC", 'c', ctrl, "")),
+            b"\x1b[99;5u"
         );
     }
 
@@ -1984,25 +2660,153 @@ mod tests {
         assert_eq!(row_text(&frame, 0), "ab");
     }
 
+    /// (image, column, row, columns, rows) of a placement.
+    type PlacedAt = (u32, i32, i32, u32, u32);
+
+    /// Where a client sees the image placements: (image, column, row,
+    /// columns, rows) at the bottom, one row scrolled back and at the top of
+    /// the history. An image transmitted again has a new generation, so that
+    /// is left out.
+    fn placements(screen: &mut GhosttyScreen) -> [Vec<PlacedAt>; 3] {
+        let mut seen = |delta| {
+            screen.scroll(delta);
+            let mut placements: Vec<_> = (screen.frame(true).unwrap().unwrap().placements)
+                .iter()
+                .map(|p| (p.image_id, p.col, p.row, p.cols, p.rows))
+                .collect();
+            placements.sort_unstable();
+            placements
+        };
+        let seen = [seen(0), seen(-1), seen(-100)];
+        screen.scroll_to_bottom();
+        seen
+    }
+
     #[test]
-    fn snapshot_leaves_out_an_image_scrolled_into_the_history() {
-        let mut bytes = b"ab".to_vec();
+    fn snapshot_keeps_an_image_scrolled_into_the_history() {
+        // One image where a soft-wrapped line continues, both rows in the
+        // history; under it another, its top one row up in the history.
+        let mut bytes = b"0123456789abcdefghijkl".to_vec();
+        bytes.extend(kitty_image(",i=8"));
+        bytes.extend(b"\r\nab");
         bytes.extend(kitty_image(""));
-        // Text on every row (the formatter drops blank history rows); the
-        // image's top ends up one row up in the history.
-        bytes.extend(b"c\r\nd\r\ne\r\nf\r\ng");
-        let mut restored = round_trip(&bytes);
-        let frame = restored.frame(true).unwrap().unwrap();
-        assert!(frame.placements.is_empty());
-        restored.scroll(-1);
-        assert!(
-            restored
-                .frame(false)
-                .unwrap()
-                .unwrap()
-                .placements
-                .is_empty()
+        bytes.extend(b"\r\nc\r\nd\r\ne");
+        let mut original = screen();
+        original.feed(&bytes);
+        let before = placements(&mut original);
+        assert_eq!(
+            before,
+            [
+                vec![(7, 2, -1, 10, 2)],
+                vec![(7, 2, 0, 10, 2)],
+                vec![(7, 2, 3, 10, 2), (8, 2, 1, 10, 2)],
+            ]
         );
+
+        let mut restored = round_trip(&bytes);
+        assert_eq!(placements(&mut restored), before);
+    }
+
+    #[test]
+    fn snapshot_keeps_a_line_wrapped_across_the_history_border() {
+        let mut bytes = Vec::new();
+        for i in 0..6 {
+            bytes.extend(format!("line {i}\r\n").bytes());
+        }
+        // 30 characters: the last history row wraps into the first screen
+        // row, and that one wraps no further.
+        bytes.extend(b"abcdefghijklmnopqrst0123456789\r\nx\r\ny\r\nz");
+        let mut original = screen();
+        original.feed(&bytes);
+        let history = original.term.scrollback_rows().unwrap() as u32;
+        assert!(row_wrapped(&original.term, history - 1).unwrap());
+
+        let mut restored = round_trip(&bytes);
+        assert!(row_wrapped(&restored.term, history - 1).unwrap());
+        assert!(!row_wrapped(&restored.term, history).unwrap());
+        // Wider, the line is one row again, as it is in the original.
+        for screen in [&mut original, &mut restored] {
+            screen.resize(40, 4, DEFAULT_CELL_PX).unwrap();
+        }
+        assert_eq!(view(&mut restored), view(&mut original));
+        assert!(
+            view(&mut restored)
+                .0
+                .contains(&"abcdefghijklmnopqrst0123456789".to_owned())
+        );
+    }
+
+    #[test]
+    fn snapshot_keeps_a_pending_wrap() {
+        // Exactly a row's worth, the last cell in red, the pen green: the
+        // cursor waits at the last column.
+        for bytes in [
+            &b"$ abcdefghijklmnopq\x1b[31mr\x1b[32m"[..],
+            // The same with a wide character in the last two columns.
+            "$ abcdefghijklmnop\u{4e2d}\x1b[32m".as_bytes(),
+        ] {
+            let mut original = screen();
+            original.feed(bytes);
+            assert!(original.term.is_cursor_pending_wrap().unwrap());
+            let mut restored = round_trip(bytes);
+            assert!(restored.term.is_cursor_pending_wrap().unwrap());
+
+            for screen in [&mut original, &mut restored] {
+                screen.feed(b"x");
+            }
+            let frame = restored.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 1), "x");
+            let expected = original.frame(true).unwrap().unwrap();
+            assert_eq!(frame.changed, expected.changed);
+            assert_eq!(frame.styles, expected.styles);
+        }
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_under_origin_mode() {
+        // Under origin mode a cursor position counts from the margins: the
+        // restored cursor is on the same cell, waiting to wrap as it was,
+        // and the text after it wraps at the same margins.
+        for bytes in [
+            // A scrolling region, the cursor on its second row.
+            &b"\x1b[3;8r\x1b[?6h\x1b[2;5H"[..],
+            // Left and right margins too.
+            b"\x1b[?69h\x1b[5;15s\x1b[3;8r\x1b[?6h\x1b[2;3H",
+            // A pending wrap at the last column under origin mode.
+            b"\x1b[3;8r\x1b[?6h\x1b[2;19H\x1b[31mab",
+            // A pending wrap at the right margin.
+            b"\x1b[?69h\x1b[5;15s\x1b[3;8r\x1b[?6h\x1b[2;10H\x1b[31mab",
+            // Left and right margins without origin mode.
+            b"\x1b[?69h\x1b[5;15s\x1b[3;8r\x1b[4;7H",
+        ] {
+            let new = || {
+                let mut screen = GhosttyScreen::new(20, 10).unwrap();
+                screen.feed(bytes);
+                screen
+            };
+            let mut original = new();
+            let snapshot = new().snapshot().unwrap();
+            let mut restored = GhosttyScreen::restore(20, 10, DEFAULT_CELL_PX, &snapshot).unwrap();
+            let cursor = |screen: &GhosttyScreen| {
+                (
+                    screen.term.cursor_x().unwrap(),
+                    screen.term.cursor_y().unwrap(),
+                    screen.term.is_cursor_pending_wrap().unwrap(),
+                    screen.term.mode(Mode::ORIGIN).unwrap(),
+                )
+            };
+            assert_eq!(
+                cursor(&restored),
+                cursor(&original),
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+            for screen in [&mut original, &mut restored] {
+                screen.feed(b"x0123456789abcdef\x1b[Hy");
+            }
+            assert_eq!(cursor(&restored), cursor(&original));
+            assert_eq!(view(&mut restored), view(&mut original));
+        }
     }
 
     #[test]

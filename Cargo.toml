@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tilr-proto", "crates/tilr-screen", "crates/tilr-server"]
+members = ["crates/tilr", "crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilrd", "crates/tilr-websocket"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tilr-dev/tilrd"
 
 [workspace.dependencies]
+tilr-websocket = { path = "crates/tilr-websocket" }
 tilr-proto = { path = "crates/tilr-proto" }
 tilr-screen = { path = "crates/tilr-screen" }
 anyhow = "1"
@@ -29,3 +30,15 @@ codegen-units = 1
 # `ls` takes a second). No debuginfo for that one crate makes it ReleaseFast in dev builds too.
 [profile.dev.package.libghostty-vt-sys]
 debug = false
+
+# The real-reload update test in tilrd and the update test in tilr's client tests gzip the
+# real debug tilrd binary (~36 MB) into a fake release, and the tilrd under test gunzips it.
+# Unoptimized, flate2/miniz_oxide/crc32fast take seconds per pass; optimize just these crates.
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3

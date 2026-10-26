@@ -4,7 +4,7 @@ File and line numbers are as of the 2026-10-03 review; after the 2026-10-04 chan
 
 ## Security
 
-- [x] Authentication: an access token in `Hello.token`, kept in `$XDG_STATE_HOME/tilr/token` (0600); `tilr-server token` prints it; `--no-auth` turns it off with a warning.
+- [x] Authentication: an access token in `Hello.token`, kept in `$XDG_STATE_HOME/tilr/token` (0600); `tilrd token` prints it; `--no-auth` turns it off with a warning.
 - [ ] One token per server, and it never expires: no revocation, no per-client tokens, no permissions (read-only and the like).
 - [ ] Token guessing is not rate-limited (the length is enough: 256 bits), but attempts are neither counted nor logged per address.
 - [ ] Limit the pane size: clamping to 65535×65535 lets a single `Resize`/`CreatePane` crash a pane or eat memory (`supervisor.rs:364,388`, `pane.rs:177`).
@@ -27,14 +27,14 @@ File and line numbers are as of the 2026-10-03 review; after the 2026-10-04 chan
 ## Protocol (before v1)
 
 - [x] `Hello`: the version is checked, `Hello` must be the first message; otherwise `Error` and the connection is closed.
-- [x] `Ping` / `Pong` in the protocol (feature `"ping"`), so a browser client notices a server that silently went away.
+- [x] `Ping` / `Pong` in the protocol (part of every server since protocol 3), so a browser client notices a server that silently went away.
 - [ ] Web client: send `Ping` and reconnect when no `Pong` comes back.
 - [x] Extensibility: unknown messages are ignored, features are announced in `Hello.features` / `HelloAck.features`.
-- [ ] `KeyInput`: the physical key for non-Latin layouts (Ctrl+С on a Russian layout does not give `^C`).
+- [x] `KeyInput`: the physical key for non-Latin layouts (`KeyInput.code`; Ctrl+С on a Russian layout gives `^C`).
 - [ ] Document or change: scroll and size are shared by all viewers, input is accepted from unsubscribed clients.
 - [ ] `seq` resets when the pane process restarts.
 - [x] The pane ID is a UUID (a string), not a number: the same in the protocol, in `ps`, in `$TILR_PANE`. Protocol version 2. The server ID is in `HelloAck.server_id`.
-- [ ] `tilr-server ps` does not show the shell's pid: the supervisor does not know it, the pane process does.
+- [ ] `tilrd ps` does not show the shell's pid: the supervisor does not know it, the pane process does.
 - [ ] `UNSPECIFIED = 0` in `KeyAction` and `MouseAction`: an unknown value currently becomes `Press`.
 - [ ] Remove `PaneStatus` from the public proto.
 - [ ] README: a client must escape the title and the cwd.
@@ -48,7 +48,7 @@ File and line numbers are as of the 2026-10-03 review; after the 2026-10-04 chan
 - [ ] Manifests: `description`, `repository`, `rust-version` are done; still missing: `version` on the path dependencies.
 - [ ] Public API: drop `anyhow` from the `Screen` trait, `DecodeError` with `source()` and `#[non_exhaustive]`, docs for pub items.
 - [ ] `cfg(unix)` or a clear compile error on Windows.
-- [x] Scenario-based integration tests of the server (`crates/tilr-server/tests/`, listed in `USE_CASES.md`): connecting, reconnecting, scrolling, clipboard, reload.
+- [x] Scenario-based integration tests of the server (`crates/tilrd/tests/`, listed in `USE_CASES.md`): connecting, reconnecting, scrolling, clipboard, reload.
 - [ ] Unit tests for `pty` and for input encoding in `pane`.
 - [x] `cargo fmt`.
 - [ ] Check whether the name `tilr` is free on crates.io.
@@ -65,12 +65,12 @@ File and line numbers are as of the 2026-10-03 review; after the 2026-10-04 chan
 
 ## tilr Cloud
 
-Done: `tilr-server cloud login|logout|status`, the control connection,
+Done: `tilrd cloud login|logout|status`, the control connection,
 starting `cloudflared` when Cloud says so (`src/cloud.rs`). Cloud itself lives in a separate repository.
 
 - [ ] Check with a real `cloudflared` and a real tunnel: so far only a stub script.
 - [ ] End-to-end encryption client ↔ server: TLS currently ends at Cloudflare, frames are visible there.
-- [ ] Handing the access token to the client (by hand today: `tilr-server token` → paste into the client). Needs client pairing without Cloud: a QR code or a code.
+- [ ] Handing the access token to the client (by hand today: `tilrd token` → paste into the client). Needs client pairing without Cloud: a QR code or a code.
 - [ ] `--allow-origin` for a web client not opened from localhost is set by hand.
 - [ ] `cloudflared` is not installed automatically: it must be on `PATH` or given with `--cloudflared`.
 - [ ] A `cloudflared` that outlives a crashed server keeps running.

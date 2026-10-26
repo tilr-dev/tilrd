@@ -1,10 +1,10 @@
 # Releases: release-please keeps a release PR open from the Conventional Commits on main
 # (version bump in [workspace.package] of Cargo.toml and in Cargo.lock, CHANGELOG); merging
 # it tags vX.Y.Z and creates the GitHub release; `build` and `upload` then attach prebuilt
-# `tilr-server` binaries to the release, and `cdn` publishes the Linux ones to the CDN,
-# where `tilr-server update` finds them.
-# The three crates (tilr-proto, tilr-screen, tilr-server) share the workspace version and
-# move together; none is published to crates.io (publish = false), so there is no publish
+# `tilrd` and `tilr` binaries to the release, and `cdn` publishes the Linux ones to the CDN,
+# where the installer and `tilr update` find them.
+# The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version
+# and move together; none is published to crates.io (publish = false), so there is no publish
 # job. release-please-config.json uses the `simple` strategy with TOML extra-files: the
 # `rust` strategy cannot bump a version inherited from [workspace.package]. The Cargo.lock
 # filter reads `@.name.value` because release-please parses TOML into position-tagged
@@ -15,7 +15,7 @@
 # tilr-bot, not by the GITHUB_TOKEN, so CI runs on it like on any PR. There is no bypass: the
 # release PR goes through the same required checks, and merging it is the release approval.
 #
-# binaries: `build` compiles `tilr-server` per target with read-only permissions (dependency
+# binaries: `build` compiles `tilrd` and `tilr` per target with read-only permissions (dependency
 # build scripts run there), and `upload` attaches the archives to the tag's GitHub release.
 # Only `upload` gets a writable token: the GITHUB_TOKEN with contents: write, for that job
 # alone. GITHUB_TOKEN can upload assets to a release created by tilr-bot (release assets are a
@@ -28,12 +28,13 @@
 #
 # cdn: uploads what the Linux builds laid out in dist/cdn to the R2 bucket tilr-cdn with
 # `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
-# releases/<platform>/latest, releases/<version>/tilr-server-<platform>[.sha256], versions
-# like 0.1.0-26449dd). It runs in the `cdn` environment (restricted to main), which holds
-# CLOUDFLARE_API_TOKEN (R2 write access to the bucket's account) and the required
+# releases/<platform>/latest, releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]
+# holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment
+# (restricted to main), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+# (R2 S3 object access scoped to tilr-cdn), plus the required
 # CLOUDFLARE_ACCOUNT_ID variable (the bucket's account; the job fails without it). It runs
-# last, after the GitHub release has its assets: from its last upload on, servers that run
-# `tilr-server update` get the new version.
+# last, after the GitHub release has its assets: from its last upload on, `tilr update` and
+# the installer get the new version.
 
 name: release
 
@@ -76,6 +77,36 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  back-merge:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Back-merge main into dev
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        shell: bash
+        run: |
+          pr=$(gh pr list --base dev --head main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            pr=$(gh pr create --base dev --head main --title "chore: back-merge $TAG" --body "Return release $TAG from main to dev.")
+          fi
+          if ! gh pr merge "$pr" --merge; then
+            echo "::warning::Back-merge PR $pr remains open; resolve conflicts or required checks manually."
+          fi
+
   build:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -115,37 +146,46 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --target "$TARGET"
           rustup default stable
+      # As of 2026-10-19, macos-15 includes macOS 15.4 SDK in Xcode 16.3.
+      # Recheck the runner-images macos-15-arm64 README; remove with the Zig SDK pin.
+      - name: Select macOS 15.4 SDK
+        if: matrix.platform == ''
+        run: |
+          echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
+          echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
       - name: Install Zig and protoc
         if: matrix.platform == ''
         run: |
-          scripts/install-tools.sh "$RUNNER_TEMP/tools"
+          scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       # No cache: a release build starts clean.
       - name: Build (macOS)
         if: matrix.platform == ''
         run: |
-          cargo build --release --locked -p tilr-server --target "$TARGET"
-          echo "BINARY=target/$TARGET/release/tilr-server" >> "$GITHUB_ENV"
-      # The CDN layout (dist/cdn) and dist/tilr-server-<platform>, as by hand.
+          cargo build --release --locked -p tilrd -p tilr --target "$TARGET"
+          echo "BIN_DIR=target/$TARGET/release" >> "$GITHUB_ENV"
+      # The CDN layout (dist/cdn) and dist/<platform>/{tilrd,tilr}, as by hand.
       - name: Build (Linux, scripts/release.sh)
         if: matrix.platform != ''
         env:
           PLATFORM: ${{ matrix.platform }}
         run: |
           scripts/release.sh "$PLATFORM"
-          echo "BINARY=dist/tilr-server-$PLATFORM" >> "$GITHUB_ENV"
-      # The binary names the version it was built as: the tag's version and the commit.
+          echo "BIN_DIR=dist/$PLATFORM" >> "$GITHUB_ENV"
+      # Each binary names the version it was built as: the tag's version and the commit.
       - name: Check the version
         if: matrix.native
         run: |
-          case "$("$BINARY" --version)" in
-            "tilr-server ${TAG#v}-$(git rev-parse --short HEAD) ("*")") ;;
-            *) "$BINARY" --version; exit 1 ;;
-          esac
-      - run: scripts/package.sh "$TAG" "$TARGET" "$BINARY" dist/github
+          for exe in tilrd tilr; do
+            case "$("$BIN_DIR/$exe" --version)" in
+              "$exe ${TAG#v}-$(git rev-parse --short HEAD) ("*")") ;;
+              *) "$BIN_DIR/$exe" --version; exit 1 ;;
+            esac
+          done
+      - run: scripts/package.sh "$TAG" "$TARGET" "$BIN_DIR" dist/github
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: tilr-server-${{ matrix.target }}
+          name: tilr-${{ matrix.target }}
           path: dist/github/*
           if-no-files-found: error
           retention-days: 7
@@ -167,7 +207,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: tilr-server-*
+          pattern: tilr-*
           path: dist
           merge-multiple: true
       - name: Verify checksums
@@ -211,15 +251,13 @@ jobs:
           for platform in $PLATFORMS; do
             test "$(cat "dist/cdn/releases/$platform/latest")" = "$want"
           done
-      # wrangler is the tool scripts/release.sh uploads with; pinned by version (npm checks
-      # the package's integrity against the registry).
-      - name: Install wrangler
-        run: npm install --global --no-fund --no-audit "wrangler@${WRANGLER_VERSION}"
-        env:
-          WRANGLER_VERSION: 4.151.1
+      # AWS CLI comes from the runner image; log its version for release diagnostics.
+      - name: Check AWS CLI
+        run: aws --version
       - name: Upload to the CDN
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           : "${CLOUDFLARE_ACCOUNT_ID:?set the CLOUDFLARE_ACCOUNT_ID variable of the cdn environment}"

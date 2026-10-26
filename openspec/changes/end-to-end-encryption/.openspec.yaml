@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-18
+# Deferred: security design to be done; no behavior change yet.
+skip_specs: true
