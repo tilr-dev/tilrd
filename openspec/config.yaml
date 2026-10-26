@@ -68,7 +68,7 @@ context: |
   --workspace --all-targets --locked -- -D warnings, with and without
   --features tilrd/failpoints; cargo nextest run --workspace --features tilrd/failpoints --locked
   on ubuntu-latest and macos-15; a smoke test of `tilrd --version` and `tilr --version`
-  (`<name> X.Y.Z-<sha> (<platform>)`) and `--help`; MSRV 1.90 (`rust-version` in Cargo.toml, cargo check with the failpoints
+  (`<name> X.Y.Z-<sha> (<platform>)`) and `--help`; MSRV 1.99 (`rust-version` in Cargo.toml, cargo check with the failpoints
   feature); cargo-deny (deny.toml); gitleaks over the whole history.
   Cargo.lock is committed and every cargo command runs with --locked. Clippy findings are
   fixed, not silenced; an #[allow] names the lint and says why. No --no-verify.

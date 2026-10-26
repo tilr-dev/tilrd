@@ -21,7 +21,7 @@ the line.
   gitleaks git --redact --no-banner --exit-code 1 .
   ```
 
-  CI also checks the MSRV (`rust-version` in Cargo.toml, `cargo +1.90 check --workspace
+  CI also checks the MSRV (`rust-version` in Cargo.toml, `cargo +1.99 check --workspace
   --all-targets --features tilrd/failpoints --locked`) and runs the tests on Linux and macOS. `scripts/linux.sh` runs
   the suite in a Linux container from another OS (`scripts/linux.sh cargo clippy ...` the
   lint), as a non-root user with a passwd entry and a home directory, like CI's `runner`
