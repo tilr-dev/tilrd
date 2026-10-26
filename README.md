@@ -1396,13 +1396,16 @@ Dan must provision these GitHub secrets in the `apple-signing` environment (rest
 - `APPLE_CERTIFICATE_PASSWORD`: password for that PKCS#12 export.
 - `APPLE_SIGN_IDENTITY`: full `Developer ID Application: … (TEAMID)` identity,
   using the same signer as the bundled daemon.
-- `APPLE_ID`: Apple account used for notarization.
-- `APPLE_TEAM_ID`: developer team ID.
-- `APPLE_NOTARY_PASSWORD`: app-specific password for that Apple account.
+- `APPLE_API_KEY_P8_BASE64`: base64-encoded App Store Connect API key (`.p8`) for
+  notarization: App Store Connect → Users and Access → Integrations → Team Keys,
+  role Developer. Not tied to a personal Apple ID and revoked on its own.
+- `APPLE_API_KEY_ID`: that key's Key ID.
+- `APPLE_API_ISSUER_ID`: the team's Issuer ID (above the key list).
 
 The build job has no environment or Apple secrets and uploads unsigned binaries
 with SHA-256 checksums. A fresh `sign-macos` runner verifies those checksums,
-imports a non-exportable private key into a temporary keychain, signs and
+imports a non-exportable private key into a temporary keychain, stores the
+notarization API key there (its `.p8` file is deleted right away), signs and
 notarizes without checkout or build commands, then uploads signed artifacts.
 The keychain is removed even on failure. Signing metadata is never exported
 through `GITHUB_ENV`. A separate `package-macos` job uses only the signed artifacts

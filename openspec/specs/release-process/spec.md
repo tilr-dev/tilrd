@@ -514,6 +514,7 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **THEN** the build job has no environment or Apple secrets and uploads unsigned binaries with SHA-256 checksums
 - **AND** a separate clean sign-macos runner downloads and verifies those checksums before importing Apple credentials from the apple-signing environment
 - **AND** the signing job performs no checkout or build, imports a non-exportable private key, signs and notarizes the binaries, and uploads signed artifacts only after Accepted notarization
+- **AND** notarization uses an App Store Connect API key from the apple-signing environment, not an Apple ID password; its key file is deleted right after it is stored in the keychain and again on failure
 - **AND** the keychain is removed even on failure, without exporting its path, identity or notary profile through GITHUB_ENV
 - **AND** a separate packaging job consumes only signed macOS artifacts for GitHub and CDN publication
 

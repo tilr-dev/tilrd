@@ -233,15 +233,15 @@ jobs:
           CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           : "${CERTIFICATE:?missing APPLE_CERTIFICATE_P12_BASE64}"
           : "${CERTIFICATE_PASSWORD:?missing APPLE_CERTIFICATE_PASSWORD}"
-          : "${APPLE_ID:?missing APPLE_ID}"
-          : "${TEAM_ID:?missing APPLE_TEAM_ID}"
-          : "${NOTARY_PASSWORD:?missing APPLE_NOTARY_PASSWORD}"
+          : "${API_KEY:?missing APPLE_API_KEY_P8_BASE64}"
+          : "${API_KEY_ID:?missing APPLE_API_KEY_ID}"
+          : "${API_ISSUER_ID:?missing APPLE_API_ISSUER_ID}"
           case "$SIGN_IDENTITY" in
             "Developer ID Application: "*) ;;
             *) echo "Expected a Developer ID Application identity" >&2; exit 2 ;;
@@ -261,7 +261,10 @@ jobs:
             keychains+=("$existing")
           done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
           security list-keychains -d user -s "$keychain" "${keychains[@]}"
-          xcrun notarytool store-credentials tilr-release --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$NOTARY_PASSWORD" --keychain "$keychain"
+          # App Store Connect API key (role Developer): not tied to a personal Apple ID.
+          (umask 077 && printf '%s' "$API_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8")
+          xcrun notarytool store-credentials tilr-release --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID" --keychain "$keychain"
+          rm "$RUNNER_TEMP/AuthKey.p8"
           for exe in tilrd tilr; do
             chmod 755 "binaries/$exe"
             codesign --force --sign "$SIGN_IDENTITY" --keychain "$keychain" --options runtime --timestamp "binaries/$exe"
@@ -280,7 +283,7 @@ jobs:
       - name: Remove Apple signing credentials
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/certificate.p12"
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/AuthKey.p8"
           if [ -f "$RUNNER_TEMP/tilr-signing.keychain-db" ]; then
             security delete-keychain "$RUNNER_TEMP/tilr-signing.keychain-db"
           fi
