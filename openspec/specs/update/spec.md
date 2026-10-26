@@ -163,15 +163,6 @@ An update SHALL hold an exclusive `flock` on the executable's directory from aft
 - **WHEN** the CDN's `latest` names a version that has no `tilr-<version>-<platform>.tar.gz.sha256`
 - **THEN** the update exits non-zero with `has no release <version>` and the directory holds only the old executable
 
-### Requirement: A server managed by Tilr.app is not updated here
-When `app-managed.json` is next to the executable, `tilrd update` SHALL fail before contacting any CDN, saying the server `is managed by Tilr.app` and to use Tilr > Check for Server Updates.
-
-**Verified by**: `update::app_managed_server_never_contacts_the_standalone_update_feed`.
-
-#### Scenario: App-managed copy
-- **WHEN** `app-managed.json` is next to the executable and `tilrd update --cdn http://127.0.0.1:1` runs
-- **THEN** it exits non-zero with `managed by Tilr.app` on stderr
-
 ### Requirement: tilr update runs the update in the local server
 `tilr update [--cdn URL]` (or `TILR_CDN`) SHALL run `tilrd update [--cdn URL]` in the local server as a server command (a child of the server, in its environment; see the `exec` spec) and SHALL refuse a remote target with `server commands run in the local tilrd; on another machine, run tilr there`.
 
@@ -211,6 +202,15 @@ After both programs are installed, a reload request failure SHALL leave the new 
 #### Scenario: Request cannot be sent
 - **WHEN** installation succeeds but the subsequent reload request fails
 - **THEN** both new programs remain installed, temporary files are removed, and the command exits non-zero with an explicit reload request error
+
+### Requirement: Legacy app markers do not affect updates
+`tilrd update` SHALL ignore `app-managed.json` next to the executable and use the ordinary release discovery, verification, installation, and reload path.
+
+**Verified by**: `update::update_installs_the_latest_release_with_a_legacy_app_marker`.
+
+#### Scenario: Update with a legacy app marker
+- **WHEN** `app-managed.json` is next to the executable and the CDN offers a newer valid release
+- **THEN** the update exits 0, installs both release executables, and leaves the marker unchanged
 
 ## Notes
 
