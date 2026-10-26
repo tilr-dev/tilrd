@@ -38,6 +38,11 @@
           "type": "toml",
           "path": "Cargo.lock",
           "jsonpath": "$.package[?(@.name.value=='tilr-driver')].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='tilr-websocket')].version"
         }
       ]
     }
