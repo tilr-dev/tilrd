@@ -97,12 +97,22 @@ fn installed() -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn app_managed_server_never_contacts_the_standalone_update_feed() {
+fn update_installs_the_latest_release_with_a_legacy_app_marker() {
     let (dir, exe) = installed();
-    std::fs::write(dir.join("app-managed.json"), "{}").unwrap();
-    let result = update(&exe, "http://127.0.0.1:1");
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("managed by Tilr.app"));
+    let marker = dir.join("app-managed.json");
+    std::fs::write(&marker, "{}").unwrap();
+    let (_, platform) = version_and_platform();
+    let archive = release(STUB);
+    let cdn = dir.join("cdn");
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
+    let cdn = serve_files(cdn);
+
+    let output = update(&exe, &cdn);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("-> 9.9.9-test"));
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "{}");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

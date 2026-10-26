@@ -87,13 +87,8 @@ curl -fsSL "https://cdn.tilr.dev/releases/$version/tilr-$version-$platform.tar.g
 tilr
 ```
 
-**macOS application distribution.** The Mac app bundles a pinned bootstrap `tilrd`,
-without the JavaScript `tilr` CLI. It installs a user LaunchAgent, then updates the managed
-server through its own signed server feed, separately from the application's Sparkle
-updates. A newer compatible server survives app upgrades with older bundled copies. Use
-**Tilr > Check for Server Updates** for this managed copy; separate installations retain
-their own updater. See the Mac app's
-[release and lifecycle details](https://github.com/tilr-dev/desktop-mac/blob/main/PRODUCTION.md).
+**macOS application distribution.** The Mac app uses the ordinary `tilrd` installation.
+Update the server with `tilrd update` or `tilr update` from a shell.
 
 ### Updating
 
@@ -115,6 +110,8 @@ then [reloads itself](#reloading-without-closing-shells) and keeps every shell. 
 (or `TILR_CDN`) names another place to fetch releases from. If the reload request fails
 after installation, the new programs remain installed, the command exits non-zero and
 reports the request failure without claiming reload succeeded.
+
+A legacy `app-managed.json` next to `tilrd` is ignored by the updater and remains unchanged.
 
 `tilr version` prints what builds the client and the running server are: the package
 version, the commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)` (`tilr
