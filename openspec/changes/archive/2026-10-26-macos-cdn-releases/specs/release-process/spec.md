@@ -92,4 +92,3 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **WHEN** the macOS build job starts
 - **THEN** it imports the certificate and notary credentials from the cdn environment into a temporary keychain
 - **AND** that keychain is removed even on failure
-
