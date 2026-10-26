@@ -1002,6 +1002,9 @@ fn assert_release_contract(release: &str, package: &str) {
         "actions/checkout",
         "scripts/",
         "$GITHUB_ENV",
+        "APPLE_ID",
+        "APPLE_NOTARY_PASSWORD",
+        "--apple-id",
     ] {
         assert!(!signing.contains(forbidden), "signing contains {forbidden}");
     }
@@ -1016,6 +1019,10 @@ fn assert_release_contract(release: &str, package: &str) {
         " -x ",
         "codesign --force --sign",
         "--options runtime --timestamp",
+        "secrets.APPLE_API_KEY_P8_BASE64",
+        "notarytool store-credentials tilr-release --key \"$RUNNER_TEMP/AuthKey.p8\"",
+        "rm -f \"$RUNNER_TEMP/certificate.p12\" \"$RUNNER_TEMP/AuthKey.p8\"",
+        "rm \"$RUNNER_TEMP/AuthKey.p8\"\n",
         "notarytool submit",
         "--wait",
         "!= \"Accepted\"",
@@ -1081,6 +1088,7 @@ fn a_release_builds_and_packages_every_target() {
     assert_release_contract(&release, &package);
     for clause in [
         "security list-keychains -d user -s",
+        " \"$RUNNER_TEMP/AuthKey.p8\"\n",
         "scripts/cdn-layout.sh \"$version\" \"$PLATFORM\"",
         "if: matrix.native",
         "${TAG#v}-$(git rev-parse --short HEAD)",
