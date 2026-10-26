@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/tilr", "crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilrd", "crates/tilr-websocket"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # libghostty-vt 0.2.2 requires 1.90 (checked with `cargo +1.90 check --workspace --all-targets`;
 # 1.89 fails). Keep in sync with the msrv job in .github/workflows/ci.yml.
