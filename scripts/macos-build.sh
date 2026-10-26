@@ -30,7 +30,15 @@ done
 # Raw executables cannot carry stapled tickets. Apple's service records tickets
 # for both signed binaries inside this ZIP; distribute the same executable bytes.
 # Include the client too, without any intermediate unsigned files.
-(cd "$stage" && zip -q notarization.zip tilrd tilr)
+python3 - "$stage" <<'ZIP'
+from pathlib import Path
+import sys
+import zipfile
+stage = Path(sys.argv[1])
+with zipfile.ZipFile(stage / "notarization.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+    for name in ("tilrd", "tilr"):
+        archive.write(stage / name, name)
+ZIP
 set -- notarytool submit "$stage/notarization.zip" --keychain-profile "$TILR_NOTARY_PROFILE" --wait --output-format json
 if [ -n "${TILR_SIGN_KEYCHAIN:-}" ]; then
     set -- "$@" --keychain "$TILR_SIGN_KEYCHAIN"
