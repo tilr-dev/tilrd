@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Specification change authorization on dev
-After the trusted workflow is added to main and the dev ruleset is activated, pull requests into dev SHALL pass the required spec-change check. The check SHALL reject nonexistent tasks, tasks in Done or Canceled, and unavailable or incomplete task metadata. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
+After the trusted workflow is added to main and the dev ruleset is activated, pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -30,7 +30,7 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 - **THEN** the matching edit or archive entry from Dan is required
 
 #### Scenario: Task data is unavailable
-- **WHEN** the task cannot be identified or its comments cannot be read completely
+- **WHEN** the task cannot be identified, its creation date or column is unavailable, or its comments cannot be read completely
 - **THEN** the check fails with an actionable error
 
 #### Scenario: Local merge automation
