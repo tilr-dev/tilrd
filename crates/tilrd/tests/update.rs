@@ -97,12 +97,22 @@ fn installed() -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn app_managed_server_never_contacts_the_standalone_update_feed() {
+fn update_installs_the_latest_release_with_a_legacy_app_marker() {
     let (dir, exe) = installed();
-    std::fs::write(dir.join("app-managed.json"), "{}").unwrap();
-    let result = update(&exe, "http://127.0.0.1:1");
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("managed by Tilr.app"));
+    let marker = dir.join("app-managed.json");
+    std::fs::write(&marker, "{}").unwrap();
+    let (_, platform) = version_and_platform();
+    let archive = release(STUB);
+    let cdn = dir.join("cdn");
+    publish(&cdn, &platform, "9.9.9-test", &archive, &archive);
+    let cdn = serve_files(cdn);
+
+    let output = update(&exe, &cdn);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("-> 9.9.9-test"));
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "{}");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -405,31 +415,33 @@ fn fetch_release_writes_a_checked_archive() {
     let dir = Server::scratch_dir();
     // Foreign platform programs must be validated as archive members, never run.
     let bytes = archive(&[("tilr", b"foreign client"), ("tilrd", b"foreign server")]);
-    publish(&dir.join("cdn"), "linux-aarch64", "9.9.9", &bytes, &bytes);
-    let cdn = serve_files(dir.join("cdn"));
-    let out = dir.join("out");
-    let result = Command::new(env!("CARGO_BIN_EXE_tilrd"))
-        .args([
-            "fetch-release",
-            "--platform",
-            "linux-aarch64",
-            "--cdn",
-            &cdn,
-            "--out",
-        ])
-        .arg(&out)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(
-        std::fs::read(out.join("tilr-9.9.9-linux-aarch64.tar.gz")).unwrap(),
-        bytes
-    );
-    assert_eq!(std::fs::read_dir(out).unwrap().count(), 1);
+    for platform in ["linux-aarch64", "macos-aarch64", "macos-x86_64"] {
+        publish(&dir.join("cdn"), platform, "9.9.9", &bytes, &bytes);
+        let cdn = serve_files(dir.join("cdn"));
+        let out = dir.join(platform);
+        let result = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+            .args([
+                "fetch-release",
+                "--platform",
+                platform,
+                "--cdn",
+                &cdn,
+                "--out",
+            ])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            std::fs::read(out.join(format!("tilr-9.9.9-{platform}.tar.gz"))).unwrap(),
+            bytes
+        );
+        assert_eq!(std::fs::read_dir(out).unwrap().count(), 1);
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 

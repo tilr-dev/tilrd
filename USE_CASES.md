@@ -282,7 +282,7 @@ Cloud repository.
 | † The updater is killed just before the swap: the executables are the old ones; the next update goes through and cleans up the unpacked release | `an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up` |
 | † `tilr` is already in place but `tilrd` cannot be swapped: the old `tilr` is put back (or removed if there was none) | `a_server_that_cannot_be_put_in_place_puts_the_old_client_back` |
 | † Two updates at once: the release is installed once, the second waits and sees it is already there | `two_updates_at_once_install_the_release_once` |
-| A server Tilr.app manages (`app-managed.json` next to the executable): `tilrd update` fails, saying so, without contacting the CDN | `app_managed_server_never_contacts_the_standalone_update_feed` |
+| A legacy `app-managed.json` next to the executable: `tilrd update` installs the latest release normally and leaves the marker unchanged | `update_installs_the_latest_release_with_a_legacy_app_marker` |
 
 ### Live check on a machine — `scripts/update-test.sh`
 
@@ -611,3 +611,13 @@ crate-qualified Cargo citations, rejection of unrelated paths, and local JSON/Ma
 generation with Git ignore rules. It also checks report selection and preservation of
 the last recorded run. Run with `uv run --no-project python -m unittest discover -s
 itests/tests -p test_coverage.py`.
+
+- macOS CDN releases: `release::both_macos_architectures_publish_the_signed_bytes_and_checked_layout`
+  publishes both macOS architectures and verifies signed archive members, checksums,
+  latest pointers, upload order and upload-only without Apple credentials.
+- macOS release failures: `release::macos_signing_and_notarization_failures_publish_nothing`
+  rejects missing credentials, failed signing/verification and failed or rejected notarization.
+- Native CDN update: `release::the_layout_release_sh_writes_is_what_tilrd_update_reads`
+  updates a copied native daemon from the real release-script layout on Linux and macOS.
+- Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
+  Apple architectures without executing their programs.

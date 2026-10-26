@@ -43,7 +43,12 @@ impl Fixture {
         fs::create_dir(&dir).unwrap();
         fs::create_dir(dir.join("scripts")).unwrap();
         fs::create_dir(dir.join("bin")).unwrap();
-        for script in ["release.sh", "install.sh"] {
+        for script in [
+            "release.sh",
+            "install.sh",
+            "macos-build.sh",
+            "cdn-layout.sh",
+        ] {
             fs::copy(
                 root().join("scripts").join(script),
                 dir.join("scripts").join(script),
@@ -86,6 +91,58 @@ if [ -f "$AWS_FAIL" ] && [ "$4" = "s3://tilr-cdn/$(cat "$AWS_FAIL")" ]; then
 fi
 "#,
         );
+        executable(&dir.join("bin/uname"), "#!/bin/sh\necho Darwin\n");
+        executable(
+            &dir.join("bin/cargo"),
+            r#"#!/bin/sh
+set -eu
+[ "$*" = "build --release --locked -p tilrd -p tilr --target aarch64-apple-darwin" ] ||
+[ "$*" = "build --release --locked -p tilrd -p tilr --target x86_64-apple-darwin" ] || exit 9
+for target; do :; done
+case "$target" in
+ aarch64-apple-darwin) platform=macos-aarch64 ;;
+ x86_64-apple-darwin) platform=macos-x86_64 ;;
+esac
+printf '%s\n' "$platform" >> build.log
+mkdir -p "target/$target/release"
+for exe in tilrd tilr; do
+ printf '#!/bin/sh\nprintf "%%s\\n" "%s 9.8.7-%s (%s)"\n' "$exe" "$TILR_BUILD_COMMIT" "$platform" > "target/$target/release/$exe"
+ chmod +x "target/$target/release/$exe"
+done
+"#,
+        );
+        executable(
+            &dir.join("bin/codesign"),
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> signing.log
+[ "${SIGN_FAIL:-}" != 1 ] || exit 1
+for binary; do :; done
+if [ "$1" = --verify ]; then
+ [ "${VERIFY_FAIL:-}" != 1 ] || exit 1
+ tail -1 "$binary" | grep -q '^# Developer ID signed$'
+else
+ [ "$*" = "--force --sign Developer ID Application: Fixture --options runtime --timestamp $binary" ] || exit 9
+ printf '# Developer ID signed\n' >> "$binary"
+fi
+"#,
+        );
+        executable(
+            &dir.join("bin/xcrun"),
+            r#"#!/bin/sh
+set -eu
+[ "$1 $2" = 'notarytool submit' ] || exit 9
+[ "$4 $5 $6 $7 $8" = '--keychain-profile fixture --wait --output-format json' ] || exit 9
+python3 - "$3" <<'CHECK'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    assert sorted(z.namelist()) == ['tilr', 'tilrd']
+    assert all(z.read(n).endswith(b'# Developer ID signed\n') for n in z.namelist())
+CHECK
+[ "${NOTARY_FAIL:-}" != 1 ] || exit 1
+printf '{"status":"%s"}\n' "${NOTARY_STATUS:-Accepted}"
+"#,
+        );
         git(&dir, &["init", "-q"]);
         git(&dir, &["config", "user.email", "release@test.invalid"]);
         git(&dir, &["config", "user.name", "Release Test"]);
@@ -95,6 +152,10 @@ fi
     }
 
     fn run(&self, args: &[&str], account: bool) -> Output {
+        self.run_env(args, account, &[])
+    }
+
+    fn run_env(&self, args: &[&str], account: bool, env: &[(&str, &str)]) -> Output {
         let mut command = Command::new("sh");
         command
             .current_dir(&self.dir)
@@ -108,6 +169,13 @@ fi
                 std::env::var("PATH").unwrap()
             ),
         );
+        command.env("TILR_SIGN_IDENTITY", "Developer ID Application: Fixture");
+        command.env("TILR_NOTARY_PROFILE", "fixture");
+        command.env_remove("TILR_SIGN_KEYCHAIN");
+        for name in ["SIGN_FAIL", "VERIFY_FAIL", "NOTARY_FAIL", "NOTARY_STATUS"] {
+            command.env_remove(name);
+        }
+        command.envs(env.iter().copied());
         command.env("AWS_LOG", self.dir.join("aws.log"));
         command.env("AWS_FAIL", self.dir.join("aws.fail"));
         command.env("AWS_ACCESS_KEY_ID", "fixture-key");
@@ -228,6 +296,81 @@ fn each_platform_given_is_built_with_its_own_latest() {
         fs::read_to_string(f.dir.join("build.log")).unwrap(),
         "linux-x86_64\nlinux-aarch64\n"
     );
+}
+
+#[test]
+fn both_macos_architectures_publish_the_signed_bytes_and_checked_layout() {
+    let f = Fixture::new();
+    assert_exit(
+        &f.run(&["--publish", "macos-aarch64", "macos-x86_64"], true),
+        0,
+    );
+    let version = f.version();
+    let mut expected = Vec::new();
+    for platform in ["macos-aarch64", "macos-x86_64"] {
+        let file = archive(&f, platform);
+        let checksum = Command::new("shasum")
+            .current_dir(file.parent().unwrap())
+            .args(["-a", "256", "-c"])
+            .arg(file.file_name().unwrap().to_str().unwrap().to_owned() + ".sha256")
+            .output()
+            .unwrap();
+        assert!(checksum.status.success(), "{checksum:?}");
+        for exe in ["tilrd", "tilr"] {
+            let unpacked = Command::new("tar")
+                .args(["-xOf"])
+                .arg(&file)
+                .arg(exe)
+                .output()
+                .unwrap();
+            assert!(unpacked.status.success(), "{unpacked:?}");
+            let signed = fs::read(f.dir.join("dist").join(platform).join(exe)).unwrap();
+            assert_eq!(unpacked.stdout, signed);
+            assert!(signed.ends_with(b"# Developer ID signed\n"));
+        }
+        assert_eq!(
+            fs::read_to_string(f.cdn().join(platform).join("latest")).unwrap(),
+            format!("{version}\n")
+        );
+        let key = format!("releases/{version}/tilr-{version}-{platform}.tar.gz");
+        expected.extend([
+            key.clone(),
+            format!("{key}.sha256"),
+            format!("releases/{platform}/latest"),
+        ]);
+    }
+    expected.push("install.sh".into());
+    assert_eq!(f.uploads(), expected);
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
+    assert_exit(
+        &f.run_env(
+            &["--upload-only", "macos-aarch64", "macos-x86_64"],
+            true,
+            &[("TILR_SIGN_IDENTITY", ""), ("TILR_NOTARY_PROFILE", "")],
+        ),
+        0,
+    );
+    assert_eq!(f.uploads(), expected);
+}
+
+#[test]
+fn macos_signing_and_notarization_failures_publish_nothing() {
+    for env in [
+        ("SIGN_FAIL", "1"),
+        ("VERIFY_FAIL", "1"),
+        ("NOTARY_FAIL", "1"),
+        ("NOTARY_STATUS", "Invalid"),
+        ("NOTARY_STATUS", "\""),
+        ("TILR_SIGN_IDENTITY", "-"),
+        ("TILR_NOTARY_PROFILE", ""),
+    ] {
+        let f = Fixture::new();
+        let output = f.run_env(&["--publish", "macos-aarch64"], true, &[env]);
+        assert!(!output.status.success(), "{env:?}: {output:?}");
+        assert!(!archive(&f, "macos-aarch64").exists(), "{env:?}");
+        assert!(!f.cdn().join("macos-aarch64/latest").exists(), "{env:?}");
+        assert!(f.uploads().is_empty(), "{env:?}");
+    }
 }
 
 #[test]
@@ -414,36 +557,7 @@ fn the_layout_release_sh_writes_is_what_tilrd_update_reads() {
         .nth(2)
         .unwrap()
         .trim_matches(['(', ')']);
-    let built = if native.starts_with("linux-") {
-        native
-    } else {
-        "linux-aarch64"
-    };
-    assert_exit(&f.run(&[built], false), 0);
-
-    // release.sh currently builds Linux only. On macOS, mirror its archive under
-    // the native platform name so the native updater can consume the same layout.
-    if native != built {
-        let version = f.version();
-        let native_dir = f.cdn().join(native);
-        fs::create_dir_all(&native_dir).unwrap();
-        fs::copy(
-            f.cdn().join(built).join("latest"),
-            native_dir.join("latest"),
-        )
-        .unwrap();
-        let source = archive(&f, built);
-        let target = f
-            .cdn()
-            .join(&version)
-            .join(format!("tilr-{version}-{native}.tar.gz"));
-        fs::copy(&source, &target).unwrap();
-        fs::copy(
-            source.with_extension("gz.sha256"),
-            target.with_extension("gz.sha256"),
-        )
-        .unwrap();
-    }
+    assert_exit(&f.run(&[native], false), 0);
 
     let installed = f.dir.join("installed");
     fs::create_dir(&installed).unwrap();
@@ -866,15 +980,72 @@ fn assert_release_contract(release: &str, package: &str) {
     }
     for clause in [
         "vars.RELEASE_LINUX_ARM64 == 'true'",
-        "cargo build --release --locked -p tilrd -p tilr --target",
+        "\"platform\":\"macos-aarch64\"",
+        "\"platform\":\"macos-x86_64\"",
         "scripts/release.sh \"$PLATFORM\"",
         "scripts/package.sh \"$TAG\" \"$TARGET\" \"$BIN_DIR\" dist/github",
         "name: tilr-${{ matrix.target }}",
         "name: cdn-${{ matrix.platform }}",
-        "if: matrix.platform != ''",
     ] {
         assert!(build.contains(clause), "{clause}");
     }
+    assert!(
+        !build.contains("secrets.APPLE_"),
+        "build can access Apple credentials"
+    );
+    assert!(!build.contains("environment:"), "build has an environment");
+    assert!(build.contains("name: unsigned-${{ matrix.platform }}"));
+    let signing = job(&release, "sign-macos");
+    for forbidden in [
+        "cargo ",
+        "npm ",
+        "actions/checkout",
+        "scripts/",
+        "$GITHUB_ENV",
+        "APPLE_ID",
+        "APPLE_NOTARY_PASSWORD",
+        "--apple-id",
+    ] {
+        assert!(!signing.contains(forbidden), "signing contains {forbidden}");
+    }
+    for clause in [
+        "needs: build",
+        "environment: apple-signing",
+        "secrets.APPLE_",
+        "name: unsigned-${{ matrix.platform }}",
+        "shasum -a 256 -c binaries.sha256",
+        "security import",
+        "security list-keychains -d user -s \"$keychain\" \"${keychains[@]}\"",
+        " -x ",
+        "codesign --force --sign",
+        "--options runtime --timestamp",
+        "secrets.APPLE_API_KEY_P8_BASE64",
+        "notarytool store-credentials tilr-release --key \"$RUNNER_TEMP/AuthKey.p8\"",
+        "rm -f \"$RUNNER_TEMP/certificate.p12\" \"$RUNNER_TEMP/AuthKey.p8\"",
+        "rm \"$RUNNER_TEMP/AuthKey.p8\"\n",
+        "notarytool submit",
+        "--wait",
+        "!= \"Accepted\"",
+        "if: always()",
+        "security delete-keychain",
+        "name: signed-${{ matrix.platform }}",
+    ] {
+        assert!(signing.contains(clause), "signing missing {clause}");
+    }
+    assert!(signing.find("shasum -a 256 -c").unwrap() < signing.find("security import").unwrap());
+    assert!(
+        signing.find("security list-keychains -d user -s").unwrap()
+            < signing.find("codesign --force").unwrap()
+    );
+    assert!(signing.find("!= \"Accepted\"").unwrap() < signing.find("name: signed-").unwrap());
+    let macos_package = job(&release, "package-macos");
+    assert!(macos_package.contains("needs: [release-please, sign-macos]"));
+    assert!(macos_package.contains("name: signed-${{ matrix.platform }}"));
+    assert!(!macos_package.contains("unsigned-"));
+    assert!(!macos_package.contains("secrets.APPLE_"));
+    assert!(macos_package.contains("scripts/package.sh"));
+    assert!(macos_package.contains("scripts/cdn-layout.sh \"$version\" \"$PLATFORM\""));
+    assert!(macos_package.contains("name: cdn-${{ matrix.platform }}"));
     let version = build
         .split("- name: Check the version\n")
         .nth(1)
@@ -906,7 +1077,7 @@ fn assert_release_contract(release: &str, package: &str) {
         );
     }
     let upload = job(&release, "upload");
-    assert!(upload.contains("needs: [release-please, build]"));
+    assert!(upload.contains("needs: [release-please, build, package-macos]"));
     assert!(upload.contains("gh release upload"));
 }
 
@@ -916,12 +1087,50 @@ fn a_release_builds_and_packages_every_target() {
     let package = text_file("scripts/package.sh");
     assert_release_contract(&release, &package);
     for clause in [
+        "security list-keychains -d user -s",
+        " \"$RUNNER_TEMP/AuthKey.p8\"\n",
+        "scripts/cdn-layout.sh \"$version\" \"$PLATFORM\"",
         "if: matrix.native",
         "${TAG#v}-$(git rev-parse --short HEAD)",
     ] {
         let removed = release.replace(clause, "");
         assert_ne!(removed, release);
         assert!(std::panic::catch_unwind(|| assert_release_contract(&removed, &package)).is_err());
+    }
+    for (from, to) in [
+        (
+            "  build:\n",
+            "  build:\n    env:\n      KEY: ${{ secrets.APPLE_SIGN_IDENTITY }}\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    # comment\n    command: cargo build\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    command: npm install\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    command: actions/checkout@unsafe\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    command: echo KEY >> $GITHUB_ENV\n",
+        ),
+        (
+            "name: signed-${{ matrix.platform }}",
+            "name: unsigned-${{ matrix.platform }}",
+        ),
+        (" -x -T /usr/bin/codesign", " -T /usr/bin/codesign"),
+        ("!= \"Accepted\"", "!= \"Invalid\""),
+    ] {
+        let mutated = release.replace(from, to);
+        assert_ne!(mutated, release);
+        assert!(
+            std::panic::catch_unwind(|| assert_release_contract(&mutated, &package)).is_err(),
+            "accepted unsafe workflow mutation: {from} -> {to}"
+        );
     }
     for clause in [
         "\"$BIN_DIR/tilrd\"",
@@ -948,7 +1157,7 @@ fn assert_cdn_contract(release: &str) {
     for clause in [
         "needs: [release-please, upload]",
         "environment: cdn",
-        "vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64' || 'linux-x86_64'",
+        "vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64' || 'linux-x86_64 macos-aarch64 macos-x86_64'",
         "pattern: cdn-*",
         "merge-multiple: true",
         "for platform in $PLATFORMS",

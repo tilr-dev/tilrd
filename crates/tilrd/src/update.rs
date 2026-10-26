@@ -105,7 +105,13 @@ fn download(cdn: &str, latest: &str, platform: &str) -> Result<Vec<u8>> {
 /// Fetch or validate a release without running its foreign-platform programs.
 pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>) -> Result<()> {
     ensure!(
-        ["linux-x86_64", "linux-aarch64", "macos-aarch64"].contains(&platform),
+        [
+            "linux-x86_64",
+            "linux-aarch64",
+            "macos-aarch64",
+            "macos-x86_64"
+        ]
+        .contains(&platform),
         "unsupported release platform: {platform}"
     );
     let (name, archive) = if let Some(path) = local {
@@ -162,10 +168,6 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
 }
 
 pub fn run(cdn: &str, exe: &Path) -> Result<()> {
-    ensure!(
-        !exe.with_file_name("app-managed.json").exists(),
-        "this server is managed by Tilr.app; use Tilr > Check for Server Updates for the independent signed server channel"
-    );
     let cdn = cdn.trim_end_matches('/');
     let latest = latest_version(cdn, PLATFORM)?;
     if latest == VERSION {
