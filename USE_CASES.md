@@ -260,6 +260,7 @@ Cloud repository.
 | AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
 | Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
+| A created release opens or reuses a main-to-dev PR as tilr-bot and attempts a merge commit; a conflicting merge leaves the PR open and the release successful | `a_created_release_back_merges_main_into_dev`, `back_merge_creates_or_reuses_a_pr_and_keeps_conflicts_open` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
 

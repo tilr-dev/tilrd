@@ -744,6 +744,105 @@ fn release_please_bumps_the_workspace_version_and_lock() {
     }
 }
 
+#[test]
+fn a_created_release_back_merges_main_into_dev() {
+    let release = active(&text_file(".github/workflows/release.yml"));
+    let back_merge = job(&release, "back-merge");
+    for clause in [
+        "needs: release-please",
+        "if: needs.release-please.outputs.release_created == 'true'",
+        "permissions: {}",
+        "actions/create-github-app-token@",
+        "client-id: ${{ vars.TILR_BOT_CLIENT_ID }}",
+        "private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}",
+        "repositories: ${{ github.event.repository.name }}",
+        "permission-contents: write",
+        "permission-pull-requests: write",
+        "GH_TOKEN: ${{ steps.app.outputs.token }}",
+        "GH_REPO: ${{ github.repository }}",
+        "TAG: ${{ needs.release-please.outputs.tag_name }}",
+        "shell: bash",
+        "gh pr list --base dev --head main --state open --json number",
+        "gh pr create --base dev --head main --title \"chore: back-merge $TAG\"",
+        "if ! gh pr merge \"$pr\" --merge; then",
+    ] {
+        assert!(
+            back_merge.contains(clause),
+            "missing back-merge contract: {clause}"
+        );
+    }
+    assert!(!back_merge.contains("continue-on-error:"));
+    assert!(!back_merge.contains("actions/checkout@"));
+    assert!(!back_merge.contains("--squash"));
+    assert!(!back_merge.contains("--delete-branch"));
+}
+
+#[test]
+fn back_merge_creates_or_reuses_a_pr_and_keeps_conflicts_open() {
+    let release = text_file(".github/workflows/release.yml");
+    let script = job(&release, "back-merge")
+        .split_once("        run: |\n")
+        .unwrap()
+        .1
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for existing in ["", "42"] {
+        for conflict in [false, true] {
+            let fixture = Fixture::new();
+            executable(
+                &fixture.dir.join("bin/gh"),
+                r#"#!/bin/sh
+set -eu
+printf '%s|' "$@" >> "$GH_LOG"
+printf '\n' >> "$GH_LOG"
+case "$*" in
+  'pr list '*) printf '%s\n' "$EXISTING_PR" ;;
+  'pr create '*) printf '%s\n' 'https://github.com/fixture/repo/pull/43' ;;
+  'pr merge '*) exit "$MERGE_EXIT" ;;
+  *) exit 99 ;;
+esac
+"#,
+            );
+            let log = fixture.dir.join("gh.log");
+            let output = Command::new("bash")
+                .args(["-euo", "pipefail", "-c", &script])
+                .current_dir(&fixture.dir)
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        fixture.dir.join("bin").display(),
+                        std::env::var("PATH").unwrap()
+                    ),
+                )
+                .env("GH_LOG", &log)
+                .env("EXISTING_PR", existing)
+                .env("MERGE_EXIT", if conflict { "1" } else { "0" })
+                .env("TAG", "v1.2.3")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let calls = fs::read_to_string(log).unwrap();
+            let mut expected = String::from(
+                "pr|list|--base|dev|--head|main|--state|open|--json|number|--jq|.[0].number // empty|\n",
+            );
+            let pr = if existing.is_empty() {
+                expected.push_str("pr|create|--base|dev|--head|main|--title|chore: back-merge v1.2.3|--body|Return release v1.2.3 from main to dev.|\n");
+                "https://github.com/fixture/repo/pull/43"
+            } else {
+                existing
+            };
+            expected.push_str(&format!("pr|merge|{pr}|--merge|\n"));
+            // No close/delete call follows a failed merge, and the shell still succeeds.
+            assert_eq!(calls, expected);
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(stdout.contains("::warning::Back-merge PR"), conflict);
+        }
+    }
+}
+
 fn assert_release_contract(release: &str, package: &str) {
     let release = active(release);
     let build = job(&release, "build");
