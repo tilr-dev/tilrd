@@ -723,7 +723,17 @@ fn release_please_bumps_the_workspace_version_and_lock() {
         files.iter().any(|file| file["path"] == "Cargo.toml"
             && file["jsonpath"] == "$.workspace.package.version")
     );
-    for name in ["tilr-proto", "tilr-screen", "tilrd", "tilr", "tilr-driver"] {
+    // Every workspace crate, so a new member cannot be left at the old version in Cargo.lock.
+    let workspace: toml::Value = toml::from_str(&text_file("Cargo.toml")).unwrap();
+    let members = workspace["workspace"]["members"].as_array().unwrap();
+    assert!(!members.is_empty());
+    for member in members {
+        let manifest: toml::Value = toml::from_str(&text_file(&format!(
+            "{}/Cargo.toml",
+            member.as_str().unwrap()
+        )))
+        .unwrap();
+        let name = manifest["package"]["name"].as_str().unwrap();
         assert!(
             files.iter().any(|file| file["path"] == "Cargo.lock"
                 && file["jsonpath"]
