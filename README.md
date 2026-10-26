@@ -1327,7 +1327,7 @@ share it) and CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release
   `tilr-vX.Y.Z-TARGET.tar.gz` + `.sha256` to the release (`scripts/package.sh`)
   (`aarch64-unknown-linux-gnu` only while the repository variable `RELEASE_LINUX_ARM64` is
   `true`: its runner is free only for public repositories);
-- publishes the Linux archives to the CDN, the R2 bucket `tilr-cdn` behind
+- publishes the Linux and signed, notarized macOS archives to the CDN, the R2 bucket `tilr-cdn` behind
   `https://cdn.tilr.dev`, with `scripts/release.sh --upload-only`.
 
 After release creation, tilr-bot automatically opens a `main` → `dev` PR titled
@@ -1345,7 +1345,8 @@ releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 ```
 
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
-`linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
+`linux-aarch64`, `linux-x86_64`, `macos-aarch64` or `macos-x86_64`. Each platform has
+its own `latest`, uploaded last. By
 hand, from a clean checkout, `scripts/release.sh --publish linux-aarch64 linux-x86_64`
 builds in the Linux container and uploads with AWS CLI. Install AWS CLI and OpenSSL
 first. Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
@@ -1380,10 +1381,6 @@ CRC64NVME). Neither `AWS_REQUEST_CHECKSUM_CALCULATION` nor
 In CI, the `cdn` environment supplies both AWS secrets and the
 `CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
 
-## License
-
-MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
-
 ### macOS CDN releases
 
 The release workflow builds `macos-aarch64` and `macos-x86_64` through
@@ -1417,3 +1414,8 @@ commit. `TILR_SIGN_KEYCHAIN` optionally names the keychain containing both the
 signing identity and notary profile. `--publish` also requires the CDN credentials;
 `--upload-only macos-aarch64 macos-x86_64` publishes completed layouts without
 Apple credentials or rebuilding.
+
+
+## License
+
+MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE).
