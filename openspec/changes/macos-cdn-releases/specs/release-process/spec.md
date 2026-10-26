@@ -37,12 +37,12 @@ Merging the release PR SHALL tag `vX.Y.Z` and create a GitHub release with `tilr
 
 #### Scenario: Apple rejects a build
 - **WHEN** signing, signature verification or notarization fails for either macOS target
-- **THEN** the build job fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
+- **THEN** the release workflow fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
 
 #### Scenario: Release target selection and packaging
 - **WHEN** the release build matrix runs
 - **THEN** it builds `aarch64-apple-darwin` and cross-compiles `x86_64-apple-darwin` on macOS, and builds `x86_64-unknown-linux-gnu` plus `aarch64-unknown-linux-gnu` only with `RELEASE_LINUX_ARM64=true`
-- **AND** every platform is built through `scripts/release.sh`
+- **AND** Linux platforms are built through `scripts/release.sh`, while macOS compilation, signing and packaging run in separate jobs
 - **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
 
 ### Requirement: The CDN gets the release last
@@ -72,7 +72,7 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **THEN** the CDN and GitHub archives contain those exact signed executable bytes and checksums describe the completed archives
 
 #### Scenario: Missing Apple credentials
-- **WHEN** a macOS build lacks its identity or notary profile
+- **WHEN** a manual macOS release helper invocation lacks its identity or notary profile
 - **THEN** it fails before building or publishing
 
 #### Scenario: Upload previously completed macOS builds
@@ -80,8 +80,8 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **THEN** it checks their versions and checksums and uploads them without requiring Apple credentials
 
 #### Scenario: Signing and notarization configuration
-- **WHEN** a macOS release is built
-- **THEN** a Developer ID Application identity and a notarytool keychain profile are required before building
+- **WHEN** a macOS release is signed
+- **THEN** a Developer ID Application identity and a notarytool keychain profile are required before signing
 - **AND** both signed executables are submitted together in a ZIP to Apple
 
 #### Scenario: Signing or notarization fails
@@ -89,7 +89,10 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **THEN** no distributable archive or new latest pointer is produced or published
 
 #### Scenario: CI imports Apple credentials
-- **WHEN** the macOS build job starts
-- **THEN** it imports the certificate and notary credentials from the cdn environment into a temporary keychain
-- **AND** that keychain is removed even on failure
+- **WHEN** CI releases macOS binaries
+- **THEN** the build job has no environment or Apple secrets and uploads unsigned binaries with SHA-256 checksums
+- **AND** a separate clean sign-macos runner downloads and verifies those checksums before importing Apple credentials from the apple-signing environment
+- **AND** the signing job performs no checkout or build, imports a non-exportable private key, signs and notarizes the binaries, and uploads signed artifacts only after Accepted notarization
+- **AND** the keychain is removed even on failure, without exporting its path, identity or notary profile through GITHUB_ENV
+- **AND** a separate packaging job consumes only signed macOS artifacts for GitHub and CDN publication
 

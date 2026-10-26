@@ -975,12 +975,8 @@ fn assert_release_contract(release: &str, package: &str) {
     }
     for clause in [
         "vars.RELEASE_LINUX_ARM64 == 'true'",
-        "environment: cdn",
         "\"platform\":\"macos-aarch64\"",
         "\"platform\":\"macos-x86_64\"",
-        "name: Configure Apple signing",
-        "if: always() && runner.os == 'macOS'",
-        "security delete-keychain",
         "scripts/release.sh \"$PLATFORM\"",
         "scripts/package.sh \"$TAG\" \"$TARGET\" \"$BIN_DIR\" dist/github",
         "name: tilr-${{ matrix.target }}",
@@ -988,6 +984,50 @@ fn assert_release_contract(release: &str, package: &str) {
     ] {
         assert!(build.contains(clause), "{clause}");
     }
+    assert!(
+        !build.contains("secrets.APPLE_"),
+        "build can access Apple credentials"
+    );
+    assert!(!build.contains("environment:"), "build has an environment");
+    assert!(build.contains("name: unsigned-${{ matrix.platform }}"));
+    let signing = job(&release, "sign-macos");
+    for forbidden in [
+        "cargo ",
+        "npm ",
+        "actions/checkout",
+        "scripts/",
+        "$GITHUB_ENV",
+    ] {
+        assert!(!signing.contains(forbidden), "signing contains {forbidden}");
+    }
+    for clause in [
+        "needs: build",
+        "environment: apple-signing",
+        "secrets.APPLE_",
+        "name: unsigned-${{ matrix.platform }}",
+        "shasum -a 256 -c binaries.sha256",
+        "security import",
+        " -x ",
+        "codesign --force --sign",
+        "--options runtime --timestamp",
+        "notarytool submit",
+        "--wait",
+        "!= \"Accepted\"",
+        "if: always()",
+        "security delete-keychain",
+        "name: signed-${{ matrix.platform }}",
+    ] {
+        assert!(signing.contains(clause), "signing missing {clause}");
+    }
+    assert!(signing.find("shasum -a 256 -c").unwrap() < signing.find("security import").unwrap());
+    assert!(signing.find("!= \"Accepted\"").unwrap() < signing.find("name: signed-").unwrap());
+    let macos_package = job(&release, "package-macos");
+    assert!(macos_package.contains("needs: [release-please, sign-macos]"));
+    assert!(macos_package.contains("name: signed-${{ matrix.platform }}"));
+    assert!(!macos_package.contains("unsigned-"));
+    assert!(!macos_package.contains("secrets.APPLE_"));
+    assert!(macos_package.contains("scripts/package.sh"));
+    assert!(macos_package.contains("name: cdn-${{ matrix.platform }}"));
     let version = build
         .split("- name: Check the version\n")
         .nth(1)
@@ -1019,7 +1059,7 @@ fn assert_release_contract(release: &str, package: &str) {
         );
     }
     let upload = job(&release, "upload");
-    assert!(upload.contains("needs: [release-please, build]"));
+    assert!(upload.contains("needs: [release-please, build, package-macos]"));
     assert!(upload.contains("gh release upload"));
 }
 
@@ -1035,6 +1075,41 @@ fn a_release_builds_and_packages_every_target() {
         let removed = release.replace(clause, "");
         assert_ne!(removed, release);
         assert!(std::panic::catch_unwind(|| assert_release_contract(&removed, &package)).is_err());
+    }
+    for (from, to) in [
+        (
+            "  build:\n",
+            "  build:\n    env:\n      KEY: ${{ secrets.APPLE_SIGN_IDENTITY }}\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    # comment\n    command: cargo build\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    command: npm install\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    command: actions/checkout@unsafe\n",
+        ),
+        (
+            "  sign-macos:\n",
+            "  sign-macos:\n    command: echo KEY >> $GITHUB_ENV\n",
+        ),
+        (
+            "name: signed-${{ matrix.platform }}",
+            "name: unsigned-${{ matrix.platform }}",
+        ),
+        (" -x -T /usr/bin/codesign", " -T /usr/bin/codesign"),
+        ("!= \"Accepted\"", "!= \"Invalid\""),
+    ] {
+        let mutated = release.replace(from, to);
+        assert_ne!(mutated, release);
+        assert!(
+            std::panic::catch_unwind(|| assert_release_contract(&mutated, &package)).is_err(),
+            "accepted unsafe workflow mutation: {from} -> {to}"
+        );
     }
     for clause in [
         "\"$BIN_DIR/tilrd\"",

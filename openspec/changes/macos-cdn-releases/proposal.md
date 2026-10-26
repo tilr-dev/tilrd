@@ -10,4 +10,4 @@ The native updater reads the same per-platform release layout on macOS as on Lin
 
 ## Impact
 - Release scripts, GitHub release workflow, release-process specification, release and update integration tests.
-- Apple signing and notarization credentials in the cdn environment; first installation remains outside this change.
+- Apple signing and notarization credentials in the isolated apple-signing environment; first installation remains outside this change.

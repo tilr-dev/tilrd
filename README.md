@@ -1380,15 +1380,15 @@ In CI, the `cdn` environment supplies both AWS secrets and the
 
 ### macOS CDN releases
 
-The release workflow builds `macos-aarch64` and `macos-x86_64` through
-`scripts/release.sh`, signs `tilrd` and `tilr` with Developer ID, and requires
+The release workflow compiles `macos-aarch64` and `macos-x86_64` without
+credentials, signs `tilrd` and `tilr` with Developer ID on a separate runner, and requires
 accepted Apple notarization before packaging either GitHub or CDN artifacts.
 The CDN uses `releases/macos-<arch>/latest` and
 `releases/<version>/tilr-<version>-macos-<arch>.tar.gz` with its `.sha256`.
 The same signed executables go into both distributions. `tilrd update` uses
 this layout on either Mac architecture; first installation comes from the app.
 
-Dan must provision these GitHub secrets in the `cdn` environment (restricted to
+Dan must provision these GitHub secrets in the `apple-signing` environment (restricted to
 `main`) before the first macOS release:
 
 - `APPLE_CERTIFICATE_P12_BASE64`: base64-encoded Developer ID Application
@@ -1400,8 +1400,13 @@ Dan must provision these GitHub secrets in the `cdn` environment (restricted to
 - `APPLE_TEAM_ID`: developer team ID.
 - `APPLE_NOTARY_PASSWORD`: app-specific password for that Apple account.
 
-The build job imports these into a temporary keychain and removes it even when
-building or notarization fails. Bucket credentials remain in the final CDN job.
+The build job has no environment or Apple secrets and uploads unsigned binaries
+with SHA-256 checksums. A fresh `sign-macos` runner verifies those checksums,
+imports a non-exportable private key into a temporary keychain, signs and
+notarizes without checkout or build commands, then uploads signed artifacts.
+The keychain is removed even on failure. Signing metadata is never exported
+through `GITHUB_ENV`. A separate `package-macos` job uses only the signed artifacts
+for GitHub and CDN packaging. Bucket credentials remain in the final CDN job.
 No secret values belong in the repository or command output.
 
 For a manual build on macOS, install the two Rust Apple targets and configure

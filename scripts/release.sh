@@ -25,7 +25,8 @@
 #   scripts/release.sh --upload-only linux-aarch64 linux-x86_64
 #                                            # upload what earlier runs left in dist/cdn
 #
-# A build also leaves the two binaries in dist/<platform>/ (scripts/linux-build.sh),
+# A build also leaves the two binaries in dist/<platform>/ (scripts/linux-build.sh or
+# scripts/macos-build.sh),
 # which .github/workflows/release.yml packs for the GitHub release.
 #
 # --upload-only builds nothing: it uploads dist/cdn as earlier runs of this
