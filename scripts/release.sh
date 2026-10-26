@@ -14,7 +14,8 @@
 # and updated together.
 #
 # A version is the package version plus the commit, e.g. 0.1.0-26449dd. A
-# platform is named as the binary names itself: linux-aarch64, linux-x86_64.
+# platform is named as the binary names itself: linux-aarch64, linux-x86_64,
+# macos-aarch64, macos-x86_64.
 # Each platform has its own `latest`, so a release can be out for one and not
 # yet for another.
 #
@@ -24,7 +25,8 @@
 #   scripts/release.sh --upload-only linux-aarch64 linux-x86_64
 #                                            # upload what earlier runs left in dist/cdn
 #
-# A build also leaves the two binaries in dist/<platform>/ (scripts/linux-build.sh),
+# A build also leaves the two binaries in dist/<platform>/ (scripts/linux-build.sh or
+# scripts/macos-build.sh),
 # which .github/workflows/release.yml packs for the GitHub release.
 #
 # --upload-only builds nothing: it uploads dist/cdn as earlier runs of this
@@ -60,7 +62,7 @@ fi
 
 for platform in "$@"; do
     case "$platform" in
-        linux-aarch64 | linux-x86_64) ;;
+        linux-aarch64 | linux-x86_64 | macos-aarch64 | macos-x86_64) ;;
         *) echo "unknown platform: $platform" >&2; exit 2 ;;
     esac
 done
@@ -73,28 +75,19 @@ if [ -n "$build" ]; then
     commit=$(git rev-parse --short HEAD)
     package=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
     version="$package-$commit"
-    mkdir -p "dist/cdn/releases/$version"
 
     for platform in "$@"; do
         case "$platform" in
             linux-aarch64) docker_platform=linux/arm64 ;;
             linux-x86_64) docker_platform=linux/amd64 ;;
         esac
-        # The container does not own the source tree, so git there refuses to
-        # say what the commit is.
-        TILR_BUILD_COMMIT=$commit TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh
-        archive="tilr-$version-$platform.tar.gz"
-        pack="dist/pack-$platform"
-        rm -rf "$pack" && mkdir -p "$pack"
-        cp "dist/$platform/tilrd" "dist/$platform/tilr" LICENSE-APACHE LICENSE-MIT README.md "$pack/"
-        chmod 755 "$pack/tilrd" "$pack/tilr"
-        # COPYFILE_DISABLE: no AppleDouble (._*) entries from macOS tar.
-        COPYFILE_DISABLE=1 tar -czf "dist/cdn/releases/$version/$archive" -C "$pack" \
-            tilrd tilr LICENSE-APACHE LICENSE-MIT README.md
-        rm -rf "$pack"
-        (cd "dist/cdn/releases/$version" && shasum -a 256 "$archive" >"$archive.sha256")
-        mkdir -p "dist/cdn/releases/$platform"
-        printf '%s\n' "$version" >"dist/cdn/releases/$platform/latest"
+        case "$platform" in
+            linux-*)
+                # The container cannot read the host worktree's Git metadata.
+                TILR_BUILD_COMMIT=$commit TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh ;;
+            macos-*) TILR_BUILD_COMMIT=$commit scripts/macos-build.sh "$platform" ;;
+        esac
+        scripts/cdn-layout.sh "$version" "$platform"
     done
 
     echo "built $version for: $*"

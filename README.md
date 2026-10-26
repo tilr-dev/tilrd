@@ -1324,7 +1324,7 @@ share it) and CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release
   `tilr-vX.Y.Z-TARGET.tar.gz` + `.sha256` to the release (`scripts/package.sh`)
   (`aarch64-unknown-linux-gnu` only while the repository variable `RELEASE_LINUX_ARM64` is
   `true`: its runner is free only for public repositories);
-- publishes the Linux archives to the CDN, the R2 bucket `tilr-cdn` behind
+- publishes the Linux and signed, notarized macOS archives to the CDN, the R2 bucket `tilr-cdn` behind
   `https://cdn.tilr.dev`, with `scripts/release.sh --upload-only`.
 
 After release creation, tilr-bot automatically opens a `main` → `dev` PR titled
@@ -1342,7 +1342,8 @@ releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 ```
 
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
-`linux-aarch64` or `linux-x86_64`. Each platform has its own `latest`, uploaded last. By
+`linux-aarch64`, `linux-x86_64`, `macos-aarch64` or `macos-x86_64`. Each platform has
+its own `latest`, uploaded last. By
 hand, from a clean checkout, `scripts/release.sh --publish linux-aarch64 linux-x86_64`
 builds in the Linux container and uploads with AWS CLI. Install AWS CLI and OpenSSL
 first. Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
@@ -1376,6 +1377,46 @@ CRC64NVME). Neither `AWS_REQUEST_CHECKSUM_CALCULATION` nor
 
 In CI, the `cdn` environment supplies both AWS secrets and the
 `CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
+
+### macOS CDN releases
+
+The release workflow compiles `macos-aarch64` and `macos-x86_64` without
+credentials, signs `tilrd` and `tilr` with Developer ID on a separate runner, and requires
+accepted Apple notarization before packaging either GitHub or CDN artifacts.
+The CDN uses `releases/macos-<arch>/latest` and
+`releases/<version>/tilr-<version>-macos-<arch>.tar.gz` with its `.sha256`.
+The same signed executables go into both distributions. `tilrd update` uses
+this layout on either Mac architecture; first installation comes from the app.
+
+Dan must provision these GitHub secrets in the `apple-signing` environment (restricted to
+`main`) before the first macOS release:
+
+- `APPLE_CERTIFICATE_P12_BASE64`: base64-encoded Developer ID Application
+  certificate **with its private key**, exported as PKCS#12.
+- `APPLE_CERTIFICATE_PASSWORD`: password for that PKCS#12 export.
+- `APPLE_SIGN_IDENTITY`: full `Developer ID Application: … (TEAMID)` identity,
+  using the same signer as the bundled daemon.
+- `APPLE_ID`: Apple account used for notarization.
+- `APPLE_TEAM_ID`: developer team ID.
+- `APPLE_NOTARY_PASSWORD`: app-specific password for that Apple account.
+
+The build job has no environment or Apple secrets and uploads unsigned binaries
+with SHA-256 checksums. A fresh `sign-macos` runner verifies those checksums,
+imports a non-exportable private key into a temporary keychain, signs and
+notarizes without checkout or build commands, then uploads signed artifacts.
+The keychain is removed even on failure. Signing metadata is never exported
+through `GITHUB_ENV`. A separate `package-macos` job uses only the signed artifacts
+for GitHub and CDN packaging. Bucket credentials remain in the final CDN job.
+No secret values belong in the repository or command output.
+
+For a manual build on macOS, install the two Rust Apple targets and configure
+`TILR_SIGN_IDENTITY` and `TILR_NOTARY_PROFILE` (an existing notarytool keychain
+profile), then run `scripts/release.sh macos-aarch64 macos-x86_64` from a clean
+commit. `TILR_SIGN_KEYCHAIN` optionally names the keychain containing both the
+signing identity and notary profile. `--publish` also requires the CDN credentials;
+`--upload-only macos-aarch64 macos-x86_64` publishes completed layouts without
+Apple credentials or rebuilding.
+
 
 ## License
 
