@@ -24,7 +24,8 @@
 # The Linux binaries are built as they always were, by scripts/release.sh (Docker,
 # scripts/linux.Dockerfile: Debian 12, glibc 2.36+), on a native runner per architecture, so
 # the GitHub release and the CDN carry the same files. macOS builds natively (arm64) and
-# cross-compiles x86_64 on the same runner.
+# cross-compiles x86_64 on the same runner. `sign-macos` signs and notarizes on fresh
+# runners with Apple credentials; `package-macos` packages only the signed artifacts.
 #
 # cdn: uploads what the Linux builds and macOS packaging laid out in dist/cdn to the R2 bucket tilr-cdn with
 # `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
@@ -255,6 +256,11 @@ jobs:
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -x -T /usr/bin/codesign
           rm "$RUNNER_TEMP/certificate.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          keychains=()
+          while IFS= read -r existing; do
+            keychains+=("$existing")
+          done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+          security list-keychains -d user -s "$keychain" "${keychains[@]}"
           xcrun notarytool store-credentials tilr-release --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$NOTARY_PASSWORD" --keychain "$keychain"
           for exe in tilrd tilr; do
             chmod 755 "binaries/$exe"
@@ -317,12 +323,9 @@ jobs:
           chmod 755 binaries/tilrd binaries/tilr
           scripts/package.sh "$TAG" "$TARGET" binaries dist/github
           version="${TAG#v}-$(git rev-parse --short HEAD)"
-          archive="tilr-$version-$PLATFORM.tar.gz"
-          mkdir -p "dist/cdn/releases/$version" "dist/cdn/releases/$PLATFORM" dist/pack
-          cp binaries/tilrd binaries/tilr LICENSE-APACHE LICENSE-MIT README.md dist/pack/
-          COPYFILE_DISABLE=1 tar -czf "dist/cdn/releases/$version/$archive" -C dist/pack tilrd tilr LICENSE-APACHE LICENSE-MIT README.md
-          (cd "dist/cdn/releases/$version" && shasum -a 256 "$archive" > "$archive.sha256")
-          printf '%s\n' "$version" > "dist/cdn/releases/$PLATFORM/latest"
+          mkdir -p "dist/$PLATFORM"
+          cp binaries/tilrd binaries/tilr "dist/$PLATFORM/"
+          scripts/cdn-layout.sh "$version" "$PLATFORM"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tilr-${{ matrix.target }}

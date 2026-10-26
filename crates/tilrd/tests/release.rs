@@ -43,7 +43,12 @@ impl Fixture {
         fs::create_dir(&dir).unwrap();
         fs::create_dir(dir.join("scripts")).unwrap();
         fs::create_dir(dir.join("bin")).unwrap();
-        for script in ["release.sh", "install.sh", "macos-build.sh"] {
+        for script in [
+            "release.sh",
+            "install.sh",
+            "macos-build.sh",
+            "cdn-layout.sh",
+        ] {
             fs::copy(
                 root().join("scripts").join(script),
                 dir.join("scripts").join(script),
@@ -1007,6 +1012,7 @@ fn assert_release_contract(release: &str, package: &str) {
         "name: unsigned-${{ matrix.platform }}",
         "shasum -a 256 -c binaries.sha256",
         "security import",
+        "security list-keychains -d user -s \"$keychain\" \"${keychains[@]}\"",
         " -x ",
         "codesign --force --sign",
         "--options runtime --timestamp",
@@ -1020,6 +1026,10 @@ fn assert_release_contract(release: &str, package: &str) {
         assert!(signing.contains(clause), "signing missing {clause}");
     }
     assert!(signing.find("shasum -a 256 -c").unwrap() < signing.find("security import").unwrap());
+    assert!(
+        signing.find("security list-keychains -d user -s").unwrap()
+            < signing.find("codesign --force").unwrap()
+    );
     assert!(signing.find("!= \"Accepted\"").unwrap() < signing.find("name: signed-").unwrap());
     let macos_package = job(&release, "package-macos");
     assert!(macos_package.contains("needs: [release-please, sign-macos]"));
@@ -1027,6 +1037,7 @@ fn assert_release_contract(release: &str, package: &str) {
     assert!(!macos_package.contains("unsigned-"));
     assert!(!macos_package.contains("secrets.APPLE_"));
     assert!(macos_package.contains("scripts/package.sh"));
+    assert!(macos_package.contains("scripts/cdn-layout.sh \"$version\" \"$PLATFORM\""));
     assert!(macos_package.contains("name: cdn-${{ matrix.platform }}"));
     let version = build
         .split("- name: Check the version\n")
@@ -1069,6 +1080,8 @@ fn a_release_builds_and_packages_every_target() {
     let package = text_file("scripts/package.sh");
     assert_release_contract(&release, &package);
     for clause in [
+        "security list-keychains -d user -s",
+        "scripts/cdn-layout.sh \"$version\" \"$PLATFORM\"",
         "if: matrix.native",
         "${TAG#v}-$(git rev-parse --short HEAD)",
     ] {

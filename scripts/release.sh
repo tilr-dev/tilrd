@@ -75,7 +75,6 @@ if [ -n "$build" ]; then
     commit=$(git rev-parse --short HEAD)
     package=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
     version="$package-$commit"
-    mkdir -p "dist/cdn/releases/$version"
 
     for platform in "$@"; do
         case "$platform" in
@@ -88,18 +87,7 @@ if [ -n "$build" ]; then
                 TILR_BUILD_COMMIT=$commit TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh ;;
             macos-*) TILR_BUILD_COMMIT=$commit scripts/macos-build.sh "$platform" ;;
         esac
-        archive="tilr-$version-$platform.tar.gz"
-        pack="dist/pack-$platform"
-        rm -rf "$pack" && mkdir -p "$pack"
-        cp "dist/$platform/tilrd" "dist/$platform/tilr" LICENSE-APACHE LICENSE-MIT README.md "$pack/"
-        chmod 755 "$pack/tilrd" "$pack/tilr"
-        # COPYFILE_DISABLE: no AppleDouble (._*) entries from macOS tar.
-        COPYFILE_DISABLE=1 tar -czf "dist/cdn/releases/$version/$archive" -C "$pack" \
-            tilrd tilr LICENSE-APACHE LICENSE-MIT README.md
-        rm -rf "$pack"
-        (cd "dist/cdn/releases/$version" && shasum -a 256 "$archive" >"$archive.sha256")
-        mkdir -p "dist/cdn/releases/$platform"
-        printf '%s\n' "$version" >"dist/cdn/releases/$platform/latest"
+        scripts/cdn-layout.sh "$version" "$platform"
     done
 
     echo "built $version for: $*"
