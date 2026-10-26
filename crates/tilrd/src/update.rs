@@ -162,10 +162,6 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
 }
 
 pub fn run(cdn: &str, exe: &Path) -> Result<()> {
-    ensure!(
-        !exe.with_file_name("app-managed.json").exists(),
-        "this server is managed by Tilr.app; use Tilr > Check for Server Updates for the independent signed server channel"
-    );
     let cdn = cdn.trim_end_matches('/');
     let latest = latest_version(cdn, PLATFORM)?;
     if latest == VERSION {
