@@ -105,7 +105,13 @@ fn download(cdn: &str, latest: &str, platform: &str) -> Result<Vec<u8>> {
 /// Fetch or validate a release without running its foreign-platform programs.
 pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>) -> Result<()> {
     ensure!(
-        ["linux-x86_64", "linux-aarch64", "macos-aarch64"].contains(&platform),
+        [
+            "linux-x86_64",
+            "linux-aarch64",
+            "macos-aarch64",
+            "macos-x86_64"
+        ]
+        .contains(&platform),
         "unsupported release platform: {platform}"
     );
     let (name, archive) = if let Some(path) = local {

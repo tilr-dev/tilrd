@@ -111,6 +111,7 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     name: build (${{ matrix.target }})
+    environment: cdn
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     permissions:
@@ -130,8 +131,8 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(format('[{0}{1}]',
-          '{"target":"aarch64-apple-darwin","os":"macos-15","native":true,"platform":""},
-          {"target":"x86_64-apple-darwin","os":"macos-15","native":false,"platform":""},
+          '{"target":"aarch64-apple-darwin","os":"macos-15","native":true,"platform":"macos-aarch64"},
+          {"target":"x86_64-apple-darwin","os":"macos-15","native":false,"platform":"macos-x86_64"},
           {"target":"x86_64-unknown-linux-gnu","os":"ubuntu-24.04","native":true,"platform":"linux-x86_64"}',
           vars.RELEASE_LINUX_ARM64 == 'true'
           && ',{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-24.04-arm","native":true,"platform":"linux-aarch64"}'
@@ -142,36 +143,76 @@ jobs:
           ref: ${{ needs.release-please.outputs.tag_name }}
           persist-credentials: false
       - name: Install Rust (stable, ${{ matrix.target }})
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
           rustup toolchain install stable --profile minimal --target "$TARGET"
           rustup default stable
       # As of 2026-10-19, macos-15 includes macOS 15.4 SDK in Xcode 16.3.
       # Recheck the runner-images macos-15-arm64 README; remove with the Zig SDK pin.
       - name: Select macOS 15.4 SDK
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
           echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
           echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
       - name: Install Zig and protoc
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
           scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
-      # No cache: a release build starts clean.
-      - name: Build (macOS)
-        if: matrix.platform == ''
+      - name: Configure Apple signing
+        if: runner.os == 'macOS'
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
         run: |
-          cargo build --release --locked -p tilrd -p tilr --target "$TARGET"
-          echo "BIN_DIR=target/$TARGET/release" >> "$GITHUB_ENV"
-      # The CDN layout (dist/cdn) and dist/<platform>/{tilrd,tilr}, as by hand.
-      - name: Build (Linux, scripts/release.sh)
-        if: matrix.platform != ''
+          : "${CERTIFICATE:?missing APPLE_CERTIFICATE_P12_BASE64}"
+          : "${CERTIFICATE_PASSWORD:?missing APPLE_CERTIFICATE_PASSWORD}"
+          : "${SIGN_IDENTITY:?missing APPLE_SIGN_IDENTITY}"
+          : "${APPLE_ID:?missing APPLE_ID}"
+          : "${TEAM_ID:?missing APPLE_TEAM_ID}"
+          : "${NOTARY_PASSWORD:?missing APPLE_NOTARY_PASSWORD}"
+          keychain="$RUNNER_TEMP/tilr-signing.keychain-db"
+          password=$(openssl rand -hex 32)
+          echo "::add-mask::$password"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          xcrun notarytool store-credentials tilr-release --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$NOTARY_PASSWORD" --keychain "$keychain"
+          {
+            echo "TILR_SIGN_KEYCHAIN=$keychain"
+            echo "TILR_SIGN_IDENTITY=$SIGN_IDENTITY"
+            echo 'TILR_NOTARY_PROFILE=tilr-release'
+          } >> "$GITHUB_ENV"
+      # No cache: a release build starts clean. macOS signs and notarizes before packaging.
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
         env:
           PLATFORM: ${{ matrix.platform }}
         run: |
           scripts/release.sh "$PLATFORM"
           echo "BIN_DIR=dist/$PLATFORM" >> "$GITHUB_ENV"
+      - name: Build (Linux, scripts/release.sh)
+        if: runner.os == 'Linux'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          scripts/release.sh "$PLATFORM"
+          echo "BIN_DIR=dist/$PLATFORM" >> "$GITHUB_ENV"
+      - name: Remove Apple signing credentials
+        if: always() && runner.os == 'macOS'
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          if [ -f "$RUNNER_TEMP/tilr-signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/tilr-signing.keychain-db"
+          fi
       # Each binary names the version it was built as: the tag's version and the commit.
       - name: Check the version
         if: matrix.native
@@ -190,7 +231,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.platform != ''
         with:
           name: cdn-${{ matrix.platform }}
           path: dist/cdn/
@@ -228,10 +268,10 @@ jobs:
     environment: cdn
     permissions:
       contents: read
-    # The Linux platforms the build job built; with aarch64 off its CDN `latest` is left as
+    # All macOS platforms and the Linux platforms built; with Linux aarch64 off its `latest` is left as
     # it is.
     env:
-      PLATFORMS: ${{ vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64' || 'linux-x86_64' }}
+      PLATFORMS: ${{ vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64' || 'linux-x86_64 macos-aarch64 macos-x86_64' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

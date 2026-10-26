@@ -14,7 +14,8 @@
 # and updated together.
 #
 # A version is the package version plus the commit, e.g. 0.1.0-26449dd. A
-# platform is named as the binary names itself: linux-aarch64, linux-x86_64.
+# platform is named as the binary names itself: linux-aarch64, linux-x86_64,
+# macos-aarch64, macos-x86_64.
 # Each platform has its own `latest`, so a release can be out for one and not
 # yet for another.
 #
@@ -60,7 +61,7 @@ fi
 
 for platform in "$@"; do
     case "$platform" in
-        linux-aarch64 | linux-x86_64) ;;
+        linux-aarch64 | linux-x86_64 | macos-aarch64 | macos-x86_64) ;;
         *) echo "unknown platform: $platform" >&2; exit 2 ;;
     esac
 done
@@ -80,9 +81,12 @@ if [ -n "$build" ]; then
             linux-aarch64) docker_platform=linux/arm64 ;;
             linux-x86_64) docker_platform=linux/amd64 ;;
         esac
-        # The container does not own the source tree, so git there refuses to
-        # say what the commit is.
-        TILR_BUILD_COMMIT=$commit TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh
+        case "$platform" in
+            linux-*)
+                # The container cannot read the host worktree's Git metadata.
+                TILR_BUILD_COMMIT=$commit TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh ;;
+            macos-*) TILR_BUILD_COMMIT=$commit scripts/macos-build.sh "$platform" ;;
+        esac
         archive="tilr-$version-$platform.tar.gz"
         pack="dist/pack-$platform"
         rm -rf "$pack" && mkdir -p "$pack"
