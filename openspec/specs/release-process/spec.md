@@ -68,7 +68,7 @@ Each executable SHALL carry a version `<package>-<commit>`: `<package>` is `TILR
 - **THEN** it builds both Apple targets and produces their separate CDN archives, checksums and latest pointers
 
 ### Requirement: The CDN layout is one archive per platform
-Per platform, `scripts/release.sh` SHALL lay out in `dist/cdn`: `releases/<version>/tilr-<version>-<platform>.tar.gz` (gzip tar holding `tilrd` and `tilr`, mode 0755, with `LICENSE-APACHE`, `LICENSE-MIT` and `README.md`, all at its top level), its `.sha256` (`<hex>  <archive>`), and `releases/<platform>/latest` holding `<version>\n`. This local staging layout SHALL remain the same for both channels. On the public CDN stable SHALL use `releases/<platform>/latest` and beta SHALL use `releases/<platform>/beta`, both pointing to the same versioned archive layout.
+Per platform, `scripts/release.sh` SHALL lay out in `dist/cdn`: `releases/<version>/tilr-<version>-<platform>.tar.gz` (gzip tar holding `tilrd` and `tilr`, mode 0755, with `LICENSE-APACHE`, `LICENSE-MIT` and `README.md`, all at its top level), its `.sha256` (`<hex>  <archive>`), and `releases/<platform>/latest` holding `<version>\n`.
 
 **Verified by**: itests `UC-001` (`uc_001.py::the_installer_puts_tilrd_and_tilr_in_local_bin_without_root`), whose CDN publishes this layout (`LocalCdn.publish`).
 
@@ -86,17 +86,13 @@ The layout SHALL NOT change without `tilrd update` (`crates/tilrd/src/update.rs`
 - **THEN** `releases/<version>/` holds only `tilr-<version>-linux-x86_64.tar.gz` and its `.sha256` for that platform
 
 ### Requirement: Publishing uploads the archive before latest
-With `--publish` and optional `--channel stable|beta` (default `stable`), `scripts/release.sh` SHALL upload with AWS CLI `aws s3 cp` through `https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com` with region `auto` to bucket `tilr-cdn` (`https://cdn.tilr.dev`), per platform: the archive (`application/gzip`) and its `.sha256` (`text/plain; charset=utf-8`) with `public, max-age=31536000, immutable`, and only then the selected pointer (`releases/<platform>/latest` for stable, `releases/<platform>/beta` for beta) with `no-cache`, printing `published <version> for: <platforms>`.
+With `--publish`, `scripts/release.sh` SHALL upload with AWS CLI `aws s3 cp` through `https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com` with region `auto` to bucket `tilr-cdn` (`https://cdn.tilr.dev`), per platform: the archive (`application/gzip`) and its `.sha256` (`text/plain; charset=utf-8`) with `public, max-age=31536000, immutable`, and only then `releases/<platform>/latest` with `no-cache`, printing `published <version> for: <platforms>`.
 
-**Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest`, `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`, `release::beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer`.
+**Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest`.
 
 #### Scenario: Publish two platforms
 - **WHEN** `scripts/release.sh --publish linux-aarch64 linux-x86_64` runs with S3 credentials scoped to objects in `tilr-cdn`
 - **THEN** each platform's archive and checksum are uploaded before its `latest`
-
-#### Scenario: Publish a candidate
-- **WHEN** `scripts/release.sh --publish --channel beta linux-x86_64` runs
-- **THEN** the archive and checksum are uploaded before beta; latest and install.sh are untouched
 
 ### Requirement: Uploading needs the bucket's account id
 `scripts/release.sh --publish` and `--upload-only` SHALL fail with `CLOUDFLARE_ACCOUNT_ID is not set: export the account id of the tilr-cdn bucket ...` and exit 2 when `CLOUDFLARE_ACCOUNT_ID` is not exported, before building or uploading anything.
@@ -108,17 +104,13 @@ With `--publish` and optional `--channel stable|beta` (default `stable`), `scrip
 - **THEN** it says `CLOUDFLARE_ACCOUNT_ID is not set` and exits 2 before building or uploading
 
 ### Requirement: --upload-only uploads what earlier builds laid out
-`scripts/release.sh --upload-only <platforms>` SHALL build nothing; it SHALL check that every platform given has a `dist/cdn/releases/<platform>/latest` (`nothing built for <platform>: no ...` otherwise), that all name the same version and that each archive matches its `.sha256`, then upload them as `--publish` does, with the same optional `--channel stable|beta`. Neither pointer of a platform not given SHALL change. Stable publication SHALL leave beta unchanged and beta publication SHALL leave latest unchanged.
+`scripts/release.sh --upload-only <platforms>` SHALL build nothing; it SHALL check that every platform given has a `dist/cdn/releases/<platform>/latest` (`nothing built for <platform>: no ...` otherwise), that all name the same version and that each archive matches its `.sha256`, then upload them as `--publish` does. The `latest` of a platform not given SHALL be left as it is.
 
-**Verified by**: `release::upload_only_checks_what_was_built_and_leaves_other_platforms_alone`, `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`.
+**Verified by**: `release::upload_only_checks_what_was_built_and_leaves_other_platforms_alone`.
 
 #### Scenario: Platforms built as different versions
 - **WHEN** `linux-aarch64` was built as one version and `linux-x86_64` as another and `--upload-only` is given both
 - **THEN** it says `<platform> is built as <v1>, not <v2>`, exits 1 and uploads nothing
-
-#### Scenario: Upload a staged candidate
-- **WHEN** a candidate is staged under local latest and `--upload-only --channel beta` runs for selected platforms
-- **THEN** no build runs and only their archives, checksums and beta pointers are uploaded
 
 ### Requirement: CI gates every change
 Every pull request into `main` or `release/**`, every merge queue group and every push to `main` or `release/**` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
@@ -181,7 +173,7 @@ Merging the release PR SHALL tag `vX.Y.Z` and create a GitHub release with `tilr
 - **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
 
 ### Requirement: The CDN gets the release last
-After GitHub assets are attached, the `cdn` job SHALL verify each built platform carries `<tag version>-<commit>` and upload its completed `dist/cdn` layout with `scripts/release.sh --upload-only --channel <channel> <platforms>`, for both created releases and candidates. The channel SHALL be stable for a release and beta for a candidate. Both macOS platforms SHALL always be included; Linux arm64 SHALL remain optional.
+After GitHub assets are attached, the `cdn` job SHALL verify each built platform carries `<tag version>-<commit>` and upload its completed `dist/cdn` layout with `scripts/release.sh --upload-only <platforms>`, for a created release only, never for a release candidate. Both macOS platforms SHALL always be included; Linux arm64 SHALL remain optional.
 
 **Verified by**: `release::the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` (static: `.github/workflows/release.yml`).
 
@@ -196,10 +188,6 @@ After GitHub assets are attached, the `cdn` job SHALL verify each built platform
 #### Scenario: CDN credentials
 - **WHEN** the CDN job publishes a release
 - **THEN** it uses environment `cdn`, restricted to `release/*` branches, with bucket-scoped `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets and the `CLOUDFLARE_ACCOUNT_ID` variable
-
-#### Scenario: Candidate publication
-- **WHEN** candidate GitHub assets have been attached
-- **THEN** the CDN job uploads completed archives and checksums before beta for enabled platforms, without rebuilding or modifying latest or install.sh
 
 ### Requirement: Releases are cut from release branches
 Nothing SHALL be released from `main`, the only integration branch: on the owner's explicit instruction a release branch `release/X.Y` is cut from a commit of `main`, and only pushes to `release/**` SHALL run release-please, release candidates and publishing. A fix for a release branch SHALL land in `main` first through a pull request and then be cherry-picked into `release/X.Y`; nothing SHALL be merged from a release branch back into `main`.
@@ -216,9 +204,9 @@ Nothing SHALL be released from `main`, the only integration branch: on the owner
 - **AND** no workflow merges `release/0.3` or a release back into `main`
 
 ### Requirement: A push to a release branch builds a release candidate
-A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. `Z` is 0 until a stable `vX.Y.*` tag exists, then one more than its highest patch; `N` is one more than the highest `vX.Y.Z-rc.*`. The CDN SHALL receive the candidate archives and checksums and update only the beta pointers; latest and install.sh SHALL NOT be touched.
+A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. `Z` is 0 until a stable `vX.Y.*` tag exists, then one more than its highest patch; `N` is one more than the highest `vX.Y.Z-rc.*`. The CDN SHALL NOT be touched.
 
-**Verified by**: `release::a_push_to_a_release_branch_tags_the_next_release_candidate` (the workflow step's shell with a stub GitHub CLI), `release::a_release_candidate_is_built_like_a_release_and_publishes_to_beta` (static: `.github/workflows/release.yml`).
+**Verified by**: `release::a_push_to_a_release_branch_tags_the_next_release_candidate` (the workflow step's shell with a stub GitHub CLI), `release::a_release_candidate_is_built_like_a_release_and_skips_the_cdn` (static: `.github/workflows/release.yml`).
 
 #### Scenario: The first candidate
 - **WHEN** `release/0.3` is pushed and no `v0.3.*` tag exists
@@ -249,8 +237,8 @@ A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.
 - **THEN** the release workflow fails with `release branches are named release/X.Y` before release-please runs: no release PR, release, candidate or build
 
 #### Scenario: The CDN is left alone
-- **WHEN** a release candidate is built, its prerelease has its assets and the stable CDN channel already exists
-- **THEN** the stable CDN channel is left alone: the `cdn` job publishes beta and no `latest` or `install.sh` changes
+- **WHEN** a release candidate is built and its prerelease has its assets
+- **THEN** the `cdn` job does not run and no `latest` changes
 
 ### Requirement: Specification merge readiness diagnostics
 Before fetching a pull request's test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission, with the shared helper `spec_merge.py` downloaded from a fixed gitpm commit and checked against its pinned digest. It SHALL tell a conflict with `main` from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
@@ -360,7 +348,7 @@ tilrd, tilr and tilr-driver SHALL verify outgoing secure WebSocket certificates 
 - **THEN** the regression check or cargo deny fails instead of ignoring the advisory
 
 ### Requirement: The installer is published after the release it installs
-`scripts/release.sh --publish` and `--upload-only` SHALL, for the stable channel only, upload `scripts/install.sh` to `install.sh` in bucket `tilr-cdn` (`text/x-shellscript; charset=utf-8`, `public, max-age=300`) after the `latest` of every platform given, and SHALL NOT upload it when any of those uploads failed. Beta publication SHALL NOT upload install.sh, even after successful uploads. The served installer SHALL be the one the itests run (`scripts/install.sh`).
+`scripts/release.sh --publish` and `--upload-only` SHALL upload `scripts/install.sh` to `install.sh` in bucket `tilr-cdn` (`text/x-shellscript; charset=utf-8`, `public, max-age=300`) after the `latest` of every platform given, and SHALL NOT upload it when any of those uploads failed. The served installer SHALL be the one the itests run (`scripts/install.sh`).
 
 **Verified by**: `release::the_installer_is_uploaded_after_latest` (a test of `scripts/release.sh --upload-only` with a stub `aws` on `PATH` that logs its calls).
 
@@ -371,10 +359,6 @@ tilrd, tilr and tilr-driver SHALL verify outgoing secure WebSocket certificates 
 #### Scenario: A failed upload
 - **WHEN** the stub `aws` fails on `releases/linux-x86_64/latest`
 - **THEN** the script exits non-zero and `install.sh` is not uploaded
-
-#### Scenario: Candidate installer isolation
-- **WHEN** beta publication succeeds
-- **THEN** install.sh is not uploaded
 
 ### Requirement: Shared Ghostty VT development build
 
