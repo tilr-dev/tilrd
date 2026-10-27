@@ -507,7 +507,43 @@ async fn a_copy_nobody_takes_stays_in_the_shared_buffer() {
     // A client that comes later is not sent it: the first copy it gets is
     // the next one.
     let mut later = copying_client(&server).await;
-    later.subscribe(pane_id).await;
+    #[cfg(feature = "failpoints")]
+    let controller = PauseController::bind(&server.dir);
+    #[cfg(feature = "failpoints")]
+    let point = format!("reconnect-subscribe:{pane_id}");
+    #[cfg(feature = "failpoints")]
+    std::fs::write(server.dir.join("failpoints"), format!("{point}=pause")).unwrap();
+    {
+        let ready = async {
+            later.subscribe(pane_id).await;
+            // The copy runs on another connection. A successful send alone
+            // does not order it after viewer registration on the server.
+            later
+                .wait_for(|msg| match msg {
+                    server_message::Msg::Frame(frame)
+                        if frame.pane_id == pane_id.to_string() && frame.full =>
+                    {
+                        Some(())
+                    }
+                    _ => None,
+                })
+                .await;
+        };
+        tokio::pin!(ready);
+        #[cfg(feature = "failpoints")]
+        {
+            // A send on this connection must not let the other connection
+            // start copying before the server has registered the viewer.
+            let held = tokio::select! {
+                biased;
+                () = &mut ready => panic!("copy could start before viewer registration"),
+                held = controller.wait(&point) => held,
+            };
+            std::fs::write(server.dir.join("failpoints"), "").unwrap();
+            held.release().await;
+        }
+        ready.await;
+    }
     assert_eq!(
         client
             .run(pane_id, "echo later | xclip -selection clipboard -i")
