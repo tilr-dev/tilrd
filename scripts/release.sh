@@ -13,7 +13,9 @@
 # with LICENSE-APACHE, LICENSE-MIT and README.md; both programs are installed
 # and updated together.
 #
-# A version is the package version plus the commit, e.g. 0.1.0-26449dd. A
+# A version is the package version plus the commit, e.g. 0.1.0-26449dd; the package
+# version is TILR_BUILD_VERSION if set (the release workflow sets the tag's, e.g.
+# 0.3.0-rc.1), else the root Cargo.toml's. A
 # platform is named as the binary names itself: linux-aarch64, linux-x86_64,
 # macos-aarch64, macos-x86_64.
 # Each platform has its own `latest`, so a release can be out for one and not
@@ -73,7 +75,7 @@ if [ -n "$build" ]; then
         exit 1
     fi
     commit=$(git rev-parse --short HEAD)
-    package=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    package=${TILR_BUILD_VERSION:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)}
     version="$package-$commit"
 
     for platform in "$@"; do
@@ -84,8 +86,11 @@ if [ -n "$build" ]; then
         case "$platform" in
             linux-*)
                 # The container cannot read the host worktree's Git metadata.
-                TILR_BUILD_COMMIT=$commit TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh ;;
-            macos-*) TILR_BUILD_COMMIT=$commit scripts/macos-build.sh "$platform" ;;
+                TILR_BUILD_VERSION=$package TILR_BUILD_COMMIT=$commit \
+                    TILR_LINUX_PLATFORM=$docker_platform scripts/linux-build.sh ;;
+            macos-*)
+                TILR_BUILD_VERSION=$package TILR_BUILD_COMMIT=$commit \
+                    scripts/macos-build.sh "$platform" ;;
         esac
         scripts/cdn-layout.sh "$version" "$platform"
     done

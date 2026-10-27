@@ -1311,13 +1311,16 @@ used and can also be removed once all older runs have stopped.
 
 ## Releases
 
-Promote `dev` to `main` with a PR titled `chore: promote dev to main`, merged with
-a merge commit. Task branches are squash-merged into `dev`.
+`main` is the only integration branch: task branches are squash-merged into it through pull
+requests, and nothing is released from it. On the owner's word a release branch `release/X.Y`
+is cut from a commit of `main`; a fix for a release lands in `main` first and is then
+cherry-picked into `release/X.Y`. Nothing is merged from a release branch back into `main`.
 
 Releases are made by [release-please](https://github.com/googleapis/release-please)
-(`.github/workflows/release.yml`): Conventional Commits on `main` keep a release PR open with
-the version bump (`[workspace.package] version` in Cargo.toml, and Cargo.lock; the crates
-share it) and CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release and then:
+(`.github/workflows/release.yml`), which runs on pushes to `release/**` only: the Conventional
+Commits of `release/X.Y` keep a release PR into that branch open with the version bump
+(`[workspace.package] version` in Cargo.toml, and Cargo.lock; the crates share it) and
+CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release and then:
 
 - builds `tilrd` and `tilr` for `aarch64-apple-darwin`, `x86_64-apple-darwin`,
   `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` and attaches
@@ -1327,11 +1330,10 @@ share it) and CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release
 - publishes the Linux and signed, notarized macOS archives to the CDN, the R2 bucket `tilr-cdn` behind
   `https://cdn.tilr.dev`, with `scripts/release.sh --upload-only`.
 
-After release creation, tilr-bot automatically opens a `main` → `dev` PR titled
-`chore: back-merge vX.Y.Z` and merges it with a merge commit, returning the version
-and changelog to `dev`. An existing open PR is reused. If the merge fails (for example,
-because of a conflict), the PR stays open for manual resolution and the release stays
-successful.
+Every other push to `release/X.Y` builds a release candidate: the pushed commit is tagged
+`vX.Y.Z-rc.N` and a GitHub prerelease of that tag gets the same archives and checksums
+(`Z` is 0 until `vX.Y.0` is released, then the next patch; `N` counts the candidates of that
+version). The binaries say `X.Y.Z-rc.N-<commit>`. A candidate is not published to the CDN.
 
 The CDN layout is what the installer and `tilrd update` read:
 

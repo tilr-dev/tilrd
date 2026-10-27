@@ -1,4 +1,5 @@
-# CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR and every push to main.
+# CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR into and every push to main
+# or a release branch release/** (the release PR and cherry-picks go there), and on merge groups.
 # The tests run on Linux and macOS (the server's two platforms; they need only /bin/sh, ps
 # and kill, no network, tmux or ssh), with the `failpoints` feature, as in the README. The
 # matrix shows as `test (ubuntu-latest)` and `test (macos-15)`: required checks name both.
@@ -14,17 +15,17 @@ name: ci
 on:
   merge_group:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   push:
-    branches: [main]
+    branches: [main, 'release/**']
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A push to main always finishes; elsewhere a newer push replaces the run.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # A push to main or a release branch always finishes; elsewhere a newer push replaces the run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 env:
   CARGO_TERM_COLOR: always
