@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
-### Requirement: Specification change authorization on dev
-After the trusted workflow is added to main and the dev ruleset is activated, pull requests into dev SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main; the dev tree SHALL carry no copy of that workflow. Other tests SHALL remain local for dev.
+### Requirement: Specification change authorization on main
+Pull requests into main SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main and compare main with GitHub's test merge of the pull request; a copy of that workflow in the pull request is never run. The other checks run in CI.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -39,10 +39,14 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 
 #### Scenario: Candidate code cannot replace the checker
 - **WHEN** a pull request changes checker scripts or workflow definitions
-- **THEN** the check still runs the workflow from main, not a workflow file from the pull request or dev
+- **THEN** the check still runs the workflow from main, not a workflow file from the pull request
 - **AND** the trusted workflow reads candidate Git objects without checking out or executing candidate files
-- **AND** the shared checker content is verified against a digest pinned in main's workflow before execution, and a new digest takes effect only through a pull request into main
+- **AND** the shared checker content is downloaded from a fixed gitpm commit and verified against a digest pinned in main's workflow before execution, and a new commit or digest takes effect only through a pull request into main
 - **AND** only the checker process receives the read-only task credential
+
+#### Scenario: A branch behind main
+- **WHEN** a task branch forked before `main` gained a requirement and the pull request leaves that requirement alone
+- **THEN** the check compares `main` with GitHub's test merge of the pull request, so that requirement does not count as removed
 
 #### Scenario: Malformed scope declaration
 - **WHEN** the latest intake-ready Spec scope line is empty or does not identify an own change
@@ -58,7 +62,7 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 - **THEN** both archive and edit authorization are required for that change
 
 #### Scenario: Text is inserted into an existing requirement
-- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in dev
+- **WHEN** a pull request adds a sentence, scenario, or scenario step inside a requirement already present in main
 - **THEN** matching modify authorization for that existing requirement is required
 - **AND** adding a separate new requirement remains allowed without authorization
 
@@ -72,7 +76,7 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 
 #### Scenario: Chained requirement renames retain their original authorization
 - **WHEN** an own delta renames an existing requirement through intermediate names and modifies or removes it
-- **THEN** the operation requires authorization for the original requirement in dev
+- **THEN** the operation requires authorization for the original requirement in main
 - **AND** cyclic or ambiguous rename mappings fail the check
 
 #### Scenario: A new requirement takes an existing scenario
@@ -81,11 +85,11 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 
 #### Scenario: Reusing a renamed requirement's former name
 - **WHEN** an own delta renames an existing requirement and another requirement takes its former name
-- **THEN** each rename remains authorized against its own original requirement in dev
+- **THEN** each rename remains authorized against its own original requirement in main
 - **AND** modifying or removing the first requirement under its new name requires permission for that original requirement
 
 #### Scenario: A requirement's text moves under another existing requirement
-- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in dev
+- **WHEN** a pull request deletes or moves the heading of an existing requirement so that some of its text or scenarios fall under another requirement already present in main
 - **THEN** authorization to remove or modify the requirement whose heading changed does not cover the change
 - **AND** modify authorization for the requirement that absorbs the text is required
 
@@ -94,7 +98,7 @@ After the trusted workflow is added to main and the dev ruleset is activated, pu
 - **THEN** the check fails with an error instead of treating any other word as the own change
 
 #### Scenario: An existing archive shares the own change name
-- **WHEN** a pull request edits an archive that already exists in dev under the same change name as the task's own change
+- **WHEN** a pull request edits an archive that already exists in main under the same change name as the task's own change
 - **THEN** the archive is treated as a foreign change and edit authorization is required
 
 #### Scenario: A new capability differs from an existing one only by letter case or Unicode form
