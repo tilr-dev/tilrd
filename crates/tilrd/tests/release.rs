@@ -928,6 +928,18 @@ fn assert_release_branches(release: &str) {
     assert!(!on.contains("pull_request"));
     let please = job(&release, "release-please");
     assert!(please.contains("target-branch: ${{ github.ref_name }}"));
+    // The branch name is checked before release-please can open a PR or make a release.
+    let line = please
+        .find("      - id: line\n")
+        .expect("missing branch name check");
+    assert!(line < please.find("      - id: release\n").unwrap());
+    assert!(
+        !please[line..]
+            .split("\n      - ")
+            .next()
+            .unwrap()
+            .contains("if:")
+    );
     assert!(
         !release.contains("\n  back-merge:\n"),
         "a back-merge job is back"
@@ -945,6 +957,7 @@ fn releases_run_only_on_release_branches() {
         ("branches: ['release/**']", "branches: [main]"),
         ("branches: ['release/**']", "branches: ['release/**', main]"),
         ("          target-branch: ${{ github.ref_name }}\n", ""),
+        ("      - id: line\n", "      - id: later\n"),
         ("  build:\n", "  back-merge:\n    runs-on: x\n  build:\n"),
     ] {
         let mutated = release.replacen(from, to, 1);
@@ -956,14 +969,15 @@ fn releases_run_only_on_release_branches() {
     }
 }
 
-/// The shell of the `rc` step of the release-please job, as GitHub runs it.
-fn rc_script() -> String {
+/// The shell of step `id` of the release-please job, as GitHub runs it.
+fn step_script(id: &str) -> String {
     let release = text_file(".github/workflows/release.yml");
-    job(&release, "release-please")
-        .split_once("      - id: rc\n")
-        .expect("missing rc step")
-        .1
-        .split_once("        run: |\n")
+    let step = job(&release, "release-please")
+        .split_once(&format!("      - id: {id}\n"))
+        .unwrap_or_else(|| panic!("missing step {id}"))
+        .1;
+    let step = step.split("\n      - ").next().unwrap();
+    step.split_once("        run: |\n")
         .unwrap()
         .1
         .lines()
@@ -978,8 +992,8 @@ struct Candidate {
     created: String,
 }
 
-/// Runs the rc step on `branch` at commit `sha` with `tags` ("<tag> <commit>" lines) in the
-/// repository, through a stub GitHub CLI.
+/// Runs the branch name check and then the rc step on `branch` at commit `sha` with `tags`
+/// ("<tag> <commit>" lines) in the repository, through a stub GitHub CLI.
 fn candidate(branch: &str, sha: &str, tags: &str) -> Candidate {
     let fixture = Fixture::new();
     executable(
@@ -1000,15 +1014,14 @@ esac
     );
     let log = fixture.dir.join("gh.log");
     let output = fixture.dir.join("github-output");
+    // The branch name check runs first, as in the job; its output is not the rc step's.
+    let script = format!(
+        "({})\nexport LINE=\"${{BRANCH#release/}}\"\n: > \"$GITHUB_OUTPUT\"\n{}",
+        step_script("line"),
+        step_script("rc")
+    );
     let status = Command::new("bash")
-        .args([
-            "--noprofile",
-            "--norc",
-            "-eo",
-            "pipefail",
-            "-c",
-            &rc_script(),
-        ])
+        .args(["--noprofile", "--norc", "-eo", "pipefail", "-c", &script])
         .current_dir(&fixture.dir)
         .env(
             "PATH",
@@ -1077,6 +1090,11 @@ fn a_push_to_a_release_branch_tags_the_next_release_candidate() {
     let run = candidate("release/0.3", sha, "v0.3.0-rc.1 c0ffee\nv0.3.0 c0ffee\n");
     assert!(run.status.status.success(), "{:?}", run.status);
     assert_eq!(run.output, "");
+    assert_eq!(run.created, "");
+    // A re-run on an older candidate's commit after a later release reuses that candidate.
+    let run = candidate("release/0.3", sha, "v0.3.0-rc.2 c0ffee\nv0.3.0 bbb\n");
+    assert!(run.status.status.success(), "{:?}", run.status);
+    assert_eq!(run.output, "tag_name=v0.3.0-rc.2\n");
     assert_eq!(run.created, "");
     // A candidate of the released version on an earlier commit does not stop the next patch.
     let run = candidate("release/0.3", sha, "v0.3.0-rc.1 aaa\nv0.3.0 bbb\n");

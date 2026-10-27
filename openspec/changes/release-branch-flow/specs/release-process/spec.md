@@ -32,7 +32,7 @@ A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.
 - **THEN** the new commit is tagged `v0.3.1-rc.1`
 
 #### Scenario: A re-run on the same commit
-- **WHEN** the workflow is re-run for a commit that already carries a candidate tag of its version
+- **WHEN** the workflow is re-run for a commit that already carries a candidate tag of its line, even after a later release
 - **THEN** that tag is reused and no new candidate is tagged
 
 #### Scenario: A re-run on the release commit
@@ -45,7 +45,7 @@ A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.
 
 #### Scenario: A branch not named release/X.Y
 - **WHEN** a branch `release/next` is pushed
-- **THEN** the step fails with `release branches are named release/X.Y` and nothing is tagged or built
+- **THEN** the release workflow fails with `release branches are named release/X.Y` before release-please runs: no release PR, release, candidate or build
 
 #### Scenario: The CDN is left alone
 - **WHEN** a release candidate is built and its prerelease has its assets
