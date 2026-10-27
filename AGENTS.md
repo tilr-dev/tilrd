@@ -57,9 +57,14 @@ the line.
 
 ## Releases
 
-- release-please (`.github/workflows/release.yml`): `feat` / `fix` commits open or update the
-  release PR; merging it tags `vX.Y.Z`, builds the binaries for the GitHub release and
-  publishes the Linux ones to the CDN (`scripts/release.sh --upload-only`).
+- Nothing is released from `main`. On the owner's word a release branch `release/X.Y` is cut
+  from a commit of `main`; fixes for it land in `main` first and are cherry-picked into it.
+- release-please (`.github/workflows/release.yml`) runs on pushes to `release/**` only:
+  `feat` / `fix` commits there open or update the release PR into that branch; merging it tags
+  `vX.Y.Z`, builds the binaries for the GitHub release and publishes them to the CDN
+  (`scripts/release.sh --upload-only`). Any other push to `release/X.Y` tags a release
+  candidate `vX.Y.Z-rc.N` and fills its GitHub prerelease with the same archives; candidates
+  never reach the CDN.
 - `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported
   (in CI the `cdn` environment's variable), plus AWS keys scoped to objects in tilr-cdn.
   For manual publishing, Infisical `/cloudflare` in `prod` supplies `CF_ACCOUNT_ID` and
