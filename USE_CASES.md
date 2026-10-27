@@ -630,3 +630,11 @@ itests/tests -p test_coverage.py`.
   engine and local Git fixtures for a second release branch, a fix-only first release,
   same-line patches, annotated stable tags, ignored RCs, shipped cherry-picks,
   bootstrap, divergent tags, PR creation and merged-PR publication outputs.
+
+## Release upstream gate
+
+- `release::release_upstream_checks_real_git_histories`: direct and forged fixes fail;
+  upstream commits and cherry-picks pass; mixed PRs, novel merges, empty commits and
+  spoofed automation fail; authentic release-please PRs pass.
+- `release::release_upstream_workflow_is_trusted`: the release PR check executes main's
+  checker with read-only permissions and fetches candidate Git objects as data.
