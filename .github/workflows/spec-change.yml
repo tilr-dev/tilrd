@@ -2,7 +2,7 @@ name: Specification authorization
 
 on:
   pull_request_target:
-    branches: [dev]
+    branches: [main]
     types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
@@ -42,7 +42,7 @@ jobs:
           curl --fail --silent --show-error --location \
             https://raw.githubusercontent.com/tilr-dev/gitpm/main/scripts/spec_change.py \
             --output "$RUNNER_TEMP/spec_change.py"
-          printf '6b366dbce43ae5df3c4f571fb9004f03a944608f6805daf0e98ab75435cc177c  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
+          printf 'd27166908553b740351c8105555351792fa9a810f79c092369e684acbe1bd27a  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
       - name: Authorize specification changes
         env:
           ITSAPLAN_READ_ONLY_TOKEN: ${{ secrets.ITSAPLAN_READ_ONLY_TOKEN }}
