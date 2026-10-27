@@ -35,6 +35,10 @@ A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.
 - **WHEN** the workflow is re-run for a commit that already carries a candidate tag of its version
 - **THEN** that tag is reused and no new candidate is tagged
 
+#### Scenario: A re-run on the release commit
+- **WHEN** the workflow is re-run for the commit tagged `v0.3.0` after its build or upload failed
+- **THEN** no candidate is tagged and nothing is built in place of the release
+
 #### Scenario: The push creates a release
 - **WHEN** the push is the merge of the release PR and release-please creates `v0.3.0`
 - **THEN** no candidate is tagged; the release is built and published to the CDN

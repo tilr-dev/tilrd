@@ -11,7 +11,8 @@
 # vX.Y.Z-rc.N (step `rc`) and creates a GitHub prerelease, which `build` and `upload` fill with
 # the same archives and checksums as a release. Z is 0 until a stable vX.Y.* tag exists, then
 # its highest patch plus one; N is the highest rc of that version plus one. A re-run on a
-# commit that already has a candidate tag of that version reuses it. `cdn` runs for releases
+# commit that already has a candidate tag of that version reuses it; a commit that already
+# carries the release vX.Y.Z gets no candidate. `cdn` runs for releases
 # only: a candidate never reaches the CDN. The binaries are stamped with the tag's version
 # (TILR_BUILD_VERSION), so a candidate's binaries name the candidate.
 # The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version
@@ -109,6 +110,16 @@ jobs:
           # Tags of this line, as "<tag> <commit>" (lightweight tags point at the commit).
           tags=$(gh api "repos/$GH_REPO/git/matching-refs/tags/v$line." --paginate \
             --jq '.[] | "\(.ref | ltrimstr("refs/tags/")) \(.object.sha)"')
+          # A commit that already carries a release (a re-run after a failed build or upload)
+          # gets no candidate: release-please no longer reports that release as created.
+          released=$(awk -v line="v$line." -v sha="$SHA" '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+$/ && $2 == sha {
+              print $1; exit
+            }' <<<"$tags")
+          if [ -n "$released" ]; then
+            echo "::notice::$SHA is release $released; no release candidate"
+            exit 0
+          fi
           patch=$(awk -v line="v$line." '
             index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+$/ {
               p = substr($1, length(line) + 1) + 1; if (p > next_patch) next_patch = p

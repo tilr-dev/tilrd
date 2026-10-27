@@ -1072,8 +1072,14 @@ fn a_push_to_a_release_branch_tags_the_next_release_candidate() {
     assert!(run.status.status.success(), "{:?}", run.status);
     assert_eq!(run.output, "tag_name=v0.3.0-rc.2\n");
     assert_eq!(run.created, "");
-    // A candidate of an already released version is not reused for the next patch.
+    // A re-run on the release commit itself (release-please reports no new release then)
+    // tags no candidate, so nothing is built in place of the release.
     let run = candidate("release/0.3", sha, "v0.3.0-rc.1 c0ffee\nv0.3.0 c0ffee\n");
+    assert!(run.status.status.success(), "{:?}", run.status);
+    assert_eq!(run.output, "");
+    assert_eq!(run.created, "");
+    // A candidate of the released version on an earlier commit does not stop the next patch.
+    let run = candidate("release/0.3", sha, "v0.3.0-rc.1 aaa\nv0.3.0 bbb\n");
     assert!(run.status.status.success(), "{:?}", run.status);
     assert_eq!(run.output, "tag_name=v0.3.1-rc.1\n");
     for branch in ["release/next", "release/0.3.1", "release/0.3-hotfix"] {
