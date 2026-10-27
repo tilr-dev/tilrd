@@ -22,4 +22,3 @@ Notes: proposed behavior, with no implementation test in this research. Resource
 #### Scenario: A stopped watch has an in-flight scan
 - **WHEN** a watch is replaced, unwatched or disconnected before its reconciliation finishes
 - **THEN** that reconciliation sends no notifications for the stopped registration
-
