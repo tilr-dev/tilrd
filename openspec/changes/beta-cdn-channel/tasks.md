@@ -8,4 +8,4 @@
 
 ## 3. Validation
 - [x] Integration tests cover publication isolation and local CDN beta installation and failures.
-- [ ] Self-review and required checks.
+- [x] Self-review and focused checks; finish performs the full validation.
