@@ -119,8 +119,8 @@ jobs:
       # Keep in sync with `rust-version` in Cargo.toml ([workspace.package]).
       - name: Install Rust (MSRV)
         run: |
-          rustup toolchain install 1.90 --profile minimal
-          rustup default 1.90
+          rustup toolchain install 1.99 --profile minimal
+          rustup default 1.99
       - name: Install Zig and protoc
         run: |
           scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc

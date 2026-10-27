@@ -794,8 +794,8 @@ fn assert_ci_gates(ci: &str) {
     let secrets = job(&ci, "secrets");
     let msrv = job(&ci, "msrv");
     for gate in [
-        "rustup toolchain install 1.90 --profile minimal",
-        "rustup default 1.90",
+        "rustup toolchain install 1.99 --profile minimal",
+        "rustup default 1.99",
         "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
     ] {
         assert!(msrv.contains(gate), "missing MSRV gate: {gate}");
@@ -828,8 +828,8 @@ fn ci_runs_every_gate_of_agents_md() {
     for clause in [
         "  merge_group:\n",
         ", 'release/**'",
-        "rustup toolchain install 1.90 --profile minimal",
-        "rustup default 1.90",
+        "rustup toolchain install 1.99 --profile minimal",
+        "rustup default 1.99",
         "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
         "fetch-depth: 0",
         "- run: cargo fmt --all --check",
