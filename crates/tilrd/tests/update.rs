@@ -116,6 +116,70 @@ fn update_installs_the_latest_release_with_a_legacy_app_marker() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn update_selects_beta_without_changing_the_stable_default() {
+    for channel in [None, Some("stable"), Some("beta")] {
+        let (dir, exe) = installed();
+        let (version, platform) = version_and_platform();
+        let cdn = dir.join("cdn");
+        let archive = release(STUB);
+        publish(&cdn, &platform, "9.9.9-rc.1-test", &archive, &archive);
+        let pointers = cdn.join("releases").join(&platform);
+        std::fs::rename(pointers.join("latest"), pointers.join("beta")).unwrap();
+        std::fs::write(pointers.join("latest"), version).unwrap();
+        let url = serve_files(cdn);
+        let before = std::fs::read(&exe).unwrap();
+        let mut cmd = Command::new(&exe);
+        cmd.args(["update", "--cdn", &url])
+            .env("TILR_CHANNEL", "beta");
+        if let Some(channel) = channel {
+            cmd.args(["--channel", channel]);
+        }
+        let output = spawn_copied(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))
+            .wait_with_output()
+            .unwrap();
+        assert!(output.status.success(), "{channel:?}: {output:?}");
+        if channel == Some("beta") {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("-> 9.9.9-rc.1-test"));
+            assert_eq!(std::fs::read(&exe).unwrap(), STUB);
+            assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
+        } else {
+            assert_eq!(std::fs::read(&exe).unwrap(), before);
+            assert!(!dir.join("tilr").exists());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn update_rejects_invalid_channels_and_does_not_fall_back_from_beta() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let cdn = dir.join("cdn");
+    let archive = release(STUB);
+    publish(&cdn, &platform, "9.9.9-stable", &archive, &archive);
+    let url = serve_files(cdn);
+    let before = std::fs::read(&exe).unwrap();
+    for channel in ["beta", "rc", "../latest"] {
+        let output = spawn_copied(
+            Command::new(&exe)
+                .args(["update", "--cdn", &url, "--channel", channel])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .wait_with_output()
+        .unwrap();
+        assert!(!output.status.success(), "{channel}: {output:?}");
+        if channel != "beta" {
+            assert_eq!(output.status.code(), Some(2));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("invalid value"));
+        }
+        assert_eq!(std::fs::read(&exe).unwrap(), before);
+        assert!(!dir.join("tilr").exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn update(exe: &Path, cdn: &str) -> std::process::Output {
     update_failing(exe, cdn, "").wait_with_output().unwrap()
 }

@@ -482,6 +482,79 @@ fn publishing_uploads_the_archive_and_its_checksum_before_latest() {
 }
 
 #[test]
+fn beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers() {
+    let f = Fixture::new();
+    let args = [
+        "--publish",
+        "--channel",
+        "beta",
+        "linux-x86_64",
+        "linux-aarch64",
+        "macos-aarch64",
+        "macos-x86_64",
+    ];
+    let env = [("TILR_BUILD_VERSION", "9.9.0-rc.2")];
+    assert_exit(&f.run_env(&args, true, &env), 0);
+    let version = f.version_of("9.9.0-rc.2");
+    let mut expected = Vec::new();
+    for platform in [
+        "linux-x86_64",
+        "linux-aarch64",
+        "macos-aarch64",
+        "macos-x86_64",
+    ] {
+        let name = format!("releases/{version}/tilr-{version}-{platform}.tar.gz");
+        expected.extend([
+            name.clone(),
+            format!("{name}.sha256"),
+            format!("releases/{platform}/beta"),
+        ]);
+    }
+    assert_eq!(f.uploads(), expected);
+    for line in f.log().lines().filter(|line| line.contains("/beta|")) {
+        assert!(line.contains("|--cache-control|no-cache|"));
+    }
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
+    fs::remove_file(f.dir.join("build.log")).unwrap();
+    assert_exit(
+        &f.run(
+            &["--upload-only", "--channel", "beta", "linux-x86_64"],
+            true,
+        ),
+        0,
+    );
+    assert!(!f.dir.join("build.log").exists());
+    assert_eq!(f.uploads(), expected[..3]);
+    fs::remove_file(f.dir.join("aws.log")).unwrap();
+    let name = format!("tilr-{version}-linux-x86_64.tar.gz");
+    fs::write(f.cdn().join(&version).join(name), "corrupt").unwrap();
+    assert_exit(
+        &f.run(
+            &["--upload-only", "--channel", "beta", "linux-x86_64"],
+            true,
+        ),
+        1,
+    );
+    assert!(f.uploads().is_empty());
+}
+
+#[test]
+fn beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer() {
+    let f = Fixture::new();
+    assert_exit(&f.run(&["linux-x86_64"], false), 0);
+    let name = format!("releases/{0}/tilr-{0}-linux-x86_64.tar.gz", f.version());
+    f.fail_upload(&format!("{name}.sha256"));
+    assert_exit(
+        &f.run(
+            &["--upload-only", "--channel", "beta", "linux-x86_64"],
+            true,
+        ),
+        1,
+    );
+    assert_eq!(f.uploads(), [name.clone(), format!("{name}.sha256")]);
+}
+
+#[test]
 fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     let f = Fixture::new();
     assert_exit(&f.run(&["linux-aarch64", "linux-x86_64"], false), 0);
@@ -1127,7 +1200,7 @@ fn assert_candidate_contract(release: &str) {
         assert!(please.contains(clause), "release-please missing {clause}");
     }
     assert!(please.find("- id: release").unwrap() < please.find("- id: rc").unwrap());
-    for name in ["build", "upload"] {
+    for name in ["build", "upload", "cdn"] {
         assert!(
             job(&release, name)
                 .contains("    if: needs.release-please.outputs.publish == 'true'\n"),
@@ -1135,8 +1208,8 @@ fn assert_candidate_contract(release: &str) {
         );
     }
     let cdn = job(&release, "cdn");
-    assert!(cdn.contains("    if: needs.release-please.outputs.release_created == 'true'\n"));
-    assert!(!cdn.contains("publish"), "the cdn job runs for a candidate");
+    assert!(cdn.contains("CHANNEL: ${{ needs.release-please.outputs.release_created == 'true' && 'stable' || 'beta' }}"));
+    assert!(cdn.contains("scripts/release.sh --upload-only --channel \"$CHANNEL\" $PLATFORMS"));
     let build = job(&release, "build");
     for clause in [
         "TILR_BUILD_VERSION=\"${TAG#v}\" cargo build --release --locked -p tilrd -p tilr --target \"$TARGET\"",
@@ -1147,7 +1220,7 @@ fn assert_candidate_contract(release: &str) {
 }
 
 #[test]
-fn a_release_candidate_is_built_like_a_release_and_skips_the_cdn() {
+fn a_release_candidate_is_built_like_a_release_and_publishes_to_beta() {
     let release = text_file(".github/workflows/release.yml");
     assert_candidate_contract(&release);
     for (from, to) in [
@@ -1156,8 +1229,8 @@ fn a_release_candidate_is_built_like_a_release_and_skips_the_cdn() {
             "    if: needs.release-please.outputs.release_created == 'true'\n",
         ),
         (
-            "    if: needs.release-please.outputs.release_created == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
             "    if: needs.release-please.outputs.publish == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+            "    if: needs.release-please.outputs.release_created == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
         ),
         (
             "TILR_BUILD_VERSION=\"${TAG#v}\" scripts/release.sh",
@@ -1445,7 +1518,7 @@ fn assert_cdn_contract(release: &str) {
         "AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}",
         "run: aws --version",
         "CLOUDFLARE_ACCOUNT_ID:",
-        "scripts/release.sh --upload-only $PLATFORMS",
+        "scripts/release.sh --upload-only --channel \"$CHANNEL\" $PLATFORMS",
     ] {
         assert!(cdn.contains(clause), "{clause}");
     }

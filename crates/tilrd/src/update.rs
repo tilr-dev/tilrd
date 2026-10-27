@@ -4,6 +4,7 @@
 //! Releases are files under one base URL:
 //!
 //! ```text
+//! releases/<platform>/beta                                   the candidate for the platform
 //! releases/<platform>/latest                                 the version ready for the platform
 //! releases/<version>/tilr-<version>-<platform>.tar.gz        tilrd and tilr
 //! releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
@@ -31,6 +32,22 @@ use sha2::{Digest, Sha256};
 
 use crate::{PLATFORM, VERSION};
 
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum Channel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+impl Channel {
+    fn pointer(self) -> &'static str {
+        match self {
+            Self::Stable => "latest",
+            Self::Beta => "beta",
+        }
+    }
+}
+
 pub const DEFAULT_CDN: &str = "https://cdn.tilr.dev";
 
 /// No release comes near this; a larger answer is not one.
@@ -50,9 +67,10 @@ fn archive_name(version: &str, platform: &str) -> String {
     format!("tilr-{version}-{platform}.tar.gz")
 }
 
-fn latest_version(cdn: &str, platform: &str) -> Result<String> {
+fn latest_version(cdn: &str, platform: &str, channel: Channel) -> Result<String> {
     let cdn = cdn.trim_end_matches('/');
-    let latest = fetch_text(&format!("{cdn}/releases/{platform}/latest"))
+    let pointer = channel.pointer();
+    let latest = fetch_text(&format!("{cdn}/releases/{platform}/{pointer}"))
         .with_context(|| format!("find the latest release for {platform} at {cdn}"))?;
     let latest = latest.trim();
     // It becomes part of a URL.
@@ -142,7 +160,7 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
         (name.to_owned(), archive)
     } else {
         let cdn = cdn.trim_end_matches('/');
-        let latest = latest_version(cdn, platform).with_context(|| {
+        let latest = latest_version(cdn, platform, Channel::Stable).with_context(|| {
             format!("no release of tilr for {platform} on {cdn}; give one with --archive")
         })?;
         let archive = download(cdn, &latest, platform)?;
@@ -167,9 +185,9 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
     Ok(())
 }
 
-pub fn run(cdn: &str, exe: &Path) -> Result<()> {
+pub fn run(cdn: &str, channel: Channel, exe: &Path) -> Result<()> {
     let cdn = cdn.trim_end_matches('/');
-    let latest = latest_version(cdn, PLATFORM)?;
+    let latest = latest_version(cdn, PLATFORM, channel)?;
     if latest == VERSION {
         println!("tilrd {VERSION} ({PLATFORM}) is the latest release");
         return Ok(());

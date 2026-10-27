@@ -625,3 +625,11 @@ itests/tests -p test_coverage.py`.
   updates a copied native daemon from the real release-script layout on Linux and macOS.
 - Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
   Apple architectures without executing their programs.
+
+- Beta CDN publication: `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`
+  checks candidate upload order and isolation from latest/install.sh, upload-only and checksum validation.
+  `release::beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer` checks failed uploads.
+- Beta updates: `update::update_selects_beta_without_changing_the_stable_default` installs a candidate
+  from a local CDN and checks the stable default, explicit stable and ignored channel environment variable.
+  `update::update_rejects_invalid_channels_and_does_not_fall_back_from_beta` checks missing beta
+  and invalid channel failures without installation changes.

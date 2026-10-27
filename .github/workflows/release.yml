@@ -13,7 +13,7 @@
 # its highest patch plus one; N is the highest rc of that version plus one. A re-run on a
 # commit that already has a candidate tag of that line reuses it; a commit that already
 # carries the release vX.Y.Z gets no candidate. A branch not named release/X.Y fails before
-# release-please runs. `cdn` runs for releases only: a candidate never reaches the CDN. The
+# release-please runs. `cdn` publishes candidates to beta, leaving latest and install.sh unchanged. The
 # binaries are stamped with the tag's version
 # (TILR_BUILD_VERSION), so a candidate's binaries name the candidate.
 # The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version
@@ -416,10 +416,10 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
-  # Releases only: a release candidate never reaches the CDN.
+  # Publish releases to stable and candidates to beta after GitHub assets.
   cdn:
     needs: [release-please, upload]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: cdn
@@ -453,10 +453,11 @@ jobs:
         run: aws --version
       - name: Upload to the CDN
         env:
+          CHANNEL: ${{ needs.release-please.outputs.release_created == 'true' && 'stable' || 'beta' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           : "${CLOUDFLARE_ACCOUNT_ID:?set the CLOUDFLARE_ACCOUNT_ID variable of the cdn environment}"
           # shellcheck disable=SC2086 # PLATFORMS is a list of words
-          scripts/release.sh --upload-only $PLATFORMS
+          scripts/release.sh --upload-only --channel "$CHANNEL" $PLATFORMS
