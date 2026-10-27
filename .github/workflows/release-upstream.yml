@@ -1,0 +1,43 @@
+name: Release upstream
+
+on:
+  pull_request_target:
+    branches: ['release/**']
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  release-upstream:
+    name: release-upstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Only main is trusted. Candidate objects are fetched into a separate bare repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Fetch upstream and PR history as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --bare "$RUNNER_TEMP/upstream.git"
+          git -C "$RUNNER_TEMP/upstream.git" remote add origin "https://github.com/$REPOSITORY.git"
+          authorization=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          printf '::add-mask::%s\n' "$authorization"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization"
+          git -C "$RUNNER_TEMP/upstream.git" fetch --no-tags origin \
+            "+refs/heads/main:refs/inspection/main" \
+            "+$BASE_SHA:refs/inspection/base" \
+            "+$HEAD_SHA:refs/inspection/head"
+      - name: Enforce upstream first
+        run: python3 scripts/release_upstream.py --repo "$RUNNER_TEMP/upstream.git" --event "$GITHUB_EVENT_PATH"

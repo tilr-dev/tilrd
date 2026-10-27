@@ -625,3 +625,11 @@ itests/tests -p test_coverage.py`.
   updates a copied native daemon from the real release-script layout on Linux and macOS.
 - Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
   Apple architectures without executing their programs.
+
+## Release upstream gate
+
+- `release::release_upstream_checks_real_git_histories`: direct and forged fixes fail;
+  upstream commits and cherry-picks pass; mixed PRs, novel merges, empty commits and
+  spoofed automation fail; authentic release-please PRs pass.
+- `release::release_upstream_workflow_is_trusted`: the release PR check executes main's
+  checker with read-only permissions and fetches candidate Git objects as data.
