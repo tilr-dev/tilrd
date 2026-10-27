@@ -909,9 +909,9 @@ fn release_please_bumps_the_workspace_version_and_lock() {
     let release = active(&text_file(".github/workflows/release.yml"));
     let please = job(&release, "release-please");
     for clause in [
-        "googleapis/release-please-action@",
-        "config-file: release-please-config.json",
-        "manifest-file: .release-please-manifest.json",
+        "npm ci --prefix .github/release-please --ignore-scripts",
+        "run: node .github/release-please/run.cjs",
+        "fetch-depth: 0",
     ] {
         assert!(please.contains(clause));
     }
@@ -927,7 +927,11 @@ fn assert_release_branches(release: &str) {
     assert!(!on.contains("main"), "the release workflow runs on main");
     assert!(!on.contains("pull_request"));
     let please = job(&release, "release-please");
-    assert!(please.contains("target-branch: ${{ github.ref_name }}"));
+    let runner = please.split("      - id: release\n").nth(1).unwrap();
+    let runner = runner.split("\n      - ").next().unwrap();
+    assert!(runner.contains("BRANCH: ${{ github.ref_name }}"));
+    assert!(runner.contains("GH_TOKEN: ${{ steps.app.outputs.token }}"));
+    assert!(runner.contains("run: node .github/release-please/run.cjs"));
     // The branch name is checked before release-please can open a PR or make a release.
     let line = please
         .find("      - id: line\n")
@@ -956,7 +960,7 @@ fn releases_run_only_on_release_branches() {
     for (from, to) in [
         ("branches: ['release/**']", "branches: [main]"),
         ("branches: ['release/**']", "branches: ['release/**', main]"),
-        ("          target-branch: ${{ github.ref_name }}\n", ""),
+        ("        run: node .github/release-please/run.cjs\n", ""),
         ("      - id: line\n", "      - id: later\n"),
         ("  build:\n", "  back-merge:\n    runs-on: x\n  build:\n"),
     ] {

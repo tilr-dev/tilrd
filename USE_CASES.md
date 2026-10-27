@@ -625,3 +625,8 @@ itests/tests -p test_coverage.py`.
   updates a copied native daemon from the real release-script layout on Linux and macOS.
 - Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
   Apple architectures without executing their programs.
+
+- Release-line version and changelog: `.github/release-please/run.test.cjs` uses the real
+  engine and local Git fixtures for a second release branch, a fix-only first release,
+  same-line patches, annotated stable tags, ignored RCs, shipped cherry-picks,
+  bootstrap, divergent tags, PR creation and merged-PR publication outputs.
