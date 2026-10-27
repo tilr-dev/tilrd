@@ -1,8 +1,21 @@
-# Releases: release-please keeps a release PR open from the Conventional Commits on main
-# (version bump in [workspace.package] of Cargo.toml and in Cargo.lock, CHANGELOG); merging
-# it tags vX.Y.Z and creates the GitHub release; `build` and `upload` then attach prebuilt
-# `tilrd` and `tilr` binaries to the release, and `cdn` publishes the Linux ones to the CDN,
-# where the installer and `tilr update` find them.
+# Releases: nothing is released from main. On the owner's instruction a release branch
+# release/X.Y is cut from a commit of main; this workflow runs on pushes to release/** only.
+# release-please keeps a release PR into the pushed branch (target-branch) open from its
+# Conventional Commits (version bump in [workspace.package] of Cargo.toml and in Cargo.lock,
+# CHANGELOG); merging it tags vX.Y.Z and creates the GitHub release; `build` and `upload` then
+# attach prebuilt `tilrd` and `tilr` binaries to the release, and `cdn` publishes the Linux and
+# macOS ones to the CDN, where the installer and `tilr update` find them. A fix for a release
+# lands in main first and is cherry-picked into release/X.Y; nothing is merged back into main.
+#
+# Release candidates: a push to release/X.Y that creates no release tags the pushed commit
+# vX.Y.Z-rc.N (step `rc`) and creates a GitHub prerelease, which `build` and `upload` fill with
+# the same archives and checksums as a release. Z is 0 until a stable vX.Y.* tag exists, then
+# its highest patch plus one; N is the highest rc of that version plus one. A re-run on a
+# commit that already has a candidate tag of that line reuses it; a commit that already
+# carries the release vX.Y.Z gets no candidate. A branch not named release/X.Y fails before
+# release-please runs. `cdn` runs for releases only: a candidate never reaches the CDN. The
+# binaries are stamped with the tag's version
+# (TILR_BUILD_VERSION), so a candidate's binaries name the candidate.
 # The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version
 # and move together; none is published to crates.io (publish = false), so there is no publish
 # job. release-please-config.json uses the `simple` strategy with TOML extra-files: the
@@ -24,13 +37,14 @@
 # The Linux binaries are built as they always were, by scripts/release.sh (Docker,
 # scripts/linux.Dockerfile: Debian 12, glibc 2.36+), on a native runner per architecture, so
 # the GitHub release and the CDN carry the same files. macOS builds natively (arm64) and
-# cross-compiles x86_64 on the same runner.
+# cross-compiles x86_64 on the same runner. `sign-macos` signs and notarizes on fresh
+# runners with Apple credentials; `package-macos` packages only the signed artifacts.
 #
-# cdn: uploads what the Linux builds laid out in dist/cdn to the R2 bucket tilr-cdn with
+# cdn: uploads what the Linux builds and macOS packaging laid out in dist/cdn to the R2 bucket tilr-cdn with
 # `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
 # releases/<platform>/latest, releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]
 # holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment
-# (restricted to main), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+# (restricted to release/* branches), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
 # (R2 S3 object access scoped to tilr-cdn), plus the required
 # CLOUDFLARE_ACCOUNT_ID variable (the bucket's account; the job fails without it). It runs
 # last, after the GitHub release has its assets: from its last upload on, `tilr update` and
@@ -40,7 +54,7 @@ name: release
 
 on:
   push:
-    branches: [main]
+    branches: ['release/**']
 
 permissions: {}
 
@@ -57,17 +71,33 @@ jobs:
     permissions:
       contents: read # all writes go through the tilr-bot token below
     # The package is the repository root ("."), so the outputs carry no path prefix.
+    # tag_name is the release's tag or the candidate's; publish is 'true' for either.
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.rc.outputs.tag_name }}
+      publish: ${{ steps.release.outputs.release_created == 'true' || steps.rc.outputs.tag_name != '' }}
     steps:
+      # Before release-please: a branch not named release/X.Y gets no release PR, release or
+      # candidate.
+      - id: line
+        name: Check the branch name
+        env:
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          line=${BRANCH#release/}
+          if ! [[ $line =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release branches are named release/X.Y, not $BRANCH"
+            exit 1
+          fi
+          echo "line=$line" >> "$GITHUB_OUTPUT"
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
           private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
-          permission-contents: write # the release PR's branch, the tag, the GitHub release
+          permission-contents: write # the release PR's branch, the tags, the GitHub releases
           permission-pull-requests: write # the release PR
           permission-issues: write # release-please's labels on the release PR
       - id: release
@@ -76,40 +106,61 @@ jobs:
           token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  back-merge:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-          permission-pull-requests: write
-      - name: Back-merge main into dev
+          target-branch: ${{ github.ref_name }}
+      - id: rc
+        name: Tag a release candidate
+        if: steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          BRANCH: ${{ github.ref_name }}
+          LINE: ${{ steps.line.outputs.line }}
+          SHA: ${{ github.sha }}
         shell: bash
         run: |
-          pr=$(gh pr list --base dev --head main --state open --json number --jq '.[0].number // empty')
-          if [ -z "$pr" ]; then
-            pr=$(gh pr create --base dev --head main --title "chore: back-merge $TAG" --body "Return release $TAG from main to dev.")
+          line=$LINE
+          # Tags of this line, as "<tag> <commit>" (lightweight tags point at the commit).
+          tags=$(gh api "repos/$GH_REPO/git/matching-refs/tags/v$line." --paginate \
+            --jq '.[] | "\(.ref | ltrimstr("refs/tags/")) \(.object.sha)"')
+          # A commit that already carries a release (a re-run after a failed build or upload)
+          # gets no candidate: release-please no longer reports that release as created.
+          released=$(awk -v line="v$line." -v sha="$SHA" '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+$/ && $2 == sha {
+              print $1; exit
+            }' <<<"$tags")
+          if [ -n "$released" ]; then
+            echo "::notice::$SHA is release $released; no release candidate"
+            exit 0
           fi
-          if ! gh pr merge "$pr" --merge; then
-            echo "::warning::Back-merge PR $pr remains open; resolve conflicts or required checks manually."
+          # A re-run on a commit that already has a candidate of this line reuses it, even if a
+          # release came out since.
+          tag=$(awk -v line="v$line." -v sha="$SHA" '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+-rc\.[0-9]+$/ && $2 == sha {
+              print $1; exit
+            }' <<<"$tags")
+          if [ -n "$tag" ]; then
+            echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          patch=$(awk -v line="v$line." '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+$/ {
+              p = substr($1, length(line) + 1) + 1; if (p > next_patch) next_patch = p
+            }
+            END { print next_patch + 0 }' <<<"$tags")
+          version="$line.$patch"
+          rc=$(awk -v prefix="v$version-rc." '
+            index($1, prefix) == 1 && substr($1, length(prefix) + 1) ~ /^[0-9]+$/ {
+              n = substr($1, length(prefix) + 1) + 0; if (n > max) max = n
+            }
+            END { print max + 1 }' <<<"$tags")
+          tag="v$version-rc.$rc"
+          gh release create "$tag" --prerelease --target "$SHA" --title "$tag" \
+            --notes "Release candidate $tag from $BRANCH at $SHA."
+          echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
 
   build:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.publish == 'true'
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -118,6 +169,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       TAG: ${{ needs.release-please.outputs.tag_name }}
+    # The binaries name the tag's version (a candidate's too), not the version in Cargo.toml.
     # Native arm64 macOS runner; x86_64 is cross-compiled there (the macOS SDK has both
     # architectures, and Zig builds libghostty-vt for the target cargo names).
     # Linux: scripts/release.sh in Docker on a runner of the target's architecture, so the
@@ -130,8 +182,8 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(format('[{0}{1}]',
-          '{"target":"aarch64-apple-darwin","os":"macos-15","native":true,"platform":""},
-          {"target":"x86_64-apple-darwin","os":"macos-15","native":false,"platform":""},
+          '{"target":"aarch64-apple-darwin","os":"macos-15","native":true,"platform":"macos-aarch64"},
+          {"target":"x86_64-apple-darwin","os":"macos-15","native":false,"platform":"macos-x86_64"},
           {"target":"x86_64-unknown-linux-gnu","os":"ubuntu-24.04","native":true,"platform":"linux-x86_64"}',
           vars.RELEASE_LINUX_ARM64 == 'true'
           && ',{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-24.04-arm","native":true,"platform":"linux-aarch64"}'
@@ -142,35 +194,37 @@ jobs:
           ref: ${{ needs.release-please.outputs.tag_name }}
           persist-credentials: false
       - name: Install Rust (stable, ${{ matrix.target }})
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
           rustup toolchain install stable --profile minimal --target "$TARGET"
           rustup default stable
       # As of 2026-10-19, macos-15 includes macOS 15.4 SDK in Xcode 16.3.
       # Recheck the runner-images macos-15-arm64 README; remove with the Zig SDK pin.
       - name: Select macOS 15.4 SDK
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
           echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
           echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
       - name: Install Zig and protoc
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
           scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
-      # No cache: a release build starts clean.
+      # No cache: compile dependency build scripts without signing credentials.
       - name: Build (macOS)
-        if: matrix.platform == ''
+        if: runner.os == 'macOS'
         run: |
-          cargo build --release --locked -p tilrd -p tilr --target "$TARGET"
-          echo "BIN_DIR=target/$TARGET/release" >> "$GITHUB_ENV"
-      # The CDN layout (dist/cdn) and dist/<platform>/{tilrd,tilr}, as by hand.
+          TILR_BUILD_VERSION="${TAG#v}" cargo build --release --locked -p tilrd -p tilr --target "$TARGET"
+          mkdir -p dist/unsigned
+          cp "target/$TARGET/release/tilrd" "target/$TARGET/release/tilr" dist/unsigned/
+          (cd dist/unsigned && shasum -a 256 tilrd tilr > binaries.sha256)
+          echo 'BIN_DIR=dist/unsigned' >> "$GITHUB_ENV"
       - name: Build (Linux, scripts/release.sh)
-        if: matrix.platform != ''
+        if: runner.os == 'Linux'
         env:
           PLATFORM: ${{ matrix.platform }}
         run: |
-          scripts/release.sh "$PLATFORM"
+          TILR_BUILD_VERSION="${TAG#v}" scripts/release.sh "$PLATFORM"
           echo "BIN_DIR=dist/$PLATFORM" >> "$GITHUB_ENV"
       # Each binary names the version it was built as: the tag's version and the commit.
       - name: Check the version
@@ -182,7 +236,150 @@ jobs:
               *) "$BIN_DIR/$exe" --version; exit 1 ;;
             esac
           done
-      - run: scripts/package.sh "$TAG" "$TARGET" "$BIN_DIR" dist/github
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'macOS'
+        with:
+          name: unsigned-${{ matrix.platform }}
+          path: dist/unsigned/
+          if-no-files-found: error
+          retention-days: 7
+      - if: runner.os == 'Linux'
+        run: scripts/package.sh "$TAG" "$TARGET" "$BIN_DIR" dist/github
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'Linux'
+        with:
+          name: tilr-${{ matrix.target }}
+          path: dist/github/*
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'Linux'
+        with:
+          name: cdn-${{ matrix.platform }}
+          path: dist/cdn/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A fresh runner: no dependency build scripts or repository checkout can persist here.
+  sign-macos:
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment: apple-signing
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-aarch64, macos-x86_64]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-${{ matrix.platform }}
+          path: binaries
+      - name: Verify unsigned checksums
+        working-directory: binaries
+        run: shasum -a 256 -c binaries.sha256
+      - name: Sign and notarize
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          : "${CERTIFICATE:?missing APPLE_CERTIFICATE_P12_BASE64}"
+          : "${CERTIFICATE_PASSWORD:?missing APPLE_CERTIFICATE_PASSWORD}"
+          : "${API_KEY:?missing APPLE_API_KEY_P8_BASE64}"
+          : "${API_KEY_ID:?missing APPLE_API_KEY_ID}"
+          : "${API_ISSUER_ID:?missing APPLE_API_ISSUER_ID}"
+          case "$SIGN_IDENTITY" in
+            "Developer ID Application: "*) ;;
+            *) echo "Expected a Developer ID Application identity" >&2; exit 2 ;;
+          esac
+          keychain="$RUNNER_TEMP/tilr-signing.keychain-db"
+          password=$(openssl rand -hex 32)
+          echo "::add-mask::$password"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -x -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          keychains=()
+          while IFS= read -r existing; do
+            keychains+=("$existing")
+          done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+          security list-keychains -d user -s "$keychain" "${keychains[@]}"
+          # App Store Connect API key (role Developer): not tied to a personal Apple ID.
+          (umask 077 && printf '%s' "$API_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8")
+          xcrun notarytool store-credentials tilr-release --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID" --keychain "$keychain"
+          rm "$RUNNER_TEMP/AuthKey.p8"
+          for exe in tilrd tilr; do
+            chmod 755 "binaries/$exe"
+            codesign --force --sign "$SIGN_IDENTITY" --keychain "$keychain" --options runtime --timestamp "binaries/$exe"
+            codesign --verify --strict "binaries/$exe"
+          done
+          /usr/bin/ditto -c -k binaries "$RUNNER_TEMP/notarization.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarization.zip" --keychain-profile tilr-release --keychain "$keychain" --wait --output-format json > "$RUNNER_TEMP/notarization.json"
+          python3 - "$RUNNER_TEMP/notarization.json" <<'CHECK'
+          import json
+          import sys
+          with open(sys.argv[1]) as response:
+              if json.load(response).get("status") != "Accepted":
+                  sys.exit("Apple did not accept notarization; no release packaged")
+          CHECK
+          (cd binaries && shasum -a 256 tilrd tilr > binaries.sha256)
+      - name: Remove Apple signing credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/AuthKey.p8"
+          if [ -f "$RUNNER_TEMP/tilr-signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/tilr-signing.keychain-db"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-${{ matrix.platform }}
+          path: binaries/
+          if-no-files-found: error
+          retention-days: 7
+
+  package-macos:
+    needs: [release-please, sign-macos]
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - platform: macos-aarch64
+            target: aarch64-apple-darwin
+          - platform: macos-x86_64
+            target: x86_64-apple-darwin
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      TARGET: ${{ matrix.target }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-${{ matrix.platform }}
+          path: binaries
+      - name: Package signed binaries
+        run: |
+          (cd binaries && shasum -a 256 -c binaries.sha256)
+          chmod 755 binaries/tilrd binaries/tilr
+          scripts/package.sh "$TAG" "$TARGET" binaries dist/github
+          version="${TAG#v}-$(git rev-parse --short HEAD)"
+          mkdir -p "dist/$PLATFORM"
+          cp binaries/tilrd binaries/tilr "dist/$PLATFORM/"
+          scripts/cdn-layout.sh "$version" "$PLATFORM"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tilr-${{ matrix.target }}
@@ -190,7 +387,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.platform != ''
         with:
           name: cdn-${{ matrix.platform }}
           path: dist/cdn/
@@ -198,8 +394,8 @@ jobs:
           retention-days: 7
 
   upload:
-    needs: [release-please, build]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please, build, package-macos]
+    if: needs.release-please.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -220,6 +416,7 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
+  # Releases only: a release candidate never reaches the CDN.
   cdn:
     needs: [release-please, upload]
     if: needs.release-please.outputs.release_created == 'true'
@@ -228,10 +425,10 @@ jobs:
     environment: cdn
     permissions:
       contents: read
-    # The Linux platforms the build job built; with aarch64 off its CDN `latest` is left as
+    # All macOS platforms and the Linux platforms built; with Linux aarch64 off its `latest` is left as
     # it is.
     env:
-      PLATFORMS: ${{ vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64' || 'linux-x86_64' }}
+      PLATFORMS: ${{ vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64' || 'linux-x86_64 macos-aarch64 macos-x86_64' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

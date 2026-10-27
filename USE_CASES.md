@@ -256,11 +256,15 @@ Cloud repository.
 | The updater finds and installs the archive built by `release.sh` through a local CDN | `the_layout_release_sh_writes_is_what_tilrd_update_reads` |
 | Linux builds use the pinned Debian 12 image; build tools (Zig, protoc, cargo-nextest) are checksum pinned and used in CI, release builds and the container | `the_linux_build_runs_in_the_pinned_debian_12_image`, `build_tools_are_pinned_by_checksum_and_used_everywhere` |
 | The Linux dev container builds the dev profile with line-tables-only debuginfo, as on the host, unless `CARGO_PROFILE_DEV_DEBUG` overrides it | `the_linux_dev_container_builds_with_line_tables_only_debuginfo` |
-| CI runs every AGENTS.md gate (including MSRV and full-history secret scanning), rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
+| CI runs every AGENTS.md gate (including MSRV and full-history secret scanning) on pull requests, pushes and merge groups of `main` and `release/**`, rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
 | AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
 | Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
-| A created release opens or reuses a main-to-dev PR as tilr-bot and attempts a merge commit; a conflicting merge leaves the PR open and the release successful | `a_created_release_back_merges_main_into_dev`, `back_merge_creates_or_reuses_a_pr_and_keeps_conflicts_open` |
+| Releases run only on pushes to `release/**`, with release-please targeting the pushed branch; nothing merges a release back into `main` | `releases_run_only_on_release_branches` |
+| A push to `release/X.Y` without a release tags the next candidate `vX.Y.Z-rc.N` (patch after a stable release, rc after the highest one, the same tag on a re-run) and refuses a branch not named `release/X.Y` | `a_push_to_a_release_branch_tags_the_next_release_candidate` |
+| A release candidate is built, checked and attached like a release, with the tag's version in the binaries, and never reaches the CDN | `a_release_candidate_is_built_like_a_release_and_skips_the_cdn` |
+| `release.sh` builds the version `TILR_BUILD_VERSION` names, when set, instead of the one in `Cargo.toml` | `a_release_is_named_after_the_build_version_when_given` |
+| The spec-change check compares `main` with GitHub's test merge through `spec_merge.py`, both shared scripts fetched from a fixed gitpm commit and checked against their digests | `the_spec_change_check_compares_main_with_the_test_merge` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
 
@@ -282,7 +286,7 @@ Cloud repository.
 | † The updater is killed just before the swap: the executables are the old ones; the next update goes through and cleans up the unpacked release | `an_update_killed_before_the_swap_changes_nothing_and_the_next_one_tidies_up` |
 | † `tilr` is already in place but `tilrd` cannot be swapped: the old `tilr` is put back (or removed if there was none) | `a_server_that_cannot_be_put_in_place_puts_the_old_client_back` |
 | † Two updates at once: the release is installed once, the second waits and sees it is already there | `two_updates_at_once_install_the_release_once` |
-| A server Tilr.app manages (`app-managed.json` next to the executable): `tilrd update` fails, saying so, without contacting the CDN | `app_managed_server_never_contacts_the_standalone_update_feed` |
+| A legacy `app-managed.json` next to the executable: `tilrd update` installs the latest release normally and leaves the marker unchanged | `update_installs_the_latest_release_with_a_legacy_app_marker` |
 
 ### Live check on a machine — `scripts/update-test.sh`
 
@@ -611,3 +615,13 @@ crate-qualified Cargo citations, rejection of unrelated paths, and local JSON/Ma
 generation with Git ignore rules. It also checks report selection and preservation of
 the last recorded run. Run with `uv run --no-project python -m unittest discover -s
 itests/tests -p test_coverage.py`.
+
+- macOS CDN releases: `release::both_macos_architectures_publish_the_signed_bytes_and_checked_layout`
+  publishes both macOS architectures and verifies signed archive members, checksums,
+  latest pointers, upload order and upload-only without Apple credentials.
+- macOS release failures: `release::macos_signing_and_notarization_failures_publish_nothing`
+  rejects missing credentials, failed signing/verification and failed or rejected notarization.
+- Native CDN update: `release::the_layout_release_sh_writes_is_what_tilrd_update_reads`
+  updates a copied native daemon from the real release-script layout on Linux and macOS.
+- Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
+  Apple architectures without executing their programs.

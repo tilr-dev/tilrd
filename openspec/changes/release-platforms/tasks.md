@@ -3,7 +3,7 @@
 ## 1. Platforms
 
 - [ ] 1.1 Try a musl build; verify `tilrd --version` in an Alpine container and itests group A on Alpine
-- [ ] 1.2 Decide macOS on the CDN; verify `tilrd update` on macOS from the CDN if added
+- [x] 1.2 Publish Developer ID signed and notarized macOS releases on the CDN; verify `tilrd update` on macOS from the per-platform layout
 
 ## 2. Checks
 
