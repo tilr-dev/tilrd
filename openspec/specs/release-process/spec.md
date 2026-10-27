@@ -456,7 +456,7 @@ them or they do not exist.
 - **THEN** cargo in the container sees `CARGO_PROFILE_DEV_DEBUG=full` and builds `target/debug/tilrd` with full debuginfo
 
 ### Requirement: Specification change authorization on main
-Pull requests into main SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main and compare main with GitHub's test merge of the pull request; a copy of that workflow in the pull request is never run. The other checks run in CI.
+Pull requests into main SHALL pass spec-change using the shared checker and read-only task credential to enforce intake Spec scope and Dan's authorization. PR authorization SHALL run only from the trusted pull_request_target workflow in main, never from candidate code. On merge_group checks_requested, the workflow SHALL report success as spec-change without repeating PR authorization; queue admission requires green PR checks.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -579,6 +579,15 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **WHEN** local verification supplies a trusted export containing the issue metadata and complete comment activity
 - **THEN** the same existence, creation date, closed-state, scope, and grant-lifetime rules apply
 - **AND** a comments-only array or metadata naming a different task fails with an actionable error
+
+#### Scenario: Pull request comparison
+- **WHEN** pull_request_target requests authorization
+- **THEN** the checker compares main with GitHub's test merge of the pull request
+
+#### Scenario: Merge queue requests the required check
+- **WHEN** GitHub sends merge_group checks_requested for queued pull requests
+- **THEN** the spec-change job reports success without reading pull_request fields, fetching candidate trees, downloading checkers, or accessing the task credential
+- **AND** PR authorization still runs on pull_request_target and fails for unauthorized specification changes
 
 ### Requirement: macOS releases require Developer ID and accepted notarization
 The macOS release helper SHALL require macOS and Apple signing credentials, sign and verify both executables with Developer ID, hardened runtime and a secure timestamp, and require Accepted notarization before producing distributable artifacts. CI SHALL use a temporary keychain and remove it even on failure.
