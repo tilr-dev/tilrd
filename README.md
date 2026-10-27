@@ -1206,7 +1206,7 @@ CDN: it installs an older release there, opens panes and updates them to the lat
 
 ## Build
 
-Needs Rust 1.90+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network access on the
+Needs Rust 1.99+, [Zig](https://ziglang.org) 0.15.2 and `protoc`, plus network access on the
 first build (libghostty-vt fetches the Ghostty source). `scripts/install-tools.sh DIR`
 downloads the pinned Zig, protoc and cargo-nextest (the tests run with it) into `DIR` and
 checks their SHA-256 sums.
