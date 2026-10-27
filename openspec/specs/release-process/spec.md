@@ -468,7 +468,7 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **AND** deltas that modify existing requirements still require authorization
 
 #### Scenario: Authorized changes
-- **WHEN** every affected existing requirement and foreign change has a matching operation in Dan's spec-change block for this component
+- **WHEN** the task is in Review, Supervise, or Merge and every affected existing requirement and foreign change has a matching operation in Dan's spec-change block for this component
 - **THEN** the check passes
 
 #### Scenario: Bot impersonates authorization
@@ -476,15 +476,16 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **THEN** the block does not authorize any changes
 
 #### Scenario: Task predates scope declarations
-- **WHEN** the task's intake-ready comments contain no Spec scope line
+- **WHEN** the task was created before 2026-10-22T21:02:26Z, is neither Done nor Canceled, and has a trusted intake-ready comment but no Spec scope line
 - **THEN** the check passes as a legacy task
+- **AND** the cutoff is the landing of the original authorization rule in dev
 
 #### Scenario: Foreign change edited or archived
 - **WHEN** a pull request edits or archives another task's change
 - **THEN** the matching edit or archive entry from Dan is required
 
 #### Scenario: Task data is unavailable
-- **WHEN** the task cannot be identified or its comments cannot be read completely
+- **WHEN** the task cannot be identified, its creation date or column is unavailable, or its comments cannot be read completely
 - **THEN** the check fails with an actionable error
 
 #### Scenario: Local merge automation
@@ -559,6 +560,25 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **WHEN** a pull request adds a capability directory whose name equals an existing or another added capability after case folding and Unicode normalization
 - **THEN** the check fails with an error instead of treating it as a new capability
 - **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form
+
+#### Scenario: Branch names cannot select an unavailable or closed task
+- **WHEN** the task branch names a nonexistent task or a task in Done or Canceled
+- **THEN** the check exits with failure and an actionable error even if no Spec scope line exists
+
+#### Scenario: Missing scope is not proof of legacy status
+- **WHEN** a task without Spec scope was created at or after 2026-10-22T21:02:26Z, or has no trusted intake-ready comment
+- **THEN** the check exits with failure instead of granting a legacy exception
+
+#### Scenario: Grants expire outside the review lifecycle
+- **WHEN** a task outside Review, Supervise, and Merge contains Dan's authorization block
+- **THEN** the block grants no permission to modify existing requirements or foreign changes
+- **AND** additions and edits of the declared own change that need no grant remain permitted
+- **AND** a fresh invocation after the task enters Review, Supervise, or Merge evaluates its grants
+
+#### Scenario: Offline task metadata
+- **WHEN** local verification supplies a trusted export containing the issue metadata and complete comment activity
+- **THEN** the same existence, creation date, closed-state, scope, and grant-lifetime rules apply
+- **AND** a comments-only array or metadata naming a different task fails with an actionable error
 
 ### Requirement: macOS releases require Developer ID and accepted notarization
 The macOS release helper SHALL require macOS and Apple signing credentials, sign and verify both executables with Developer ID, hardened runtime and a secure timestamp, and require Accepted notarization before producing distributable artifacts. CI SHALL use a temporary keychain and remove it even on failure.
