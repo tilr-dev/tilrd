@@ -1316,6 +1316,14 @@ requests, and nothing is released from it. On the owner's word a release branch 
 is cut from a commit of `main`; a fix for a release lands in `main` first and is then
 cherry-picked into `release/X.Y`. Nothing is merged from a release branch back into `main`.
 
+PRs into `release/**` run `release-upstream`: every proposed commit must be in main
+or match an upstream patch (a cherry-pick may have a different SHA). A new patch,
+an unmatched merge or an unmatched empty commit fails the check with an instruction
+to land it in main first. A cherry-pick trailer alone does not authorize a patch.
+The bot's release-please PR is exempt, so its version and changelog commits can
+remain on the release branch. Required checks for release branches must include
+`release-upstream`.
+
 Releases are made by [release-please](https://github.com/googleapis/release-please)
 (`.github/workflows/release.yml`), which runs on pushes to `release/**` only: the Conventional
 Commits of `release/X.Y` keep a release PR into that branch open with the version bump
