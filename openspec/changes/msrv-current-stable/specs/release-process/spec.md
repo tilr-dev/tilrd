@@ -12,3 +12,4 @@ Every pull request and push to `main` SHALL pass `.github/workflows/ci.yml`: `ca
 #### Scenario: Build at the minimum supported Rust version
 - **WHEN** CI runs the MSRV job
 - **THEN** it installs Rust 1.99 and runs `cargo check --workspace --all-targets --features tilrd/failpoints --locked`
+
