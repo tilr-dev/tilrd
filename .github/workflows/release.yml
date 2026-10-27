@@ -1,8 +1,21 @@
-# Releases: release-please keeps a release PR open from the Conventional Commits on main
-# (version bump in [workspace.package] of Cargo.toml and in Cargo.lock, CHANGELOG); merging
-# it tags vX.Y.Z and creates the GitHub release; `build` and `upload` then attach prebuilt
-# `tilrd` and `tilr` binaries to the release, and `cdn` publishes the Linux and macOS ones to the CDN,
-# where the installer and `tilr update` find them.
+# Releases: nothing is released from main. On the owner's instruction a release branch
+# release/X.Y is cut from a commit of main; this workflow runs on pushes to release/** only.
+# release-please keeps a release PR into the pushed branch (target-branch) open from its
+# Conventional Commits (version bump in [workspace.package] of Cargo.toml and in Cargo.lock,
+# CHANGELOG); merging it tags vX.Y.Z and creates the GitHub release; `build` and `upload` then
+# attach prebuilt `tilrd` and `tilr` binaries to the release, and `cdn` publishes the Linux and
+# macOS ones to the CDN, where the installer and `tilr update` find them. A fix for a release
+# lands in main first and is cherry-picked into release/X.Y; nothing is merged back into main.
+#
+# Release candidates: a push to release/X.Y that creates no release tags the pushed commit
+# vX.Y.Z-rc.N (step `rc`) and creates a GitHub prerelease, which `build` and `upload` fill with
+# the same archives and checksums as a release. Z is 0 until a stable vX.Y.* tag exists, then
+# its highest patch plus one; N is the highest rc of that version plus one. A re-run on a
+# commit that already has a candidate tag of that line reuses it; a commit that already
+# carries the release vX.Y.Z gets no candidate. A branch not named release/X.Y fails before
+# release-please runs. `cdn` runs for releases only: a candidate never reaches the CDN. The
+# binaries are stamped with the tag's version
+# (TILR_BUILD_VERSION), so a candidate's binaries name the candidate.
 # The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version
 # and move together; none is published to crates.io (publish = false), so there is no publish
 # job. release-please-config.json uses the `simple` strategy with TOML extra-files: the
@@ -31,7 +44,7 @@
 # `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
 # releases/<platform>/latest, releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]
 # holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment
-# (restricted to main), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+# (restricted to release/* branches), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
 # (R2 S3 object access scoped to tilr-cdn), plus the required
 # CLOUDFLARE_ACCOUNT_ID variable (the bucket's account; the job fails without it). It runs
 # last, after the GitHub release has its assets: from its last upload on, `tilr update` and
@@ -41,7 +54,7 @@ name: release
 
 on:
   push:
-    branches: [main]
+    branches: ['release/**']
 
 permissions: {}
 
@@ -58,17 +71,33 @@ jobs:
     permissions:
       contents: read # all writes go through the tilr-bot token below
     # The package is the repository root ("."), so the outputs carry no path prefix.
+    # tag_name is the release's tag or the candidate's; publish is 'true' for either.
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.rc.outputs.tag_name }}
+      publish: ${{ steps.release.outputs.release_created == 'true' || steps.rc.outputs.tag_name != '' }}
     steps:
+      # Before release-please: a branch not named release/X.Y gets no release PR, release or
+      # candidate.
+      - id: line
+        name: Check the branch name
+        env:
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          line=${BRANCH#release/}
+          if ! [[ $line =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release branches are named release/X.Y, not $BRANCH"
+            exit 1
+          fi
+          echo "line=$line" >> "$GITHUB_OUTPUT"
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
           private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
-          permission-contents: write # the release PR's branch, the tag, the GitHub release
+          permission-contents: write # the release PR's branch, the tags, the GitHub releases
           permission-pull-requests: write # the release PR
           permission-issues: write # release-please's labels on the release PR
       - id: release
@@ -77,40 +106,61 @@ jobs:
           token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  back-merge:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-          permission-pull-requests: write
-      - name: Back-merge main into dev
+          target-branch: ${{ github.ref_name }}
+      - id: rc
+        name: Tag a release candidate
+        if: steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          BRANCH: ${{ github.ref_name }}
+          LINE: ${{ steps.line.outputs.line }}
+          SHA: ${{ github.sha }}
         shell: bash
         run: |
-          pr=$(gh pr list --base dev --head main --state open --json number --jq '.[0].number // empty')
-          if [ -z "$pr" ]; then
-            pr=$(gh pr create --base dev --head main --title "chore: back-merge $TAG" --body "Return release $TAG from main to dev.")
+          line=$LINE
+          # Tags of this line, as "<tag> <commit>" (lightweight tags point at the commit).
+          tags=$(gh api "repos/$GH_REPO/git/matching-refs/tags/v$line." --paginate \
+            --jq '.[] | "\(.ref | ltrimstr("refs/tags/")) \(.object.sha)"')
+          # A commit that already carries a release (a re-run after a failed build or upload)
+          # gets no candidate: release-please no longer reports that release as created.
+          released=$(awk -v line="v$line." -v sha="$SHA" '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+$/ && $2 == sha {
+              print $1; exit
+            }' <<<"$tags")
+          if [ -n "$released" ]; then
+            echo "::notice::$SHA is release $released; no release candidate"
+            exit 0
           fi
-          if ! gh pr merge "$pr" --merge; then
-            echo "::warning::Back-merge PR $pr remains open; resolve conflicts or required checks manually."
+          # A re-run on a commit that already has a candidate of this line reuses it, even if a
+          # release came out since.
+          tag=$(awk -v line="v$line." -v sha="$SHA" '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+-rc\.[0-9]+$/ && $2 == sha {
+              print $1; exit
+            }' <<<"$tags")
+          if [ -n "$tag" ]; then
+            echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          patch=$(awk -v line="v$line." '
+            index($1, line) == 1 && substr($1, length(line) + 1) ~ /^[0-9]+$/ {
+              p = substr($1, length(line) + 1) + 1; if (p > next_patch) next_patch = p
+            }
+            END { print next_patch + 0 }' <<<"$tags")
+          version="$line.$patch"
+          rc=$(awk -v prefix="v$version-rc." '
+            index($1, prefix) == 1 && substr($1, length(prefix) + 1) ~ /^[0-9]+$/ {
+              n = substr($1, length(prefix) + 1) + 0; if (n > max) max = n
+            }
+            END { print max + 1 }' <<<"$tags")
+          tag="v$version-rc.$rc"
+          gh release create "$tag" --prerelease --target "$SHA" --title "$tag" \
+            --notes "Release candidate $tag from $BRANCH at $SHA."
+          echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
 
   build:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.publish == 'true'
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -119,6 +169,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       TAG: ${{ needs.release-please.outputs.tag_name }}
+    # The binaries name the tag's version (a candidate's too), not the version in Cargo.toml.
     # Native arm64 macOS runner; x86_64 is cross-compiled there (the macOS SDK has both
     # architectures, and Zig builds libghostty-vt for the target cargo names).
     # Linux: scripts/release.sh in Docker on a runner of the target's architecture, so the
@@ -163,7 +214,7 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          cargo build --release --locked -p tilrd -p tilr --target "$TARGET"
+          TILR_BUILD_VERSION="${TAG#v}" cargo build --release --locked -p tilrd -p tilr --target "$TARGET"
           mkdir -p dist/unsigned
           cp "target/$TARGET/release/tilrd" "target/$TARGET/release/tilr" dist/unsigned/
           (cd dist/unsigned && shasum -a 256 tilrd tilr > binaries.sha256)
@@ -173,7 +224,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
         run: |
-          scripts/release.sh "$PLATFORM"
+          TILR_BUILD_VERSION="${TAG#v}" scripts/release.sh "$PLATFORM"
           echo "BIN_DIR=dist/$PLATFORM" >> "$GITHUB_ENV"
       # Each binary names the version it was built as: the tag's version and the commit.
       - name: Check the version
@@ -344,7 +395,7 @@ jobs:
 
   upload:
     needs: [release-please, build, package-macos]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -365,6 +416,7 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
+  # Releases only: a release candidate never reaches the CDN.
   cdn:
     needs: [release-please, upload]
     if: needs.release-please.outputs.release_created == 'true'

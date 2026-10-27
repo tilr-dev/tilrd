@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/tilr-dev/tilrd/compare/v0.2.0...v0.2.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **release:** notarize macOS tilrd releases with an App Store Connect API key ([a1a9a6e](https://github.com/tilr-dev/tilrd/commit/a1a9a6edfa3919da0f558a0b748826f91eee1918))
+* **release:** notarize macOS tilrd releases with an App Store Connect API key ([#87](https://github.com/tilr-dev/tilrd/issues/87)) ([edfc63d](https://github.com/tilr-dev/tilrd/commit/edfc63dc380db87f6f30a01f0d3b03a7cb71d9cd))
+
 ## [0.2.0](https://github.com/tilr-dev/tilrd/compare/v0.1.0...v0.2.0) (2026-10-26)
 
 

@@ -75,7 +75,7 @@ esac
 printf '%s\n' "$platform" >> build.log
 mkdir -p "dist/$platform"
 for exe in tilrd tilr; do
-  printf '#!/bin/sh\nprintf "%%s\\n" "%s 9.8.7-%s (%s)"\n' "$exe" "$TILR_BUILD_COMMIT" "$platform" > "dist/$platform/$exe"
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s %s-%s (%s)"\n' "$exe" "$TILR_BUILD_VERSION" "$TILR_BUILD_COMMIT" "$platform" > "dist/$platform/$exe"
   chmod +x "dist/$platform/$exe"
 done
 "#,
@@ -106,7 +106,7 @@ esac
 printf '%s\n' "$platform" >> build.log
 mkdir -p "target/$target/release"
 for exe in tilrd tilr; do
- printf '#!/bin/sh\nprintf "%%s\\n" "%s 9.8.7-%s (%s)"\n' "$exe" "$TILR_BUILD_COMMIT" "$platform" > "target/$target/release/$exe"
+ printf '#!/bin/sh\nprintf "%%s\\n" "%s %s-%s (%s)"\n' "$exe" "$TILR_BUILD_VERSION" "$TILR_BUILD_COMMIT" "$platform" > "target/$target/release/$exe"
  chmod +x "target/$target/release/$exe"
 done
 "#,
@@ -172,6 +172,7 @@ printf '{"status":"%s"}\n' "${NOTARY_STATUS:-Accepted}"
         command.env("TILR_SIGN_IDENTITY", "Developer ID Application: Fixture");
         command.env("TILR_NOTARY_PROFILE", "fixture");
         command.env_remove("TILR_SIGN_KEYCHAIN");
+        command.env_remove("TILR_BUILD_VERSION");
         for name in ["SIGN_FAIL", "VERIFY_FAIL", "NOTARY_FAIL", "NOTARY_STATUS"] {
             command.env_remove(name);
         }
@@ -189,12 +190,19 @@ printf '{"status":"%s"}\n' "${NOTARY_STATUS:-Accepted}"
     }
 
     fn version(&self) -> String {
+        self.version_of("9.8.7")
+    }
+
+    fn version_of(&self, package: &str) -> String {
         let output = Command::new("git")
             .current_dir(&self.dir)
             .args(["rev-parse", "--short", "HEAD"])
             .output()
             .unwrap();
-        format!("9.8.7-{}", String::from_utf8(output.stdout).unwrap().trim())
+        format!(
+            "{package}-{}",
+            String::from_utf8(output.stdout).unwrap().trim()
+        )
     }
 
     fn cdn(&self) -> PathBuf {
@@ -279,6 +287,36 @@ fn a_release_is_named_after_the_package_version_and_the_commit() {
         fs::read_to_string(f.dir.join("build.log")).unwrap(),
         "linux-aarch64\n"
     );
+}
+
+#[test]
+fn a_release_is_named_after_the_build_version_when_given() {
+    let f = Fixture::new();
+    let output = f.run_env(
+        &["linux-x86_64", "macos-aarch64"],
+        false,
+        &[("TILR_BUILD_VERSION", "9.9.0-rc.2")],
+    );
+    assert_exit(&output, 0);
+    let version = f.version_of("9.9.0-rc.2");
+    for platform in ["linux-x86_64", "macos-aarch64"] {
+        assert_eq!(
+            fs::read_to_string(f.cdn().join(platform).join("latest")).unwrap(),
+            format!("{version}\n")
+        );
+        assert!(
+            f.cdn()
+                .join(&version)
+                .join(format!("tilr-{version}-{platform}.tar.gz"))
+                .is_file()
+        );
+        let tilrd = f.dir.join("dist").join(platform).join("tilrd");
+        let said = Command::new(&tilrd).output().unwrap().stdout;
+        assert_eq!(
+            String::from_utf8(said).unwrap(),
+            format!("tilrd {version} ({platform})\n")
+        );
+    }
 }
 
 #[test]
@@ -630,6 +668,7 @@ fn the_linux_build_runs_in_the_pinned_debian_12_image() {
     assert!(linux.contains("docker build"));
     assert!(linux.contains("TILR_LINUX_PLATFORM"));
     assert!(linux.contains("-e TILR_BUILD_COMMIT"));
+    assert!(linux.contains("-e TILR_BUILD_VERSION"));
     let build = active(&text_file("scripts/linux-build.sh"));
     assert!(build.contains("scripts/linux.sh"));
     assert!(build.contains("-p tilrd -p tilr"));
@@ -741,6 +780,14 @@ fn repository_documentation_matches_the_build_snapshot() {
 
 fn assert_ci_gates(ci: &str) {
     let ci = active(ci);
+    let on = ci.split("\npermissions:").next().unwrap();
+    assert!(on.contains("\n  merge_group:\n"), "CI skips merge groups");
+    for event in ["pull_request", "push"] {
+        assert!(
+            on.contains(&format!("  {event}:\n    branches: [main, 'release/**']\n")),
+            "CI skips {event} of main or release/**"
+        );
+    }
     let lint = job(&ci, "lint");
     let test = job(&ci, "test");
     let deny = job(&ci, "deny");
@@ -779,6 +826,8 @@ fn ci_runs_every_gate_of_agents_md() {
     assert_ne!(removed, ci);
     assert!(std::panic::catch_unwind(|| assert_ci_gates(&removed)).is_err());
     for clause in [
+        "  merge_group:\n",
+        ", 'release/**'",
         "rustup toolchain install 1.90 --profile minimal",
         "rustup default 1.90",
         "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
@@ -868,102 +917,331 @@ fn release_please_bumps_the_workspace_version_and_lock() {
     }
 }
 
-#[test]
-fn a_created_release_back_merges_main_into_dev() {
-    let release = active(&text_file(".github/workflows/release.yml"));
-    let back_merge = job(&release, "back-merge");
-    for clause in [
-        "needs: release-please",
-        "if: needs.release-please.outputs.release_created == 'true'",
-        "permissions: {}",
-        "actions/create-github-app-token@",
-        "client-id: ${{ vars.TILR_BOT_CLIENT_ID }}",
-        "private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}",
-        "repositories: ${{ github.event.repository.name }}",
-        "permission-contents: write",
-        "permission-pull-requests: write",
-        "GH_TOKEN: ${{ steps.app.outputs.token }}",
-        "GH_REPO: ${{ github.repository }}",
-        "TAG: ${{ needs.release-please.outputs.tag_name }}",
-        "shell: bash",
-        "gh pr list --base dev --head main --state open --json number",
-        "gh pr create --base dev --head main --title \"chore: back-merge $TAG\"",
-        "if ! gh pr merge \"$pr\" --merge; then",
-    ] {
-        assert!(
-            back_merge.contains(clause),
-            "missing back-merge contract: {clause}"
-        );
+fn assert_release_branches(release: &str) {
+    let release = active(release);
+    let on = release.split("\npermissions:").next().unwrap();
+    assert!(
+        on.contains("on:\n  push:\n    branches: ['release/**']\n"),
+        "the release workflow must run on pushes to release/** only"
+    );
+    assert!(!on.contains("main"), "the release workflow runs on main");
+    assert!(!on.contains("pull_request"));
+    let please = job(&release, "release-please");
+    assert!(please.contains("target-branch: ${{ github.ref_name }}"));
+    // The branch name is checked before release-please can open a PR or make a release.
+    let line = please
+        .find("      - id: line\n")
+        .expect("missing branch name check");
+    assert!(line < please.find("      - id: release\n").unwrap());
+    assert!(
+        !please[line..]
+            .split("\n      - ")
+            .next()
+            .unwrap()
+            .contains("if:")
+    );
+    assert!(
+        !release.contains("\n  back-merge:\n"),
+        "a back-merge job is back"
+    );
+    for forbidden in ["--base dev", "gh pr merge", "gh pr create"] {
+        assert!(!release.contains(forbidden), "release.yml runs {forbidden}");
     }
-    assert!(!back_merge.contains("continue-on-error:"));
-    assert!(!back_merge.contains("actions/checkout@"));
-    assert!(!back_merge.contains("--squash"));
-    assert!(!back_merge.contains("--delete-branch"));
 }
 
 #[test]
-fn back_merge_creates_or_reuses_a_pr_and_keeps_conflicts_open() {
+fn releases_run_only_on_release_branches() {
     let release = text_file(".github/workflows/release.yml");
-    let script = job(&release, "back-merge")
-        .split_once("        run: |\n")
+    assert_release_branches(&release);
+    for (from, to) in [
+        ("branches: ['release/**']", "branches: [main]"),
+        ("branches: ['release/**']", "branches: ['release/**', main]"),
+        ("          target-branch: ${{ github.ref_name }}\n", ""),
+        ("      - id: line\n", "      - id: later\n"),
+        ("  build:\n", "  back-merge:\n    runs-on: x\n  build:\n"),
+    ] {
+        let mutated = release.replacen(from, to, 1);
+        assert_ne!(mutated, release);
+        assert!(
+            std::panic::catch_unwind(|| assert_release_branches(&mutated)).is_err(),
+            "accepted {from} -> {to}"
+        );
+    }
+}
+
+/// The shell of step `id` of the release-please job, as GitHub runs it.
+fn step_script(id: &str) -> String {
+    let release = text_file(".github/workflows/release.yml");
+    let step = job(&release, "release-please")
+        .split_once(&format!("      - id: {id}\n"))
+        .unwrap_or_else(|| panic!("missing step {id}"))
+        .1;
+    let step = step.split("\n      - ").next().unwrap();
+    step.split_once("        run: |\n")
         .unwrap()
         .1
         .lines()
         .map(|line| line.strip_prefix("          ").unwrap_or(line))
         .collect::<Vec<_>>()
-        .join("\n");
-    for existing in ["", "42"] {
-        for conflict in [false, true] {
-            let fixture = Fixture::new();
-            executable(
-                &fixture.dir.join("bin/gh"),
-                r#"#!/bin/sh
+        .join("\n")
+}
+
+struct Candidate {
+    status: Output,
+    output: String,
+    created: String,
+}
+
+/// Runs the branch name check and then the rc step on `branch` at commit `sha` with `tags`
+/// ("<tag> <commit>" lines) in the repository, through a stub GitHub CLI.
+fn candidate(branch: &str, sha: &str, tags: &str) -> Candidate {
+    let fixture = Fixture::new();
+    executable(
+        &fixture.dir.join("bin/gh"),
+        r#"#!/bin/sh
 set -eu
-printf '%s|' "$@" >> "$GH_LOG"
-printf '\n' >> "$GH_LOG"
-case "$*" in
-  'pr list '*) printf '%s\n' "$EXISTING_PR" ;;
-  'pr create '*) printf '%s\n' 'https://github.com/fixture/repo/pull/43' ;;
-  'pr merge '*) exit "$MERGE_EXIT" ;;
+case "$1" in
+  api)
+    [ "$2" = "repos/fixture/repo/git/matching-refs/tags/v$EXPECT_LINE." ] || exit 98
+    [ "$3" = --paginate ] && [ "$4" = --jq ] || exit 97
+    printf '%s' "$TAGS" ;;
+  release)
+    printf '%s|' "$@" >> "$GH_LOG"
+    printf '\n' >> "$GH_LOG" ;;
   *) exit 99 ;;
 esac
 "#,
-            );
-            let log = fixture.dir.join("gh.log");
-            let output = Command::new("bash")
-                .args(["-euo", "pipefail", "-c", &script])
-                .current_dir(&fixture.dir)
-                .env(
-                    "PATH",
-                    format!(
-                        "{}:{}",
-                        fixture.dir.join("bin").display(),
-                        std::env::var("PATH").unwrap()
-                    ),
-                )
-                .env("GH_LOG", &log)
-                .env("EXISTING_PR", existing)
-                .env("MERGE_EXIT", if conflict { "1" } else { "0" })
-                .env("TAG", "v1.2.3")
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-            let calls = fs::read_to_string(log).unwrap();
-            let mut expected = String::from(
-                "pr|list|--base|dev|--head|main|--state|open|--json|number|--jq|.[0].number // empty|\n",
-            );
-            let pr = if existing.is_empty() {
-                expected.push_str("pr|create|--base|dev|--head|main|--title|chore: back-merge v1.2.3|--body|Return release v1.2.3 from main to dev.|\n");
-                "https://github.com/fixture/repo/pull/43"
-            } else {
-                existing
-            };
-            expected.push_str(&format!("pr|merge|{pr}|--merge|\n"));
-            // No close/delete call follows a failed merge, and the shell still succeeds.
-            assert_eq!(calls, expected);
-            let stdout = String::from_utf8(output.stdout).unwrap();
-            assert_eq!(stdout.contains("::warning::Back-merge PR"), conflict);
-        }
+    );
+    let log = fixture.dir.join("gh.log");
+    let output = fixture.dir.join("github-output");
+    // The branch name check runs first, as in the job; its output is not the rc step's.
+    let script = format!(
+        "({})\nexport LINE=\"${{BRANCH#release/}}\"\n: > \"$GITHUB_OUTPUT\"\n{}",
+        step_script("line"),
+        step_script("rc")
+    );
+    let status = Command::new("bash")
+        .args(["--noprofile", "--norc", "-eo", "pipefail", "-c", &script])
+        .current_dir(&fixture.dir)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fixture.dir.join("bin").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env("GH_LOG", &log)
+        .env("GITHUB_OUTPUT", &output)
+        .env("GH_REPO", "fixture/repo")
+        .env("BRANCH", branch)
+        .env("SHA", sha)
+        .env("TAGS", tags)
+        .env("EXPECT_LINE", branch.trim_start_matches("release/"))
+        .output()
+        .unwrap();
+    Candidate {
+        status,
+        output: fs::read_to_string(output).unwrap_or_default(),
+        created: fs::read_to_string(log).unwrap_or_default(),
+    }
+}
+
+fn created(tag: &str, sha: &str) -> String {
+    format!(
+        "release|create|{tag}|--prerelease|--target|{sha}|--title|{tag}|--notes|Release candidate {tag} from release/0.3 at {sha}.|\n"
+    )
+}
+
+#[test]
+fn a_push_to_a_release_branch_tags_the_next_release_candidate() {
+    let sha = "c0ffee";
+    for (tags, want) in [
+        ("", "v0.3.0-rc.1"),
+        // Another line's tags, a prefix lookalike and a non-numeric suffix do not count.
+        (
+            "v0.2.1 aaa\nv0.30.0 bbb\nv0.3.0-rc.x ccc\nv0.3.0-beta ddd\n",
+            "v0.3.0-rc.1",
+        ),
+        ("v0.3.0-rc.1 aaa\nv0.3.0-rc.2 bbb\n", "v0.3.0-rc.3"),
+        ("v0.3.0-rc.2 aaa\nv0.3.0-rc.10 bbb\n", "v0.3.0-rc.11"),
+        (
+            "v0.3.0-rc.1 aaa\nv0.3.0-rc.2 bbb\nv0.3.0 bbb\n",
+            "v0.3.1-rc.1",
+        ),
+        ("v0.3.0 aaa\nv0.3.1 bbb\nv0.3.2-rc.1 ccc\n", "v0.3.2-rc.2"),
+    ] {
+        let run = candidate("release/0.3", sha, tags);
+        assert!(run.status.status.success(), "{tags:?}: {:?}", run.status);
+        assert_eq!(run.output, format!("tag_name={want}\n"), "{tags:?}");
+        assert_eq!(run.created, created(want, sha), "{tags:?}");
+    }
+    // A re-run on a commit that already has a candidate of this version reuses its tag.
+    let run = candidate(
+        "release/0.3",
+        sha,
+        "v0.3.0-rc.1 aaa\nv0.3.0-rc.2 c0ffee\nv0.3.0-rc.3 bbb\n",
+    );
+    assert!(run.status.status.success(), "{:?}", run.status);
+    assert_eq!(run.output, "tag_name=v0.3.0-rc.2\n");
+    assert_eq!(run.created, "");
+    // A re-run on the release commit itself (release-please reports no new release then)
+    // tags no candidate, so nothing is built in place of the release.
+    let run = candidate("release/0.3", sha, "v0.3.0-rc.1 c0ffee\nv0.3.0 c0ffee\n");
+    assert!(run.status.status.success(), "{:?}", run.status);
+    assert_eq!(run.output, "");
+    assert_eq!(run.created, "");
+    // A re-run on an older candidate's commit after a later release reuses that candidate.
+    let run = candidate("release/0.3", sha, "v0.3.0-rc.2 c0ffee\nv0.3.0 bbb\n");
+    assert!(run.status.status.success(), "{:?}", run.status);
+    assert_eq!(run.output, "tag_name=v0.3.0-rc.2\n");
+    assert_eq!(run.created, "");
+    // A candidate of the released version on an earlier commit does not stop the next patch.
+    let run = candidate("release/0.3", sha, "v0.3.0-rc.1 aaa\nv0.3.0 bbb\n");
+    assert!(run.status.status.success(), "{:?}", run.status);
+    assert_eq!(run.output, "tag_name=v0.3.1-rc.1\n");
+    for branch in ["release/next", "release/0.3.1", "release/0.3-hotfix"] {
+        let run = candidate(branch, sha, "");
+        assert_eq!(run.status.status.code(), Some(1), "{branch}");
+        assert!(
+            String::from_utf8_lossy(&run.status.stdout)
+                .contains("release branches are named release/X.Y"),
+            "{branch}: {:?}",
+            run.status
+        );
+        assert_eq!(run.output, "");
+        assert_eq!(run.created, "");
+    }
+}
+
+fn assert_candidate_contract(release: &str) {
+    let release = active(release);
+    let please = job(&release, "release-please");
+    for clause in [
+        "tag_name: ${{ steps.release.outputs.tag_name || steps.rc.outputs.tag_name }}",
+        "publish: ${{ steps.release.outputs.release_created == 'true' || steps.rc.outputs.tag_name != '' }}",
+        "if: steps.release.outputs.release_created != 'true'",
+        "GH_TOKEN: ${{ steps.app.outputs.token }}",
+        "SHA: ${{ github.sha }}",
+    ] {
+        assert!(please.contains(clause), "release-please missing {clause}");
+    }
+    assert!(please.find("- id: release").unwrap() < please.find("- id: rc").unwrap());
+    for name in ["build", "upload"] {
+        assert!(
+            job(&release, name)
+                .contains("    if: needs.release-please.outputs.publish == 'true'\n"),
+            "{name} does not run for a candidate"
+        );
+    }
+    let cdn = job(&release, "cdn");
+    assert!(cdn.contains("    if: needs.release-please.outputs.release_created == 'true'\n"));
+    assert!(!cdn.contains("publish"), "the cdn job runs for a candidate");
+    let build = job(&release, "build");
+    for clause in [
+        "TILR_BUILD_VERSION=\"${TAG#v}\" cargo build --release --locked -p tilrd -p tilr --target \"$TARGET\"",
+        "TILR_BUILD_VERSION=\"${TAG#v}\" scripts/release.sh \"$PLATFORM\"",
+    ] {
+        assert!(build.contains(clause), "build missing {clause}");
+    }
+}
+
+#[test]
+fn a_release_candidate_is_built_like_a_release_and_skips_the_cdn() {
+    let release = text_file(".github/workflows/release.yml");
+    assert_candidate_contract(&release);
+    for (from, to) in [
+        (
+            "    if: needs.release-please.outputs.publish == 'true'\n",
+            "    if: needs.release-please.outputs.release_created == 'true'\n",
+        ),
+        (
+            "    if: needs.release-please.outputs.release_created == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+            "    if: needs.release-please.outputs.publish == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+        ),
+        (
+            "TILR_BUILD_VERSION=\"${TAG#v}\" scripts/release.sh",
+            "scripts/release.sh",
+        ),
+        (" || steps.rc.outputs.tag_name }}", " }}"),
+    ] {
+        let mutated = release.replacen(from, to, 1);
+        assert_ne!(mutated, release, "mutation did not apply: {from}");
+        assert!(
+            std::panic::catch_unwind(|| assert_candidate_contract(&mutated)).is_err(),
+            "accepted {from} -> {to}"
+        );
+    }
+}
+
+fn assert_spec_change_contract(workflow: &str) {
+    let workflow = active(workflow);
+    assert!(workflow.contains("  pull_request_target:\n    branches: [main]\n"));
+    assert!(workflow.contains("  pull-requests: read"));
+    assert!(!workflow.contains("actions/checkout"));
+    let mut pinned = Vec::new();
+    for script in ["spec_merge.py", "spec_change.py"] {
+        let url = format!("/scripts/{script} \\");
+        let line = workflow
+            .lines()
+            .find(|line| line.trim_end().ends_with(&url))
+            .unwrap_or_else(|| panic!("{script} is not downloaded"));
+        let commit = line
+            .trim()
+            .strip_prefix("https://raw.githubusercontent.com/tilr-dev/gitpm/")
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(commit, _)| commit)
+            .unwrap_or_else(|| panic!("{script} is not from tilr-dev/gitpm"));
+        assert!(
+            commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{script} is fetched from {commit}, not a fixed commit"
+        );
+        pinned.push(commit.to_owned());
+        let check = format!("  %s\\n' \"$RUNNER_TEMP/{script}\" | sha256sum --check --strict");
+        assert!(workflow.contains(&check), "{script} is not checked");
+    }
+    assert_eq!(
+        pinned[0], pinned[1],
+        "the shared scripts come from different commits"
+    );
+    assert!(
+        workflow
+            .find("python3 \"$RUNNER_TEMP/spec_merge.py\"")
+            .unwrap()
+            < workflow
+                .find("python3 \"$RUNNER_TEMP/spec_change.py\"")
+                .unwrap()
+    );
+    assert!(workflow.contains("--component tilrd"));
+    assert!(workflow.contains("--base refs/inspection/base --head refs/inspection/merge"));
+}
+
+#[test]
+fn the_spec_change_check_compares_main_with_the_test_merge() {
+    let workflow = text_file(".github/workflows/spec-change.yml");
+    assert_spec_change_contract(&workflow);
+    let merge_url = workflow
+        .lines()
+        .find(|line| line.contains("/scripts/spec_merge.py \\"))
+        .unwrap();
+    for (from, to) in [
+        (
+            merge_url.to_owned(),
+            merge_url.replace(merge_url.trim().split('/').nth(5).unwrap(), "main"),
+        ),
+        (
+            "--head refs/inspection/merge".to_owned(),
+            "--head refs/inspection/head".to_owned(),
+        ),
+        ("  pull-requests: read".to_owned(), String::new()),
+        ("branches: [main]".to_owned(), "branches: [dev]".to_owned()),
+    ] {
+        let mutated = workflow.replacen(&from, &to, 1);
+        assert_ne!(mutated, workflow, "mutation did not apply: {from}");
+        assert!(
+            std::panic::catch_unwind(|| assert_spec_change_contract(&mutated)).is_err(),
+            "accepted {from} -> {to}"
+        );
     }
 }
 
