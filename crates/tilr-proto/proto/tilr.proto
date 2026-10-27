@@ -2,9 +2,19 @@ syntax = "proto3";
 
 package tilr.v1;
 
-// Both sides ignore messages they do not know, so new message types can be
-// added without breaking older peers. What a peer supports is announced in
-// Hello / HelloAck `features`.
+// Both sides ignore message types and fields they do not know.
+//
+// PROTOCOL_VERSION (Hello / HelloAck `protocol_version`, now 1) is the
+// mandatory contract: a peer of a version implements every message and field
+// of it, and a server refuses every other version. Before the first public
+// release, all protocol changes use version 1 without a bump. Afterward, bump
+// only for a change incompatible with a client or server of the previous
+// public release, once per release as a separate step in its release milestone.
+// A change a peer may ignore (a new push, a new field with a harmless default)
+// needs neither a bump nor a feature. HelloAck `features` names only capabilities
+// a server can be run without (switched off by its operator or missing in its
+// environment), so a client checks one before sending that capability's requests;
+// Hello `features` says what the client can serve.
 
 // ---------------------------------------------------------------------------
 // Client -> server
@@ -37,13 +47,28 @@ message ClientMessage {
     FsUnwatch fs_unwatch = 23;
     StreamData stream_data = 24;
     StreamClose stream_close = 25;
+    ExecStart exec_start = 26;
+    ExecInput exec_input = 27;
+    ExecSignal exec_signal = 28;
+    ExecCancel exec_cancel = 29;
+    FinalizeInput finalize_input = 30;
   }
   // Names an input message (KeyInput, MouseInput, Paste, RawInput, Scroll, Resize) so the
   // client can tell which frame shows its effect: HelloAck.seq_base + n, n = 1, 2, 3, ...
   // counted by the client on its connection; echoed in Frame.last_input_seq. 0 = not named.
   // Optional; a server that does not know the field ignores it.
   uint64 seq = 100;
+  // Delivery sequence per stable client/pane, independent of latency seq.
+  uint64 input_seq = 101;
+  // Internal supervisor-to-pane fields; always overwritten at ingress.
+  string input_identity = 102;
+  uint64 input_probe = 103;
+  bool input_forget = 104;
 }
+
+// Sent after all admitted input is acknowledged, before a normal client exit.
+// Ends this connection's numbered input session and removes its delivery history.
+message FinalizeInput {}
 
 // Must be the first message on a connection. The server answers HelloAck, or,
 // if it does not speak `protocol_version`, an Error and closes the
@@ -52,13 +77,43 @@ message Hello {
   // The PROTOCOL_VERSION the client was built against.
   uint32 protocol_version = 1;
   string client_name = 2;
-  // Optional capabilities the client supports.
+  // Optional capabilities the client supports:
+  //   "host-events" - takes HostEvent
+  //   "agent" - serves the SSH agent (StreamOpen with kind "ssh-agent")
+  //   "clipboard-write" - takes ClipboardWrite
   repeated string features = 3;
-  // The server's access token (`tilr-server token`). A server that asks for
+  // The server's access token (`tilr token` on its machine). A server that asks for
   // one answers a Hello without it, or with another, with an Error and
   // closes the connection.
   string token = 4;
+  // Names this client instance (a window, a tab, a process) for as long as it
+  // runs, the same on every connection it makes: a UUID v4 in its text form,
+  // made up by the client when it starts. A Hello that names the client_id of
+  // a connection still open with the same token closes that connection at
+  // once, with the WebSocket close code CLOSE_SUPERSEDED: it is the same
+  // client come back on a new connection, and the old one is what a network
+  // it left still holds. Nothing carries over to the new connection; it
+  // subscribes as any other. A client whose connection is closed as
+  // superseded does not reconnect it. Empty = no identity: such a connection
+  // supersedes nobody and nobody supersedes it.
+  string client_id = 5;
 }
+
+// WebSocket close codes the server ends a connection with, besides the
+// standard ones (see `tilr_proto::close`):
+//   4000 "superseded" - a newer connection of the same client (Hello.client_id)
+//   4001 "too slow"   - the client did not take what it was sent
+//   4002 "timeout"    - the client went silent, or stopped answering the
+//                       server's WebSocket pings (it no longer hears it)
+//
+// A client answers the server's WebSocket pings, as browsers and WebSocket
+// libraries do on their own, in the order it reads. Besides telling the
+// client is there, they pace data in quantity (FsData, StreamData,
+// ExecOutput): the server keeps at most about 1 MiB of it written but not
+// yet read by the client, which it knows by the pongs to pings it sends
+// between the chunks, so that a frame never waits behind megabytes of file
+// in the network. A client that does not answer pings stalls its file
+// reads, streams and execs.
 
 // Panes are named by `pane_id`: a UUID in its usual text form
 // ("6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4") that the server makes up when the
@@ -154,6 +209,32 @@ message KeyInput {
   uint32 codepoint = 5;
   // Text the key produced, if any ("A" for Shift+A).
   string text = 6;
+  // The physical key, as W3C KeyboardEvent.code names it: "KeyC", "Digit1",
+  // "BracketLeft", "Semicolon", ... (the name of the key at that place on a
+  // US keyboard, whatever the layout). A browser has it as event.code; on
+  // macOS it comes from NSEvent.keyCode (kVK_ANSI_C -> "KeyC"), on iPad from
+  // UIKey.keyCode (the HID usage, UIKeyboardHIDUsageKeyboardC -> "KeyC").
+  //
+  // It matters with Ctrl on a layout that is not Latin: Ctrl+C on a Russian
+  // layout is the key that types "с" (U+0441), and a terminal sends ^C for
+  // it, as for Ctrl+C on a US layout. So when Ctrl is held and the key's
+  // character (`codepoint`, or `text`) is not ASCII, the server encodes the
+  // key as its US-layout character: Ctrl+С is 0x03, Ctrl+Я is 0x1A (the Z
+  // key), Ctrl+Alt+С is ESC 0x03. A character that is ASCII is taken as it
+  // is, whatever the physical key: Ctrl+C on Dvorak (the I key) is 0x03,
+  // Ctrl+A on AZERTY (the Q key) is 0x01. Alt without Ctrl is ESC and the
+  // character the key produced (`text`, else `codepoint` with Shift), never
+  // remapped: Alt+ж is ESC ж, Alt+Shift+Ф is ESC Ф. A character composed by
+  // AltGr or macOS Option is sent without Alt and passes as itself; Alt is
+  // only what `mods` says (Option acting as Alt is the client's setting).
+  // With the kitty keyboard protocol the physical key is also the "base
+  // layout key" it reports. Typing without Ctrl or Alt is the text, as ever.
+  //
+  // Empty: no physical key (synthetic input from a script, or a character
+  // key of a client that reads keys as characters, such as `tilr`); the key
+  // is then taken from `codepoint` as if the layout were US, and Ctrl with a
+  // character that is not ASCII sends nothing (Alt: ESC and the character).
+  string code = 7;
 }
 
 enum MouseAction {
@@ -221,13 +302,15 @@ message ClipboardPut {
   bool last = 5;
 }
 
-// Ask whether the server is still there; it answers Pong at once. Requires
-// the "ping" feature.
+// Ask whether the server is still there; it answers Pong at once. Every
+// server has it: no feature announces it.
 //
 // A network that drops out without closing the connection leaves a client
 // waiting forever. A client that pings and hears nothing back for a while
 // knows to reconnect. (The server checks on its clients with WebSocket pings,
-// which a browser answers by itself but does not let a page send.)
+// which a browser answers by itself but does not let a page send. A client
+// that sends but no longer answers them, its way from the server cut, is
+// dropped like one that went silent: Ping does not keep a connection alive.)
 message Ping {
   // Echoed back in the Pong.
   uint64 nonce = 1;
@@ -248,18 +331,34 @@ message Ping {
 // default): a path that leads elsewhere, through ".." or a symbolic link,
 // gets an error. A server that is read-only (`[files] readonly`) answers
 // FsWrite, FsMkdir, FsRename and FsDelete with an error.
+//
+// Names that are not UTF-8. A file name on Linux is any bytes but '/' and
+// NUL, which a `string` cannot hold. Every path in a request has a `bytes`
+// twin (`path_bytes`, `from_bytes`, `to_bytes`): the path as the raw bytes
+// of the server's file system. When it is not empty the server goes by it
+// and ignores the string, which is then only for showing. In answers, a
+// name or path that is not UTF-8 comes with its raw bytes the same way
+// (FsEntry.name_bytes, FsEntries/FsInfo/FsChanged.path_bytes), its string
+// then being the bytes made UTF-8 with U+FFFD for what is not, for showing
+// only. A client sends back the bytes of what it was given (the twin, when
+// it came with one), so it can name any file. The `bytes` fields are empty
+// for UTF-8 names.
 // ---------------------------------------------------------------------------
 
 // What is in a directory. Answered with FsEntries.
 message FsList {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // One entry, not followed if it is a symbolic link. Answered with FsInfo.
 message FsStat {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // The content of a file, or a part of it. Answered with FsData chunks.
@@ -271,6 +370,8 @@ message FsRead {
   // How much to read; 0 = to the end. A read of more than
   // HelloAck.fs_max_bytes is refused: a larger file is read in parts.
   uint64 length = 4;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 5;
 }
 
 // Replace the content of a file. Answered with one FsAck, after the last
@@ -300,12 +401,17 @@ message FsWrite {
   bool truncate = 6;
   bytes data = 7;
   bool last = 8;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above). First
+  // chunk only.
+  bytes path_bytes = 9;
 }
 
 // Make a directory; its parent must exist. Answered with FsAck.
 message FsMkdir {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // Move or rename an entry; `to` must not exist. Answered with FsAck.
@@ -313,6 +419,10 @@ message FsRename {
   uint64 request_id = 1;
   string from = 2;
   string to = 3;
+  // `from` and `to` as raw bytes, for names that are not UTF-8 (see above);
+  // each one on its own.
+  bytes from_bytes = 4;
+  bytes to_bytes = 5;
 }
 
 // Remove a file, a symbolic link (not what it points to) or a directory.
@@ -322,6 +432,8 @@ message FsDelete {
   string path = 2;
   // A directory goes with everything in it. Without: only an empty one.
   bool recursive = 3;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 4;
 }
 
 // Hear about changes to the entries of a directory (not of its
@@ -330,12 +442,16 @@ message FsDelete {
 message FsWatch {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // Stop watching a directory, named as in its FsWatch. Answered with FsAck.
 message FsUnwatch {
   uint64 request_id = 1;
   string path = 2;
+  // `path` as raw bytes, for a name that is not UTF-8 (see above).
+  bytes path_bytes = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +485,71 @@ message StreamClose {
 }
 
 // ---------------------------------------------------------------------------
+// Exec: run a program on the server's machine without a pane or a shell, its
+// stdout and stderr apart, and hear how it ended (feature "exec").
+//
+// ExecStart is answered with ExecStarted: the exec's id, or why it did not
+// start. Then come ExecOutput, in order per stream, and last ExecExit. Output
+// and the exit go as data in quantity (see the WebSocket pings above): a
+// client that takes them slowly holds the program up, which blocks on
+// writing, rather than the server's memory growing.
+//
+// The program runs in a process group of its own and nothing of it outlives
+// the exec: when it exits, whatever is left in its group is killed
+// (SIGKILL), and so is the whole group on a time limit, ExecCancel, the end
+// of the client's connection, and a reload or stop of the server. Execs are
+// not panes: they do not survive a reload, and a client sees them end with
+// ExecExit.reason "reload" if its connection lets it.
+// ---------------------------------------------------------------------------
+
+// Start a program. Answered with ExecStarted.
+message ExecStart {
+  // Echoed in ExecStarted.
+  uint64 request_id = 1;
+  // The program and its arguments, as they are: no shell, nothing expanded.
+  // argv[0] is looked up in the server's PATH unless it has a "/".
+  repeated string argv = 2;
+  // Directory to run in; it must exist. Empty = the home directory.
+  string cwd = 3;
+  // "NAME=value", added to the server's environment.
+  repeated string env = 4;
+  // The program's stdin is fed by ExecInput. Without, it reads end of file.
+  bool stdin = 5;
+  // The program and its process group are killed (SIGKILL) after this long,
+  // and its ExecExit says timed_out. 0 = no limit.
+  uint32 timeout_ms = 6;
+  // A server command: `argv` are arguments of the server's own executable
+  // (`token`, `cloud login`, `update`), run as a child of the server, in its
+  // environment, as `tilr token` and the like do. Taken on the Unix socket
+  // only (refused on TCP), whether or not the "exec" feature is on.
+  bool server_command = 7;
+}
+
+// Bytes for the program's stdin, of an exec started with `stdin`; `eof`
+// closes it after them. A client keeps at most 4 MiB of stdin sent but not
+// yet taken by the program, as ExecInputAck tells; an exec whose client
+// sends more is killed (ExecExit.reason "input overrun"). Input after `eof`,
+// and for an exec that is not the client's, is ignored.
+message ExecInput {
+  uint64 exec_id = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+// Send a signal (its number: 2 SIGINT, 15 SIGTERM, ...) to the program's
+// process group, as a terminal does for Ctrl+C. Not answered.
+message ExecSignal {
+  uint64 exec_id = 1;
+  int32 signal = 2;
+}
+
+// The client no longer wants the program: it and its process group are
+// killed at once (SIGKILL), and ExecExit says cancelled.
+message ExecCancel {
+  uint64 exec_id = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Server -> client
 // ---------------------------------------------------------------------------
 
@@ -391,21 +572,31 @@ message ServerMessage {
     StreamOpen stream_open = 15;
     StreamData stream_data = 16;
     StreamClose stream_close = 17;
+    ExecStarted exec_started = 18;
+    ExecOutput exec_output = 19;
+    ExecExit exec_exit = 20;
+    ExecInputAck exec_input_ack = 21;
+    ClipboardWrite clipboard_write = 22;
+    PaneActivity pane_activity = 23;
+    InputAck input_ack = 24;
   }
 }
 
 message HelloAck {
   uint32 protocol_version = 1;
   string server_version = 2;
-  // Optional capabilities the server supports:
-  //   "clipboard" - ClipboardPut
-  //   "ping" - Ping
+  // The capabilities this server can be run without and offers, in this
+  // order (what is part of the protocol version, such as Ping, is never
+  // listed):
+  //   "clipboard" - ClipboardPut, and ClipboardWrite to clients that list
+  //                 "clipboard-write" (off with --no-clipboard)
   //   "files" - FsList, FsStat, FsRead, FsWrite, FsMkdir, FsRename, FsDelete,
-  //             FsWatch, FsUnwatch
-  //   "host-events" - HostEvent
+  //             FsWatch, FsUnwatch (off with --no-files)
+  //   "host-events" - HostEvent (when the host-events socket is up)
   //   "agent" - SSH agent forwarding: StreamOpen with kind "ssh-agent",
-  //             StreamData, StreamClose. Only towards a client that has
-  //             "agent" in its Hello.features.
+  //             StreamData, StreamClose (off with --no-agent)
+  //   "exec" - ExecStart, ExecInput, ExecSignal, ExecCancel (off with
+  //            --no-exec)
   repeated string features = 3;
   // Largest content ClipboardPut accepts. 0 without the "clipboard" feature.
   uint64 clipboard_max_bytes = 4;
@@ -423,6 +614,7 @@ message HelloAck {
   // seq echoed, but with several clients on a pane, or after it reconnects, it cannot tell
   // its echoes from another connection's. 0 from a server that does not know seq.
   uint64 seq_base = 7;
+  repeated InputAck applied_input = 8;
 }
 
 message PaneInfo {
@@ -442,6 +634,23 @@ message PaneInfo {
   // Process id of the pane process on the server machine. The shell is its
   // child.
   uint32 pid = 9;
+  // The clients subscribed to the pane, one per connection (`viewers` of
+  // them), in no particular order.
+  repeated Viewer viewed_by = 10;
+  // Unix time in milliseconds when a client last subscribed to the pane or
+  // sent it input; `created_at_ms` until then. `tilr` attaches to the pane
+  // used last. PaneList is not pushed when only this changes.
+  uint64 used_at_ms = 11;
+}
+
+// A connection watching a pane.
+message Viewer {
+  // Hello.client_id of the connection; empty if it named none.
+  string client_id = 1;
+  // Hello.client_name.
+  string client_name = 2;
+  // Where the connection comes from, as the server sees it: "203.0.113.5:51234".
+  string address = 3;
 }
 
 message PaneCreated {
@@ -459,6 +668,18 @@ message PaneList {
 message PaneExited {
   string pane_id = 1;
   int32 exit_code = 2;
+}
+
+enum PaneActivityKind {
+  PANE_ACTIVITY_KIND_UNSPECIFIED = 0;
+  PANE_ACTIVITY_KIND_BELL = 1;
+  PANE_ACTIVITY_KIND_COMMAND_FINISHED = 2;
+}
+
+message PaneActivity {
+  string pane_id = 1;
+  PaneActivityKind kind = 2;
+  uint64 at_ms = 3;
 }
 
 message Error {
@@ -505,6 +726,9 @@ message FsEntry {
   // FILE_KIND_OTHER (a broken link, or anything else). A link is listed as a
   // link; a request naming it follows it.
   FileKind target = 6;
+  // The name's raw bytes when it is not UTF-8, `name` then being for
+  // showing only (see "Names that are not UTF-8"). Empty otherwise.
+  bytes name_bytes = 7;
 }
 
 message FsEntries {
@@ -515,6 +739,8 @@ message FsEntries {
   // Sorted by name.
   repeated FsEntry entries = 3;
   string error = 4;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
 }
 
 message FsInfo {
@@ -523,6 +749,8 @@ message FsInfo {
   string path = 2;
   FsEntry entry = 3;
   string error = 4;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
 }
 
 // Part of a file, in answer to FsRead. Chunks come in order, the last one
@@ -563,6 +791,8 @@ message FsChanged {
   // the directory itself (removed, say).
   string path = 3;
   FsChange kind = 4;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
 }
 
 // Something a program in a pane asks the client to do: `tilr edit <file>`
@@ -583,6 +813,33 @@ message HostEvent {
   repeated string args = 5;
 }
 
+// A program in a pane copied to the clipboard (OSC 52 or OSC 1337 Copy in its
+// output, or the server's `xclip -selection clipboard -i` / `wl-copy`). The
+// copy is the server's clipboard from then on, and goes to every client
+// subscribed to the pane that has "clipboard-write" in its Hello.features;
+// a copy nobody watches for stays on the server and is not sent later. Part
+// of the "clipboard" feature (HelloAck.features).
+//
+// Content comes on the bulk lane in chunks of at most 256 KiB sharing one
+// `transfer_id`, `mime` and `total_size`, the last with `last`. A newer copy
+// ends a transfer still under way without its `last` chunk: a client drops a
+// transfer whose chunks stop coming before `last` once another `transfer_id`
+// starts, and takes only a transfer that ends with `last`.
+message ClipboardWrite {
+  // Chosen by the server, larger than those of its previous transfers. A
+  // chunk of a transfer older than the one under way is dropped: a newer
+  // copy may overtake the last chunk of the one it ends.
+  uint64 transfer_id = 1;
+  // The pane the program runs in.
+  string pane_id = 2;
+  // MIME type of the content: "text/plain;charset=utf-8" for OSC 52.
+  string mime = 3;
+  // Size of the whole content in bytes.
+  uint64 total_size = 4;
+  bytes data = 5;
+  bool last = 6;
+}
+
 // A program connected to the server for a stream to this client; see
 // "Streams" above. StreamData follows, both ways, until a StreamClose.
 message StreamOpen {
@@ -592,6 +849,49 @@ message StreamOpen {
   string kind = 2;
   // The pane whose socket the program connected to.
   string pane_id = 3;
+}
+
+// Answer to ExecStart.
+message ExecStarted {
+  uint64 request_id = 1;
+  // Chosen by the server, never used again while it runs.
+  uint64 exec_id = 2;
+  // Of the program on the server's machine; the id of its process group too.
+  uint32 pid = 3;
+  // Why it did not start (no such program, no such directory, too many
+  // execs); then `exec_id` is 0 and nothing else comes.
+  string error = 4;
+}
+
+// Output of a program, at most 64 KiB in one message, in order per stream.
+message ExecOutput {
+  uint64 exec_id = 1;
+  // 1 stdout, 2 stderr.
+  uint32 stream = 2;
+  bytes data = 3;
+}
+
+// How much of its stdin the program has taken: `taken` bytes in all, of the
+// ExecInput data sent for it. Sent as it takes them.
+message ExecInputAck {
+  uint64 exec_id = 1;
+  uint64 taken = 2;
+}
+
+// The program ended, and its output did; the last message of an exec.
+message ExecExit {
+  uint64 exec_id = 1;
+  // Its exit status, if it exited; 0 if a signal killed it.
+  int32 code = 2;
+  // The signal that killed it, 0 if none.
+  int32 signal = 3;
+  // Killed for its time limit (ExecStart.timeout_ms).
+  bool timed_out = 4;
+  // Killed for ExecCancel.
+  bool cancelled = 5;
+  // Why the server killed it on its own: "reload", "shutdown", "input
+  // overrun". Empty otherwise.
+  string reason = 6;
 }
 
 // Absent Color = terminal default.
@@ -632,6 +932,8 @@ message Run {
   // Every cell of this run is two columns wide.
   bool wide = 3;
   bool cluster = 4;
+  // Index into Frame.links plus one; 0 = no hyperlink.
+  uint32 link = 5;
 }
 
 // Replaces viewport row `y` entirely. Columns past the last run are blank.
@@ -657,7 +959,20 @@ message Cursor {
 
 // Screen update for one pane. `full` frames carry every row and reset the
 // client's copy; otherwise only changed rows are present.
+//
+// A client that falls behind (what is queued for it waited too long for its
+// connection) is not sent every frame: the server skips its frames of the
+// pane and, once its connection has caught up, sends it a full frame of the
+// screen as it is then. `seq` then jumps. Its own input echoed only in the
+// frames it missed is carried by that full frame's `last_input_seq`, so every
+// input of a client still gets a frame that echoes it.
 message Frame {
+  // Hyperlink URIs used by changed rows, deduplicated within this frame.
+  // Run.link indexes this table plus one; URIs over the VT engine's OSC limit
+  // are plain text (about 2 KiB in libghostty-vt 0.2.2, checked 2026-10-24).
+  // Recheck: cargo test -p tilr-screen the_vt_osc_limit_keeps_text_but_drops_long_links --locked
+  // The frame reader also has a defensive 8 KiB URI bound.
+  repeated string links = 20;
   string pane_id = 1;
   uint64 seq = 2;
   bool full = 3;
@@ -785,7 +1100,9 @@ message PaneStatus {
 // ---------------------------------------------------------------------------
 
 message SupervisorState {
-  // Descriptor of the listening socket.
+  // Descriptor of the listening TCP socket; -1 for a server that listens on
+  // its Unix socket only (an executable that cannot take that over is not
+  // reloaded into, see `tilrd state-formats`).
   int32 listener = 1;
   reserved 2;
   repeated PaneState panes = 3;
@@ -796,6 +1113,15 @@ message SupervisorState {
   // The id the next connection gets, so ids (and HelloAck.seq_base) are not
   // given out twice across a reload. 0 = not recorded: start from 1.
   uint64 next_client_id = 5;
+  // The Unix socket for local clients (see tilr_proto::local), if the
+  // server serves one: the listening socket, the lock file held for it, and
+  // its path. Unset: the successor sets one up as a server starting does.
+  optional int32 local_listener = 6;
+  optional int32 local_lock = 7;
+  string local_path = 8;
+  // The last ClipboardWrite.transfer_id given out, so ids only grow across
+  // a reload. 0 = not recorded.
+  uint64 last_copy_id = 9;
 }
 
 message PaneState {
@@ -837,6 +1163,15 @@ message PaneHandover {
   uint64 last_input_seq = 12;
   // Named input not yet credited, oldest first.
   repeated PendingInput pending_inputs = 13;
+  // Milliseconds left until the process groups being ended after a
+  // ClosePane are killed (0 = none: no deadline armed).
+  uint32 kill_in_ms = 14;
+  // Those process groups: the shell's and the pty's foreground one, hung up
+  // already (empty = none).
+  repeated uint32 kill_pgids = 15;
+  // Legacy fields: delivery history is no longer written or restored at exec.
+  repeated InputDeliveryState delivery_states = 16;
+  repeated PendingDelivery pending_delivery = 17;
 }
 
 // An input message named by ClientMessage.seq whose bytes are not all
@@ -847,4 +1182,31 @@ message PendingInput {
   uint64 end = 2;
   // Microseconds since the pane process received it.
   uint64 age_us = 3;
+}
+
+// Cumulative completed input for one pane of the greeted client: applied to
+// the PTY, or terminally rejected with Error because that pane does not exist.
+// HelloAck.applied_input contains only applied counters from running panes.
+message InputAck {
+  string pane_id = 1;
+  uint64 seq = 2;
+}
+
+// Internal pane state and acknowledgements, never accepted from clients.
+message InputDeliveryState {
+  string identity = 1;
+  uint64 accepted = 2;
+  uint64 applied = 3;
+}
+message PendingDelivery {
+  string identity = 1;
+  uint64 seq = 2;
+  uint64 end = 3;
+}
+message PaneInputAck {
+  uint32 cols = 4;
+  uint32 rows = 5;
+  string identity = 1;
+  uint64 seq = 2;
+  uint64 probe = 3;
 }

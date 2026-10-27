@@ -1,5 +1,5 @@
 #!/bin/sh
-# Live test of `tilr-server update` on a real machine, from the real CDN.
+# Live test of `tilrd update` on a real machine, from the real CDN.
 #
 #   scripts/update-test.sh <ssh-host> <old-version>
 #   scripts/update-test.sh ubu-test 0.1.0-7b5740b
@@ -77,20 +77,21 @@ shell_state() {
 }
 
 # Put a release where the server runs from, the way it is done by hand:
-# download, check, rename into place.
+# download the archive, check it, unpack it, rename both programs into place.
 install_by_hand() {
-    r "cd $dir && curl -fsSL -o staged '$cdn/releases/$1/tilr-server-$platform' &&
-        [ \"\$(sha256sum staged | cut -d' ' -f1)\" = \"\$(curl -fsSL '$cdn/releases/$1/tilr-server-$platform.sha256' | cut -d' ' -f1)\" ] &&
-        chmod 755 staged && mv staged tilr-server"
+    r "cd $dir && rm -rf staged && mkdir staged && a=tilr-$1-$platform.tar.gz &&
+        curl -fsSL -o staged/\$a \"$cdn/releases/$1/\$a\" &&
+        [ \"\$(sha256sum staged/\$a | cut -d' ' -f1)\" = \"\$(curl -fsSL \"$cdn/releases/$1/\$a.sha256\" | cut -d' ' -f1)\" ] &&
+        tar -xzf staged/\$a -C staged tilr tilrd && mv staged/tilr tilr && mv staged/tilrd tilrd && rm -rf staged"
 }
 
 start_server() {
-    r "cd $dir && (TILR_RUNTIME_DIR=\$PWD/runtime setsid ./tilr-server --listen 127.0.0.1:$port >>log 2>&1 </dev/null &)
-        sleep 1; pgrep -f '^./tilr-server --listen 127.0.0.1:$port' | head -1 >pid; test -s pid"
+    r "cd $dir && (TILR_RUNTIME_DIR=\$PWD/runtime setsid ./tilrd --listen 127.0.0.1:$port >>log 2>&1 </dev/null &)
+        sleep 1; pgrep -f '^./tilrd --listen 127.0.0.1:$port' | head -1 >pid; test -s pid"
 }
 
 stop_server() { r "kill \$(cat $dir/pid) 2>/dev/null; sleep 1"; }
-version() { r "$dir/tilr-server --version" | cut -d' ' -f2; }
+version() { r "$dir/tilrd --version" | cut -d' ' -f2; }
 server_pid() { r "pid=\$(cat $dir/pid); kill -0 \$pid 2>/dev/null && echo \$pid"; }
 reloads() { r "grep -c 'resumed after reload with' $dir/log"; }
 pane_ids() { t list | cut -f1 | tr '\n' ' '; }
@@ -138,7 +139,7 @@ before=$(shell_state "$p1")
 check "pane 1 has its mark and a job before the update" "${before#* pid=*jobs=}" "1"
 shell_pid=$(echo "$before" | sed 's/.*pid=\([0-9]*\).*/\1/')
 
-type_line "$p1" "TILR_CDN=$cdn ~/$dir/tilr-server update"
+type_line "$p1" "TILR_CDN=$cdn ~/$dir/tilrd update"
 wait_remote "test \"\$(grep -c 'resumed after reload with' $dir/log)\" -ge 1" ||
     not_ok "the server reloads after the update"
 sleep 2
@@ -156,7 +157,7 @@ t dump "$p3" | grep -q '^back-in-the-shell' && ok "pane 3 returns to its shell" 
 check "pane 4 still runs its command" "$(r "pgrep -fc '^sleep 100000'")" "1"
 
 echo "# 3. update again"
-again=$(r "$dir/tilr-server update --cdn $cdn")
+again=$(r "$dir/tilrd update --cdn $cdn")
 case "$again" in
     *"is the latest release"*) ok "a second update finds nothing to do" ;;
     *) not_ok "a second update finds nothing to do" "$again" ;;
@@ -165,21 +166,22 @@ sleep 3
 check "it reloads nothing" "$(reloads)" "1"
 
 echo "# 4. update with the CDN out of reach"
-sum=$(r "sha256sum $dir/tilr-server")
-r "$dir/tilr-server update --cdn http://127.0.0.1:9" >/dev/null 2>&1 &&
+sum=$(r "sha256sum $dir/tilrd")
+r "$dir/tilrd update --cdn http://127.0.0.1:9" >/dev/null 2>&1 &&
     not_ok "the update fails" || ok "the update fails"
-check "the executable is untouched" "$(r "sha256sum $dir/tilr-server")" "$sum"
-check "nothing is left next to it" "$(r "ls $dir | grep -c '\.new\.'")" "0"
+check "the executable is untouched" "$(r "sha256sum $dir/tilrd")" "$sum"
+check "nothing is left next to it" "$(r "ls -A $dir | grep -c '^\.tilr-update\.'")" "0"
 check "the server carries on" "$(pane_ids)" "$panes"
 
 echo "# 5. rollback by hand, then update again"
 install_by_hand "$old" || not_ok "the old release is put back"
+r "kill -USR1 $pid"
 wait_remote "test \"\$(grep -c 'resumed after reload with' $dir/log)\" -ge 2" ||
     not_ok "the server reloads into the old release"
 sleep 2
 check "the version is the old release" "$(version)" "$old"
 check "pane 1 survives the way back" "$(shell_state "$p1")" "mark=survived pid=$shell_pid jobs=1"
-r "$dir/tilr-server update --cdn $cdn" >/dev/null
+r "$dir/tilrd update --cdn $cdn" >/dev/null
 wait_remote "test \"\$(grep -c 'resumed after reload with' $dir/log)\" -ge 3" ||
     not_ok "the server reloads into the latest release"
 sleep 2
@@ -193,7 +195,7 @@ check "nothing was refused or lost" "$(r "grep -cE 'not reloading|WARN|ERROR' $d
 echo "# 6. update with the server stopped"
 stop_server
 install_by_hand "$old" || not_ok "the old release is put back"
-r "$dir/tilr-server update --cdn $cdn" >/dev/null && ok "the update runs without a server" ||
+r "$dir/tilrd update --cdn $cdn" >/dev/null && ok "the update runs without a server" ||
     not_ok "the update runs without a server"
 start_server && ok "the server starts" || not_ok "the server starts"
 check "it is the latest release" "$(version)" "$latest"

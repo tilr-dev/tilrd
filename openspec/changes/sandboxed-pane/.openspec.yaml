@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-18
+# Deferred; deltas are written after the quarantine experiment.
+skip_specs: true

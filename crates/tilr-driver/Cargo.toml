@@ -1,0 +1,29 @@
+[package]
+name = "tilr-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Scripted tilr client for black-box tests: JSON-lines commands in, events out"
+
+[dependencies]
+tilr-websocket.workspace = true
+tilr-proto.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+prost.workspace = true
+regex = "1"
+serde_json = "1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["rt", "macros", "net", "io-std", "io-util", "sync", "time"] }
+tokio-tungstenite = "0.30"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1.0.10"

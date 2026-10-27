@@ -1,0 +1,25 @@
+## 1. Contract
+
+- [x] 1.1 Specify confirmed readiness, signal and timeout interruption, owned-PID checks, and cleanup in `specs/test-server-cleanup-stand/spec.md`; verify with `openspec validate test-server-cleanup-stand --strict`.
+
+## 2. Stand
+
+- [x] 2.1 Add ignored `cleanup_stand::server_ready_then_wait_for_interruption` fixture; verify it compiles with `cargo test -p tilrd --test cleanup_stand --no-run --locked`.
+- [x] 2.2 Add `scripts/test_server_cleanup_stand.py` with exact-PID and macOS `pgrep` checks; verify real signal and timeout cases report surviving PIDs before the lifecycle fix and leave no owned server after exit.
+- [x] 2.3 Add `scripts/test_server_cleanup_stand_selftest.py`; verify four integration cases pass, including surviving and clean children plus failure paths; also verify stand SIGTERM cleanup and three exit-watcher contract tests.
+- [x] 2.4 Document both commands in `README.md` and the ignored fixture in `USE_CASES.md`; verify the documented commands match the files and test names.
+
+## 3. Checks
+
+- [x] 3.1 Before marking the change done, run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo test --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 .`; on macOS also `scripts/linux.sh`. Record SDK and sandbox workarounds in the task note.
+
+## Review corrections
+- [x] Rebase onto dev and validate current specs.
+- [x] Require an exit event, bound failure at 30 seconds, and fail on unavailable watchers.
+- [x] Check the watcher contract deterministically and scope pgrep selftest to macOS.
+- [x] Verify macOS/Linux selftests and required checks.
+- [x] Own the fixture directory in the external stand and verify artifact cleanup after interruption and readiness/check failures.
+
+## Supervisor corrections
+- [x] Observe SIGTERM cleanup with a parent-owned exit watcher, including a controlled zombie model; verify CleanupStandTest.test_cleans_when_stand_receives_sigterm.
+- [x] Name readiness deadlines and watcher contract tests, diagnose vanished READY PIDs, and remove the unused fixture release protocol; verify ReadyEventTest and ExitEventTest.

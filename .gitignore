@@ -1,10 +1,13 @@
 /target
 /dist
-# Local build workarounds (see README, "Build").
-/.cargo/
+/.cargo/*
+!/.cargo/config.toml
 .DS_Store
 .env*
 !.env.example
 *.pem
 *.key
 *.p12
+
+# Generated spec coverage reports (./itests/dt coverage)
+/openspec/coverage/
