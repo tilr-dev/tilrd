@@ -1,13 +1,17 @@
 ## MODIFIED Requirements
 
 ### Requirement: The latest release is read from the CDN
-`tilrd update` SHALL read `<cdn>/releases/<platform>/latest` for the stable channel or `<cdn>/releases/<platform>/beta` for the beta channel (the platform as `--version` names it) and SHALL refuse a trimmed value that is empty or has characters other than ASCII letters, digits, `.`, `-`, `+`, `_` (`... names a release that is not a version: ...`). It SHALL then fetch `releases/<version>/tilr-<version>-<platform>.tar.gz.sha256` and download `releases/<version>/tilr-<version>-<platform>.tar.gz`, printing `downloading tilr <version> (<platform>)`.
+`tilrd update` SHALL read `<cdn>/releases/<platform>/latest` for the stable channel or `<cdn>/releases/<platform>/beta` for the beta channel (the platform as `--version` names it) and SHALL refuse a trimmed value that is empty or has characters other than ASCII letters, digits, `.`, `-`, `+`, `_` (`... names a release that is not a version: ...`). It SHALL then fetch `releases/<version>/tilr-<version>-<platform>.tar.gz.sha256` and download `releases/<version>/tilr-<version>-<platform>.tar.gz`.
 
 **Verified by**: `update::update_installs_nothing_when_the_cdn_misbehaves`, `update::update_installs_the_latest_release_and_the_running_server_keeps_its_shells`.
 
 #### Scenario: A login page instead of the CDN
 - **WHEN** `releases/<platform>/latest` answers `<html><body>Sign in</body></html>`
 - **THEN** the update exits non-zero with `not a version` on stderr and the executable is unchanged
+
+#### Scenario: Download a valid release
+- **WHEN** the selected pointer names a valid version
+- **THEN** stdout prints `downloading tilr <version> (<platform>)` before fetching the archive
 
 ## ADDED Requirements
 

@@ -1,31 +1,39 @@
 ## MODIFIED Requirements
 
 ### Requirement: The CDN layout is one archive per platform
-Per platform, `scripts/release.sh` SHALL lay out in `dist/cdn`: `releases/<version>/tilr-<version>-<platform>.tar.gz` (gzip tar holding `tilrd` and `tilr`, mode 0755, with `LICENSE-APACHE`, `LICENSE-MIT` and `README.md`, all at its top level), its `.sha256` (`<hex>  <archive>`), and `releases/<platform>/latest` holding `<version>\n`. This local staging layout SHALL remain the same for both channels. On the public CDN stable SHALL use `releases/<platform>/latest` and beta SHALL use `releases/<platform>/beta`, both pointing to the same versioned archive layout.
+Per platform, `scripts/release.sh` SHALL lay out in `dist/cdn`: `releases/<version>/tilr-<version>-<platform>.tar.gz` (gzip tar holding both programs and documentation), its `.sha256` (`<hex>  <archive>`), and `releases/<platform>/latest` holding `<version>\n`. This local staging layout SHALL remain the same for both channels. On the public CDN stable SHALL use `releases/<platform>/latest` and beta SHALL use `releases/<platform>/beta`, both pointing to the same versioned archive layout.
 
 **Verified by**: itests `UC-001` (`uc_001.py::the_installer_puts_tilrd_and_tilr_in_local_bin_without_root`), whose CDN publishes this layout (`LocalCdn.publish`).
 
 #### Scenario: One platform built
 - **WHEN** `scripts/release.sh linux-x86_64` finishes for `0.1.0-26449dd`
-- **THEN** `dist/cdn/releases/0.1.0-26449dd/` holds `tilr-0.1.0-26449dd-linux-x86_64.tar.gz` and its `.sha256`, and `releases/linux-x86_64/latest` is `0.1.0-26449dd`
+- **THEN** the archive holds `tilrd` and `tilr` mode 0755, `LICENSE-APACHE`, `LICENSE-MIT` and `README.md` at its top level
+- **AND** `dist/cdn/releases/0.1.0-26449dd/` holds `tilr-0.1.0-26449dd-linux-x86_64.tar.gz` and its `.sha256`, and `releases/linux-x86_64/latest` is `0.1.0-26449dd`
 
 ### Requirement: Publishing uploads the archive before latest
-With `--publish` and optional `--channel stable|beta` (default `stable`), `scripts/release.sh` SHALL upload with AWS CLI `aws s3 cp` through `https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com` with region `auto` to bucket `tilr-cdn` (`https://cdn.tilr.dev`), per platform: the archive (`application/gzip`) and its `.sha256` (`text/plain; charset=utf-8`) with `public, max-age=31536000, immutable`, and only then the selected pointer (`releases/<platform>/latest` for stable, `releases/<platform>/beta` for beta) with `no-cache`, printing `published <version> for: <platforms>`.
+With `--publish` and optional `--channel stable|beta` (default `stable`), `scripts/release.sh` SHALL upload each platform's archive and checksum before its selected pointer: `releases/<platform>/latest` for stable or `releases/<platform>/beta` for beta. Uploads SHALL use AWS CLI `aws s3 cp` to bucket `tilr-cdn` (`https://cdn.tilr.dev`) with the endpoint, metadata and success output specified below.
 
 **Verified by**: `release::publishing_uploads_the_archive_and_its_checksum_before_latest`, `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`, `release::beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer`.
 
 #### Scenario: Publish two platforms
 - **WHEN** `scripts/release.sh --publish linux-aarch64 linux-x86_64` runs with S3 credentials scoped to objects in `tilr-cdn`
 - **THEN** each platform's archive and checksum are uploaded before its `latest`
+- **AND** uploads use endpoint `https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com`, region `auto`
+- **AND** archives use `application/gzip`, checksums use `text/plain; charset=utf-8`, both with `public, max-age=31536000, immutable`; pointers use `text/plain; charset=utf-8` with `no-cache`
+- **AND** stdout prints `published <version> for: <platforms>`
 
 #### Scenario: Publish a candidate
 - **WHEN** `scripts/release.sh --publish --channel beta linux-x86_64` runs
 - **THEN** the archive and checksum are uploaded before beta; latest and install.sh are untouched
 
 ### Requirement: --upload-only uploads what earlier builds laid out
-`scripts/release.sh --upload-only <platforms>` SHALL build nothing; it SHALL check that every platform given has a `dist/cdn/releases/<platform>/latest` (`nothing built for <platform>: no ...` otherwise), that all name the same version and that each archive matches its `.sha256`, then upload them as `--publish` does, with the same optional `--channel stable|beta`. Neither pointer of a platform not given SHALL change. Stable publication SHALL leave beta unchanged and beta publication SHALL leave latest unchanged.
+`scripts/release.sh --upload-only <platforms>` SHALL build nothing; it SHALL check that every platform given has a `dist/cdn/releases/<platform>/latest`, that all name the same version and that each archive matches its `.sha256`, then upload them as `--publish` does, with the same optional `--channel stable|beta`. Neither pointer of a platform not given SHALL change. Stable publication SHALL leave beta unchanged and beta publication SHALL leave latest unchanged.
 
 **Verified by**: `release::upload_only_checks_what_was_built_and_leaves_other_platforms_alone`, `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`.
+
+#### Scenario: No staged platform
+- **WHEN** a selected platform has no local latest file
+- **THEN** upload-only fails with `nothing built for <platform>: no ...` before uploading
 
 #### Scenario: Platforms built as different versions
 - **WHEN** `linux-aarch64` was built as one version and `linux-x86_64` as another and `--upload-only` is given both
@@ -57,13 +65,14 @@ After GitHub assets are attached, the `cdn` job SHALL verify each built platform
 - **THEN** the CDN job uploads completed archives and checksums before beta for enabled platforms, without rebuilding or modifying latest or install.sh
 
 ### Requirement: A push to a release branch builds a release candidate
-A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. `Z` is 0 until a stable `vX.Y.*` tag exists, then one more than its highest patch; `N` is one more than the highest `vX.Y.Z-rc.*`. The CDN SHALL receive the candidate archives and checksums and update only the beta pointers; latest and install.sh SHALL NOT be touched.
+A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. The CDN SHALL receive the candidate archives and checksums and update only the beta pointers; latest and install.sh SHALL NOT be touched.
 
 **Verified by**: `release::a_push_to_a_release_branch_tags_the_next_release_candidate` (the workflow step's shell with a stub GitHub CLI), `release::a_release_candidate_is_built_like_a_release_and_publishes_to_beta` (static: `.github/workflows/release.yml`).
 
 #### Scenario: The first candidate
 - **WHEN** `release/0.3` is pushed and no `v0.3.*` tag exists
-- **THEN** the pushed commit is tagged `v0.3.0-rc.1` and a GitHub prerelease `v0.3.0-rc.1` gets `tilr-v0.3.0-rc.1-<target>.tar.gz` and its `.sha256` for every enabled target
+- **THEN** `Z` is 0 until a stable `vX.Y.*` tag exists, then one more than its highest patch; `N` is one more than the highest `vX.Y.Z-rc.*`
+- **AND** the pushed commit is tagged `v0.3.0-rc.1` and a GitHub prerelease `v0.3.0-rc.1` gets `tilr-v0.3.0-rc.1-<target>.tar.gz` and its `.sha256` for every enabled target
 
 #### Scenario: A cherry-pick after a candidate
 - **WHEN** a fix is cherry-picked into `release/0.3` and `v0.3.0-rc.1` and `v0.3.0-rc.2` exist
