@@ -10,6 +10,7 @@ sudo -v
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 prefix="$PWD/logs/privileged-$stamp"
 probe_dir=$(mktemp -d /private/tmp/fsevents-delay-build.XXXXXX)
+trap 'rm -rf "$probe_dir"' EXIT
 clang -Wall -Wextra -Werror -Wno-deprecated-declarations \
     tilrd/diagnostic/fsevents-delay.c -framework CoreServices -o "$probe_dir/native-delay"
 (
@@ -31,15 +32,16 @@ sudo -n /usr/bin/sample fseventsd 10 10 -file "$prefix-sample.txt" > "$prefix-sa
 sample_pid=$!
 sudo -n /usr/bin/fs_usage -w -f filesys -t 90 fseventsd native-delay > "$prefix-fs-usage.txt" 2>&1 &
 trace_pid=$!
-# Short all-process window identifies writers; may contain private file paths.
-sudo -n /usr/bin/fs_usage -w -f filesys -t 15 > "$prefix-writers.txt" 2>&1 &
-writers_pid=$!
 "$probe_dir/native-delay" > "$prefix-native.txt" 2>&1 &
 probe_pid=$!
 status=0
-for child in "$sample_pid" "$trace_pid" "$writers_pid" "$probe_pid"; do
+for child in "$sample_pid" "$trace_pid" "$probe_pid"; do
     wait "$child" || status=1
 done
+# fs_usage captures compete for ktrace: never run our two captures concurrently.
+# This later context window is not simultaneous with the sample or native probe.
+# It may contain private file paths.
+sudo -n /usr/bin/fs_usage -w -f filesys -t 15 > "$prefix-writers.txt" 2>&1 || status=1
 {
     date -u
     ps -p "$(pgrep -x fseventsd)" -o pid,etime,time,pcpu,rss,state
