@@ -5,8 +5,8 @@ schema: spec-driven
 # merged in), README.md, AGENTS.md and .github/workflows (2026-10-18).
 context: |
   Roadmap: openspec/ROADMAP.md lists every open change in implementation order (phases,
-  size, dependencies, Блокер, status) and the release gate (what lands before dev goes to
-  main and the first release). Read it before choosing what to apply next.
+  size, dependencies, Блокер, status) and the release gate (what had to land before the
+  first release). Read it before choosing what to apply next.
 
   Language: every OpenSpec artifact (proposal, design, specs, tasks) is written in English,
   as are log lines, CLI output, README.md, USE_CASES.md and TODO.md. Discussions with the
@@ -90,9 +90,10 @@ context: |
   Secrets: assume the repo is public: no tokens, keys, .env files or personal data in code,
   tests, fixtures or commit messages; gitleaks scans the history.
 
-  Git flow: work happens on `dev` (or feature branches off `dev`) and is tested locally.
-  Nothing goes to `main` (push, merge, PR, release-PR merge) without the owner's explicit
-  word "в main" at that moment. "Merge"/"commit" without a target means `dev`. No commit or
+  Git flow: `main` is the only integration branch; work happens on task branches off `main`
+  and reaches it only through a pull request (squash). Nothing is released from `main`: on the
+  owner's explicit word a release branch `release/X.Y` is cut from a commit of `main`; fixes for
+  it land in `main` first and are cherry-picked. Merging a release PR is the owner's step. No commit or
   push without explicit permission. Conventional Commits; no AI attribution: never add
   "Generated with Claude Code" or an agent Co-Authored-By.
 
@@ -120,7 +121,7 @@ operations:
   apply:
     guidance:
       - Take the next change from openspec/ROADMAP.md whose dependencies are archived and that has no Блокер; when its status, scope or dependencies change, update its row there in the same change.
-      - Work on the dev branch; do not commit, push or open PRs without explicit permission.
+      - Work on a task branch off main; do not commit, push or open PRs without explicit permission.
       - Update README.md (the user-facing contract) and USE_CASES.md in the same change as the behavior.
       - A tilr.proto change also updates the README "Protocol" section and follows the protocol version policy above; an incompatible change does not bump the version during pre-release development.
   archive:

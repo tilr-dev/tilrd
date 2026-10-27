@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "tilr"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "tilr-driver"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "tilr-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "libc",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "tilr-screen"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "tilr-websocket"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures-util",
  "rcgen",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "tilrd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",

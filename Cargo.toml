@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/tilr", "crates/tilr-driver", "crates/tilr-proto", "crates/tilr-screen", "crates/tilrd", "crates/tilr-websocket"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 # Keep in sync with the msrv job in .github/workflows/ci.yml.
 rust-version = "1.99"

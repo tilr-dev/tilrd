@@ -35,6 +35,7 @@ if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi
 # CARGO_PROFILE_DEV_DEBUG: the host cargo config is not visible here; default to line-tables-only
 # as on the host, override by exporting it (e.g. CARGO_PROFILE_DEV_DEBUG=full for gdb with locals).
 exec docker run --rm --init $tty ${platform:+--platform "$platform"} \
+    -e TILR_BUILD_VERSION \
     -e TILR_BUILD_COMMIT \
     -e TILR_LINUX_USER \
     -e CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}" \
