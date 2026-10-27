@@ -1,6 +1,6 @@
 ## 1. Specification
 - [x] Add the release branch flow, release candidates and spec merge readiness diagnostics; modify CI triggers, release-please branch and the `cdn` environment's branch; rename spec-change authorization to `main`; remove the back-merge requirement (`openspec validate release-branch-flow --strict`).
-- [ ] State in «A release is built from a clean commit» and «Linux binaries are built in a Debian 12 container» that `release.sh` takes `TILR_BUILD_VERSION` and passes it into the build (needs the owner's authorization for both).
+- [x] State in «A release is built from a clean commit» and «Linux binaries are built in a Debian 12 container» that `release.sh` takes `TILR_BUILD_VERSION` and passes it into the build (`release::a_release_is_named_after_the_build_version_when_given`, `release::the_linux_build_runs_in_the_pinned_debian_12_image`).
 
 ## 2. Implementation
 - [x] Run release-please only on pushes to `release/**` with the pushed branch as `target-branch`; drop the `back-merge` job (`release::releases_run_only_on_release_branches`).

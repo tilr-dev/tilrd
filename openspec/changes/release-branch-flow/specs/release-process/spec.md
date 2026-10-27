@@ -77,6 +77,28 @@ Before fetching a pull request's test merge for specification authorization, the
 
 ## MODIFIED Requirements
 
+### Requirement: Linux binaries are built in a Debian 12 container
+`scripts/linux-build.sh` SHALL run `cargo build --release -p tilrd -p tilr` (no `failpoints`) through `scripts/linux.sh` in the image of `scripts/linux.Dockerfile` (`rust:1.99-bookworm` pinned by digest: glibc 2.36, `protobuf-compiler`, Zig 0.15.2 from `scripts/install-tools.sh`) for the architecture `TILR_LINUX_PLATFORM` names (default the host's), passing `TILR_BUILD_VERSION` and `TILR_BUILD_COMMIT` in, and copy the results to `dist/linux-<arch>/tilrd` and `dist/linux-<arch>/tilr`.
+
+**Verified by**: `release::the_linux_build_runs_in_the_pinned_debian_12_image` (static: `scripts/linux.Dockerfile` and `scripts/linux-build.sh`).
+
+#### Scenario: amd64 from another machine
+- **WHEN** `TILR_LINUX_PLATFORM=linux/amd64 scripts/linux-build.sh` runs
+- **THEN** `dist/linux-x86_64/tilrd` and `dist/linux-x86_64/tilr` are written
+
+### Requirement: A release is built from a clean commit
+`scripts/release.sh` SHALL refuse to build when `git status --porcelain` is not empty (`uncommitted changes: a release is built from a commit`, exit 1). The version SHALL be the package version, `-`, and the short commit: the package version is `TILR_BUILD_VERSION` if set and non-empty, else the root `Cargo.toml`'s first `version = "..."`. Both SHALL be passed to the build, as `TILR_BUILD_VERSION` and `TILR_BUILD_COMMIT`, so the binaries name the version.
+
+**Verified by**: `release::a_dirty_tree_builds_no_release`, `release::a_release_is_named_after_the_package_version_and_the_commit` and `release::a_release_is_named_after_the_build_version_when_given`.
+
+#### Scenario: Dirty tree
+- **WHEN** `scripts/release.sh` runs with an uncommitted change
+- **THEN** it prints `uncommitted changes: a release is built from a commit` and exits 1 without building
+
+#### Scenario: A release candidate's version
+- **WHEN** `TILR_BUILD_VERSION=0.3.0-rc.1 scripts/release.sh linux-x86_64` runs at commit `26449dd`
+- **THEN** the binaries say `0.3.0-rc.1-26449dd` and `releases/linux-x86_64/latest` in `dist/cdn` is `0.3.0-rc.1-26449dd`
+
 ### Requirement: CI gates every change
 Every pull request into `main` or `release/**`, every merge queue group and every push to `main` or `release/**` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
 
