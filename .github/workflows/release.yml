@@ -1,5 +1,48 @@
-# Branch pushes create candidates; owner-created stable tags release the matching line.
-# Builds consume the selected tag; signing and publication follow successful builds.
+# Releases: nothing is released from main. On the owner's instruction a release branch
+# release/X.Y is cut from a commit of main. A branch push creates a release candidate;
+# bin/release creates the stable vX.Y.Z tag. Stable tags must point to a commit on the
+# matching release/X.Y branch; other branch names and mismatched tags are rejected.
+# RC tags are excluded from the tag trigger, so creating a candidate does not start a
+# second run. A fix lands in main first and is cherry-picked into release/X.Y;
+# nothing is merged back into main. No release PR or Conventional Commits are required.
+#
+# Release candidates: a push to release/X.Y tags the pushed commit vX.Y.Z-rc.N and
+# creates a GitHub prerelease, which `build` and `upload` fill with the same archives
+# and checksums as a release. Z is 0 until a stable vX.Y.* tag exists, then its highest
+# patch plus one; N is the highest rc of that version plus one. A re-run reuses a
+# candidate tag already on that commit; a commit carrying stable vX.Y.Z gets no candidate.
+# `cdn` publishes candidates to beta, leaving latest and install.sh unchanged.
+# Binaries are stamped with the selected tag's version (TILR_BUILD_VERSION), including
+# the candidate suffix. CI checks that the tag's numeric version is at least the Cargo
+# workspace version; releasing does not edit Cargo.toml, Cargo.lock or generate CHANGELOG.md.
+# The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version;
+# none is published to crates.io (publish = false), so there is no publish job.
+#
+# The release job acts as the org GitHub App tilr-bot with a short-lived installation
+# token scoped to this repository. No check or branch-protection bypass is granted;
+# stable releases start with the owner-approved tag from bin/release.
+#
+# binaries: `build` compiles `tilrd` and `tilr` per target with read-only permissions (dependency
+# build scripts run there), and `upload` attaches the archives to the tag's GitHub release.
+# Only `upload` gets a writable token: the GITHUB_TOKEN with contents: write, for that job
+# alone. GITHUB_TOKEN can upload assets to a release created by tilr-bot (release assets are a
+# repository permission, not tied to the release's author), so the App's private key is not
+# needed here. Asset names: scripts/package.sh.
+# The Linux binaries are built as they always were, by scripts/release.sh (Docker,
+# scripts/linux.Dockerfile: Debian 12, glibc 2.36+), on a native runner per architecture, so
+# the GitHub release and the CDN carry the same files. macOS builds natively (arm64) and
+# cross-compiles x86_64 on the same runner. `sign-macos` signs and notarizes on fresh
+# runners with Apple credentials; `package-macos` packages only the signed artifacts.
+#
+# cdn: uploads what the Linux builds and macOS packaging laid out in dist/cdn to the R2 bucket tilr-cdn with
+# `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
+# releases/<platform>/latest, releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]
+# holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment
+# (restricted to release/* branches and v* tags), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+# (R2 S3 object access scoped to tilr-cdn), plus the required
+# CLOUDFLARE_ACCOUNT_ID variable (the bucket's account; the job fails without it). It runs
+# last, after the GitHub release has its assets: from its last stable upload on, `tilr update`
+# and the installer get the new version. Candidates update beta only.
 name: release
 
 on:

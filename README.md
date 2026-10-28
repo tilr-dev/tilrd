@@ -1456,7 +1456,10 @@ CRC64NVME). Neither `AWS_REQUEST_CHECKSUM_CALCULATION` nor
 `AWS_RESPONSE_CHECKSUM_VALIDATION` needs to be set for this upload.
 
 In CI, the `cdn` environment supplies both AWS secrets and the
-`CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
+`CLOUDFLARE_ACCOUNT_ID` variable. The release version comes from the tag; the Cargo
+workspace version is development metadata. Releases do not modify Cargo.toml or
+Cargo.lock, and CHANGELOG.md is no longer generated. Release notes live in GitHub
+Releases.
 
 ### macOS CDN releases
 
