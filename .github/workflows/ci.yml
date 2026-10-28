@@ -42,11 +42,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tilr-dev/.github
+          ref: 9d718afb7718a84e6658b91c518f0692660f170e
+          path: shared-release
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - run: npm ci --prefix .github/release-please --ignore-scripts --no-audit --no-fund
-      - run: npm test --prefix .github/release-please
+      - run: npm ci --prefix shared-release/.github/release-please --ignore-scripts --no-audit --no-fund
+      - run: npm test --prefix shared-release/.github/release-please
+
+      - run: node --test .github/release-workflow.test.cjs
 
   lint:
     name: fmt + clippy
