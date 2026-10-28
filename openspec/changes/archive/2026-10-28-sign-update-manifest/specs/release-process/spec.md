@@ -72,4 +72,3 @@ After GitHub assets are attached, the `cdn` job SHALL verify each built platform
 #### Scenario: Candidate publication
 - **WHEN** candidate GitHub assets have been attached
 - **THEN** the CDN job uploads completed archives and checksums before signed beta manifests and beta for enabled platforms, without rebuilding or modifying latest or install.sh
-
