@@ -32,10 +32,10 @@ class SignerTests(unittest.TestCase):
         )
         self.unsupported.chmod(0o755)
         seed = bytes.fromhex("302e020100300506032b657004220420") + bytes(32)
+        encoded = base64.b64encode(seed).decode()
         self.env = {
             "PATH": str(self.bin),
-            "TILR_UPDATE_SIGNING_KEY": "-----BEGIN PRIVATE KEY-----\n"
-            + base64.b64encode(seed).decode() + "\n-----END PRIVATE KEY-----\n",
+            "TILR_UPDATE_SIGNING_KEY": f"-----BEGIN PRIVATE KEY-----\n{encoded}\n-----END PRIVATE KEY-----\n",
             "TILR_UPDATE_PUBLIC_KEY": "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
         }
         archive = self.root / "dist/cdn/releases/9.8.7/tilr-9.8.7-linux-x86_64.tar.gz"
