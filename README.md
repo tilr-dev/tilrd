@@ -114,9 +114,10 @@ reports the request failure without claiming reload succeeded.
 
 Missing or invalid signed metadata fails before an archive is downloaded or either program
 changes. There is no fallback to the unsigned `.sha256` file. The manifest binds the version,
-platform, archive basename and checksum; a different CDN or runtime environment cannot
-replace the embedded trust key. Signatures authenticate releases, including intentional
-rollbacks; they do not prevent replay of a previously signed release.
+channel (`stable` or `beta`), platform, archive basename and checksum; a different CDN or
+runtime environment cannot replace the embedded trust key. Signatures authenticate releases, including intentional
+rollbacks; they reject manifests from another channel before requesting an archive, but do
+not prevent replay of a previously signed release within the requested channel.
 
 A legacy `app-managed.json` next to `tilrd` is ignored by the updater and remains unchanged.
 
@@ -1399,7 +1400,9 @@ prefers Homebrew OpenSSL to the system LibreSSL. It checks the private/public pa
 prepares every selected manifest before uploading anything. Each archive and checksum
 is uploaded before its signed channel manifest and legacy pointer. Manifest envelopes
 are JSON with a `payload` string and hex `signature`; Ed25519 covers the exact UTF-8 payload
-bytes. Payload fields are `version`, `platform`, `archive`, and `sha256`.
+bytes. Payload fields are `version`, `channel` (`stable` or `beta`), `platform`, `archive`, and `sha256`.
+The updater requires the signed channel to match `--channel`; intentional rollbacks and
+replay of previously signed releases within the same channel remain possible.
 
 Old clients and the installer continue to read the unsigned pointer and `.sha256`; removal
 of that legacy layout follows a signed release separately. During publication a request

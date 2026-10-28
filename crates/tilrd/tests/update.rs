@@ -117,11 +117,11 @@ fn update_selects_beta_without_changing_the_stable_default() {
         publish(&cdn, &platform, "9.9.9-rc.1-test", &archive, &archive);
         let pointers = cdn.join("releases").join(&platform);
         std::fs::rename(pointers.join("latest"), pointers.join("beta")).unwrap();
-        std::fs::rename(
-            pointers.join("latest.manifest.json"),
-            pointers.join("beta.manifest.json"),
-        )
-        .unwrap();
+        let checksum: String = Sha256::digest(&archive)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        manifest::write_manifest(&cdn, &platform, "9.9.9-rc.1-test", "beta", &checksum);
         manifest::write_manifest(&cdn, &platform, &version, "latest", &"0".repeat(64));
         std::fs::write(pointers.join("latest"), version).unwrap();
         let url = serve_files(cdn);
@@ -598,6 +598,8 @@ fn update_requires_authentic_metadata_before_downloading() {
         "archive",
         "version",
         "checksum",
+        "missing channel",
+        "invalid channel",
         "oversize",
     ] {
         let mut envelope: serde_json::Value = serde_json::from_slice(&authentic).unwrap();
@@ -618,6 +620,10 @@ fn update_requires_authentic_metadata_before_downloading() {
                     "archive" => payload["archive"] = "../untrusted.tar.gz".into(),
                     "version" => payload["version"] = "0.0.0".into(),
                     "checksum" => payload["sha256"] = "invalid".into(),
+                    "missing channel" => {
+                        payload.as_object_mut().unwrap().remove("channel");
+                    }
+                    "invalid channel" => payload["channel"] = "latest".into(),
                     _ => (),
                 }
                 let payload = payload.to_string();
@@ -662,4 +668,58 @@ fn update_requires_authentic_metadata_before_downloading() {
     assert_eq!(std::fs::read(&exe).unwrap(), STUB);
     assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn update_rejects_cross_channel_replay_before_downloading() {
+    for (channel, pointer, replayed_pointer) in
+        [("stable", "latest", "beta"), ("beta", "beta", "latest")]
+    {
+        let (dir, exe) = installed();
+        let (_, platform) = version_and_platform();
+        let original = std::fs::read(&exe).unwrap();
+        let old_client = b"previous client";
+        std::fs::write(dir.join("tilr"), old_client).unwrap();
+        let root = dir.join("cdn");
+        let archive = release(STUB);
+        let version = "9.9.9-rc.1-test";
+        publish(&root, &platform, version, &archive, &archive);
+        let checksum: String = Sha256::digest(&archive)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        manifest::write_manifest(&root, &platform, version, replayed_pointer, &checksum);
+        let pointers = root.join("releases").join(&platform);
+        std::fs::write(pointers.join(pointer), version).unwrap();
+        std::fs::copy(
+            pointers.join(format!("{replayed_pointer}.manifest.json")),
+            pointers.join(format!("{pointer}.manifest.json")),
+        )
+        .unwrap();
+        let (url, requests) = cdn::serve_files_with_requests(root);
+        let output = spawn_copied(
+            Command::new(&exe)
+                .args(["update", "--cdn", &url, "--channel", channel])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .wait_with_output()
+        .unwrap();
+        assert!(!output.status.success(), "{channel}: {output:?}");
+        assert!(
+            !requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.ends_with(".tar.gz")),
+            "{channel}: requested archive"
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), original, "{channel}");
+        assert_eq!(
+            std::fs::read(dir.join("tilr")).unwrap(),
+            old_client,
+            "{channel}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

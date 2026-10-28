@@ -24,6 +24,7 @@ def run_openssl(openssl, *args):
 
 def main():
     version, pointer, *platforms = sys.argv[1:]
+    channel = {"latest": "stable", "beta": "beta"}[pointer]
     openssl = os.environ.get("OPENSSL") or (shutil.which(
         "openssl", path="/opt/homebrew/opt/openssl@3/bin:/usr/local/opt/openssl@3/bin:/opt/homebrew/bin:/usr/local/bin"
     ) if sys.platform == "darwin" else None) or "openssl"
@@ -41,7 +42,7 @@ def main():
         for platform in platforms:
             name = f"tilr-{version}-{platform}.tar.gz"
             archive = Path("dist/cdn/releases") / version / name
-            payload = json.dumps(dict(version=version, platform=platform, archive=name,
+            payload = json.dumps(dict(version=version, channel=channel, platform=platform, archive=name,
                                       sha256=hashlib.sha256(archive.read_bytes()).hexdigest()),
                                  separators=(",", ":"))
             message = Path(temp) / "payload"

@@ -2,8 +2,13 @@
 use std::path::Path;
 
 pub fn write_manifest(root: &Path, platform: &str, version: &str, pointer: &str, checksum: &str) {
+    let channel = match pointer {
+        "latest" => "stable",
+        "beta" => "beta",
+        _ => panic!("unknown channel pointer: {pointer}"),
+    };
     let payload = serde_json::json!({
-        "version": version, "platform": platform,
+        "version": version, "channel": channel, "platform": platform,
         "archive": format!("tilr-{version}-{platform}.tar.gz"), "sha256": checksum
     })
     .to_string();

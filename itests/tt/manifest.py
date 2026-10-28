@@ -11,7 +11,7 @@ def write_manifest(root, platform, version):
     name = f"tilr-{version}-{platform}.tar.gz"
     archive = root / "releases" / version / name
     digest = hashlib.sha256(archive.read_bytes()).hexdigest() if archive.exists() else "0" * 64
-    payload = json.dumps(dict(version=version, platform=platform, archive=name, sha256=digest),
+    payload = json.dumps(dict(version=version, channel="stable", platform=platform, archive=name, sha256=digest),
                          separators=(",", ":"))
     with tempfile.TemporaryDirectory() as tmp:
         key, message = Path(tmp) / "key.der", Path(tmp) / "payload"
