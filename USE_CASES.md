@@ -261,8 +261,8 @@ Cloud repository.
 | Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
 | Releases run only on pushes to `release/**`, with release-please targeting the pushed branch; nothing merges a release back into `main` | `releases_run_only_on_release_branches` |
-| A push to `release/X.Y` without a release tags the next candidate `vX.Y.Z-rc.N` (patch after a stable release, rc after the highest one, the same tag on a re-run) and refuses a branch not named `release/X.Y` | `a_push_to_a_release_branch_tags_the_next_release_candidate` |
-| A release candidate is built, checked and attached like a release, with the tag's version in the binaries, and never reaches the CDN | `a_release_candidate_is_built_like_a_release_and_skips_the_cdn` |
+| A push to `release/X.Y` without a release tags the next candidate `vX.Y.Z-rc.N` (patch after a stable release, rc after the highest one, the same tag on a re-run) and refuses a branch not named `release/X.Y` | `candidate.test.cjs` in the pinned `tilr-dev/.github` workflow, `.github/release-workflow.test.cjs`, `release::releases_run_only_on_release_branches` |
+| A release candidate is built, checked and attached like a release, with the tag's version in the binaries, and publishes only to the CDN beta channel | `a_release_candidate_is_built_like_a_release_and_publishes_to_beta` |
 | `release.sh` builds the version `TILR_BUILD_VERSION` names, when set, instead of the one in `Cargo.toml` | `a_release_is_named_after_the_build_version_when_given` |
 | The spec-change check compares `main` with GitHub's test merge through `spec_merge.py`, both shared scripts fetched from a fixed gitpm commit and checked against their digests | `the_spec_change_check_compares_main_with_the_test_merge` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
@@ -626,10 +626,12 @@ itests/tests -p test_coverage.py`.
 - Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
   Apple architectures without executing their programs.
 
-- Release-line version and changelog: `.github/release-please/run.test.cjs` uses the real
-  engine and local Git fixtures for a second release branch, a fix-only first release,
+- Release-line version and changelog: `run.test.cjs` in the pinned
+  `tilr-dev/.github` workflow uses the real engine and local Git fixtures for a second release branch, a fix-only first release,
   same-line patches, annotated stable tags, ignored RCs, shipped cherry-picks,
   bootstrap, divergent tags, PR creation and merged-PR publication outputs.
+  Caller wiring is checked by `.github/release-workflow.test.cjs` and
+  `release::releases_run_only_on_release_branches`.
 - Beta CDN publication: `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`
   checks candidate upload order and isolation from latest/install.sh, upload-only and checksum validation.
   `release::beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer` checks failed uploads.
