@@ -64,7 +64,7 @@ the line.
   `vX.Y.Z`, builds the binaries for the GitHub release and publishes them to the CDN
   (`scripts/release.sh --upload-only`). Any other push to `release/X.Y` tags a release
   candidate `vX.Y.Z-rc.N` and fills its GitHub prerelease with the same archives; candidates
-  never reach the CDN.
+  reach only the CDN beta channel, leaving latest and install.sh unchanged.
 - `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported
   (in CI the `cdn` environment's variable), plus AWS keys scoped to objects in tilr-cdn.
   For manual publishing, Infisical `/cloudflare` in `prod` supplies `CF_ACCOUNT_ID` and
@@ -76,7 +76,7 @@ the line.
   repos) is off by default: set repo variable RELEASE_LINUX_ARM64=true once the repo is
   public to enable the arm64 build. While it is off, the release and the CDN get
   `linux-x86_64` only and `releases/linux-aarch64/latest` is left as it is.
-- The CDN layout (`releases/<platform>/latest`,
+- The CDN layout (`releases/<platform>/latest` (stable), `releases/<platform>/beta` (candidates),
   `releases/<version>/tilr-<version>-<platform>.tar.gz` holding `tilrd` and `tilr`, with its
   `.sha256`) is what `tilrd update` (`crates/tilrd/src/update.rs`, run by `tilr update`) and
   the installer (`scripts/install.sh`, which `tilr.sh` serves and the black-box tests run) read: do

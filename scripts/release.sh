@@ -18,13 +18,15 @@
 # 0.3.0-rc.1), else the root Cargo.toml's. A
 # platform is named as the binary names itself: linux-aarch64, linux-x86_64,
 # macos-aarch64, macos-x86_64.
-# Each platform has its own `latest`, so a release can be out for one and not
+# --channel stable (default) publishes latest and install.sh; --channel beta
+# publishes beta only. Both use the same local staging layout with latest.
+# Each platform has its own pointer, so a release can be out for one and not
 # yet for another.
 #
 #   scripts/release.sh                       # build for linux-aarch64
 #   scripts/release.sh --publish             # build and upload
 #   scripts/release.sh --publish linux-aarch64 linux-x86_64
-#   scripts/release.sh --upload-only linux-aarch64 linux-x86_64
+#   scripts/release.sh --upload-only --channel beta linux-aarch64 linux-x86_64
 #                                            # upload what earlier runs left in dist/cdn
 #
 # A build also leaves the two binaries in dist/<platform>/ (scripts/linux-build.sh or
@@ -54,6 +56,17 @@ publish=
 case "${1:-}" in
     --publish) publish=1; shift ;;
     --upload-only) build=; publish=1; shift ;;
+esac
+channel=stable
+if [ "${1:-}" = --channel ]; then
+    channel=${2:-}
+    [ "$#" -ge 2 ] || { echo "--channel needs stable or beta" >&2; exit 2; }
+    shift 2
+fi
+case "$channel" in
+    stable) pointer=latest ;;
+    beta) pointer=beta ;;
+    *) echo "unknown channel: $channel (expected stable or beta)" >&2; exit 2 ;;
 esac
 [ "$#" -gt 0 ] || set -- linux-aarch64
 if [ -n "$publish" ] && [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
@@ -122,9 +135,11 @@ for platform in "$@"; do
     put "$name" application/gzip "public, max-age=31536000, immutable" "dist/cdn/$name"
     put "$name.sha256" "text/plain; charset=utf-8" "public, max-age=31536000, immutable" "dist/cdn/$name.sha256"
     # Last: from here on the platform is offered this version.
-    put "releases/$platform/latest" "text/plain; charset=utf-8" "no-cache" "dist/cdn/releases/$platform/latest"
+    put "releases/$platform/$pointer" "text/plain; charset=utf-8" "no-cache" "dist/cdn/releases/$platform/latest"
 done
 # After every latest, so the installer never offers what the CDN does not have
 # yet; never after a failed upload (set -e).
-put install.sh "text/x-shellscript; charset=utf-8" "public, max-age=300" scripts/install.sh
+if [ "$channel" = stable ]; then
+    put install.sh "text/x-shellscript; charset=utf-8" "public, max-age=300" scripts/install.sh
+fi
 echo "published $version for: $*"
