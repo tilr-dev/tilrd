@@ -5,4 +5,4 @@
 
 ## 2. Validation
 - [x] 2.1 Add deterministic integration coverage for stable, candidate, existing pull request and invalid metadata scenarios.
-- [ ] 2.2 Verify checks and review the final diff.
+- [x] 2.2 Verify checks and review the final diff.
