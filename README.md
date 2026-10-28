@@ -1341,22 +1341,31 @@ CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release and then:
 Every other push to `release/X.Y` builds a release candidate: the pushed commit is tagged
 `vX.Y.Z-rc.N` and a GitHub prerelease of that tag gets the same archives and checksums
 (`Z` is 0 until `vX.Y.0` is released, then the next patch; `N` counts the candidates of that
-version). The binaries say `X.Y.Z-rc.N-<commit>`. A candidate is not published to the CDN.
+version). The binaries say `X.Y.Z-rc.N-<commit>`. Candidates are published to the CDN beta channel: archives and checksums go under
+`releases/<version>/`, followed by `releases/<platform>/beta`. They never change
+`latest` or `install.sh`. Install a candidate on a test machine with
+`tilrd update --channel beta`; `tilrd update --channel stable` (the default) reads
+`latest`. There is no channel environment variable; `tilr update` and the installer
+continue to use stable. Missing beta fails without falling back to stable. Stable
+publication leaves beta unchanged: a stable release follows beta testing.
 
 The CDN layout is what the installer and `tilrd update` read:
 
 ```text
-releases/<platform>/latest                                 the version ready for the platform
+releases/<platform>/latest                                 the stable version for the platform
+releases/<platform>/beta                                   the candidate version for the platform
 releases/<version>/tilr-<version>-<platform>.tar.gz        tilrd and tilr
 releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 ```
 
 A CDN version is the package version plus the commit, e.g. `0.1.0-26449dd`; a platform is
 `linux-aarch64`, `linux-x86_64`, `macos-aarch64` or `macos-x86_64`. Each platform has
-its own `latest`, uploaded last. By
+its own channel pointer, uploaded after its archive and checksum. By
 hand, from a clean checkout, `scripts/release.sh --publish linux-aarch64 linux-x86_64`
 builds in the Linux container and uploads with AWS CLI. Install AWS CLI and OpenSSL
-first. Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
+first. Use `--publish --channel beta` or `--upload-only --channel beta` for candidate
+publication; both use the same local `dist/cdn` staging layout (with `latest`).
+Infisical `/cloudflare` in `prod` holds `CF_ACCOUNT_ID` and the bucket-scoped
 `R2_CDN_TOKEN`; it does not hold the derived AWS keys. `AWS_ACCESS_KEY_ID` is that
 API token's **ID** (the `id` returned when creating the Cloudflare Account API token),
 and `AWS_SECRET_ACCESS_KEY` is the lowercase hexadecimal SHA-256 of the token value,
