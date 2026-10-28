@@ -15,7 +15,7 @@ After stable GitHub assets are uploaded, the release workflow SHALL use tilr-bot
 - **THEN** no desktop pin pull request or branch is created or updated
 
 #### Scenario: An update pull request is already open
-- **WHEN** another stable release is published while the bot pin pull request is open
+- **WHEN** another stable release is published newer than both main and the proposed pin while the bot pin pull request is open
 - **THEN** the same pull request is updated from current main with the new pin, title and description
 - **AND** no second pull request is opened
 
@@ -26,3 +26,9 @@ After stable GitHub assets are uploaded, the release workflow SHALL use tilr-bot
 #### Scenario: Main already pins the release
 - **WHEN** main already has the same version and protocol
 - **THEN** no formatting-only change or new pull request is published
+
+#### Scenario: Older or equal stable release after a newer pin
+- **WHEN** a stable release is not newer by numeric major, minor and patch than the version pinned on desktop main or the version proposed by an open bot pin pull request
+- **THEN** the step logs the skipped release and exits successfully
+- **AND** the remote bot branch and pull request remain unchanged
+- **AND** a leftover bot branch without an open pull request does not prevent a newer-than-main release from opening a new pull request

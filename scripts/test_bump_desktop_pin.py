@@ -130,6 +130,55 @@ path.write_text(json.dumps(state))
         self.assertEqual(len(self.github()['prs']), 1)
         self.assertEqual(self.read_pin()['version'], '0.3.0')
 
+    def test_older_or_equal_release_preserves_open_newer_pr(self):
+        self.run_step(TAG='v0.10.0')
+        before = git(self.remote, 'rev-parse', BRANCH)
+        pr = self.github()['prs']
+        for tag in ['v0.3.2', 'v0.10.0']:
+            with self.subTest(tag=tag):
+                result = self.run_step(TAG=tag)
+                self.assertIn('not newer', result.stdout)
+                self.assertEqual(git(self.remote, 'rev-parse', BRANCH), before)
+                self.assertEqual(self.github()['prs'], pr)
+        self.run_step(TAG='v0.10.1')
+        self.assertEqual(self.read_pin()['version'], '0.10.1')
+
+    def test_older_or_equal_release_preserves_newer_main(self):
+        pin = dict(version='1.0.0', build=4, protocolVersion=9)
+        self.pin.write_text(json.dumps(pin) + '\n')
+        git(self.main, 'add', '.')
+        git(self.main, 'commit', '-m', 'newer main pin')
+        git(self.main, 'push', 'origin', 'main')
+        before = git(self.remote, 'rev-parse', 'main')
+        for tag in ['v0.3.2', 'v1.0.0']:
+            with self.subTest(tag=tag):
+                result = self.run_step(TAG=tag)
+                self.assertIn('not newer', result.stdout)
+                self.assertEqual(git(self.remote, 'branch', '--list', BRANCH), '')
+                self.assertEqual(git(self.remote, 'rev-parse', 'main'), before)
+                self.assertFalse(self.github()['prs'])
+
+    def test_newer_main_leaves_older_open_proposal_unchanged(self):
+        self.run_step(TAG='v0.3.0')
+        before = git(self.remote, 'rev-parse', BRANCH)
+        pr = self.github()['prs']
+        self.pin.write_text(json.dumps(dict(version='0.4.0', build=4, protocolVersion=9)))
+        git(self.main, 'add', '.')
+        git(self.main, 'commit', '-m', 'main already advanced')
+        git(self.main, 'push', 'origin', 'main')
+        self.run_step(TAG='v0.4.0')
+        self.assertEqual(git(self.remote, 'rev-parse', BRANCH), before)
+        self.assertEqual(self.github()['prs'], pr)
+
+    def test_closed_pr_branch_does_not_block_new_proposal(self):
+        self.run_step(TAG='v1.0.0')
+        state = self.github()
+        state['prs'] = []
+        self.state.write_text(json.dumps(state))
+        self.run_step(TAG='v0.3.2')
+        self.assertEqual(self.read_pin()['version'], '0.3.2')
+        self.assertEqual(len(self.github()['prs']), 1)
+
     def test_invalid_artifact_revision_does_not_publish(self):
         self.pin.write_text(json.dumps(dict(version='0.2.1', build=0, protocolVersion=1)))
         git(self.main, 'add', '.')
@@ -162,7 +211,9 @@ path.write_text(json.dumps(state))
         self.metadata.write_text('pub const PROTOCOL_VERSION: u32 = 1;\n')
         self.state.write_text(json.dumps(dict(calls=[], prs=[])))
         self.run_step(TAG='v0.2.1')
-        self.assertFalse(any(c[0] == 'pr' for c in self.github()['calls']))
+        self.assertFalse(self.github()['prs'])
+        self.assertFalse(any(c[:2] in [['pr', 'create'], ['pr', 'edit']]
+                             for c in self.github()['calls']))
 
 
 if __name__ == '__main__':

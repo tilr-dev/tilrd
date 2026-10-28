@@ -6,3 +6,5 @@
 ## 2. Validation
 - [x] 2.1 Add deterministic integration coverage for stable, candidate, existing pull request and invalid metadata scenarios.
 - [x] 2.2 Verify checks and review the final diff.
+
+- [x] 2.3 Prevent equal or older stable releases from overwriting main or an open pin proposal, with deterministic regression coverage.
