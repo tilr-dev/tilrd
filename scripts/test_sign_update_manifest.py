@@ -61,11 +61,13 @@ class SignerTests(unittest.TestCase):
                              else str(self.root / "absent") for p in (path or "").split(":")]
                     return real_which(name, path=":".join(paths))
 
-                with patch.dict(os.environ, self.env, clear=True), patch("sys.platform", "darwin"), patch("sys.argv", [str(SCRIPT), "9.8.7", "beta", "linux-x86_64"]), patch.object(shutil, "which", side_effect=which):
-                    self.main()
-                manifest = json.loads((self.root / "dist/cdn/releases/linux-x86_64/beta.manifest.json").read_text())
-                self.assertEqual(len(bytes.fromhex(manifest["signature"])), 64)
-                self.assertEqual(json.loads(manifest["payload"])["version"], "9.8.7")
+                for pointer, channel in [("latest", "stable"), ("beta", "beta")]:
+                    with self.subTest(channel=channel), patch.dict(os.environ, self.env, clear=True), patch("sys.platform", "darwin"), patch("sys.argv", [str(SCRIPT), "9.8.7", pointer, "linux-x86_64"]), patch.object(shutil, "which", side_effect=which):
+                        self.main()
+                    manifest = json.loads((self.root / f"dist/cdn/releases/linux-x86_64/{pointer}.manifest.json").read_text())
+                    self.assertEqual(len(bytes.fromhex(manifest["signature"])), 64)
+                    self.assertEqual(json.loads(manifest["payload"])["version"], "9.8.7")
+                    self.assertEqual(json.loads(manifest["payload"])["channel"], channel)
                 (keg / "openssl").unlink()
 
     def test_unsupported_override_reports_binary_and_version(self):

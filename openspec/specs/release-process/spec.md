@@ -68,7 +68,7 @@ Each executable SHALL carry a version `<package>-<commit>`: `<package>` is `TILR
 - **THEN** it builds both Apple targets and produces their separate CDN archives, checksums and latest pointers
 
 ### Requirement: The CDN layout is one archive per platform
-Per platform, `scripts/release.sh` SHALL stage in `dist/cdn` the versioned `tilr-<version>-<platform>.tar.gz`, its `.sha256`, and `releases/<platform>/latest`. Public stable and beta SHALL use `latest` and `beta` respectively, with adjacent `<latest|beta>.manifest.json` authenticating version, platform, archive name and SHA-256. Both channels SHALL use the same versioned archives and local staging layout.
+Per platform, `scripts/release.sh` SHALL stage in `dist/cdn` the versioned `tilr-<version>-<platform>.tar.gz`, its `.sha256`, and `releases/<platform>/latest`. Public stable and beta SHALL use `latest` and `beta` respectively, with adjacent `<latest|beta>.manifest.json` authenticating version, channel (`stable` or `beta`), platform, archive name and SHA-256. Both channels SHALL use the same versioned archives and local staging layout.
 
 **Verified by**: itests `UC-001` (`uc_001.py::the_installer_puts_tilrd_and_tilr_in_local_bin_without_root`), whose CDN publishes this layout (`LocalCdn.publish`).
 

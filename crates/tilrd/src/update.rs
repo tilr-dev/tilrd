@@ -33,7 +33,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{PLATFORM, VERSION};
 
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum Channel {
     #[default]
     Stable,
@@ -72,6 +73,7 @@ fn archive_name(version: &str, platform: &str) -> String {
 #[serde(deny_unknown_fields)]
 struct Manifest {
     version: String,
+    channel: Channel,
     platform: String,
     archive: String,
     sha256: String,
@@ -134,6 +136,7 @@ fn latest_version(cdn: &str, platform: &str, channel: Channel) -> Result<Manifes
         serde_json::from_str(&envelope.payload).context("invalid manifest payload")?;
     ensure!(
         manifest.version == latest
+            && manifest.channel == channel
             && manifest.platform == platform
             && manifest.archive == archive_name(latest, platform)
             && manifest.sha256.len() == 64

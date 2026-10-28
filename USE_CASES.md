@@ -652,6 +652,9 @@ itests/tests -p test_coverage.py`.
 - Signed update metadata: `update::update_requires_authentic_metadata_before_downloading`
   rejects missing, forged, malformed and mismatched manifests before requesting an archive,
   preserves both installed programs, and installs a release with an authentic manifest.
+- `update::update_rejects_cross_channel_replay_before_downloading` rejects authentic
+  metadata replayed from beta to stable or stable to beta without requesting an archive
+  or changing either installed program.
 - `release::manifest_signing_supports_keg_only_openssl_and_reports_unsupported_tools`
   signs with keg-only Homebrew OpenSSL on both macOS architectures and reports the
   selected binary and version when an explicit OpenSSL override cannot sign Ed25519.
