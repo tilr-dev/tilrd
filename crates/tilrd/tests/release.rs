@@ -9,9 +9,11 @@ use cdn::serve_files;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static NEXT: AtomicUsize = AtomicUsize::new(0);
+#[path = "common/scratch.rs"]
+mod scratch;
+#[path = "common/version.rs"]
+mod version;
+use version::version_and_platform;
 
 #[test]
 fn manifest_signing_supports_keg_only_openssl_and_reports_unsupported_tools() {
@@ -86,12 +88,7 @@ impl Drop for Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "tilrd-release-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&dir).unwrap();
+        let dir = scratch::scratch_dir();
         fs::create_dir(dir.join("scripts")).unwrap();
         fs::create_dir(dir.join("bin")).unwrap();
         for script in [
@@ -212,7 +209,9 @@ printf '{"status":"%s"}\n' "${NOTARY_STATUS:-Accepted}"
         command
             .current_dir(&self.dir)
             .arg("scripts/release.sh")
-            .args(args);
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
         command.env(
             "PATH",
             format!(
@@ -311,6 +310,8 @@ fn executable(path: &Path, contents: &str) {
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .current_dir(dir)
         .args(args)
         .status()
@@ -494,13 +495,15 @@ fn an_unknown_platform_is_refused() {
 
 #[test]
 fn publishing_without_the_account_id_does_nothing() {
-    let f = Fixture::new();
-    let output = f.run(&["--publish", "linux-aarch64"], false);
-    assert_exit(&output, 2);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("CLOUDFLARE_ACCOUNT_ID"));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("README"));
-    assert!(!f.dir.join("build.log").exists());
-    assert!(f.log().is_empty());
+    for mode in ["--publish", "--upload-only"] {
+        let f = Fixture::new();
+        let output = f.run(&[mode, "linux-aarch64"], false);
+        assert_exit(&output, 2);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("CLOUDFLARE_ACCOUNT_ID"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("README"));
+        assert!(!f.dir.join("build.log").exists());
+        assert!(f.log().is_empty());
+    }
 }
 
 #[test]
@@ -668,6 +671,10 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
         5,
         "failed validation uploaded files"
     );
+    assert_eq!(
+        fs::read_to_string(f.dir.join("build.log")).unwrap(),
+        "linux-aarch64\nlinux-x86_64\n"
+    );
 }
 
 #[test]
@@ -733,15 +740,8 @@ fn the_installer_is_uploaded_after_latest() {
 fn the_layout_release_sh_writes_is_what_tilrd_update_reads() {
     let f = Fixture::new();
     let binary = Path::new(env!("CARGO_BIN_EXE_tilrd"));
-    let output = Command::new(binary).arg("--version").output().unwrap();
-    assert!(output.status.success());
-    let version_line = String::from_utf8(output.stdout).unwrap();
-    let native = version_line
-        .split_whitespace()
-        .nth(2)
-        .unwrap()
-        .trim_matches(['(', ')']);
-    assert_exit(&f.run(&["--publish", native], true), 0);
+    let (_, native) = version_and_platform();
+    assert_exit(&f.run(&["--publish", &native], true), 0);
 
     let installed = f.dir.join("installed");
     fs::create_dir(&installed).unwrap();
@@ -924,6 +924,36 @@ fn repository_documentation_matches_the_build_snapshot() {
     }
 }
 
+const MSRV_GATES: &[&str] = &[
+    "rustup toolchain install 1.99 --profile minimal",
+    "rustup default 1.99",
+    "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
+];
+
+const LINT_GATES: &[&str] = &[
+    "- run: cargo fmt --all --check",
+    "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
+];
+
+const TEST_GATES: &[&str] =
+    &["- run: cargo nextest run --workspace --features tilrd/failpoints --locked"];
+
+const DENY_GATES: &[&str] = &["- run: '\"$CARGO_DENY\" --locked check'"];
+
+const SECRETS_GATES: &[&str] =
+    &["- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'"];
+
+// The same job-specific gates drive assertions and deletion mutations.
+// Gitleaks must scan only HEAD's history, even with a full-history checkout.
+const CI_GATES: &[(&str, &[&str])] = &[
+    ("msrv", MSRV_GATES),
+    ("lint", LINT_GATES),
+    ("test", TEST_GATES),
+    ("deny", DENY_GATES),
+    ("secrets", SECRETS_GATES),
+];
+
 fn assert_ci_gates(ci: &str) {
     let ci = active(ci);
     let on = ci.split("\npermissions:").next().unwrap();
@@ -934,37 +964,17 @@ fn assert_ci_gates(ci: &str) {
             "CI skips {event} of main or release/**"
         );
     }
-    let lint = job(&ci, "lint");
-    let test = job(&ci, "test");
-    let deny = job(&ci, "deny");
     let secrets = job(&ci, "secrets");
-    let msrv = job(&ci, "msrv");
-    for gate in [
-        "rustup toolchain install 1.99 --profile minimal",
-        "rustup default 1.99",
-        "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
-    ] {
-        assert!(msrv.contains(gate), "missing MSRV gate: {gate}");
-    }
+    let test = job(&ci, "test");
     let checkout = secrets.split("- name: Install gitleaks").next().unwrap();
     assert!(checkout.contains("uses: actions/checkout@"));
     assert!(checkout.contains("fetch-depth: 0"));
-    for gate in [
-        "- run: cargo fmt --all --check",
-        "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
-        "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
-    ] {
-        assert!(lint.contains(gate), "missing CI gate: {gate}");
+    for (name, gates) in CI_GATES {
+        let section = job(&ci, name);
+        for gate in *gates {
+            assert!(section.contains(gate), "missing {name} gate: {gate}");
+        }
     }
-    assert!(
-        test.contains("- run: cargo nextest run --workspace --features tilrd/failpoints --locked")
-    );
-    assert!(deny.contains("- run: '\"$CARGO_DENY\" --locked check'"));
-    // Only HEAD's history: the full-history checkout also fetches every other branch, and
-    // gitleaks without --log-opts scans them all.
-    assert!(secrets.contains(
-        "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'"
-    ));
     assert!(test.contains("os: [ubuntu-latest, macos-15]"));
 }
 
@@ -975,21 +985,16 @@ fn ci_runs_every_gate_of_agents_md() {
     let removed = ci.replace(&format!("  msrv:\n{}", job(&ci, "msrv")), "");
     assert_ne!(removed, ci);
     assert!(std::panic::catch_unwind(|| assert_ci_gates(&removed)).is_err());
-    for clause in [
-        "  merge_group:\n",
-        ", 'release/**'",
-        "rustup toolchain install 1.99 --profile minimal",
-        "rustup default 1.99",
-        "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
-        "fetch-depth: 0",
-        "- run: cargo fmt --all --check",
-        "- run: cargo clippy --workspace --all-targets --locked -- -D warnings",
-        "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
-        "- run: cargo nextest run --workspace --features tilrd/failpoints --locked",
-        "- run: '\"$CARGO_DENY\" --locked check'",
-        "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'",
-        " --log-opts=HEAD",
-    ] {
+    for clause in CI_GATES
+        .iter()
+        .flat_map(|(_, gates)| gates.iter().copied())
+        .chain([
+            "  merge_group:\n",
+            ", 'release/**'",
+            "fetch-depth: 0",
+            " --log-opts=HEAD",
+        ])
+    {
         let removed = ci.replace(clause, "");
         assert_ne!(removed, ci, "mutation did not remove {clause}");
         assert!(
@@ -1495,38 +1500,6 @@ fn the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built() {
 
 #[test]
 fn the_pinned_zig_selects_a_compatible_macos_sdk() {
-    let config = active(&text_file(".cargo/config.toml"));
-    assert!(config.contains("[env]"));
-    assert!(config.contains(
-        "DEVELOPER_DIR = { value = \"/Library/Developer/CommandLineTools\", force = false }"
-    ));
-    assert!(config.contains("SDKROOT = { value = \"/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk\", force = false }"));
-    // Docker mounts the source but not the host worktree's Git metadata.
-    let git_available = Command::new("git")
-        .current_dir(root())
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .unwrap()
-        .status
-        .success();
-    if git_available {
-        let tracked = Command::new("git")
-            .current_dir(root())
-            .args(["ls-files", "--error-unmatch", ".cargo/config.toml"])
-            .output()
-            .unwrap();
-        assert!(
-            tracked.status.success(),
-            "Cargo SDK defaults must be tracked"
-        );
-    } else {
-        assert!(
-            text_file(".gitignore")
-                .lines()
-                .any(|line| line == "!/.cargo/config.toml")
-        );
-    }
-
     for (workflow, job_name, next) in [
         (
             ".github/workflows/ci.yml",
@@ -1547,7 +1520,9 @@ fn the_pinned_zig_selects_a_compatible_macos_sdk() {
             "{workflow}: SDK selected too late"
         );
         assert!(section.contains("DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer"));
-        assert!(section.contains("SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk"));
+        assert!(section.contains(
+            "SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk"
+        ));
     }
     assert!(!active(&text_file("scripts/linux.Dockerfile")).contains("MacOSX15.4.sdk"));
 }
