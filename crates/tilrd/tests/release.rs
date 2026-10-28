@@ -1642,6 +1642,10 @@ fn the_pinned_zig_selects_a_compatible_macos_sdk() {
             select < section.find(next).unwrap(),
             "{workflow}: SDK selected too late"
         );
+        assert!(section.contains("DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer"));
+        assert!(section.contains(
+            "SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk"
+        ));
     }
     assert!(!active(&text_file("scripts/linux.Dockerfile")).contains("MacOSX15.4.sdk"));
 }
