@@ -365,7 +365,8 @@ state format; platforms other than `linux-aarch64`.
 | † SIGTERM right before the supervisor's exec (once failpoint `reload-exec` logs that it sleeps): no thread of the old image takes it; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_supervisor_execs_waits_for_the_successor` |
 | † SIGTERM after the supervisor read its events a last time, before the panes detach and the exec (failpoint `reload-after-drain`): raised again before the exec; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_reload_prepares_its_exec_stops_the_server` |
 | † The supervisor's exec fails in `execvp` (failpoint `reload-exec-missing`), then its stderr reader goes away: the next log line does not end it (SIGPIPE ignored again), the same connection, pane and shell | `a_broken_pipe_after_a_failed_exec_does_not_kill_the_server` |
-| † 150 acknowledged SIGUSR1 signals during paused successor restoration: wait for the queued reload, keeping the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
+| † SIGUSR1 every 20 ms for 3 seconds across reloads, followed by an exec-fenced sentinel: keep the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
+| † 150 acknowledged SIGUSR1 signals during paused successor restoration: wait for the queued reload, keeping the same pid and shell | `signals_during_restoration_wait_for_the_queued_reload` |
 
 ## Clipboard — `tests/clipboard.rs`
 

@@ -1472,11 +1472,80 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
 }
 
 #[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_storm_of_reload_signals_costs_no_shell() {
+    let (mut server, _) = failing_server("");
+    let pauses = PauseController::bind(&server.dir);
+    let points = server.dir.join("failpoints");
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let server_pid = server.child.id();
+    drop(client);
+
+    // Start the periodic storm in a successor's pre-handler window. Only
+    // the traffic cadence uses time; startup ordering uses the pause.
+    std::fs::write(&points, "supervisor-resume-live=pause").unwrap();
+    server.signal("-USR1");
+    let startup = pauses.wait("supervisor-resume-live").await;
+    std::fs::write(&points, "").unwrap();
+    let mut startup = Some(startup);
+    let mut ticks = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(20),
+        Duration::from_millis(20),
+    );
+    for _ in 0..150 {
+        ticks.tick().await;
+        // SAFETY: kill has no memory-safety preconditions.
+        assert_eq!(
+            unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) },
+            0
+        );
+        if let Some(startup) = startup.take() {
+            startup.release().await;
+        }
+    }
+    assert!(count_logged(&server, "resumed after reload with") >= 2);
+
+    // Establish a unique post-storm exec fence, instead of mistaking an
+    // unread storm receipt in stderr for acknowledgment of a sentinel.
+    std::fs::write(&points, "reload-exec=pause").unwrap();
+    server.signal("-USR1");
+    let fence = pauses.wait("reload-exec").await;
+    std::fs::write(&points, "").unwrap();
+    // All old-image signal threads are held at this point. This sentinel
+    // is recorded by the successor before restoration, and queues another
+    // reload even if the request that reached the fence was absorbed by
+    // an exec already underway.
+    server.signal("-USR1");
+    fence.release().await;
+    server
+        .wait_log("the sentinel's queued reload did not finish", |log| {
+            let Some(fence) = log
+                .iter()
+                .position(|line| line.contains("failpoint reload-exec: released"))
+            else {
+                return false;
+            };
+            let after = &log[fence + 1..];
+            after
+                .iter()
+                .any(|line| line.contains("SIGUSR1 came during the reload"))
+                && storm_reload_finished(after)
+        })
+        .await;
+    assert!(server.is_running());
+    assert_eq!(server.child.id(), server_pid);
+    let client = Client::connect(&server).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[cfg(feature = "failpoints")]
 fn storm_reload_finished(log: &[String]) -> bool {
     let Some(receipt) = log.iter().rposition(|line| line.contains("SIGUSR1 came")) else {
         return false;
     };
-    // The burst is acknowledged while restoration is paused. Its queued
+    // The final receipt is from successor startup, either held across the
+    // fenced exec or acknowledged during paused restoration. Its queued
     // work starts AFTER this successor's initialization resume: only a
     // reload after the receipt and that reload's resume complete the burst.
     let after = &log[receipt + 1..];
@@ -1493,7 +1562,7 @@ fn storm_reload_finished(log: &[String]) -> bool {
 
 #[cfg(feature = "failpoints")]
 #[tokio::test]
-async fn a_storm_of_reload_signals_costs_no_shell() {
+async fn signals_during_restoration_wait_for_the_queued_reload() {
     let (mut server, _) = failing_server("supervisor-resume-ready=pause");
     let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect(&server).await;
