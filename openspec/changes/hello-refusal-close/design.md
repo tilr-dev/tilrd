@@ -1,0 +1,7 @@
+# Refusal closure and WebSocket control frames
+
+The supervisor queues the refusal Error on the outbox and then sends Closing::Flush on a separate channel. A writer running concurrently can finish the Error and select its liveness tick before that close signal arrives. The Ping carries the normal tilr-bulk: position. Flush still drains the queue and sends Close; a Ping between the Error and Close does not violate refusal semantics.
+
+The regression pauses refusal immediately after queuing the Error. A one-second client timeout supplies regular liveness pings. After reading Error, the test peeks the next frame until it observes a real Ping, without removing it, and releases refusal. This fixes the ordering independently of scheduler speed and leaves the Ping in front of Close for the closure assertion. The original one-frame assertion fails on that retained Ping.
+
+The closure check skips only Ping and Pong and rejects every other non-Close frame. One existing TIMEOUT bounds the entire read loop, so control frames cannot keep a non-closing connection passing or extend its deadline. The failpoint is compiled only with the test feature; production ordering stays as implemented.

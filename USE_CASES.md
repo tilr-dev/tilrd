@@ -108,7 +108,7 @@ real Linux containers with the same FIFO barrier.
 | Use case | Test |
 | --- | --- |
 | A numbered Resize publishes its applied dimensions while earlier PTY input is blocked; cumulative delivery stays pending until the program reads | `input_delivery::a_numbered_resize_updates_the_pane_list_while_pty_input_waits` |
-| Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
+| Numbered input before Hello receives the handshake error and closes the connection even when a liveness Ping precedes Close | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
 | Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
 | All six numbered input variants naming an absent UUID or malformed pane name receive an error and terminal acknowledgement; lost acknowledgements are repeated after reconnect, reclaiming entries without discarding another pane's pending input, while unnumbered input and controls receive only errors | `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect` |
 | A pane held before its Hello probe is killed; concurrent handshakes retain healthy counters and input applies once | `input_delivery::a_stuck_pane_does_not_block_other_panes_hello` |

@@ -637,7 +637,13 @@ async fn numbered_input_requires_a_stable_client_id() {
 // @spec protocol/hello-comes-first
 #[tokio::test]
 async fn numbered_input_before_hello_is_refused_and_closed() {
-    let server = server();
+    let server = Server::start_failing(
+        Server::scratch_dir(),
+        Path::new(env!("CARGO_BIN_EXE_tilrd")),
+        &["--client-timeout", "1"],
+        "refusal-before-close=pause",
+    );
+    let pauses = PauseController::bind(&server.dir);
     let mut client = Client::connect_silent(&server).await;
     let mut queue = Outbox::default();
     send(
@@ -645,14 +651,30 @@ async fn numbered_input_before_hello_is_refused_and_closed() {
         &queued(&mut queue, uuid::Uuid::new_v4(), b"ignored"),
     )
     .await;
+    let hit = pauses.wait("refusal-before-close").await;
     assert_eq!(client.error().await, "expected Hello first");
-    let closed = tokio::time::timeout(TIMEOUT, client.ws.next())
+    // Keep the actual liveness Ping queued ahead of Close, regardless of scheduling.
+    let mut frames = (&mut client.ws).peekable();
+    let ping = tokio::time::timeout(TIMEOUT, std::pin::Pin::new(&mut frames).peek())
         .await
         .unwrap();
     assert!(
-        matches!(closed, Some(Ok(Message::Close(_))) | None),
-        "{closed:?}"
+        matches!(ping, Some(Ok(Message::Ping(mark))) if mark.starts_with(b"tilr-bulk:")),
+        "{ping:?}"
     );
+    hit.release().await;
+    // Control frames are legal until Close, but cannot extend the deadline.
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            match frames.next().await {
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Close(_))) | None => break,
+                other => panic!("expected closure after refusal, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("connection did not close after refusal");
 }
 
 // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
