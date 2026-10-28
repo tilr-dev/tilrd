@@ -1,6 +1,8 @@
 //! Use cases: `tilrd update` installs the latest release, tilrd and tilr.
 
 mod common;
+#[path = "common/manifest.rs"]
+mod manifest;
 
 #[path = "common/cdn.rs"]
 mod cdn;
@@ -81,6 +83,7 @@ fn publish(cdn: &Path, platform: &str, version: &str, archive: &[u8], checksum_o
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
+    manifest::write_manifest(cdn, platform, version, "latest", &checksum);
     let name = path.file_name().unwrap().to_string_lossy();
     std::fs::write(twin(&path, "sha256"), format!("{checksum}  {name}\n")).unwrap();
     let latest = cdn.join("releases").join(platform);
@@ -126,6 +129,12 @@ fn update_selects_beta_without_changing_the_stable_default() {
         publish(&cdn, &platform, "9.9.9-rc.1-test", &archive, &archive);
         let pointers = cdn.join("releases").join(&platform);
         std::fs::rename(pointers.join("latest"), pointers.join("beta")).unwrap();
+        std::fs::rename(
+            pointers.join("latest.manifest.json"),
+            pointers.join("beta.manifest.json"),
+        )
+        .unwrap();
+        manifest::write_manifest(&cdn, &platform, &version, "latest", &"0".repeat(64));
         std::fs::write(pointers.join("latest"), version).unwrap();
         let url = serve_files(cdn);
         let before = std::fs::read(&exe).unwrap();
@@ -190,6 +199,7 @@ fn update_failing(exe: &Path, cdn: &str, failpoints: &str) -> Child {
     spawn_copied(
         Command::new(exe)
             .env_remove("RUST_LOG")
+            .env("TILR_UPDATE_PUBLIC_KEY", "00".repeat(32))
             .args(["update", "--cdn", cdn])
             .env("TILR_FAILPOINTS", failpoints)
             .stdout(Stdio::piped())
@@ -246,7 +256,8 @@ async fn update_does_nothing_when_the_latest_release_is_the_one_installed() {
     let (dir, exe) = installed();
     let (version, platform) = version_and_platform();
     let cdn = dir.join("cdn");
-    // Only the name of the latest release: nothing to download.
+    // Authenticated metadata without archive files: nothing to download.
+    manifest::write_manifest(&cdn, &platform, &version, "latest", &"0".repeat(64));
     std::fs::create_dir_all(cdn.join("releases").join(&platform)).unwrap();
     std::fs::write(
         cdn.join("releases").join(&platform).join("latest"),
@@ -334,6 +345,7 @@ async fn update_installs_nothing_when_the_cdn_misbehaves() {
     std::fs::remove_file(&file).unwrap();
     assert!(!update(&exe, &url).status.success());
     std::fs::remove_file(twin(&file, "sha256")).unwrap();
+    std::fs::remove_file(latest.with_file_name("latest.manifest.json")).unwrap();
     let output = update(&exe, &url);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("has no release 9.9.9-test"));
@@ -571,4 +583,95 @@ async fn a_failed_reload_request_keeps_the_installed_release() {
     for path in [dir, cdn, empty_path] {
         std::fs::remove_dir_all(path).unwrap();
     }
+}
+
+#[test]
+fn update_requires_authentic_metadata_before_downloading() {
+    let (dir, exe) = installed();
+    let (_, platform) = version_and_platform();
+    let original = std::fs::read(&exe).unwrap();
+    let old_client = b"previous client";
+    std::fs::write(dir.join("tilr"), old_client).unwrap();
+    let root = dir.join("cdn");
+    let archive = release(STUB);
+    publish(&root, &platform, "9.9.9-test", &archive, &archive);
+    let file = root
+        .join("releases")
+        .join(&platform)
+        .join("latest.manifest.json");
+    let authentic = std::fs::read(&file).unwrap();
+    let (url, requests) = cdn::serve_files_with_requests(root);
+    for fault in [
+        "missing",
+        "signature",
+        "payload",
+        "other key",
+        "platform",
+        "archive",
+        "version",
+        "checksum",
+        "oversize",
+    ] {
+        let mut envelope: serde_json::Value = serde_json::from_slice(&authentic).unwrap();
+        if fault == "missing" {
+            std::fs::remove_file(&file).unwrap();
+        } else {
+            if fault == "signature" {
+                envelope["signature"] = "00".repeat(64).into();
+            } else if fault == "payload" {
+                envelope["payload"] = format!("{} ", envelope["payload"].as_str().unwrap()).into();
+            } else if fault == "oversize" {
+                envelope["payload"] = "x".repeat(17 << 10).into();
+            } else {
+                let mut payload: serde_json::Value =
+                    serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+                match fault {
+                    "platform" => payload["platform"] = "other-platform".into(),
+                    "archive" => payload["archive"] = "../untrusted.tar.gz".into(),
+                    "version" => payload["version"] = "0.0.0".into(),
+                    "checksum" => payload["sha256"] = "invalid".into(),
+                    _ => (),
+                }
+                let payload = payload.to_string();
+                let seed = if fault == "other key" {
+                    [1; 32]
+                } else {
+                    [0; 32]
+                };
+                let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
+                envelope["signature"] = key
+                    .sign(payload.as_bytes())
+                    .as_ref()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+                    .into();
+                envelope["payload"] = payload.into();
+            }
+            std::fs::write(&file, envelope.to_string()).unwrap();
+        }
+        requests.lock().unwrap().clear();
+        let output = update(&exe, &url);
+        assert!(!output.status.success(), "{fault}: {output:?}");
+        assert!(
+            !requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.ends_with(".tar.gz")),
+            "{fault}: requested archive"
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), original, "{fault}");
+        assert_eq!(
+            std::fs::read(dir.join("tilr")).unwrap(),
+            old_client,
+            "{fault}"
+        );
+        std::fs::write(&file, &authentic).unwrap();
+    }
+    let output = update(&exe, &url);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(std::fs::read(&exe).unwrap(), STUB);
+    assert_eq!(std::fs::read(dir.join("tilr")).unwrap(), CLIENT);
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -69,3 +69,45 @@ fn every_watched_file_exists_and_the_git_head_is_watched() {
         None => assert!(watched.is_empty(), "no git, yet watched: {watched:?}"),
     }
 }
+
+#[test]
+fn release_builds_cannot_trust_the_debug_fixture_key() {
+    let dir = std::env::temp_dir().join(format!("tilrd-key-build-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let script = dir.join("build-script");
+    let output = Command::new("rustc")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"))
+        .arg("-o")
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let fixture = "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29";
+    for (profile, key, allowed) in [
+        ("release", None, false),
+        ("release", Some(fixture.to_owned()), false),
+        ("release", Some(fixture.to_uppercase()), false),
+        ("release", Some("malformed".into()), false),
+        ("release", Some("11".repeat(32)), true),
+        ("debug", None, true),
+    ] {
+        let mut cmd = Command::new(&script);
+        cmd.env("PROFILE", profile)
+            .env_remove("TILR_UPDATE_PUBLIC_KEY")
+            .env("CARGO_PKG_VERSION", "0.0.0")
+            .env("CARGO_CFG_TARGET_OS", "linux")
+            .env("CARGO_CFG_TARGET_ARCH", "x86_64");
+        if let Some(key) = key {
+            cmd.env("TILR_UPDATE_PUBLIC_KEY", key);
+        }
+        let output = cmd.output().unwrap();
+        assert_eq!(output.status.success(), allowed, "{profile}: {output:?}");
+        if allowed {
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("cargo:rustc-env=TILR_UPDATE_PUBLIC_KEY=")
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

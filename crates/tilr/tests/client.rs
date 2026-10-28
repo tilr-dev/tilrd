@@ -5,6 +5,9 @@
 //! tilrd is the one next to the tilr under test (the workspace's target
 //! directory), as `tilr` finds it.
 
+#[path = "../../tilrd/tests/common/manifest.rs"]
+mod manifest;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -737,6 +740,7 @@ fn tilr_update_runs_the_update_in_the_local_server_and_waits_for_the_reload() {
     .unwrap();
     let latest = cdn_dir.join("releases").join(platform);
     std::fs::create_dir_all(&latest).unwrap();
+    manifest::write_manifest(&cdn_dir, platform, "9.9.9-test", "latest", &checksum);
     std::fs::write(latest.join("latest"), "9.9.9-test\n").unwrap();
     let (cdn, requested, send_archive) = serve_release(cdn_dir);
 

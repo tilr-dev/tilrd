@@ -30,7 +30,7 @@ ZIG_VERSION = "0.15.2"
 DISTROS = {"ubuntu": "ubuntu:24.04"}
 RUNTIME_APT = ["python3", "procps", "psmisc", "util-linux", "bash", "ca-certificates", "curl",
                "vim", "htop", "less", "iproute2", "lsof", "iptables", "openssh-client", "openssh-server",
-               "git", "strace", "zsh", "fish"]
+               "git", "strace", "zsh", "fish", "openssl"]
 
 # Same paths in every container: test executables bake CARGO_MANIFEST_DIR and
 # CARGO_BIN_EXE_* at compile time.
@@ -233,6 +233,8 @@ with tarfile.open(f"/cdn/releases/{version}/{name}", "w:gz") as tar:
 digest = hashlib.sha256(open(f"/cdn/releases/{version}/{name}", "rb").read()).hexdigest()
 open(f"/cdn/releases/{version}/{name}.sha256", "w").write(f"{digest}  {name}\n")
 open(f"/cdn/releases/{platform}/latest", "w").write(version + "\n")
+from sign_manifest import write_manifest
+write_manifest("/cdn", platform, version)
 '''
 
 # A TCP echo service on port 7007, a thread per connection: the far end of a pane's
@@ -484,6 +486,7 @@ class TilrItests:
             out = self.build()
             cdn = (self.runtime()
                    .with_directory("/build", out)
+                   .with_file("/usr/local/bin/sign_manifest.py", self.itests.file("tt/manifest.py"))
                    .with_new_file("/usr/local/bin/tt-cdn", CDN, permissions=0o755)
                    .with_exec(["tt-cdn"])
                    .directory("/cdn"))

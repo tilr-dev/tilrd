@@ -899,6 +899,8 @@ class LocalCdn:
         path = self.dir / "releases" / self.platform / "latest"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(version + "\n")
+        from .manifest import write_manifest
+        write_manifest(self.dir, self.platform, version)
 
     def close(self):
         self.httpd.shutdown()
