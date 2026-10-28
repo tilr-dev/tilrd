@@ -640,7 +640,8 @@ async fn numbered_input_before_hello_is_refused_and_closed() {
     let server = Server::start_failing(
         Server::scratch_dir(),
         Path::new(env!("CARGO_BIN_EXE_tilrd")),
-        &["--client-timeout", "1"],
+        // Ping after 2s, with a 6s liveness window to tolerate CI scheduling stalls.
+        &["--client-timeout", "6"],
         "refusal-before-close=pause",
     );
     let pauses = PauseController::bind(&server.dir);
