@@ -58,10 +58,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Pin the checker that keeps trailing sections separate from requirements.
           curl --fail --silent --show-error --location \
-            https://raw.githubusercontent.com/tilr-dev/gitpm/dd6fde0efc2fbc54ab5ae0eab654cde3a58d24f9/scripts/spec_change.py \
+            https://raw.githubusercontent.com/tilr-dev/gitpm/70a42369296f97ea0cd41fedb4a84f7f4c151e7d/scripts/spec_change.py \
             --output "$RUNNER_TEMP/spec_change.py"
-          printf '956d89a2a3b8cf102f1c5687b1909656556a8aeb0c2bdf75ddd20e71d8a5255c  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
+          printf '315719f620180f0a8eb3c186d03101304b8edf8acbe150ded661e9f4dcd1e202  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
       - name: Authorize specification changes
         if: github.event_name == 'pull_request_target'
         env:
