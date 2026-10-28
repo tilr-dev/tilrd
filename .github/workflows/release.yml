@@ -101,13 +101,22 @@ jobs:
           permission-contents: write # the release PR's branch, the tags, the GitHub releases
           permission-pull-requests: write # the release PR
           permission-issues: write # release-please's labels on the release PR
-      - id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ steps.app.outputs.token }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-          target-branch: ${{ github.ref_name }}
+          ref: ${{ github.ref_name }} # release-please reads the current target branch
+          fetch-depth: 0 # stable tags on earlier release branches are the shipped baseline
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: Install the release-please engine
+        run: npm ci --prefix .github/release-please --ignore-scripts --no-audit --no-fund
+      - id: release
+        name: Release from the branch line and shipped history
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: node .github/release-please/run.cjs
       - id: rc
         name: Tag a release candidate
         if: steps.release.outputs.release_created != 'true'
