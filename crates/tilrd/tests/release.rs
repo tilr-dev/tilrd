@@ -14,6 +14,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn manifest_signing_supports_keg_only_openssl_and_reports_unsupported_tools() {
+    let output = Command::new("python3")
+        .arg(root().join("scripts/test_sign_update_manifest.py"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn release_upstream_checks_real_git_histories() {
     let output = Command::new("python3")
         .arg(root().join("scripts/test_release_upstream.py"))
@@ -1688,7 +1702,9 @@ fn a_failed_manifest_upload_does_not_advance_the_unsigned_pointer() {
         true,
     );
     assert!(!output.status.success(), "{output:?}");
-    assert_eq!(f.uploads().last().unwrap(), manifest);
+    let uploads = f.uploads();
+    assert!(!uploads.is_empty(), "{output:?}");
+    assert_eq!(uploads.last().unwrap(), manifest, "{output:?}");
     assert!(
         !f.uploads()
             .iter()
