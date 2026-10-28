@@ -24,7 +24,7 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, Doc, Ignore, dag, function, object_type
 
-RUST_IMAGE = "rust:1.94.0-bookworm"
+RUST_IMAGE = "rust:1.99-bookworm"
 ZIG_VERSION = "0.15.2"
 # Runtime images of the distributions the scenarios run on; one for now.
 DISTROS = {"ubuntu": "ubuntu:24.04"}
@@ -43,7 +43,8 @@ NEXT_PACKAGE_VERSION = "0.1.1"
 SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crates/*/target/", "!rustfmt.toml",
                  "!.rustfmt.toml", "!clippy.toml", "!scripts/", "!.github/workflows/ci.yml",
                  "!.github/workflows/release.yml", "!.cargo/config.toml", "!.gitignore",
-                 "!release-please-config.json", "!AGENTS.md", "!README.md", "!USE_CASES.md"]
+                 "!release-please-config.json", "!AGENTS.md", "!README.md", "!USE_CASES.md",
+                 "!itests/src/tilr_itests/main.py"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
 # Runs one test command and writes a single JSON result, so the module reads one file

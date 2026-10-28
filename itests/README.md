@@ -108,7 +108,8 @@ before the delayed close arrives, then resumes and verifies recovery.
 
 `src/tilr_itests/main.py`:
 
-1. **build** — one Rust container (rust 1.94 bookworm, zig 0.15.2, protoc; `CARGO_HOME`
+1. **build** — one Rust container (image set by `RUST_IMAGE` in
+   [`main.py`](src/tilr_itests/main.py), zig 0.15.2, protoc; `CARGO_HOME`
    and the target dirs are cache volumes on pb) builds the server and its client `tilr`
    (debug), `tilr-driver`
    (release: it plays a real client, and a debug one reads at ~30 MB/s), the test executables with failpoints (listing their tests), and the *next release*:
