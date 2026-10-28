@@ -626,6 +626,10 @@ itests/tests -p test_coverage.py`.
 - Foreign macOS releases: `update::fetch_release_writes_a_checked_archive` checks both
   Apple architectures without executing their programs.
 
+- Release-line version and changelog: `.github/release-please/run.test.cjs` uses the real
+  engine and local Git fixtures for a second release branch, a fix-only first release,
+  same-line patches, annotated stable tags, ignored RCs, shipped cherry-picks,
+  bootstrap, divergent tags, PR creation and merged-PR publication outputs.
 - Beta CDN publication: `release::beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers`
   checks candidate upload order and isolation from latest/install.sh, upload-only and checksum validation.
   `release::beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer` checks failed uploads.

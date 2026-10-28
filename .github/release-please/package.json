@@ -1,0 +1,7 @@
+{
+  "name": "release-line-runner",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "test": "node --test *.test.cjs" },
+  "dependencies": { "release-please": "17.6.0" }
+}
