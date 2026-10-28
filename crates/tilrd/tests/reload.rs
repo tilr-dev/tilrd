@@ -1504,7 +1504,6 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
             startup.release().await;
         }
     }
-    assert!(count_logged(&server, "resumed after reload with") >= 2);
 
     // Establish a unique post-storm exec fence, instead of mistaking an
     // unread storm receipt in stderr for acknowledgment of a sentinel.
@@ -1533,6 +1532,7 @@ async fn a_storm_of_reload_signals_costs_no_shell() {
                 && storm_reload_finished(after)
         })
         .await;
+    assert!(count_logged(&server, "resumed after reload with") >= 2);
     assert!(server.is_running());
     assert_eq!(server.child.id(), server_pid);
     let client = Client::connect(&server).await;

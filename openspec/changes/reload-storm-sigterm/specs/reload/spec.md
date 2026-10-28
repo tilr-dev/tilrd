@@ -2,7 +2,7 @@
 
 ### Requirement: Reload storm verification waits for queued work
 
-A dedicated queued-reload regression test SHALL deliver its burst at a controlled successor startup stage, after signal handlers are installed and before pane restoration completes. It SHALL distinguish that initialization from the reload queued by the burst, and SHALL wait for the queued reload's successor to resume before verifying the original shell. It SHALL use event-controlled pauses rather than elapsed time to establish this ordering. The separate periodic storm test SHALL finish its traffic before establishing an exec fence with all old-image signal threads held. A final SIGUSR1 sent at that fence SHALL be acknowledged by the successor as held across exec, and verification SHALL wait for the reload queued by that acknowledgment.
+A dedicated regression SHALL distinguish successor initialization from the reload queued by SIGUSR1 during restoration. The periodic storm test SHALL end with an exec-fenced signal, acknowledged by its successor as held across exec. Both tests SHALL wait for the queued reload's successor to resume before verifying the original shell, using event-controlled pauses for ordering.
 
 **Verified by**: `reload::signals_during_restoration_wait_for_the_queued_reload`, `reload::a_storm_of_reload_signals_costs_no_shell`.
 
