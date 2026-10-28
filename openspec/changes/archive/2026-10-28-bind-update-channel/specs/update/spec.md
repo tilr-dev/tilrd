@@ -24,4 +24,3 @@ The updater SHALL verify Ed25519 over the envelope's exact UTF-8 `payload` using
 #### Scenario: An older release in the requested channel
 - **WHEN** the selected pointer names an older release with authentic metadata for the requested channel
 - **THEN** the updater accepts the metadata and installs the older release; replay within a channel remains possible
-
