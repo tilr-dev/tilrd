@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Update metadata must be authenticated
-The updater SHALL verify Ed25519 over the manifest envelope's exact UTF-8 `payload` string using its embedded key. Metadata SHALL be at most 16 KiB, with a hex signature. The payload SHALL bind a valid version, requested channel (`stable` or `beta`), requested platform, expected archive basename and 64-character hex SHA-256. Missing, malformed, mismatched or untrusted metadata SHALL fail before any archive request or installation change. No unsigned checksum fallback or runtime trust-key override SHALL be accepted.
+The updater SHALL verify Ed25519 over the envelope's exact UTF-8 `payload` using its embedded key. Metadata SHALL be at most 16 KiB with a hex signature. The payload SHALL bind a valid version, requested channel (`stable` or `beta`) and platform, expected archive basename and 64-character hex SHA-256. Missing, malformed, mismatched or untrusted metadata SHALL fail before any archive request or installation change. Unsigned checksum fallback and runtime trust-key overrides SHALL be rejected.
 
 **Verified by**: `update::update_requires_authentic_metadata_before_downloading`, `update::update_rejects_cross_channel_replay_before_downloading`.
 
