@@ -1,6 +1,9 @@
 //! Use cases: `tilrd update` installs the latest release, tilrd and tilr.
 
 mod common;
+#[path = "common/version.rs"]
+mod version;
+use version::version_and_platform;
 #[path = "common/manifest.rs"]
 mod manifest;
 
@@ -16,21 +19,6 @@ fn twin(file: &Path, extension: &str) -> PathBuf {
     let mut name = file.as_os_str().to_owned();
     name.push(format!(".{extension}"));
     name.into()
-}
-
-/// Version and platform of the executable under test, as `--version` prints
-/// them: `tilrd 0.1.0-26449dd (linux-aarch64)`.
-fn version_and_platform() -> (String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
-        .env_remove("RUST_LOG")
-        .arg("--version")
-        .output()
-        .unwrap();
-    let line = String::from_utf8(output.stdout).unwrap();
-    let mut words = line.split_whitespace().skip(1);
-    let version = words.next().unwrap().to_owned();
-    let platform = words.next().unwrap().trim_matches(['(', ')']).to_owned();
-    (version, platform)
 }
 
 /// A release archive holding `members` (file name, content), as
