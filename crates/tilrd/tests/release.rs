@@ -813,6 +813,38 @@ fn job<'a>(workflow: &'a str, name: &str) -> &'a str {
 }
 
 #[test]
+fn the_itests_rust_image_supports_the_workspace_msrv() {
+    let workspace: toml::Value = toml::from_str(&text_file("Cargo.toml")).unwrap();
+    let msrv = workspace["workspace"]["package"]["rust-version"]
+        .as_str()
+        .unwrap();
+    let module = text_file("itests/src/tilr_itests/main.py");
+    let image = module
+        .lines()
+        .find_map(|line| line.strip_prefix("RUST_IMAGE = \""))
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let tag = image.strip_prefix("rust:").unwrap();
+    let version = tag.split('-').next().unwrap();
+    let parse = |version: &str| {
+        let mut parts = version.split('.').map(|part| part.parse::<u32>().unwrap());
+        let result = (
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap_or(0),
+        );
+        assert!(parts.next().is_none());
+        result
+    };
+    assert!(
+        parse(version) >= parse(msrv),
+        "itests image {image} is older than workspace MSRV {msrv}"
+    );
+}
+
+#[test]
 fn the_linux_build_runs_in_the_pinned_debian_12_image() {
     let docker = active(&text_file("scripts/linux.Dockerfile"));
     let from = docker

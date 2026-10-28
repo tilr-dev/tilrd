@@ -1925,6 +1925,8 @@ impl Supervisor {
                 },
             );
         }
+        #[cfg(feature = "failpoints")]
+        crate::fail::point("supervisor-resume-ready").expect("resume pause failed");
         tracing::info!("resumed after reload with {} pane(s)", self.panes.len());
     }
 
@@ -3447,6 +3449,9 @@ impl Supervisor {
     fn refuse(&mut self, client_id: ClientId, reason: &str) {
         tracing::warn!(client = client_id, "refusing client: {reason}");
         self.send_error(client_id, reason);
+        // The writer can send a liveness Ping before it receives the close signal.
+        #[cfg(feature = "failpoints")]
+        crate::fail::point("refusal-before-close").expect("refusal pause failed");
         // The writer sends what is queued, then closes.
         self.drop_client(client_id, Gone::Refused);
     }

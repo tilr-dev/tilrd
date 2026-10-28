@@ -1474,70 +1474,140 @@ async fn a_broken_pipe_after_a_failed_exec_does_not_kill_the_server() {
 #[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_storm_of_reload_signals_costs_no_shell() {
-    // A short pause before the handlers: some of the signals land there.
-    let (mut server, _) = failing_server("supervisor-resume-live=sleep:100");
+    let (mut server, _) = failing_server("");
+    let pauses = PauseController::bind(&server.dir);
+    let points = server.dir.join("failpoints");
     let mut client = Client::connect(&server).await;
     let pane_id = pane_with_marks(&server, &mut client).await;
     let server_pid = server.child.id();
     drop(client);
 
+    // Start the periodic storm in a successor's pre-handler window. Only
+    // the traffic cadence uses time; startup ordering uses the pause.
+    std::fs::write(&points, "supervisor-resume-live=pause").unwrap();
+    server.signal("-USR1");
+    let startup = pauses.wait("supervisor-resume-live").await;
+    std::fs::write(&points, "").unwrap();
+    let mut startup = Some(startup);
+    let mut ticks = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(20),
+        Duration::from_millis(20),
+    );
     for _ in 0..150 {
+        ticks.tick().await;
         // SAFETY: kill has no memory-safety preconditions.
-        unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) },
+            0
+        );
+        if let Some(startup) = startup.take() {
+            startup.release().await;
+        }
     }
-    // Let the last reloads finish. Each SIGUSR1 leaves a "SIGUSR1 came"
-    // line: logged by the handler as it comes (a line the server writes for
-    // this test to wait on), or, held across an exec, by the successor as it
-    // starts. A sentinel signal sent after the storm is delivered after
-    // every storm signal (or merged with one still pending). `index` counts
-    // the lines read from the server's stderr so far, not the lines it has
-    // written: the receipt waited for here is the first one read after the
-    // storm receipts already read, the sentinel's or a storm one still in
-    // the pipe. The wait for "resumed after reload" below, after whichever
-    // receipt was read last, covers the latter.
-    let index = server.log.lock().unwrap().len();
-    // SAFETY: kill has no memory-safety preconditions.
-    unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) };
+
+    // Establish a unique post-storm exec fence, instead of mistaking an
+    // unread storm receipt in stderr for acknowledgment of a sentinel.
+    std::fs::write(&points, "reload-exec=pause").unwrap();
+    server.signal("-USR1");
+    let fence = pauses.wait("reload-exec").await;
+    std::fs::write(&points, "").unwrap();
+    // All old-image signal threads are held at this point. This sentinel
+    // is recorded by the successor before restoration, and queues another
+    // reload even if the request that reached the fence was absorbed by
+    // an exec already underway.
+    server.signal("-USR1");
+    fence.release().await;
     server
-        .wait_log("no receipt of the sentinel", |log| {
-            log[index..]
+        .wait_log("the sentinel's queued reload did not finish", |log| {
+            let Some(fence) = log
                 .iter()
-                .any(|line| line.contains("SIGUSR1 came"))
-        })
-        .await;
-    // The reload of the last receipt ends with a resume. A handler's receipt
-    // is followed by its reload, or comes during one already under way,
-    // whose exec drops it; either way the next resume ends it. A held one is
-    // logged before its own server resumes and reloads after that, so it
-    // takes a reload logged after it, then a resume.
-    server
-        .wait_log("the last reload did not finish", |log| {
-            let last = log
-                .iter()
-                .rposition(|line| line.contains("SIGUSR1 came"))
-                .unwrap();
-            let after = &log[last + 1..];
-            let after = if log[last].contains("SIGUSR1 came: reload requested") {
-                after
-            } else {
-                match after
-                    .iter()
-                    .position(|line| line.contains("reloading exe="))
-                {
-                    Some(at) => &after[at + 1..],
-                    None => return false,
-                }
+                .position(|line| line.contains("failpoint reload-exec: released"))
+            else {
+                return false;
             };
+            let after = &log[fence + 1..];
             after
                 .iter()
-                .any(|line| line.contains("resumed after reload with"))
+                .any(|line| line.contains("SIGUSR1 came during the reload"))
+                && storm_reload_finished(after)
         })
         .await;
-    let seen = count_logged(&server, "resumed after reload with");
+    assert!(count_logged(&server, "resumed after reload with") >= 2);
     assert!(server.is_running());
     assert_eq!(server.child.id(), server_pid);
-    assert!(seen >= 2, "reloads: {seen}");
+    let client = Client::connect(&server).await;
+    assert_pane_survived(&mut server, client, pane_id).await;
+}
+
+#[cfg(feature = "failpoints")]
+fn storm_reload_finished(log: &[String]) -> bool {
+    let Some(receipt) = log.iter().rposition(|line| line.contains("SIGUSR1 came")) else {
+        return false;
+    };
+    // The final receipt is from successor startup, either held across the
+    // fenced exec or acknowledged during paused restoration. Its queued
+    // work starts AFTER this successor's initialization resume: only a
+    // reload after the receipt and that reload's resume complete the burst.
+    let after = &log[receipt + 1..];
+    let Some(reload) = after
+        .iter()
+        .position(|line| line.contains("reloading exe="))
+    else {
+        return false;
+    };
+    after[reload + 1..]
+        .iter()
+        .any(|line| line.contains("resumed after reload with"))
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn signals_during_restoration_wait_for_the_queued_reload() {
+    let (mut server, _) = failing_server("supervisor-resume-ready=pause");
+    let pauses = PauseController::bind(&server.dir);
+    let mut client = Client::connect(&server).await;
+    let pane_id = pane_with_marks(&server, &mut client).await;
+    let server_pid = server.child.id();
+    drop(client);
+
+    server.signal("-USR1");
+    let first = pauses.wait("supervisor-resume-ready").await;
+    // The successor has handlers but has not entered its event loop. Every
+    // delivered signal queues a reload. A receipt per signal also ensures
+    // that no signal is still awaiting delivery when the pause is released.
+    for _ in 0..150 {
+        let receipts = count_logged(&server, "SIGUSR1 came: reload requested");
+        // SAFETY: kill has no memory-safety preconditions.
+        assert_eq!(
+            unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGUSR1) },
+            0
+        );
+        server
+            .wait_log("no receipt of the burst signal", |log| {
+                log.iter()
+                    .filter(|line| line.contains("SIGUSR1 came: reload requested"))
+                    .count()
+                    > receipts
+            })
+            .await;
+    }
+    first.release().await;
+    let second = pauses.wait("supervisor-resume-ready").await;
+    // Reaching the second successor proves the queue was consumed. The
+    // first resume must not let verification race this unfinished reload.
+    server.wait_logged("resumed after reload with").await;
+    let premature = storm_reload_finished(&server.log.lock().unwrap());
+    second.release().await;
+    assert!(
+        !premature,
+        "initialization was mistaken for the queued reload's completion"
+    );
+    server
+        .wait_log("the queued reload did not finish", storm_reload_finished)
+        .await;
+    assert!(server.is_running());
+    assert_eq!(server.child.id(), server_pid);
+    assert!(count_logged(&server, "resumed after reload with") >= 2);
     let client = Client::connect(&server).await;
     assert_pane_survived(&mut server, client, pane_id).await;
 }

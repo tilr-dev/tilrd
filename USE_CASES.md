@@ -108,7 +108,7 @@ real Linux containers with the same FIFO barrier.
 | Use case | Test |
 | --- | --- |
 | A numbered Resize publishes its applied dimensions while earlier PTY input is blocked; cumulative delivery stays pending until the program reads | `input_delivery::a_numbered_resize_updates_the_pane_list_while_pty_input_waits` |
-| Numbered input before Hello receives the handshake error and closes the connection | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
+| Numbered input before Hello receives the handshake error and closes the connection even when a liveness Ping precedes Close | `input_delivery::numbered_input_before_hello_is_refused_and_closed` |
 | Numbered input without a stable client id returns an explicit error | `input_delivery::numbered_input_requires_a_stable_client_id` |
 | All six numbered input variants naming an absent UUID or malformed pane name receive an error and terminal acknowledgement; lost acknowledgements are repeated after reconnect, reclaiming entries without discarding another pane's pending input, while unnumbered input and controls receive only errors | `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect` |
 | A pane held before its Hello probe is killed; concurrent handshakes retain healthy counters and input applies once | `input_delivery::a_stuck_pane_does_not_block_other_panes_hello` |
@@ -365,7 +365,8 @@ state format; platforms other than `linux-aarch64`.
 | † SIGTERM right before the supervisor's exec (once failpoint `reload-exec` logs that it sleeps): no thread of the old image takes it; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_supervisor_execs_waits_for_the_successor` |
 | † SIGTERM after the supervisor read its events a last time, before the panes detach and the exec (failpoint `reload-after-drain`): raised again before the exec; the successor logs `SIGTERM came during the reload` and stops cleanly (exit 0), the shell ends | `a_sigterm_while_the_reload_prepares_its_exec_stops_the_server` |
 | † The supervisor's exec fails in `execvp` (failpoint `reload-exec-missing`), then its stderr reader goes away: the next log line does not end it (SIGPIPE ignored again), the same connection, pane and shell | `a_broken_pipe_after_a_failed_exec_does_not_kill_the_server` |
-| † SIGUSR1 every 20 ms for 3 s: several reloads, the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
+| † SIGUSR1 every 20 ms for 3 seconds across reloads, followed by an exec-fenced sentinel: keep the same pid and shell | `a_storm_of_reload_signals_costs_no_shell` |
+| † 150 acknowledged SIGUSR1 signals during paused successor restoration: wait for the queued reload, keeping the same pid and shell | `signals_during_restoration_wait_for_the_queued_reload` |
 
 ## Clipboard — `tests/clipboard.rs`
 

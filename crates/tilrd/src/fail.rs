@@ -12,6 +12,7 @@
 //!   `failpoint NAME: sleeping MS ms` first.
 //! - `pause` — connect to the Unix stream socket `TILR_FAILPOINTS_SOCKET`,
 //!   write `NAME\n`, then wait for exactly the byte `r` before returning.
+//!   A successful release logs `failpoint NAME: released`.
 //!   Each hit opens its own connection: a release never carries to another
 //!   hit. Missing configuration, I/O errors, EOF and other bytes fail the
 //!   point; disconnecting the controller does not silently release it.
@@ -107,7 +108,9 @@ fn pause(name: &str) -> Result<()> {
         anyhow::ensure!(release == *b"r", "expected pause release byte r");
         Ok(())
     };
-    wait().with_context(|| format!("failpoint {name}: pause"))
+    wait().with_context(|| format!("failpoint {name}: pause"))?;
+    tracing::info!("failpoint {name}: released");
+    Ok(())
 }
 
 /// Announce entry into user code for a test-only state-formats probe. The
