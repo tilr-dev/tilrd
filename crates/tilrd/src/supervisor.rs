@@ -1925,6 +1925,8 @@ impl Supervisor {
                 },
             );
         }
+        #[cfg(feature = "failpoints")]
+        crate::fail::point("supervisor-resume-ready").expect("resume pause failed");
         tracing::info!("resumed after reload with {} pane(s)", self.panes.len());
     }
 
