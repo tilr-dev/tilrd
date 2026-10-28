@@ -1315,6 +1315,7 @@ used and can also be removed once all older runs have stopped.
 requests, and nothing is released from it. On the owner's word a release branch `release/X.Y`
 is cut from a commit of `main`; a fix for a release lands in `main` first and is then
 cherry-picked into `release/X.Y`. Nothing is merged from a release branch back into `main`.
+Pull requests into `main` go through the merge queue (squash, all required checks green).
 
 PRs into `release/**` run `release-upstream`: every proposed commit must be in main
 or match an upstream patch (a cherry-pick may have a different SHA). A new patch,
