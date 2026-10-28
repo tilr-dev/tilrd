@@ -2,8 +2,8 @@
 # Called from the released tilrd tag after its signed GitHub assets are uploaded.
 set -euo pipefail
 
-if [[ ${RELEASE_CREATED:-false} != true || ${IS_RC:-false} == true ]]; then
-  echo 'No stable release created; desktop pin unchanged.'
+if [[ -z ${TAG:-} || ${IS_RC:-true} != false ]]; then
+  echo 'No stable tag selected; desktop pin unchanged.'
   exit 0
 fi
 if [[ ! ${TAG:-} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

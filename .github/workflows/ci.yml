@@ -1,5 +1,5 @@
 # CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR into and every push to main
-# or a release branch release/** (the release PR and cherry-picks go there), and on merge groups.
+# or a release branch release/** (fix pull requests and cherry-picks go there), and on merge groups.
 # The tests run on Linux and macOS (the server's two platforms; they need only /bin/sh, ps
 # and kill, no network, tmux or ssh), with the `failpoints` feature, as in the README. The
 # matrix shows as `test (ubuntu-latest)` and `test (macos-15)`: required checks name both.
@@ -45,14 +45,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tilr-dev/.github
-          ref: aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+          ref: c31b80fcfd5cb9398a193d422c212326302d0c44
           path: shared-release
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - run: npm ci --prefix shared-release/.github/release-please --ignore-scripts --no-audit --no-fund
-      - run: npm test --prefix shared-release/.github/release-please
+      - run: node --test shared-release/.github/release/*.test.cjs
+      - run: python3 scripts/test_check_release_version.py
 
       - run: node --test .github/release-workflow.test.cjs
 

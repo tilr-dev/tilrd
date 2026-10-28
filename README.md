@@ -1328,15 +1328,18 @@ PRs into `release/**` run `release-upstream`: every proposed commit must be in m
 or match an upstream patch (a cherry-pick may have a different SHA). A new patch,
 an unmatched merge or an unmatched empty commit fails the check with an instruction
 to land it in main first. A cherry-pick trailer alone does not authorize a patch.
-The bot's release-please PR is exempt, so its version and changelog commits can
-remain on the release branch. Required checks for release branches must include
+All authors follow this rule. Required checks for release branches must include
 `release-upstream`.
 
-Releases are made by [release-please](https://github.com/googleapis/release-please)
-(`.github/workflows/release.yml`), which runs on pushes to `release/**` only: the Conventional
-Commits of `release/X.Y` keep a release PR into that branch open with the version bump
-(`[workspace.package] version` in Cargo.toml, and Cargo.lock; the crates share it) and
-CHANGELOG.md. Merging it tags `vX.Y.Z`, creates the GitHub release and then:
+Stable releases start with an owner-created `vX.Y.Z` tag from `bin/release`.
+`.github/workflows/release.yml` calls the pinned shared workflow on release branch
+pushes and stable tag pushes, excluding RC tags to prevent recursion. The tag must
+point into the history of `release/X.Y`; missing branches or unrelated commits fail
+before any release is created. No conventional commit format, release pull request,
+version bump commit or generated CHANGELOG.md is required. The numeric tag version
+must be at least `[workspace.package] version` in Cargo.toml; Cargo files stay unchanged,
+and `TILR_BUILD_VERSION` stamps the tag version into both binaries. GitHub generates
+stable release notes from earlier stable tags. A stable tag creates the GitHub release and then:
 
 - builds `tilrd` and `tilr` for `aarch64-apple-darwin`, `x86_64-apple-darwin`,
   `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` and attaches
@@ -1364,7 +1367,7 @@ long-lived token or check bypass is needed. An App token, rather than GITHUB_TOK
 lets the desktop PR run its normal CI. Installation access and permissions must be
 configured by the repository owner before the first automatic bump.
 
-Every other push to `release/X.Y` builds a release candidate: the pushed commit is tagged
+Every push to `release/X.Y` whose commit has no stable tag on that line builds a release candidate: the pushed commit is tagged
 `vX.Y.Z-rc.N` and a GitHub prerelease of that tag gets the same archives and checksums
 (`Z` is 0 until `vX.Y.0` is released, then the next patch; `N` counts the candidates of that
 version). The binaries say `X.Y.Z-rc.N-<commit>`. Candidates are published to the CDN beta channel: archives and checksums go under
@@ -1456,7 +1459,10 @@ CRC64NVME). Neither `AWS_REQUEST_CHECKSUM_CALCULATION` nor
 `AWS_RESPONSE_CHECKSUM_VALIDATION` needs to be set for this upload.
 
 In CI, the `cdn` environment supplies both AWS secrets and the
-`CLOUDFLARE_ACCOUNT_ID` variable. Versions and CHANGELOG.md are not edited by hand.
+`CLOUDFLARE_ACCOUNT_ID` variable. The release version comes from the tag; the Cargo
+workspace version is development metadata. Releases do not modify Cargo.toml or
+Cargo.lock, and CHANGELOG.md is no longer generated. Release notes live in GitHub
+Releases.
 
 ### macOS CDN releases
 

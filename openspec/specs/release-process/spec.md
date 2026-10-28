@@ -137,8 +137,8 @@ Every pull request into `main` or `release/**`, every merge queue group and ever
 - **WHEN** a pull request has a clippy warning
 - **THEN** the `fmt + clippy` job fails and the change is not merged
 
-#### Scenario: The release PR is checked
-- **WHEN** the release PR into `release/0.3` is opened or updated, or a fix is cherry-picked into `release/0.3`
+#### Scenario: A release branch fix is checked
+- **WHEN** a fix pull request into `release/0.3` is opened or updated
 - **THEN** the same checks run on it as on a pull request into `main`
 
 #### Scenario: Build at the minimum supported Rust version
@@ -163,82 +163,8 @@ CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version`
 - **WHEN** `scripts/install-tools.sh "$RUNNER_TEMP/tools"` runs on Linux x86_64
 - **THEN** `DIR/zig`, `DIR/protoc` and `DIR/cargo-nextest` are in place after their checksums matched
 
-### Requirement: release-please opens the release PR
-On pushes to `release/**`, never on `main`, release-please (`simple` strategy, `release-please-config.json`, as the `tilr-bot` GitHub App) SHALL keep a release PR into the pushed branch (`target-branch`) open from the `feat` / `fix` Conventional Commits, bumping `[workspace.package] version` in `Cargo.toml`, the workspace crates' versions in `Cargo.lock`, and `CHANGELOG.md`. Versions and the changelog SHALL NOT be edited by hand. The release PR SHALL pass the same required checks as any PR.
-
-**Verified by**: `release::release_please_bumps_the_workspace_version_and_lock` (static: `release-please-config.json`, `.github/workflows/release.yml` and the pinned `tilr-dev/.github` release-branch workflow).
-
-#### Scenario: A feat commit lands on main
-- **WHEN** a `feat:` commit is pushed to `main` at version 0.2.1
-- **THEN** no release PR is opened or updated
-- **AND** once `release/0.3` is cut from that commit and pushed, the release PR into `release/0.3` proposes 0.3.0 from the branch line
-
-#### Scenario: A new release branch follows another line
-- **GIVEN** `v0.1.0` exists on `release/0.1` and its release commit is absent from `main`
-- **WHEN** a new feature lands in `main` and `release/0.2` is cut from it
-- **THEN** the release PR proposes 0.2.0 and its changelog contains the new feature only, excluding changes already shipped in 0.1.0
-
-#### Scenario: A new line contains only a fix
-- **GIVEN** the inherited manifest says 0.2.1
-- **WHEN** only a `fix:` commit is added and `release/0.3` is cut
-- **THEN** the release PR proposes 0.3.0
-
-#### Scenario: A feature on an existing line
-- **GIVEN** stable `v0.3.2` exists in the history of `release/0.3`
-- **WHEN** a new `feat:` commit is pushed to that branch
-- **THEN** the release PR proposes 0.3.3, even if another line has a newer stable release
-
-#### Scenario: A fix already shipped by cherry-pick
-- **GIVEN** a fix landed in `main` and its cherry-pick shipped on the previous release line
-- **WHEN** the next release branch is cut from `main`
-- **THEN** the changelog excludes shared history and that patch-equivalent fix
-
-#### Scenario: Candidate tags do not select stable versions
-- **GIVEN** candidate tags exist on a release line
-- **WHEN** the runner selects its next version and changelog baseline
-- **THEN** only stable tags are considered: the highest stable tag of the same line, otherwise the highest earlier stable version
-- **AND** the first release is `X.Y.0`, and subsequent releases increment the highest stable patch
-
-#### Scenario: A stable tag is outside the same-line history
-- **GIVEN** a stable tag exists for the target release line outside the branch history
-- **WHEN** the runner prepares a release
-- **THEN** it fails before creating a release PR or publishing
-
-#### Scenario: No earlier stable release exists
-- **GIVEN** no earlier stable tag exists
-- **WHEN** the runner prepares the first release
-- **THEN** the configured bootstrap SHA bounds the changelog history
-
-#### Scenario: Runtime overrides remain local
-- **WHEN** the runner selects a version and changelog baseline
-- **THEN** it copies no release commits or version files into `main`
-
-#### Scenario: Shared orchestration
-- **WHEN** a release branch is pushed
-- **THEN** the caller invokes `tilr-dev/.github/.github/workflows/release-branch.yml` at a fixed commit for branch validation, release-please and candidate selection
-- **AND** artifact builds and publication remain in this repository
-
-### Requirement: Merging the release PR builds and attaches the binaries
-Merging the release PR SHALL tag `vX.Y.Z` and create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.
-
-**Verified by**: `release::a_release_builds_and_packages_every_target` (static: `.github/workflows/release.yml`, `scripts/package.sh`).
-
-#### Scenario: Release v0.2.0
-- **WHEN** the release PR for `0.2.0` is merged
-- **THEN** tag `v0.2.0` has a GitHub release with one `tilr-v0.2.0-<target>.tar.gz` and checksum per target, each binary saying `0.2.0-<commit>`
-
-#### Scenario: Apple rejects a build
-- **WHEN** signing, signature verification or notarization fails for either macOS target
-- **THEN** the release workflow fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
-
-#### Scenario: Release target selection and packaging
-- **WHEN** the release build matrix runs
-- **THEN** it builds `aarch64-apple-darwin` and cross-compiles `x86_64-apple-darwin` on macOS, and builds `x86_64-unknown-linux-gnu` plus `aarch64-unknown-linux-gnu` only with `RELEASE_LINUX_ARM64=true`
-- **AND** Linux platforms are built through `scripts/release.sh`, while macOS compilation, signing and packaging run in separate jobs
-- **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
-
 ### Requirement: The CDN gets the release last
-After GitHub assets are attached, the `cdn` job SHALL verify each built platform carries `<tag version>-<commit>` and sign manifests and upload its completed `dist/cdn` layout with `scripts/release.sh --upload-only --channel <channel> <platforms>`, for both created releases and candidates. The channel SHALL be stable for a release and beta for a candidate. Both macOS platforms SHALL always be included; Linux arm64 SHALL remain optional.
+After GitHub assets are attached, the `cdn` job SHALL verify each built platform carries `<tag version>-<commit>` and sign manifests and upload its completed `dist/cdn` layout with `scripts/release.sh --upload-only --channel <channel> <platforms>`, for both stable tag releases and candidates. The channel SHALL be stable for a release and beta for a candidate. Both macOS platforms SHALL always be included; Linux arm64 SHALL remain optional.
 
 **Verified by**: `release::the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` (static: `.github/workflows/release.yml`).
 
@@ -252,20 +178,25 @@ After GitHub assets are attached, the `cdn` job SHALL verify each built platform
 
 #### Scenario: CDN credentials
 - **WHEN** the CDN job publishes a release
-- **THEN** it uses environment `cdn`, restricted to `release/*` branches, with bucket-scoped `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets and the `CLOUDFLARE_ACCOUNT_ID` variable. The signing step SHALL use the `TILR_UPDATE_SIGNING_KEY` secret (Ed25519 PEM); build jobs SHALL embed the public `TILR_UPDATE_PUBLIC_KEY` repository variable and SHALL NOT receive the private key
+- **THEN** it uses environment `cdn`, restricted to `release/*` branches and `v*` tags, with bucket-scoped `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets and the `CLOUDFLARE_ACCOUNT_ID` variable. The signing step SHALL use the `TILR_UPDATE_SIGNING_KEY` secret (Ed25519 PEM); build jobs SHALL embed the public `TILR_UPDATE_PUBLIC_KEY` repository variable and SHALL NOT receive the private key
 
 #### Scenario: Candidate publication
 - **WHEN** candidate GitHub assets have been attached
 - **THEN** the CDN job uploads completed archives and checksums before signed beta manifests and beta for enabled platforms, without rebuilding or modifying latest or install.sh
 
 ### Requirement: Releases are cut from release branches
-Nothing SHALL be released from `main`, the only integration branch: on the owner's explicit instruction a release branch `release/X.Y` is cut from a commit of `main`, and only pushes to `release/**` SHALL run release-please, release candidates and publishing. A fix for a release branch SHALL land in `main` first through a pull request and then be cherry-picked into `release/X.Y`; nothing SHALL be merged from a release branch back into `main`.
+Nothing SHALL be released from `main`. Branch pushes to `release/X.Y` SHALL create candidates; owner-created stable `vX.Y.Z` tag pushes SHALL release only commits in the matching branch history. Fixes SHALL land in main first and then be cherry-picked; release branches SHALL NOT be merged back into main.
 
 **Verified by**: `release::releases_run_only_on_release_branches` (static: `.github/workflows/release.yml` and the pinned shared workflow).
 
+#### Scenario: Owner selects the release
+- **WHEN** the owner prepares a release line
+- **THEN** `release/X.Y` is cut from a commit of main on the owner's explicit instruction
+- **AND** the owner creates the stable tag through `bin/release`, without requiring conventional commits, a version commit or a generated changelog
+
 #### Scenario: A pull request is merged into main
 - **WHEN** a pull request is merged into `main`
-- **THEN** the release workflow does not run: no release PR, release candidate, GitHub release or CDN upload
+- **THEN** the release workflow does not run: no release candidate, GitHub release or CDN upload
 
 #### Scenario: A fix for a release
 - **WHEN** a fix is needed for `release/0.3`
@@ -273,7 +204,7 @@ Nothing SHALL be released from `main`, the only integration branch: on the owner
 - **AND** no workflow merges `release/0.3` or a release back into `main`
 
 ### Requirement: A push to a release branch builds a release candidate
-A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. The CDN SHALL receive the candidate archives and checksums and update only the beta pointers; latest and install.sh SHALL NOT be touched.
+A push to `release/X.Y` whose commit does not already carry a stable tag on that line SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. The CDN SHALL receive the candidate archives and checksums and update only the beta pointers; latest and install.sh SHALL NOT be touched.
 
 **Verified by**: `candidate.test.cjs` in the pinned shared workflow (the candidate script with a stub GitHub CLI), `release::a_release_candidate_is_built_like_a_release_and_publishes_to_beta` (static: `.github/workflows/release.yml` and the pinned shared workflow).
 
@@ -298,17 +229,22 @@ A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.
 - **WHEN** the workflow is re-run for the commit tagged `v0.3.0` after its build or upload failed
 - **THEN** no candidate is tagged and nothing is built in place of the release
 
-#### Scenario: The push creates a release
-- **WHEN** the push is the merge of the release PR and release-please creates `v0.3.0`
-- **THEN** no candidate is tagged; the release is built and published to the CDN
+#### Scenario: Candidate tags do not retrigger stable builds
+- **WHEN** automation creates `v0.3.0-rc.1`
+- **THEN** the caller excludes that tag push and does not invoke stable validation
 
 #### Scenario: A branch not named release/X.Y
 - **WHEN** a branch `release/next` is pushed
-- **THEN** the release workflow fails with `release branches are named release/X.Y` before release-please runs: no release PR, release, candidate or build
+- **THEN** the release workflow fails with `release branches are named release/X.Y` before any tag or release mutation: no release, candidate or build
 
 #### Scenario: The CDN is left alone
 - **WHEN** a release candidate is built, its prerelease has its assets and the stable CDN channel already exists
 - **THEN** the stable CDN channel is left alone: the `cdn` job publishes beta and no `latest` or `install.sh` changes
+
+#### Scenario: Shared orchestration
+- **WHEN** a release branch is pushed
+- **THEN** the caller invokes `tilr-dev/.github/.github/workflows/release-branch.yml` at a fixed full commit with the same implementation pin for validation and candidate selection
+- **AND** artifact builds and publication remain in this repository
 
 ### Requirement: Specification merge readiness diagnostics
 Before fetching a pull request's test merge for specification authorization, the trusted check SHALL read the pull request through the GitHub API with pull-requests read permission, with the shared helper `spec_merge.py` downloaded from a fixed gitpm commit and checked against its pinned digest. It SHALL tell a conflict with `main` from a pending or stale merge result, and SHALL inspect candidate Git objects without executing candidate code.
@@ -695,8 +631,7 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 ### Requirement: Release pull requests enforce upstream first
 Pull requests into `release/**` SHALL report a `release-upstream` check. Each
 commit introduced relative to the target branch SHALL be reachable from main or
-match a non-merge commit in main by stable Git patch identity. Only release-please
-PRs SHALL be exempt. The check SHALL execute main's trusted code, treat candidate
+match a non-merge commit in main by stable Git patch identity. No author or source branch SHALL be exempt. The check SHALL execute main's trusted code, treat candidate
 objects only as data and fail closed on missing history.
 
 **Verified by**: `release::release_upstream_checks_real_git_histories` (runs
@@ -718,13 +653,9 @@ objects only as data and fail closed on missing history.
 - **WHEN** a PR contains an upstream cherry-pick followed by a novel patch, or a novel patch with a forged cherry-pick trailer
 - **THEN** the check fails for the novel patch
 
-#### Scenario: Release automation
-- **WHEN** a PR is authored by `tilr-bot[bot]` with user type `Bot`, from the same repository and branch `release-please--branches--<target release branch>`
-- **THEN** the check succeeds without requiring version and changelog commits in main
-
-#### Scenario: Spoofed release branch
-- **WHEN** another author or a fork uses the release-please branch name
-- **THEN** the normal upstream checks still apply
+#### Scenario: Automation follows upstream first
+- **WHEN** an automation-authored pull request proposes a patch absent from main
+- **THEN** the normal upstream checks fail for that patch
 
 #### Scenario: Incomplete or stale snapshots
 - **WHEN** Git history is missing or shallow, or fetched base and head do not match the event
@@ -747,14 +678,14 @@ The CI gitleaks gate SHALL scan the whole history of the commit under check (the
 After stable GitHub assets are uploaded, the release workflow SHALL use tilr-bot to propose the exact version and released protocol in `tilr-dev/desktop-mac` main through one pin pull request. It SHALL preserve the pin's positive artifact revision, run ordinary desktop CI and require ordinary review and merge. Candidates SHALL NOT propose updates.
 
 #### Scenario: Stable release
-- **WHEN** GitHub assets for stable `vX.Y.Z` have been uploaded after `release_created` is true
+- **WHEN** GitHub assets for stable `vX.Y.Z` have been uploaded on a stable tag push with a nonempty tag and `is_rc=false`
 - **THEN** tilr-bot opens the pin update pull request into desktop-mac main
 - **AND** its title is `chore: bump tilrd to X.Y.Z`
 - **AND** `server-release.json` selects `X.Y.Z` and `PROTOCOL_VERSION` from the released source, preserving `build` from main
 - **AND** ordinary desktop CI acquires that exact release through `fetch_server.py`
 
 #### Scenario: Candidate or no release
-- **WHEN** a release candidate is built or no stable release was created
+- **WHEN** a release candidate is built or the shared workflow selects no tag
 - **THEN** no desktop pin pull request or branch is created or updated
 
 #### Scenario: An update pull request is already open
@@ -775,6 +706,39 @@ After stable GitHub assets are uploaded, the release workflow SHALL use tilr-bot
 - **THEN** the step logs the skipped release and exits successfully
 - **AND** the remote bot branch and pull request remain unchanged
 - **AND** a leftover bot branch without an open pull request does not prevent a newer-than-main release from opening a new pull request
+
+### Requirement: A release tag builds and attaches the binaries
+A push of the owner-created stable tag `vX.Y.Z` SHALL create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.
+
+**Verified by**: `release::a_release_builds_and_packages_every_target` (static: `.github/workflows/release.yml`, `scripts/package.sh`).
+
+#### Scenario: Release v0.2.0
+- **WHEN** stable tag `v0.2.0` is pushed from the history of `release/0.2`
+- **THEN** tag `v0.2.0` has a GitHub release with one `tilr-v0.2.0-<target>.tar.gz` and checksum per target, each binary saying `0.2.0-<commit>`
+
+#### Scenario: Apple rejects a build
+- **WHEN** signing, signature verification or notarization fails for either macOS target
+- **THEN** the release workflow fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
+
+#### Scenario: Release target selection and packaging
+- **WHEN** the release build matrix runs
+- **THEN** it builds `aarch64-apple-darwin` and cross-compiles `x86_64-apple-darwin` on macOS, and builds `x86_64-unknown-linux-gnu` plus `aarch64-unknown-linux-gnu` only with `RELEASE_LINUX_ARM64=true`
+- **AND** Linux platforms are built through `scripts/release.sh`, while macOS compilation, signing and packaging run in separate jobs
+- **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
+
+#### Scenario: Stable tag outside the release line
+- **WHEN** `v0.3.0` points outside the history of `release/0.3`, or that branch is missing
+- **THEN** the shared workflow refuses before creating a release or building and publishing assets
+
+#### Scenario: Version source
+- **WHEN** a stable or candidate tag is built
+- **THEN** checkout selects the tag and `TILR_BUILD_VERSION` is its version without `v`
+- **AND** CI refuses a numeric tag version lower than the workspace Cargo version before compilation; Cargo files remain unchanged
+
+#### Scenario: Stable notes
+- **WHEN** a stable tag release is created
+- **THEN** GitHub generates release notes from the highest previous stable tag on the line, or the highest previous stable tag overall when the line has none
+- **AND** the first release omits the baseline; no tracked changelog is generated
 
 ## Notes
 

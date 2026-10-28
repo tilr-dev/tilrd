@@ -259,8 +259,8 @@ Cloud repository.
 | CI runs every AGENTS.md gate (including MSRV and full-history secret scanning) on pull requests, pushes and merge groups of `main` and `release/**`, rejects removed gates, and smoke tests both executables | `ci_runs_every_gate_of_agents_md`, `ci_smoke_tests_both_executables` |
 | AGENTS.md, README, USE_CASES.md, `scripts/linux.sh` and CI name one test command, `cargo nextest run`, and none still runs the suite with `cargo test` | `the_test_command_is_the_same_everywhere` |
 | Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
-| Release Please bumps the workspace and lockfile; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_please_bumps_the_workspace_version_and_lock`, `a_release_builds_and_packages_every_target` |
-| Releases run only on pushes to `release/**`, with release-please targeting the pushed branch; nothing merges a release back into `main` | `releases_run_only_on_release_branches` |
+| Release tags supply build versions without generated version files; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_tags_supply_the_version_without_release_configuration`, `a_release_builds_and_packages_every_target` |
+| Candidates run on `release/**` and stable releases on `vX.Y.Z` tag pushes; nothing merges a release back into `main` | `releases_run_only_on_release_branches` |
 | A push to `release/X.Y` without a release tags the next candidate `vX.Y.Z-rc.N` (patch after a stable release, rc after the highest one, the same tag on a re-run) and refuses a branch not named `release/X.Y` | `candidate.test.cjs` in the pinned `tilr-dev/.github` workflow, `.github/release-workflow.test.cjs`, `release::releases_run_only_on_release_branches` |
 | A release candidate is built, checked and attached like a release, with the tag's version in the binaries, and publishes only to the CDN beta channel | `a_release_candidate_is_built_like_a_release_and_publishes_to_beta` |
 | `release.sh` builds the version `TILR_BUILD_VERSION` names, when set, instead of the one in `Cargo.toml` | `a_release_is_named_after_the_build_version_when_given` |
@@ -645,8 +645,8 @@ itests/tests -p test_coverage.py`.
 
 - `release::release_upstream_checks_real_git_histories`: direct and forged fixes fail;
   upstream commits and cherry-picks pass; mixed PRs, novel merges, empty commits and
-  spoofed automation fail; authentic release-please PRs pass.
-- `release::release_upstream_workflow_is_trusted`: the release PR check executes main's
+  automation with novel patches fail; upstream-only automation passes.
+- `release::release_upstream_workflow_is_trusted`: the release branch PR check executes main's
   checker with read-only permissions and fetches candidate Git objects as data.
 
 - Signed update metadata: `update::update_requires_authentic_metadata_before_downloading`

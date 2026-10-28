@@ -27,13 +27,6 @@ def check(repo, event):
         if git(repo, "rev-parse", ref) != expected:
             raise ValueError(f"{ref} does not match the pull request event; rerun the check")
     git(repo, "rev-parse", "refs/inspection/main^{commit}")
-    if (pr["user"]["login"] == "tilr-bot[bot]"
-            and pr["user"]["type"] == "Bot"
-            and pr["head"]["repo"] is not None
-            and pr["head"]["repo"]["full_name"] == event["repository"]["full_name"]
-            and pr["head"]["ref"] == f"release-please--branches--{target}"):
-        print("release-upstream: release-please PR")
-        return
     git(repo, "merge-base", "refs/inspection/base", "refs/inspection/head")
     commits = git(repo, "rev-list", "--reverse",
                   "refs/inspection/base..refs/inspection/head").splitlines()

@@ -79,7 +79,7 @@ path.write_text(json.dumps(state))
         gh.chmod(0o755)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
                         GH_STATE=str(self.state), DESKTOP_REMOTE=str(self.remote),
-                        RELEASE_CREATED='true', IS_RC='false', TAG='v0.3.0',
+                        IS_RC='false', TAG='v0.3.0',
                         GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
 
     def run_step(self, success=True, **env):
@@ -190,7 +190,7 @@ path.write_text(json.dumps(state))
 
     def test_candidates_and_no_release_do_nothing(self):
         self.run_step(TAG='v0.3.0-rc.1', IS_RC='true')
-        self.run_step(TAG='', RELEASE_CREATED='false')
+        self.run_step(TAG='')
         self.assertEqual(self.github()['calls'], [])
         self.assertEqual(git(self.remote, 'branch', '--list', BRANCH), '')
 
