@@ -13,6 +13,43 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+#[test]
+fn release_upstream_checks_real_git_histories() {
+    let output = Command::new("python3")
+        .arg(root().join("scripts/test_release_upstream.py"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn release_upstream_workflow_is_trusted() {
+    let workflow = text_file(".github/workflows/release-upstream.yml");
+    for required in [
+        "pull_request_target:",
+        "branches: ['release/**']",
+        "name: release-upstream",
+        "ref: main",
+        "persist-credentials: false",
+        "contents: read",
+        "git init --bare",
+        "+refs/heads/main:refs/inspection/main",
+        "+$BASE_SHA:refs/inspection/base",
+        "+$HEAD_SHA:refs/inspection/head",
+        "python3 scripts/release_upstream.py",
+        "--event \"$GITHUB_EVENT_PATH\"",
+    ] {
+        assert!(workflow.contains(required), "missing {required}");
+    }
+    assert!(!workflow.contains("secrets."));
+    assert!(!workflow.contains("ref: ${{ github.event.pull_request.head"));
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -867,8 +904,8 @@ fn assert_ci_gates(ci: &str) {
     let secrets = job(&ci, "secrets");
     let msrv = job(&ci, "msrv");
     for gate in [
-        "rustup toolchain install 1.90 --profile minimal",
-        "rustup default 1.90",
+        "rustup toolchain install 1.99 --profile minimal",
+        "rustup default 1.99",
         "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
     ] {
         assert!(msrv.contains(gate), "missing MSRV gate: {gate}");
@@ -901,8 +938,8 @@ fn ci_runs_every_gate_of_agents_md() {
     for clause in [
         "  merge_group:\n",
         ", 'release/**'",
-        "rustup toolchain install 1.90 --profile minimal",
-        "rustup default 1.90",
+        "rustup toolchain install 1.99 --profile minimal",
+        "rustup default 1.99",
         "- run: cargo check --workspace --all-targets --features tilrd/failpoints --locked",
         "fetch-depth: 0",
         "- run: cargo fmt --all --check",

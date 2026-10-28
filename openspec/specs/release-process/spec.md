@@ -129,7 +129,7 @@ With `--publish` and optional `--channel stable|beta` (default `stable`), `scrip
 - **THEN** no build runs and only their archives, checksums and beta pointers are uploaded
 
 ### Requirement: CI gates every change
-Every pull request into `main` or `release/**`, every merge queue group and every push to `main` or `release/**` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.90; `cargo deny check`; `gitleaks git` over the whole history.
+Every pull request into `main` or `release/**`, every merge queue group and every push to `main` or `release/**` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.99; `cargo deny check`; `gitleaks git` over the whole history.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
@@ -140,6 +140,10 @@ Every pull request into `main` or `release/**`, every merge queue group and ever
 #### Scenario: The release PR is checked
 - **WHEN** the release PR into `release/0.3` is opened or updated, or a fix is cherry-picked into `release/0.3`
 - **THEN** the same checks run on it as on a pull request into `main`
+
+#### Scenario: Build at the minimum supported Rust version
+- **WHEN** CI runs the MSRV job
+- **THEN** it installs Rust 1.99 and runs `cargo check --workspace --all-targets --features tilrd/failpoints --locked`
 
 ### Requirement: CI smoke-tests the built executables
 CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version` is `<name> <package version>-<short commit> (<platform>)` and that `--help` runs.
@@ -477,7 +481,7 @@ them or they do not exist.
 - **THEN** cargo in the container sees `CARGO_PROFILE_DEV_DEBUG=full` and builds `target/debug/tilrd` with full debuginfo
 
 ### Requirement: Specification change authorization on main
-Pull requests into main SHALL pass the required spec-change check. One shared checker SHALL enforce intake Spec scope and accept authorization only from Dan's comments, using the dedicated read-only task credential. The check SHALL run only from the trusted pull_request_target workflow in main and compare main with GitHub's test merge of the pull request; a copy of that workflow in the pull request is never run. The other checks run in CI.
+Pull requests into main SHALL pass spec-change using the shared checker and read-only task credential to enforce intake Spec scope and Dan's authorization. PR authorization SHALL run only from the trusted pull_request_target workflow in main, never from candidate code. On merge_group checks_requested, the workflow SHALL report success as spec-change without repeating PR authorization; queue admission requires green PR checks.
 
 #### Scenario: Existing specification is changed without authorization
 - **WHEN** an intake-ready comment declares Spec scope and a pull request removes or changes existing specification lines without a matching spec-change entry from Dan
@@ -489,7 +493,7 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **AND** deltas that modify existing requirements still require authorization
 
 #### Scenario: Authorized changes
-- **WHEN** every affected existing requirement and foreign change has a matching operation in Dan's spec-change block for this component
+- **WHEN** the task is in Review, Supervise, or Merge and every affected existing requirement and foreign change has a matching operation in Dan's spec-change block for this component
 - **THEN** the check passes
 
 #### Scenario: Bot impersonates authorization
@@ -497,15 +501,16 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **THEN** the block does not authorize any changes
 
 #### Scenario: Task predates scope declarations
-- **WHEN** the task's intake-ready comments contain no Spec scope line
+- **WHEN** the task was created before 2026-10-22T21:02:26Z, is neither Done nor Canceled, and has a trusted intake-ready comment but no Spec scope line
 - **THEN** the check passes as a legacy task
+- **AND** the cutoff is the landing of the original authorization rule in dev
 
 #### Scenario: Foreign change edited or archived
 - **WHEN** a pull request edits or archives another task's change
 - **THEN** the matching edit or archive entry from Dan is required
 
 #### Scenario: Task data is unavailable
-- **WHEN** the task cannot be identified or its comments cannot be read completely
+- **WHEN** the task cannot be identified, its creation date or column is unavailable, or its comments cannot be read completely
 - **THEN** the check fails with an actionable error
 
 #### Scenario: Local merge automation
@@ -581,6 +586,34 @@ Pull requests into main SHALL pass the required spec-change check. One shared ch
 - **THEN** the check fails with an error instead of treating it as a new capability
 - **AND** the same applies when a delta in the task's own change names a capability that differs from an existing one only by letter case or Unicode form
 
+#### Scenario: Branch names cannot select an unavailable or closed task
+- **WHEN** the task branch names a nonexistent task or a task in Done or Canceled
+- **THEN** the check exits with failure and an actionable error even if no Spec scope line exists
+
+#### Scenario: Missing scope is not proof of legacy status
+- **WHEN** a task without Spec scope was created at or after 2026-10-22T21:02:26Z, or has no trusted intake-ready comment
+- **THEN** the check exits with failure instead of granting a legacy exception
+
+#### Scenario: Grants expire outside the review lifecycle
+- **WHEN** a task outside Review, Supervise, and Merge contains Dan's authorization block
+- **THEN** the block grants no permission to modify existing requirements or foreign changes
+- **AND** additions and edits of the declared own change that need no grant remain permitted
+- **AND** a fresh invocation after the task enters Review, Supervise, or Merge evaluates its grants
+
+#### Scenario: Offline task metadata
+- **WHEN** local verification supplies a trusted export containing the issue metadata and complete comment activity
+- **THEN** the same existence, creation date, closed-state, scope, and grant-lifetime rules apply
+- **AND** a comments-only array or metadata naming a different task fails with an actionable error
+
+#### Scenario: Pull request comparison
+- **WHEN** pull_request_target requests authorization
+- **THEN** the checker compares main with GitHub's test merge of the pull request
+
+#### Scenario: Merge queue requests the required check
+- **WHEN** GitHub sends merge_group checks_requested for queued pull requests
+- **THEN** the spec-change job reports success without reading pull_request fields, fetching candidate trees, downloading checkers, or accessing the task credential
+- **AND** PR authorization still runs on pull_request_target and fails for unauthorized specification changes
+
 ### Requirement: macOS releases require Developer ID and accepted notarization
 The macOS release helper SHALL require macOS and Apple signing credentials, sign and verify both executables with Developer ID, hardened runtime and a secure timestamp, and require Accepted notarization before producing distributable artifacts. CI SHALL use a temporary keychain and remove it even on failure.
 
@@ -613,6 +646,44 @@ The macOS release helper SHALL require macOS and Apple signing credentials, sign
 - **AND** notarization uses an App Store Connect API key from the apple-signing environment, not an Apple ID password; its key file is deleted right after it is stored in the keychain and again on failure
 - **AND** the keychain is removed even on failure, without exporting its path, identity or notary profile through GITHUB_ENV
 - **AND** a separate packaging job consumes only signed macOS artifacts for GitHub and CDN publication
+
+### Requirement: Release pull requests enforce upstream first
+Pull requests into `release/**` SHALL report a `release-upstream` check. Each
+commit introduced relative to the target branch SHALL be reachable from main or
+match a non-merge commit in main by stable Git patch identity. Only release-please
+PRs SHALL be exempt. The check SHALL execute main's trusted code, treat candidate
+objects only as data and fail closed on missing history.
+
+**Verified by**: `release::release_upstream_checks_real_git_histories` (runs
+`scripts/test_release_upstream.py`), `release::release_upstream_workflow_is_trusted`.
+
+#### Scenario: Direct release fix
+- **WHEN** a PR into `release/0.3` contains a patch absent from main
+- **THEN** `release-upstream` fails and identifies the commit to land in main first
+
+#### Scenario: Unsupported commits
+- **WHEN** a proposed merge or empty commit is not reachable from main
+- **THEN** the check fails, identifies the commit and instructs the author to land the change in main first
+
+#### Scenario: Cherry-picked upstream fixes
+- **WHEN** every proposed commit is in main or is a patch-equivalent cherry-pick from main, even with a different SHA and without a trailer
+- **THEN** the check succeeds
+
+#### Scenario: Mixed and forged commits
+- **WHEN** a PR contains an upstream cherry-pick followed by a novel patch, or a novel patch with a forged cherry-pick trailer
+- **THEN** the check fails for the novel patch
+
+#### Scenario: Release automation
+- **WHEN** a PR is authored by `tilr-bot[bot]` with user type `Bot`, from the same repository and branch `release-please--branches--<target release branch>`
+- **THEN** the check succeeds without requiring version and changelog commits in main
+
+#### Scenario: Spoofed release branch
+- **WHEN** another author or a fork uses the release-please branch name
+- **THEN** the normal upstream checks still apply
+
+#### Scenario: Incomplete or stale snapshots
+- **WHEN** Git history is missing or shallow, or fetched base and head do not match the event
+- **THEN** the check fails rather than authorizing the PR
 
 ## Notes
 

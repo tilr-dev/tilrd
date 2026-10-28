@@ -381,7 +381,7 @@ state format; platforms other than `linux-aarch64`.
 | A 1 MiB copy comes in 4 chunks of one transfer; an 8 MiB copy to a client that reads nothing is cut short by the next copy and never gets its last chunk (a 9 MiB read taking turns with it in the bulk lane ends first) | `a_large_copy_comes_in_chunks_and_a_newer_one_replaces_it` |
 | `--no-clipboard`: OSC 52 in a pane is not sent to a client that takes copies | `nothing_is_copied_to_clients_with_the_clipboard_turned_off` |
 | `--clipboard-max 1K`: `TILR_CLIPBOARD_MAX` is 1024 in the pane; `xclip -i` of 2 KiB exits 1 with `too large: 2 KB, the clipboard takes at most 1 KB` and the clipboard keeps what it held; an OSC 52 copy of 2 KiB is dropped with a log line and not sent | `a_copy_over_the_limit_is_refused` |
-| A copy no client takes: `xclip -i` exits 0 without running a real `xclip` later on `PATH`, the copy is the clipboard until `--clipboard-ttl`, and a client that subscribes later is not sent it | `a_copy_nobody_takes_stays_in_the_shared_buffer` |
+| A copy no client takes: `xclip -i` exits 0 without running a real `xclip` later on `PATH`, the copy is the clipboard until `--clipboard-ttl`, and a client that subscribes later is not sent it; the next copy starts only after that client's subscription is ready (registration held with a pause hook) | `a_copy_nobody_takes_stays_in_the_shared_buffer` |
 | Unit: `xclip` copy requests (`-i` or no `-o`, `-t`, files, `-rmlastnl`; the primary selection is not ours) (`src/clipboard.rs`) | `clipboard::tests::xclip_copy_requests` |
 | Unit: `wl-copy` requests (`-t`, `--type=`, `-n`, text arguments, `--`; `--primary` and `--clear` are not ours) (`src/clipboard.rs`) | `clipboard::tests::wl_copy_requests` |
 | Unit: a copy over the limit is refused with its whole size, from text or files (`src/clipboard.rs`) | `clipboard::tests::copies_over_the_limit_are_refused` |
@@ -633,3 +633,11 @@ itests/tests -p test_coverage.py`.
   from a local CDN and checks the stable default, explicit stable and ignored channel environment variable.
   `update::update_rejects_invalid_channels_and_does_not_fall_back_from_beta` checks missing beta
   and invalid channel failures without installation changes.
+
+## Release upstream gate
+
+- `release::release_upstream_checks_real_git_histories`: direct and forged fixes fail;
+  upstream commits and cherry-picks pass; mixed PRs, novel merges, empty commits and
+  spoofed automation fail; authentic release-please PRs pass.
+- `release::release_upstream_workflow_is_trusted`: the release PR check executes main's
+  checker with read-only permissions and fetches candidate Git objects as data.
