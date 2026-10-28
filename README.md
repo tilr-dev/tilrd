@@ -100,8 +100,9 @@ tilr update
 
 `tilr update` has the running server do it (it runs `tilrd update` as a child of the
 server, in its environment), then reconnects and prints the version the server reloaded
-into. It asks the CDN which version is ready for its platform, downloads its archive, checks
-it against its checksum, unpacks it into a directory next to the executable, checks that
+into. It asks the CDN which version is ready for its platform, verifies the Ed25519 signature
+of its channel manifest using the public key embedded in `tilrd`, downloads its archive and
+checks its SHA-256 against that authenticated manifest, unpacks it into a directory next to the executable, checks that
 both programs run, and renames them over the installed ones: `tilr` (next to `tilrd`) first,
 `tilrd` last; if `tilrd` cannot be put in place, the old `tilr` is put back. Both programs are
 synced to disk before the renames and the directory after them, so `updated …` means the
@@ -110,6 +111,12 @@ then [reloads itself](#reloading-without-closing-shells) and keeps every shell. 
 (or `TILR_CDN`) names another place to fetch releases from. If the reload request fails
 after installation, the new programs remain installed, the command exits non-zero and
 reports the request failure without claiming reload succeeded.
+
+Missing or invalid signed metadata fails before an archive is downloaded or either program
+changes. There is no fallback to the unsigned `.sha256` file. The manifest binds the version,
+platform, archive basename and checksum; a different CDN or runtime environment cannot
+replace the embedded trust key. Signatures authenticate releases, including intentional
+rollbacks; they do not prevent replay of a previously signed release.
 
 A legacy `app-managed.json` next to `tilrd` is ignored by the updater and remains unchanged.
 
@@ -1342,18 +1349,51 @@ Every other push to `release/X.Y` builds a release candidate: the pushed commit 
 `vX.Y.Z-rc.N` and a GitHub prerelease of that tag gets the same archives and checksums
 (`Z` is 0 until `vX.Y.0` is released, then the next patch; `N` counts the candidates of that
 version). The binaries say `X.Y.Z-rc.N-<commit>`. Candidates are published to the CDN beta channel: archives and checksums go under
-`releases/<version>/`, followed by `releases/<platform>/beta`. They never change
+`releases/<version>/`, followed by `releases/<platform>/beta.manifest.json` and
+`releases/<platform>/beta`. They never change
 `latest` or `install.sh`. Install a candidate on a test machine with
 `tilrd update --channel beta`; `tilrd update --channel stable` (the default) reads
 `latest`. There is no channel environment variable; `tilr update` and the installer
 continue to use stable. Missing beta fails without falling back to stable. Stable
 publication leaves beta unchanged: a stable release follows beta testing.
 
+Before the first signed release, provision an Ed25519 key pair outside the checkout:
+
+```sh
+umask 077
+openssl genpkey -algorithm ED25519 -out update-signing.pem
+openssl pkey -in update-signing.pem -pubout -outform DER -out update-public.der
+# The last 32 bytes of the Ed25519 SubjectPublicKeyInfo are the raw public key.
+tail -c 32 update-public.der | od -An -v -tx1 | tr -d ' \n'
+```
+
+Set repository variable `TILR_UPDATE_PUBLIC_KEY` to those 64 hex characters before building
+release binaries. Put the complete PEM contents in secret `TILR_UPDATE_SIGNING_KEY` of
+GitHub environment `cdn`; retain a secure backup and remove the local private-key file.
+Only the CDN publication step receives that secret. Release builds reject a missing key
+and the debug fixture key. Public-key changes require a new binary; runtime overrides
+are ignored. Before changing keys, distribute a build that trusts the replacement key.
+
+Manual builds also need `TILR_UPDATE_PUBLIC_KEY` exported; manual publication additionally
+needs `TILR_UPDATE_SIGNING_KEY` containing the PEM. The signer requires OpenSSL with
+Ed25519 support (OpenSSL 3.0 or newer); `OPENSSL` can name its executable. On macOS it
+prefers Homebrew OpenSSL to the system LibreSSL. It checks the private/public pair and
+prepares every selected manifest before uploading anything. Each archive and checksum
+is uploaded before its signed channel manifest and legacy pointer. Manifest envelopes
+are JSON with a `payload` string and hex `signature`; Ed25519 covers the exact UTF-8 payload
+bytes. Payload fields are `version`, `platform`, `archive`, and `sha256`.
+
+Old clients and the installer continue to read the unsigned pointer and `.sha256`; removal
+of that legacy layout follows a signed release separately. During publication a request
+may observe mismatched metadata and pointer; it fails closed and can be run again.
+
 The CDN layout is what the installer and `tilrd update` read:
 
 ```text
 releases/<platform>/latest                                 the stable version for the platform
 releases/<platform>/beta                                   the candidate version for the platform
+releases/<platform>/latest.manifest.json                    signed stable metadata
+releases/<platform>/beta.manifest.json                      signed candidate metadata
 releases/<version>/tilr-<version>-<platform>.tar.gz        tilrd and tilr
 releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
 ```

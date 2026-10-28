@@ -641,3 +641,7 @@ itests/tests -p test_coverage.py`.
   spoofed automation fail; authentic release-please PRs pass.
 - `release::release_upstream_workflow_is_trusted`: the release PR check executes main's
   checker with read-only permissions and fetches candidate Git objects as data.
+
+- Signed update metadata: `update::update_requires_authentic_metadata_before_downloading`
+  rejects missing, forged, malformed and mismatched manifests before requesting an archive,
+  preserves both installed programs, and installs a release with an authentic manifest.

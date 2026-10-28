@@ -64,6 +64,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  TILR_UPDATE_PUBLIC_KEY: ${{ vars.TILR_UPDATE_PUBLIC_KEY }}
 
 jobs:
   release-please:
@@ -454,6 +455,7 @@ jobs:
       - name: Upload to the CDN
         env:
           CHANNEL: ${{ needs.release-please.outputs.release_created == 'true' && 'stable' || 'beta' }}
+          TILR_UPDATE_SIGNING_KEY: ${{ secrets.TILR_UPDATE_SIGNING_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

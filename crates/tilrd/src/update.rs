@@ -7,7 +7,8 @@
 //! releases/<platform>/beta                                   the candidate for the platform
 //! releases/<platform>/latest                                 the version ready for the platform
 //! releases/<version>/tilr-<version>-<platform>.tar.gz        tilrd and tilr
-//! releases/<version>/tilr-<version>-<platform>.tar.gz.sha256
+//! releases/<platform>/latest.manifest.json                   signed stable metadata
+//! releases/<platform>/beta.manifest.json                     signed candidate metadata
 //! ```
 //!
 //! The archive is unpacked into a directory next to the executable, both
@@ -67,7 +68,34 @@ fn archive_name(version: &str, platform: &str) -> String {
     format!("tilr-{version}-{platform}.tar.gz")
 }
 
-fn latest_version(cdn: &str, platform: &str, channel: Channel) -> Result<String> {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    version: String,
+    platform: String,
+    archive: String,
+    sha256: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Envelope {
+    payload: String,
+    signature: String,
+}
+
+fn unhex(value: &str) -> Result<Vec<u8>> {
+    ensure!(
+        value.len().is_multiple_of(2) && value.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid hexadecimal metadata"
+    );
+    (0..value.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&value[i..i + 2], 16).context("decode hexadecimal metadata"))
+        .collect()
+}
+
+fn latest_version(cdn: &str, platform: &str, channel: Channel) -> Result<Manifest> {
     let cdn = cdn.trim_end_matches('/');
     let pointer = channel.pointer();
     let latest = fetch_text(&format!("{cdn}/releases/{platform}/{pointer}"))
@@ -81,26 +109,43 @@ fn latest_version(cdn: &str, platform: &str, channel: Channel) -> Result<String>
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_')),
         "{cdn} names a release that is not a version: {latest:?}"
     );
-    Ok(latest.to_owned())
-}
-
-fn download(cdn: &str, latest: &str, platform: &str) -> Result<Vec<u8>> {
-    let url = format!("{cdn}/releases/{latest}/{}", archive_name(latest, platform));
-    let checksum = match ureq::get(&format!("{url}.sha256")).call() {
+    let url = format!("{cdn}/releases/{platform}/{pointer}.manifest.json");
+    let bytes = match ureq::get(&url).call() {
         Ok(mut response) => response
             .body_mut()
-            .read_to_string()
-            .context("fetch the checksum")?,
+            .with_config()
+            .limit(16 << 10)
+            .read_to_vec()
+            .context("fetch signed manifest")?,
         Err(ureq::Error::StatusCode(404)) => {
-            bail!("{cdn} has no release {latest} for {platform}")
+            bail!("{cdn} has no release {latest} for {platform}: signed manifest missing")
         }
-        Err(err) => return Err(err).context("fetch the checksum"),
+        Err(err) => return Err(err).context("fetch signed manifest"),
     };
-    let expected = checksum
-        .split_whitespace()
-        .next()
-        .context("the checksum file is empty")?
-        .to_ascii_lowercase();
+    let envelope: Envelope = serde_json::from_slice(&bytes).context("invalid signed manifest")?;
+    let key = unhex(env!("TILR_UPDATE_PUBLIC_KEY"))?;
+    let signature = unhex(&envelope.signature)?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(envelope.payload.as_bytes(), &signature)
+        .map_err(|_| {
+            anyhow::anyhow!("update manifest signature is invalid, nothing was installed")
+        })?;
+    let manifest: Manifest =
+        serde_json::from_str(&envelope.payload).context("invalid manifest payload")?;
+    ensure!(
+        manifest.version == latest
+            && manifest.platform == platform
+            && manifest.archive == archive_name(latest, platform)
+            && manifest.sha256.len() == 64
+            && manifest.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+        "update manifest does not match the selected release, nothing was installed"
+    );
+    Ok(manifest)
+}
+
+fn download(cdn: &str, manifest: &Manifest) -> Result<Vec<u8>> {
+    let url = format!("{cdn}/releases/{}/{}", manifest.version, manifest.archive);
+    let expected = manifest.sha256.to_ascii_lowercase();
 
     let archive = ureq::get(&url)
         .call()
@@ -163,8 +208,8 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
         let latest = latest_version(cdn, platform, Channel::Stable).with_context(|| {
             format!("no release of tilr for {platform} on {cdn}; give one with --archive")
         })?;
-        let archive = download(cdn, &latest, platform)?;
-        (archive_name(&latest, platform), archive)
+        let archive = download(cdn, &latest)?;
+        (latest.archive, archive)
     };
     fs::create_dir_all(out)?;
     let staging = out.join(format!(".tilr-fetch.{}", std::process::id()));
@@ -188,7 +233,7 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
 pub fn run(cdn: &str, channel: Channel, exe: &Path) -> Result<()> {
     let cdn = cdn.trim_end_matches('/');
     let latest = latest_version(cdn, PLATFORM, channel)?;
-    if latest == VERSION {
+    if latest.version == VERSION {
         println!("tilrd {VERSION} ({PLATFORM}) is the latest release");
         return Ok(());
     }
@@ -204,8 +249,9 @@ pub fn run(cdn: &str, channel: Channel, exe: &Path) -> Result<()> {
     }
     remove_leftovers(dir);
 
-    println!("downloading tilr {latest} ({PLATFORM})");
-    let archive = download(cdn, &latest, PLATFORM)?;
+    println!("downloading tilr {} ({PLATFORM})", latest.version);
+    let archive = download(cdn, &latest)?;
+    let latest = latest.version;
 
     // Next to the executable, so that the renames stay on one filesystem.
     let staged = Staged(dir.join(format!("{STAGING}{}", std::process::id())));

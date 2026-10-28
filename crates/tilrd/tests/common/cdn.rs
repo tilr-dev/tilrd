@@ -6,6 +6,14 @@ use std::path::PathBuf;
 /// A file that has a twin named `<file>.cut` breaks off halfway. Returns the
 /// base URL.
 pub fn serve_files(root: PathBuf) -> String {
+    serve_files_with_requests(root).0
+}
+
+pub fn serve_files_with_requests(
+    root: PathBuf,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = requests.clone();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -18,6 +26,7 @@ pub fn serve_files(root: PathBuf) -> String {
             }
             let request = String::from_utf8_lossy(&request);
             let path = request.split(' ').nth(1).unwrap_or("/");
+            recorded.lock().unwrap().push(path.to_owned());
             let file = root.join(path.trim_start_matches('/'));
             let mut cut = file.as_os_str().to_owned();
             cut.push(".cut");
@@ -46,5 +55,5 @@ pub fn serve_files(root: PathBuf) -> String {
             };
         }
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), requests)
 }

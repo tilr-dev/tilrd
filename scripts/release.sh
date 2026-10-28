@@ -124,6 +124,10 @@ else
 fi
 [ -n "$publish" ] || exit 0
 
+# Sign every selected platform before the first upload. No partial publication
+# is possible when a signing key or a staged archive is invalid.
+python3 scripts/sign-update-manifest.py "$version" "$pointer" "$@"
+
 # S3 object access works with bucket-scoped credentials.
 put() {
     aws s3 cp "$4" "s3://tilr-cdn/$1" \
@@ -134,6 +138,8 @@ for platform in "$@"; do
     name="releases/$version/tilr-$version-$platform.tar.gz"
     put "$name" application/gzip "public, max-age=31536000, immutable" "dist/cdn/$name"
     put "$name.sha256" "text/plain; charset=utf-8" "public, max-age=31536000, immutable" "dist/cdn/$name.sha256"
+    manifest="releases/$platform/$pointer.manifest.json"
+    put "$manifest" "application/json" "no-cache" "dist/cdn/$manifest"
     # Last: from here on the platform is offered this version.
     put "releases/$platform/$pointer" "text/plain; charset=utf-8" "no-cache" "dist/cdn/releases/$platform/latest"
 done

@@ -82,6 +82,7 @@ impl Fixture {
         fs::create_dir(dir.join("bin")).unwrap();
         for script in [
             "release.sh",
+            "sign-update-manifest.py",
             "install.sh",
             "macos-build.sh",
             "cdn-layout.sh",
@@ -205,6 +206,24 @@ printf '{"status":"%s"}\n' "${NOTARY_STATUS:-Accepted}"
                 self.dir.join("bin").display(),
                 std::env::var("PATH").unwrap()
             ),
+        );
+        let seed_der = [
+            vec![
+                0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
+                0x04, 0x20,
+            ],
+            vec![0; 32],
+        ]
+        .concat();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(seed_der);
+        command.env(
+            "TILR_UPDATE_SIGNING_KEY",
+            format!("-----BEGIN PRIVATE KEY-----\n{encoded}\n-----END PRIVATE KEY-----\n"),
+        );
+        command.env(
+            "TILR_UPDATE_PUBLIC_KEY",
+            "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
         );
         command.env("TILR_SIGN_IDENTITY", "Developer ID Application: Fixture");
         command.env("TILR_NOTARY_PROFILE", "fixture");
@@ -411,6 +430,7 @@ fn both_macos_architectures_publish_the_signed_bytes_and_checked_layout() {
         expected.extend([
             key.clone(),
             format!("{key}.sha256"),
+            format!("releases/{platform}/latest.manifest.json"),
             format!("releases/{platform}/latest"),
         ]);
     }
@@ -475,7 +495,7 @@ fn publishing_uploads_the_archive_and_its_checksum_before_latest() {
     assert_exit(&f.run(&["--publish", "linux-aarch64"], true), 0);
     let version = f.version();
     let lines: Vec<_> = f.log().lines().map(str::to_owned).collect();
-    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(lines.len(), 5, "{lines:?}");
     let base = format!("releases/{version}/tilr-{version}-linux-aarch64.tar.gz");
     for (line, name, content_type, cache) in [
         (
@@ -491,7 +511,7 @@ fn publishing_uploads_the_archive_and_its_checksum_before_latest() {
             "public, max-age=31536000, immutable",
         ),
         (
-            &lines[2],
+            &lines[3],
             "releases/linux-aarch64/latest",
             "text/plain; charset=utf-8",
             "no-cache",
@@ -544,6 +564,7 @@ fn beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers()
         expected.extend([
             name.clone(),
             format!("{name}.sha256"),
+            format!("releases/{platform}/beta.manifest.json"),
             format!("releases/{platform}/beta"),
         ]);
     }
@@ -561,7 +582,7 @@ fn beta_publication_uploads_only_archives_checksums_and_selected_beta_pointers()
         0,
     );
     assert!(!f.dir.join("build.log").exists());
-    assert_eq!(f.uploads(), expected[..3]);
+    assert_eq!(f.uploads(), expected[..4]);
     fs::remove_file(f.dir.join("aws.log")).unwrap();
     let name = format!("tilr-{version}-linux-x86_64.tar.gz");
     fs::write(f.cdn().join(&version).join(name), "corrupt").unwrap();
@@ -630,7 +651,7 @@ fn upload_only_checks_what_was_built_and_leaves_other_platforms_alone() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("linux-aarch64.tar.gz: FAILED"));
     assert_eq!(
         f.log().lines().count(),
-        4,
+        5,
         "failed validation uploaded files"
     );
 }
@@ -648,6 +669,7 @@ fn the_installer_is_uploaded_after_latest() {
         [
             archive("linux-x86_64"),
             format!("{}.sha256", archive("linux-x86_64")),
+            "releases/linux-x86_64/latest.manifest.json".to_owned(),
             "releases/linux-x86_64/latest".to_owned(),
             "install.sh".to_owned(),
         ]
@@ -679,10 +701,10 @@ fn the_installer_is_uploaded_after_latest() {
         0,
     );
     let uploads = f.uploads();
-    assert_eq!(uploads.len(), 7, "{uploads:?}");
-    assert_eq!(uploads[2], "releases/linux-aarch64/latest");
-    assert_eq!(uploads[5], "releases/linux-x86_64/latest");
-    assert_eq!(uploads[6], "install.sh");
+    assert_eq!(uploads.len(), 9, "{uploads:?}");
+    assert_eq!(uploads[3], "releases/linux-aarch64/latest");
+    assert_eq!(uploads[7], "releases/linux-x86_64/latest");
+    assert_eq!(uploads[8], "install.sh");
 
     // A failed upload stops it before the installer.
     fs::remove_file(f.dir.join("aws.log")).unwrap();
@@ -705,7 +727,7 @@ fn the_layout_release_sh_writes_is_what_tilrd_update_reads() {
         .nth(2)
         .unwrap()
         .trim_matches(['(', ')']);
-    assert_exit(&f.run(&[native], false), 0);
+    assert_exit(&f.run(&["--publish", native], true), 0);
 
     let installed = f.dir.join("installed");
     fs::create_dir(&installed).unwrap();
@@ -1551,6 +1573,7 @@ fn assert_cdn_contract(release: &str) {
         "for platform in $PLATFORMS",
         "want=\"${TAG#v}-$(git rev-parse --short HEAD)\"",
         "test \"$(cat \"dist/cdn/releases/$platform/latest\")\" = \"$want\"",
+        "TILR_UPDATE_SIGNING_KEY: ${{ secrets.TILR_UPDATE_SIGNING_KEY }}",
         "AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}",
         "AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}",
         "run: aws --version",
@@ -1637,4 +1660,38 @@ fn the_macos_zig_installer_checks_its_sdk_before_download() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn publication_requires_a_matching_signing_key_before_uploading() {
+    let f = Fixture::new();
+    assert_exit(&f.run(&["linux-x86_64"], false), 0);
+    for env in [
+        ("TILR_UPDATE_SIGNING_KEY", ""),
+        ("TILR_UPDATE_PUBLIC_KEY", "00"),
+        ("TILR_UPDATE_SIGNING_KEY", "not a private key"),
+    ] {
+        let output = f.run_env(&["--upload-only", "linux-x86_64"], true, &[env]);
+        assert!(!output.status.success(), "{env:?}: {output:?}");
+        assert!(f.uploads().is_empty());
+    }
+}
+
+#[test]
+fn a_failed_manifest_upload_does_not_advance_the_unsigned_pointer() {
+    let f = Fixture::new();
+    assert_exit(&f.run(&["linux-x86_64"], false), 0);
+    let manifest = "releases/linux-x86_64/beta.manifest.json";
+    f.fail_upload(manifest);
+    let output = f.run(
+        &["--upload-only", "--channel", "beta", "linux-x86_64"],
+        true,
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(f.uploads().last().unwrap(), manifest);
+    assert!(
+        !f.uploads()
+            .iter()
+            .any(|path| path.ends_with("/beta") || path == "install.sh")
+    );
 }

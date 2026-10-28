@@ -37,6 +37,7 @@ if [ -t 0 ] && [ -t 1 ]; then tty=-it; fi
 exec docker run --rm --init $tty ${platform:+--platform "$platform"} \
     -e TILR_BUILD_VERSION \
     -e TILR_BUILD_COMMIT \
+    -e TILR_UPDATE_PUBLIC_KEY \
     -e TILR_LINUX_USER \
     -e CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}" \
     -v "$PWD":/src \

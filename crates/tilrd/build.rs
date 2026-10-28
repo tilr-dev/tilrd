@@ -5,6 +5,25 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=TILR_UPDATE_PUBLIC_KEY");
+    const FIXTURE_KEY: &str = "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29";
+    let release = std::env::var("PROFILE").unwrap() == "release";
+    let key = std::env::var("TILR_UPDATE_PUBLIC_KEY").unwrap_or_else(|_| {
+        assert!(
+            !release,
+            "release builds require TILR_UPDATE_PUBLIC_KEY (hex Ed25519 public key)"
+        );
+        FIXTURE_KEY.to_owned()
+    });
+    assert!(
+        key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid TILR_UPDATE_PUBLIC_KEY"
+    );
+    assert!(
+        !release || !key.eq_ignore_ascii_case(FIXTURE_KEY),
+        "release builds must not trust the fixture key"
+    );
+    println!("cargo:rustc-env=TILR_UPDATE_PUBLIC_KEY={key}");
     println!("cargo:rerun-if-env-changed=TILR_BUILD_COMMIT");
     println!("cargo:rerun-if-env-changed=TILR_BUILD_VERSION");
     // HEAD changes on checkout (even with the reflog off), logs/HEAD on every
