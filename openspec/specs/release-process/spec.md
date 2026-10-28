@@ -780,3 +780,9 @@ After stable GitHub assets are uploaded, the release workflow SHALL use tilr-bot
 - **THEN** the step logs the skipped release and exits successfully
 - **AND** the remote bot branch and pull request remain unchanged
 - **AND** a leftover bot branch without an open pull request does not prevent a newer-than-main release from opening a new pull request
+
+## Notes
+
+- Release scripts and workflow contracts are covered by `crates/tilrd/tests/release.rs`; workflow checks inspect source text and do not execute GitHub Actions.
+- CI, release-please (`release-please-config.json`, `.release-please-manifest.json`), `deny.toml`, `scripts/package.sh` and `scripts/install-tools.sh` came to this branch with the merge of `main` (47a8557), ported to the `tilrd` / `tilr` names; the archive layout is 2a8b425.
+- The `failpoints` feature is never enabled by the release scripts; a release has none of the fault injection points.
