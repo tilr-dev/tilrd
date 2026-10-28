@@ -228,15 +228,6 @@ Clients SHALL finalize only after all admitted input is acknowledged. The server
 - **WHEN** a client supplies internal cleanup fields
 - **THEN** ingress SHALL clear them and SHALL NOT remove any other identity
 
-### Requirement: Handshake refusal closure permits WebSocket control frames
-A client observing a handshake refusal SHALL accept WebSocket Ping and Pong control frames between the protocol Error and the connection closing. These frames MUST NOT count as closure or permit additional application messages after the refusal Error.
-
-#### Scenario: Liveness Ping between refusal Error and Close
-- **WHEN** a client sends numbered input before Hello
-- **AND** the server sends a liveness Ping after Error "expected Hello first" and before Close
-- **THEN** the client accepts the control frame and continues waiting for closure
-- **AND** the connection closes without another application message
-
 ## Notes
 
 - Requirements without a test: none. Partly untested: the 64 MiB decompression cap of "Compression of large bodies".
