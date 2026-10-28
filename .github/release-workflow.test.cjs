@@ -27,3 +27,16 @@ test('candidates retain beta CDN publication and stable releases retain stable p
   assert.match(job('cdn'),/outputs.release_created == 'true' && 'stable' \|\| 'beta'/);
   assert.match(job('cdn'),/scripts\/release.sh --upload-only --channel/);
 });
+
+test('desktop pin proposal waits for signed assets and uses the released source and scoped App token',()=>{
+  const bump=job('bump-desktop-pin');
+  assert.match(bump,/needs: \[release-please, upload\]/);
+  assert.match(bump,/if: needs.release-please.outputs.release_created == 'true' && needs.release-please.outputs.is_rc != 'true'/);
+  assert.match(bump,/ref: \$\{\{ needs.release-please.outputs.tag \}\}/);
+  assert.match(bump,/persist-credentials: false/);
+  assert.match(bump,/repositories: desktop-mac/);
+  assert.match(bump,/permission-contents: write/);
+  assert.match(bump,/permission-pull-requests: write/);
+  assert.match(bump,/GH_TOKEN: \$\{\{ steps.desktop-token.outputs.token \}\}/);
+  assert.match(bump,/bash scripts\/bump-desktop-pin.sh/);
+});

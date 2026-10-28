@@ -30,6 +30,20 @@ fn manifest_signing_supports_keg_only_openssl_and_reports_unsupported_tools() {
 }
 
 #[test]
+fn stable_releases_propose_desktop_pins_with_real_git() {
+    let output = Command::new("python3")
+        .arg(root().join("scripts/test_bump_desktop_pin.py"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn release_upstream_checks_real_git_histories() {
     let output = Command::new("python3")
         .arg(root().join("scripts/test_release_upstream.py"))
