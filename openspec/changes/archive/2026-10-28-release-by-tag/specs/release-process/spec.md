@@ -211,4 +211,3 @@ A push of the owner-created stable tag `vX.Y.Z` SHALL create a GitHub release wi
 - **WHEN** a stable tag release is created
 - **THEN** GitHub generates release notes from the highest previous stable tag on the line, or the highest previous stable tag overall when the line has none
 - **AND** the first release omits the baseline; no tracked changelog is generated
-

@@ -163,80 +163,6 @@ CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version`
 - **WHEN** `scripts/install-tools.sh "$RUNNER_TEMP/tools"` runs on Linux x86_64
 - **THEN** `DIR/zig`, `DIR/protoc` and `DIR/cargo-nextest` are in place after their checksums matched
 
-### Requirement: release-please opens the release PR
-On pushes to `release/**`, never on `main`, release-please (`simple` strategy, `release-please-config.json`, as the `tilr-bot` GitHub App) SHALL keep a release PR into the pushed branch (`target-branch`) open from the `feat` / `fix` Conventional Commits, bumping `[workspace.package] version` in `Cargo.toml`, the workspace crates' versions in `Cargo.lock`, and `CHANGELOG.md`. Versions and the changelog SHALL NOT be edited by hand. The release PR SHALL pass the same required checks as any PR.
-
-**Verified by**: `release::release_please_bumps_the_workspace_version_and_lock` (static: `release-please-config.json`, `.github/workflows/release.yml` and the pinned `tilr-dev/.github` release-branch workflow).
-
-#### Scenario: A feat commit lands on main
-- **WHEN** a `feat:` commit is pushed to `main` at version 0.2.1
-- **THEN** no release PR is opened or updated
-- **AND** once `release/0.3` is cut from that commit and pushed, the release PR into `release/0.3` proposes 0.3.0 from the branch line
-
-#### Scenario: A new release branch follows another line
-- **GIVEN** `v0.1.0` exists on `release/0.1` and its release commit is absent from `main`
-- **WHEN** a new feature lands in `main` and `release/0.2` is cut from it
-- **THEN** the release PR proposes 0.2.0 and its changelog contains the new feature only, excluding changes already shipped in 0.1.0
-
-#### Scenario: A new line contains only a fix
-- **GIVEN** the inherited manifest says 0.2.1
-- **WHEN** only a `fix:` commit is added and `release/0.3` is cut
-- **THEN** the release PR proposes 0.3.0
-
-#### Scenario: A feature on an existing line
-- **GIVEN** stable `v0.3.2` exists in the history of `release/0.3`
-- **WHEN** a new `feat:` commit is pushed to that branch
-- **THEN** the release PR proposes 0.3.3, even if another line has a newer stable release
-
-#### Scenario: A fix already shipped by cherry-pick
-- **GIVEN** a fix landed in `main` and its cherry-pick shipped on the previous release line
-- **WHEN** the next release branch is cut from `main`
-- **THEN** the changelog excludes shared history and that patch-equivalent fix
-
-#### Scenario: Candidate tags do not select stable versions
-- **GIVEN** candidate tags exist on a release line
-- **WHEN** the runner selects its next version and changelog baseline
-- **THEN** only stable tags are considered: the highest stable tag of the same line, otherwise the highest earlier stable version
-- **AND** the first release is `X.Y.0`, and subsequent releases increment the highest stable patch
-
-#### Scenario: A stable tag is outside the same-line history
-- **GIVEN** a stable tag exists for the target release line outside the branch history
-- **WHEN** the runner prepares a release
-- **THEN** it fails before creating a release PR or publishing
-
-#### Scenario: No earlier stable release exists
-- **GIVEN** no earlier stable tag exists
-- **WHEN** the runner prepares the first release
-- **THEN** the configured bootstrap SHA bounds the changelog history
-
-#### Scenario: Runtime overrides remain local
-- **WHEN** the runner selects a version and changelog baseline
-- **THEN** it copies no release commits or version files into `main`
-
-#### Scenario: Shared orchestration
-- **WHEN** a release branch is pushed
-- **THEN** the caller invokes `tilr-dev/.github/.github/workflows/release-branch.yml` at a fixed commit for branch validation, release-please and candidate selection
-- **AND** artifact builds and publication remain in this repository
-
-### Requirement: Merging the release PR builds and attaches the binaries
-Merging the release PR SHALL tag `vX.Y.Z` and create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.
-
-**Verified by**: `release::a_release_builds_and_packages_every_target` (static: `.github/workflows/release.yml`, `scripts/package.sh`).
-
-#### Scenario: Release v0.2.0
-- **WHEN** the release PR for `0.2.0` is merged
-- **THEN** tag `v0.2.0` has a GitHub release with one `tilr-v0.2.0-<target>.tar.gz` and checksum per target, each binary saying `0.2.0-<commit>`
-
-#### Scenario: Apple rejects a build
-- **WHEN** signing, signature verification or notarization fails for either macOS target
-- **THEN** the release workflow fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
-
-#### Scenario: Release target selection and packaging
-- **WHEN** the release build matrix runs
-- **THEN** it builds `aarch64-apple-darwin` and cross-compiles `x86_64-apple-darwin` on macOS, and builds `x86_64-unknown-linux-gnu` plus `aarch64-unknown-linux-gnu` only with `RELEASE_LINUX_ARM64=true`
-- **AND** Linux platforms are built through `scripts/release.sh`, while macOS compilation, signing and packaging run in separate jobs
-- **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
-
 ### Requirement: The CDN gets the release last
 After GitHub assets are attached, the `cdn` job SHALL verify each built platform carries `<tag version>-<commit>` and sign manifests and upload its completed `dist/cdn` layout with `scripts/release.sh --upload-only --channel <channel> <platforms>`, for both stable tag releases and candidates. The channel SHALL be stable for a release and beta for a candidate. Both macOS platforms SHALL always be included; Linux arm64 SHALL remain optional.
 
@@ -780,6 +706,39 @@ After stable GitHub assets are uploaded, the release workflow SHALL use tilr-bot
 - **THEN** the step logs the skipped release and exits successfully
 - **AND** the remote bot branch and pull request remain unchanged
 - **AND** a leftover bot branch without an open pull request does not prevent a newer-than-main release from opening a new pull request
+
+### Requirement: A release tag builds and attaches the binaries
+A push of the owner-created stable tag `vX.Y.Z` SHALL create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.
+
+**Verified by**: `release::a_release_builds_and_packages_every_target` (static: `.github/workflows/release.yml`, `scripts/package.sh`).
+
+#### Scenario: Release v0.2.0
+- **WHEN** stable tag `v0.2.0` is pushed from the history of `release/0.2`
+- **THEN** tag `v0.2.0` has a GitHub release with one `tilr-v0.2.0-<target>.tar.gz` and checksum per target, each binary saying `0.2.0-<commit>`
+
+#### Scenario: Apple rejects a build
+- **WHEN** signing, signature verification or notarization fails for either macOS target
+- **THEN** the release workflow fails and neither GitHub assets nor CDN latest pointers are published by the release workflow
+
+#### Scenario: Release target selection and packaging
+- **WHEN** the release build matrix runs
+- **THEN** it builds `aarch64-apple-darwin` and cross-compiles `x86_64-apple-darwin` on macOS, and builds `x86_64-unknown-linux-gnu` plus `aarch64-unknown-linux-gnu` only with `RELEASE_LINUX_ARM64=true`
+- **AND** Linux platforms are built through `scripts/release.sh`, while macOS compilation, signing and packaging run in separate jobs
+- **AND** `scripts/package.sh` attaches `tilr-<tag>-<target>.tar.gz` containing `tilrd`, `tilr`, licenses and README with its `.sha256`
+
+#### Scenario: Stable tag outside the release line
+- **WHEN** `v0.3.0` points outside the history of `release/0.3`, or that branch is missing
+- **THEN** the shared workflow refuses before creating a release or building and publishing assets
+
+#### Scenario: Version source
+- **WHEN** a stable or candidate tag is built
+- **THEN** checkout selects the tag and `TILR_BUILD_VERSION` is its version without `v`
+- **AND** CI refuses a numeric tag version lower than the workspace Cargo version before compilation; Cargo files remain unchanged
+
+#### Scenario: Stable notes
+- **WHEN** a stable tag release is created
+- **THEN** GitHub generates release notes from the highest previous stable tag on the line, or the highest previous stable tag overall when the line has none
+- **AND** the first release omits the baseline; no tracked changelog is generated
 
 ## Notes
 
