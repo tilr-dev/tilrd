@@ -8,7 +8,7 @@ A handshake-refusal test treats the next WebSocket frame after the protocol Erro
 
 - Document that WebSocket control frames may precede the refusal Close.
 - Force the Error → Ping → Close ordering with a test-only pause after the refusal Error is queued.
-- Have the test accept Ping/Pong frames while still requiring closure and rejecting additional application data under its existing deadline.
+- Have the test accept Ping/Pong frames while still requiring the refusal Close and rejecting additional application data or a liveness-timeout Close under its existing deadline.
 
 ## Capabilities
 

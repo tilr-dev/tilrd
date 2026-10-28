@@ -668,8 +668,10 @@ async fn numbered_input_before_hello_is_refused_and_closed() {
         loop {
             match frames.next().await {
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                Some(Ok(Message::Close(_))) | None => break,
-                other => panic!("expected closure after refusal, got {other:?}"),
+                // Refusal flushes with an empty Close; a liveness timeout has
+                // code 4002 and must not stand in for the refusal's closure.
+                Some(Ok(Message::Close(None))) => break,
+                other => panic!("expected refusal Close(None), got {other:?}"),
             }
         }
     })
