@@ -166,7 +166,7 @@ CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version`
 ### Requirement: release-please opens the release PR
 On pushes to `release/**`, never on `main`, release-please (`simple` strategy, `release-please-config.json`, as the `tilr-bot` GitHub App) SHALL keep a release PR into the pushed branch (`target-branch`) open from the `feat` / `fix` Conventional Commits, bumping `[workspace.package] version` in `Cargo.toml`, the workspace crates' versions in `Cargo.lock`, and `CHANGELOG.md`. Versions and the changelog SHALL NOT be edited by hand. The release PR SHALL pass the same required checks as any PR.
 
-**Verified by**: `release::release_please_bumps_the_workspace_version_and_lock` (static: `release-please-config.json`, `.github/workflows/release.yml`).
+**Verified by**: `release::release_please_bumps_the_workspace_version_and_lock` (static: `release-please-config.json`, `.github/workflows/release.yml` and the pinned `tilr-dev/.github` release-branch workflow).
 
 #### Scenario: A feat commit lands on main
 - **WHEN** a `feat:` commit is pushed to `main` at version 0.2.1
@@ -213,6 +213,11 @@ On pushes to `release/**`, never on `main`, release-please (`simple` strategy, `
 - **WHEN** the runner selects a version and changelog baseline
 - **THEN** it copies no release commits or version files into `main`
 
+#### Scenario: Shared orchestration
+- **WHEN** a release branch is pushed
+- **THEN** the caller invokes `tilr-dev/.github/.github/workflows/release-branch.yml` at a fixed commit for branch validation, release-please and candidate selection
+- **AND** artifact builds and publication remain in this repository
+
 ### Requirement: Merging the release PR builds and attaches the binaries
 Merging the release PR SHALL tag `vX.Y.Z` and create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.
 
@@ -256,7 +261,7 @@ After GitHub assets are attached, the `cdn` job SHALL verify each built platform
 ### Requirement: Releases are cut from release branches
 Nothing SHALL be released from `main`, the only integration branch: on the owner's explicit instruction a release branch `release/X.Y` is cut from a commit of `main`, and only pushes to `release/**` SHALL run release-please, release candidates and publishing. A fix for a release branch SHALL land in `main` first through a pull request and then be cherry-picked into `release/X.Y`; nothing SHALL be merged from a release branch back into `main`.
 
-**Verified by**: `release::releases_run_only_on_release_branches` (static: `.github/workflows/release.yml`).
+**Verified by**: `release::releases_run_only_on_release_branches` (static: `.github/workflows/release.yml` and the pinned shared workflow).
 
 #### Scenario: A pull request is merged into main
 - **WHEN** a pull request is merged into `main`
@@ -270,7 +275,7 @@ Nothing SHALL be released from `main`, the only integration branch: on the owner
 ### Requirement: A push to a release branch builds a release candidate
 A push to `release/X.Y` that creates no release SHALL tag the pushed commit `vX.Y.Z-rc.N` and create a GitHub prerelease with the same archives and `.sha256` per target as a release, built and checked as a release is, the binaries naming `X.Y.Z-rc.N-<commit>`. The CDN SHALL receive the candidate archives and checksums and update only the beta pointers; latest and install.sh SHALL NOT be touched.
 
-**Verified by**: `release::a_push_to_a_release_branch_tags_the_next_release_candidate` (the workflow step's shell with a stub GitHub CLI), `release::a_release_candidate_is_built_like_a_release_and_publishes_to_beta` (static: `.github/workflows/release.yml`).
+**Verified by**: `candidate.test.cjs` in the pinned shared workflow (the candidate script with a stub GitHub CLI), `release::a_release_candidate_is_built_like_a_release_and_publishes_to_beta` (static: `.github/workflows/release.yml` and the pinned shared workflow).
 
 #### Scenario: The first candidate
 - **WHEN** `release/0.3` is pushed and no `v0.3.*` tag exists
