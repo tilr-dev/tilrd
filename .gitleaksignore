@@ -2,4 +2,5 @@
 # cloud.rs unit test `described()`: a fake tunnel secret, base64 of "secret+secret/secret==".
 4cd2f845fd97542e7f21c660b541a2607e102652:crates/tilr-server/src/cloud.rs:generic-api-key:650
 # Signer regression fixture: PEM generated from the public all-zero Ed25519 test seed.
-e5d9aa24922d2e89762903d5fa76eff78b66ac68:scripts/test_sign_update_manifest.py:private-key:37
+# Omit the commit hash so this fixture remains excluded after squash merges.
+scripts/test_sign_update_manifest.py:private-key:37
