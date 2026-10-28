@@ -1077,44 +1077,27 @@ fn ci_smoke_tests_both_executables() {
 }
 
 #[test]
-fn release_please_bumps_the_workspace_version_and_lock() {
-    let config: serde_json::Value =
-        serde_json::from_str(&text_file("release-please-config.json")).unwrap();
-    assert_eq!(config["release-type"], "simple");
-    let package = &config["packages"]["."];
-    assert_eq!(package["changelog-path"], "CHANGELOG.md");
-    let files = package["extra-files"].as_array().unwrap();
-    assert!(
-        files.iter().any(|file| file["path"] == "Cargo.toml"
-            && file["jsonpath"] == "$.workspace.package.version")
-    );
-    // Every workspace crate, so a new member cannot be left at the old version in Cargo.lock.
-    let workspace: toml::Value = toml::from_str(&text_file("Cargo.toml")).unwrap();
-    let members = workspace["workspace"]["members"].as_array().unwrap();
-    assert!(!members.is_empty());
-    for member in members {
-        let manifest: toml::Value = toml::from_str(&text_file(&format!(
-            "{}/Cargo.toml",
-            member.as_str().unwrap()
-        )))
+fn release_tags_supply_the_version_without_release_configuration() {
+    assert!(!root().join("release-please-config.json").exists());
+    assert!(!root().join(".release-please-manifest.json").exists());
+    let workflow = text_file(".github/workflows/release.yml");
+    assert_reusable_release_call(&workflow);
+    assert!(job(&workflow, "build").contains("python3 scripts/check-release-version.py \"$TAG\""));
+    let result = Command::new("python3")
+        .arg(root().join("scripts/test_check_release_version.py"))
+        .output()
         .unwrap();
-        let name = manifest["package"]["name"].as_str().unwrap();
-        assert!(
-            files.iter().any(|file| file["path"] == "Cargo.lock"
-                && file["jsonpath"]
-                    .as_str()
-                    .unwrap()
-                    .contains(&format!("name.value=='{name}'"))),
-            "{name}"
-        );
-    }
-    assert_reusable_release_call(&text_file(".github/workflows/release.yml"));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 fn assert_reusable_release_call(release: &str) {
     let release = active(release);
-    let please = job(&release, "release-please");
-    let reference = please
+    let selection = job(&release, "release");
+    let reference = selection
         .lines()
         .find_map(|line| {
             line.trim()
@@ -1127,17 +1110,19 @@ fn assert_reusable_release_call(release: &str) {
         "release workflow must use a full commit SHA"
     );
     assert!(reference.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    assert!(please.contains(&format!("      workflow-sha: {reference}\n")));
+    assert!(selection.contains(&format!("      workflow-sha: {reference}\n")));
     for clause in [
         "    permissions:\n      contents: read\n",
-        "      package-path: '.'\n",
         "      app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}\n",
         "    secrets:\n      app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}\n",
     ] {
-        assert!(please.contains(clause), "release-please missing {clause}");
+        assert!(selection.contains(clause), "release missing {clause}");
     }
     for forbidden in ["    steps:", "    runs-on:", "secrets: inherit", ": write"] {
-        assert!(!please.contains(forbidden), "caller contains {forbidden}");
+        assert!(
+            !selection.contains(forbidden),
+            "caller contains {forbidden}"
+        );
     }
 }
 
@@ -1145,8 +1130,8 @@ fn assert_release_branches(release: &str) {
     let release = active(release);
     let on = release.split("\npermissions:").next().unwrap();
     assert!(
-        on.contains("on:\n  push:\n    branches: ['release/**']\n"),
-        "the release workflow must run on pushes to release/** only"
+        on.contains("on:\n  push:\n    branches: ['release/**']\n    tags: ['v*', '!v*-rc.*']\n"),
+        "the release workflow must run on release branches and stable tag pushes"
     );
     assert!(!on.contains("main"), "the release workflow runs on main");
     assert!(!on.contains("pull_request"));
@@ -1181,7 +1166,7 @@ fn releases_run_only_on_release_branches() {
         ("release-branch.yml@", "release-branch.yml@main"),
         ("      workflow-sha:", "      wrong-sha:"),
         ("      contents: read", "      contents: write"),
-        ("      package-path: '.'", "      package-path: 'other'"),
+        ("tags: ['v*', '!v*-rc.*']", "tags: ['v*']"),
         ("vars.TILR_BOT_CLIENT_ID", "secrets.TILR_BOT_CLIENT_ID"),
         ("      app-private-key:", "      wrong-private-key:"),
         ("  build:\n", "  back-merge:\n    runs-on: x\n  build:\n"),
@@ -1200,18 +1185,22 @@ fn assert_candidate_contract(release: &str) {
     assert_reusable_release_call(&release);
     for name in ["build", "upload", "cdn"] {
         assert!(
-            job(&release, name).contains("    if: needs.release-please.outputs.tag != ''\n"),
+            job(&release, name).contains("    if: needs.release.outputs.tag != ''\n"),
             "{name} does not run for a candidate"
         );
     }
     for name in ["build", "upload", "cdn"] {
         assert!(
-            job(&release, name).contains("TAG: ${{ needs.release-please.outputs.tag }}"),
+            job(&release, name).contains("TAG: ${{ needs.release.outputs.tag }}"),
             "{name} does not consume the reusable workflow tag"
         );
     }
     let cdn = job(&release, "cdn");
-    assert!(cdn.contains("CHANNEL: ${{ needs.release-please.outputs.release_created == 'true' && 'stable' || 'beta' }}"));
+    assert!(
+        cdn.contains(
+            "CHANNEL: ${{ needs.release.outputs.is_rc == 'false' && 'stable' || 'beta' }}"
+        )
+    );
     assert!(cdn.contains("scripts/release.sh --upload-only --channel \"$CHANNEL\" $PLATFORMS"));
     let build = job(&release, "build");
     for clause in [
@@ -1228,24 +1217,24 @@ fn a_release_candidate_is_built_like_a_release_and_publishes_to_beta() {
     assert_candidate_contract(&release);
     for (from, to) in [
         (
-            "    if: needs.release-please.outputs.tag != ''\n",
-            "    if: needs.release-please.outputs.release_created == 'true'\n",
+            "    if: needs.release.outputs.tag != ''\n",
+            "    if: needs.release.outputs.is_rc == 'false'\n",
         ),
         (
-            "    if: needs.release-please.outputs.tag != ''\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
-            "    if: needs.release-please.outputs.release_created == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+            "    if: needs.release.outputs.tag != ''\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+            "    if: needs.release.outputs.is_rc == 'false'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
         ),
         (
             "TILR_BUILD_VERSION=\"${TAG#v}\" scripts/release.sh",
             "scripts/release.sh",
         ),
         (
-            "needs.release-please.outputs.tag }}",
-            "needs.release-please.outputs.tag_name }}",
+            "needs.release.outputs.tag }}",
+            "needs.release.outputs.tag_name }}",
         ),
         (
-            "outputs.release_created == 'true' && 'stable' || 'beta'",
-            "outputs.release_created == 'true' && 'beta' || 'stable'",
+            "outputs.is_rc == 'false' && 'stable' || 'beta'",
+            "outputs.is_rc == 'false' && 'beta' || 'stable'",
         ),
     ] {
         let mutated = release.replacen(from, to, 1);
@@ -1400,7 +1389,7 @@ fn assert_release_contract(release: &str, package: &str) {
     );
     assert!(signing.find("!= \"Accepted\"").unwrap() < signing.find("name: signed-").unwrap());
     let macos_package = job(&release, "package-macos");
-    assert!(macos_package.contains("needs: [release-please, sign-macos]"));
+    assert!(macos_package.contains("needs: [release, sign-macos]"));
     assert!(macos_package.contains("name: signed-${{ matrix.platform }}"));
     assert!(!macos_package.contains("unsigned-"));
     assert!(!macos_package.contains("secrets.APPLE_"));
@@ -1438,7 +1427,7 @@ fn assert_release_contract(release: &str, package: &str) {
         );
     }
     let upload = job(&release, "upload");
-    assert!(upload.contains("needs: [release-please, build, package-macos]"));
+    assert!(upload.contains("needs: [release, build, package-macos]"));
     assert!(upload.contains("gh release upload"));
 }
 
@@ -1516,7 +1505,7 @@ fn assert_cdn_contract(release: &str) {
     let release = active(release);
     let cdn = job(&release, "cdn");
     for clause in [
-        "needs: [release-please, upload]",
+        "needs: [release, upload]",
         "environment: cdn",
         "vars.RELEASE_LINUX_ARM64 == 'true' && 'linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64' || 'linux-x86_64 macos-aarch64 macos-x86_64'",
         "pattern: cdn-*",

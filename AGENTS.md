@@ -49,8 +49,7 @@ the line.
 
 ## Commits
 
-- **Conventional Commits**: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `perf`,
-  optional scope, `!` / `BREAKING CHANGE:` for a break, footers `Refs: #N` / `Closes: #N`.
+- Write clear commit messages; release versions are selected by tags.
 - **No AI attribution**: no "Generated with …" lines, no agent `Co-Authored-By`.
 - One logical change per commit; short branches (`feat/12-short-name`), squash-merged into
   `main`, which stays green.
@@ -59,19 +58,22 @@ the line.
 
 - Nothing is released from `main`. On the owner's word a release branch `release/X.Y` is cut
   from a commit of `main`; fixes for it land in `main` first and are cherry-picked into it.
-- release-please (`.github/workflows/release.yml`) runs on pushes to `release/**` only:
-  `feat` / `fix` commits there open or update the release PR into that branch; merging it tags
-  `vX.Y.Z`, builds the binaries for the GitHub release and publishes them to the CDN
-  (`scripts/release.sh --upload-only`). Any other push to `release/X.Y` tags a release
-  candidate `vX.Y.Z-rc.N` and fills its GitHub prerelease with the same archives; candidates
-  reach only the CDN beta channel, leaving latest and install.sh unchanged.
+- `.github/workflows/release.yml` creates candidates on pushes to `release/X.Y` and stable
+  releases on owner-created `vX.Y.Z` tag pushes from `bin/release`. Stable tags must point
+  into the matching release branch history. RC tag pushes are excluded from the caller.
+  The pinned shared workflow selects the tag and GitHub Release; this repository builds,
+  signs, notarizes and uploads binaries, then publishes stable to latest/install.sh and
+  candidates to beta. Tag versions stamp binaries through `TILR_BUILD_VERSION`; their
+  numeric version must be at least the Cargo workspace version. No release version commit
+  or generated changelog is required.
 - `scripts/release.sh --publish` / `--upload-only` need `CLOUDFLARE_ACCOUNT_ID` exported
   (in CI the `cdn` environment's variable), plus AWS keys scoped to objects in tilr-cdn.
   For manual publishing, Infisical `/cloudflare` in `prod` supplies `CF_ACCOUNT_ID` and
   `R2_CDN_TOKEN`: export `CLOUDFLARE_ACCOUNT_ID` from `CF_ACCOUNT_ID`, use the token ID
   as `AWS_ACCESS_KEY_ID`, and the lowercase hex SHA-256 of the token value (without a
   newline) as `AWS_SECRET_ACCESS_KEY`. README's Releases section has a runnable example.
-- Do not edit versions (`[workspace.package] version`, Cargo.lock) or CHANGELOG.md by hand.
+- Cargo versions describe development metadata; release versions come from tags. Cargo files
+  remain unchanged during CI release builds; GitHub generates stable release notes.
 - The `aarch64-unknown-linux-gnu` release build (on `ubuntu-24.04-arm`, free only for public
   repos) is off by default: set repo variable RELEASE_LINUX_ARM64=true once the repo is
   public to enable the arm64 build. While it is off, the release and the CDN get

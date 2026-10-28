@@ -77,15 +77,14 @@ context: |
   scripts/build-ghostty-vt.sh builds a reusable static package; PKG_CONFIG_PATH
   pointing to its share/pkgconfig directory lets clean Cargo targets reuse it.
 
-  Release (.github/workflows/release.yml, release-please-config.json):
-  release-please on `main` (simple strategy, release PR opened by the GitHub App
-  tilr-bot, Conventional Commits, squash merges); merging the release PR tags vX.Y.Z,
-  builds tilrd and tilr per target into tilr-vX.Y.Z-<target>.tar.gz for the GitHub release
-  (scripts/package.sh) and publishes the Linux archives to the CDN (scripts/release.sh
-  --upload-only, needs CLOUDFLARE_ACCOUNT_ID; linux-aarch64 only with the repo variable
-  RELEASE_LINUX_ARM64=true). Versions, Cargo.lock
-  versions and CHANGELOG.md are never edited by hand. A release is a separate
-  explicit step by the owner.
+  Release (.github/workflows/release.yml):
+  branch pushes to release/X.Y select RC tags; owner-created stable vX.Y.Z tag pushes
+  from bin/release select stable releases only within the matching branch history.
+  The pinned shared workflow creates the GitHub Release; caller jobs build, sign,
+  notarize and publish archives. Tag versions stamp binaries through TILR_BUILD_VERSION,
+  and must be numerically at least the Cargo workspace version. Cargo files remain unchanged.
+  Candidates publish beta; stable releases publish latest/install.sh and propose a desktop pin.
+  GitHub generates stable release notes from earlier stable tags.
 
   Secrets: assume the repo is public: no tokens, keys, .env files or personal data in code,
   tests, fixtures or commit messages; gitleaks scans the history.
@@ -93,8 +92,8 @@ context: |
   Git flow: `main` is the only integration branch; work happens on task branches off `main`
   and reaches it only through a pull request (squash). Nothing is released from `main`: on the
   owner's explicit word a release branch `release/X.Y` is cut from a commit of `main`; fixes for
-  it land in `main` first and are cherry-picked. Merging a release PR is the owner's step. No commit or
-  push without explicit permission. Conventional Commits; no AI attribution: never add
+  it land in `main` first and are cherry-picked. Creating a stable release tag is the owner's step. No commit or
+  push without explicit permission. Clear commit messages; no AI attribution: never add
   "Generated with Claude Code" or an agent Co-Authored-By.
 
 rules:

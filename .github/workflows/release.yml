@@ -1,86 +1,37 @@
-# Releases: nothing is released from main. On the owner's instruction a release branch
-# release/X.Y is cut from a commit of main; this workflow runs on pushes to release/** only.
-# release-please keeps a release PR into the pushed branch (target-branch) open from its
-# Conventional Commits (version bump in [workspace.package] of Cargo.toml and in Cargo.lock,
-# CHANGELOG); merging it tags vX.Y.Z and creates the GitHub release; `build` and `upload` then
-# attach prebuilt `tilrd` and `tilr` binaries to the release, and `cdn` publishes the Linux and
-# macOS ones to the CDN, where the installer and `tilr update` find them. A fix for a release
-# lands in main first and is cherry-picked into release/X.Y; nothing is merged back into main.
-#
-# Release candidates: a push to release/X.Y that creates no release tags the pushed commit
-# vX.Y.Z-rc.N (the shared release-branch workflow) and creates a GitHub prerelease, which `build` and `upload` fill with
-# the same archives and checksums as a release. Z is 0 until a stable vX.Y.* tag exists, then
-# its highest patch plus one; N is the highest rc of that version plus one. A re-run on a
-# commit that already has a candidate tag of that line reuses it; a commit that already
-# carries the release vX.Y.Z gets no candidate. A branch not named release/X.Y fails before
-# release-please runs. `cdn` publishes candidates to beta, leaving latest and install.sh unchanged. The
-# binaries are stamped with the tag's version
-# (TILR_BUILD_VERSION), so a candidate's binaries name the candidate.
-# The crates (tilr-proto, tilr-screen, tilrd, tilr, tilr-driver) share the workspace version
-# and move together; none is published to crates.io (publish = false), so there is no publish
-# job. release-please-config.json uses the `simple` strategy with TOML extra-files: the
-# `rust` strategy cannot bump a version inherited from [workspace.package]. The Cargo.lock
-# filter reads `@.name.value` because release-please parses TOML into position-tagged
-# values (as in tilr-dev/gitpm).
-#
-# The release-please job acts as the org GitHub App tilr-bot (a short-lived installation token
-# from actions/create-github-app-token, scoped to this repository): the release PR is opened by
-# tilr-bot, not by the GITHUB_TOKEN, so CI runs on it like on any PR. There is no bypass: the
-# release PR goes through the same required checks, and merging it is the release approval.
-#
-# binaries: `build` compiles `tilrd` and `tilr` per target with read-only permissions (dependency
-# build scripts run there), and `upload` attaches the archives to the tag's GitHub release.
-# Only `upload` gets a writable token: the GITHUB_TOKEN with contents: write, for that job
-# alone. GITHUB_TOKEN can upload assets to a release created by tilr-bot (release assets are a
-# repository permission, not tied to the release's author), so the App's private key is not
-# needed here. Asset names: scripts/package.sh.
-# The Linux binaries are built as they always were, by scripts/release.sh (Docker,
-# scripts/linux.Dockerfile: Debian 12, glibc 2.36+), on a native runner per architecture, so
-# the GitHub release and the CDN carry the same files. macOS builds natively (arm64) and
-# cross-compiles x86_64 on the same runner. `sign-macos` signs and notarizes on fresh
-# runners with Apple credentials; `package-macos` packages only the signed artifacts.
-#
-# cdn: uploads what the Linux builds and macOS packaging laid out in dist/cdn to the R2 bucket tilr-cdn with
-# `scripts/release.sh --upload-only` (the same script and layout as a release by hand:
-# releases/<platform>/latest, releases/<version>/tilr-<version>-<platform>.tar.gz[.sha256]
-# holding tilrd and tilr, versions like 0.1.0-26449dd). It runs in the `cdn` environment
-# (restricted to release/* branches), which holds AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-# (R2 S3 object access scoped to tilr-cdn), plus the required
-# CLOUDFLARE_ACCOUNT_ID variable (the bucket's account; the job fails without it). It runs
-# last, after the GitHub release has its assets: from its last upload on, `tilr update` and
-# the installer get the new version.
-
+# Branch pushes create candidates; owner-created stable tags release the matching line.
+# Builds consume the selected tag; signing and publication follow successful builds.
 name: release
 
 on:
   push:
     branches: ['release/**']
+    tags: ['v*', '!v*-rc.*']
 
 permissions: {}
 
 concurrency:
   group: release
   cancel-in-progress: false
+  queue: max
 
 env:
   CARGO_TERM_COLOR: always
   TILR_UPDATE_PUBLIC_KEY: ${{ vars.TILR_UPDATE_PUBLIC_KEY }}
 
 jobs:
-  release-please:
+  release:
     permissions:
       contents: read
-    uses: tilr-dev/.github/.github/workflows/release-branch.yml@aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
+    uses: tilr-dev/.github/.github/workflows/release-branch.yml@c31b80fcfd5cb9398a193d422c212326302d0c44
     with:
-      workflow-sha: aba9d554444e5a4bde8c6e45bbc8b4a7ef915d47
-      package-path: '.'
+      workflow-sha: c31b80fcfd5cb9398a193d422c212326302d0c44
       app-client-id: ${{ vars.TILR_BOT_CLIENT_ID }}
     secrets:
       app-private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
 
   build:
-    needs: release-please
-    if: needs.release-please.outputs.tag != ''
+    needs: release
+    if: needs.release.outputs.tag != ''
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -88,7 +39,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ needs.release.outputs.tag }}
     # The binaries name the tag's version (a candidate's too), not the version in Cargo.toml.
     # Native arm64 macOS runner; x86_64 is cross-compiled there (the macOS SDK has both
     # architectures, and Zig builds libghostty-vt for the target cargo names).
@@ -111,8 +62,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
+      - name: Check tag version against Cargo metadata
+        run: python3 scripts/check-release-version.py "$TAG"
       - name: Install Rust (stable, ${{ matrix.target }})
         if: runner.os == 'macOS'
         run: |
@@ -266,7 +219,7 @@ jobs:
           retention-days: 7
 
   package-macos:
-    needs: [release-please, sign-macos]
+    needs: [release, sign-macos]
     runs-on: macos-15
     timeout-minutes: 10
     permissions:
@@ -281,11 +234,11 @@ jobs:
     env:
       PLATFORM: ${{ matrix.platform }}
       TARGET: ${{ matrix.target }}
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ needs.release.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -314,8 +267,8 @@ jobs:
           retention-days: 7
 
   upload:
-    needs: [release-please, build, package-macos]
-    if: needs.release-please.outputs.tag != ''
+    needs: [release, build, package-macos]
+    if: needs.release.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -333,13 +286,13 @@ jobs:
       - name: Upload to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-please.outputs.tag }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
   # The App token triggers ordinary desktop PR CI. No merge or approval bypass.
   bump-desktop-pin:
-    needs: [release-please, upload]
-    if: needs.release-please.outputs.release_created == 'true' && needs.release-please.outputs.is_rc != 'true'
+    needs: [release, upload]
+    if: startsWith(github.ref, 'refs/tags/') && needs.release.outputs.tag != '' && needs.release.outputs.is_rc == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -347,7 +300,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
       - uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         id: desktop-token
@@ -361,15 +314,14 @@ jobs:
       - name: Propose the desktop server pin
         env:
           GH_TOKEN: ${{ steps.desktop-token.outputs.token }}
-          TAG: ${{ needs.release-please.outputs.tag }}
-          RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
-          IS_RC: ${{ needs.release-please.outputs.is_rc }}
+          TAG: ${{ needs.release.outputs.tag }}
+          IS_RC: ${{ needs.release.outputs.is_rc }}
         run: bash scripts/bump-desktop-pin.sh
 
   # Publish releases to stable and candidates to beta after GitHub assets.
   cdn:
-    needs: [release-please, upload]
-    if: needs.release-please.outputs.tag != ''
+    needs: [release, upload]
+    if: needs.release.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: cdn
@@ -382,7 +334,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -392,7 +344,7 @@ jobs:
       # Every platform built must carry this tag's version (the tag's version plus the commit).
       - name: Check the version
         env:
-          TAG: ${{ needs.release-please.outputs.tag }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           want="${TAG#v}-$(git rev-parse --short HEAD)"
           for platform in $PLATFORMS; do
@@ -403,7 +355,7 @@ jobs:
         run: aws --version
       - name: Upload to the CDN
         env:
-          CHANNEL: ${{ needs.release-please.outputs.release_created == 'true' && 'stable' || 'beta' }}
+          CHANNEL: ${{ needs.release.outputs.is_rc == 'false' && 'stable' || 'beta' }}
           TILR_UPDATE_SIGNING_KEY: ${{ secrets.TILR_UPDATE_SIGNING_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

@@ -1,4 +1,4 @@
-"""Deterministic integration cases for the release PR gate using real Git repos."""
+"""Deterministic integration cases for the release branch pull request gate using real Git repos."""
 
 import json
 from pathlib import Path
@@ -126,14 +126,14 @@ class ReleaseUpstream(unittest.TestCase):
         git(self.repo, "commit", "-m", "merge")
         self.run_gate(False)
 
-    def test_release_please_and_spoofed_identity(self):
+    def test_automation_has_no_upstream_exemption(self):
         git(self.repo, "checkout", "-b", "candidate", "release/0.3")
         self.commit("version", "1.2.3")
         pr = self.event["pull_request"]
         pr["head"]["ref"] = "release-please--branches--release/0.3"
         self.run_gate(False)
         pr["user"] = {"login": "tilr-bot[bot]", "type": "Bot"}
-        self.run_gate(True)
+        self.run_gate(False)
         pr["head"]["repo"]["full_name"] = "fork/repo"
         self.run_gate(False)
         pr["head"]["repo"] = None
