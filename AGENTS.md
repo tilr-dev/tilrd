@@ -18,7 +18,7 @@ the line.
   cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings
   cargo nextest run --workspace --features tilrd/failpoints --locked
   cargo deny check
-  gitleaks git --redact --no-banner --exit-code 1 .
+  gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .
   ```
 
   CI also checks the MSRV (`rust-version` in Cargo.toml, `cargo +1.99 check --workspace

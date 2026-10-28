@@ -924,7 +924,11 @@ fn assert_ci_gates(ci: &str) {
         test.contains("- run: cargo nextest run --workspace --features tilrd/failpoints --locked")
     );
     assert!(deny.contains("- run: '\"$CARGO_DENY\" --locked check'"));
-    assert!(secrets.contains("- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'"));
+    // Only HEAD's history: the full-history checkout also fetches every other branch, and
+    // gitleaks without --log-opts scans them all.
+    assert!(secrets.contains(
+        "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'"
+    ));
     assert!(test.contains("os: [ubuntu-latest, macos-15]"));
 }
 
@@ -947,7 +951,8 @@ fn ci_runs_every_gate_of_agents_md() {
         "- run: cargo clippy --workspace --all-targets --features tilrd/failpoints --locked -- -D warnings",
         "- run: cargo nextest run --workspace --features tilrd/failpoints --locked",
         "- run: '\"$CARGO_DENY\" --locked check'",
-        "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 .'",
+        "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'",
+        " --log-opts=HEAD",
     ] {
         let removed = ci.replace(clause, "");
         assert_ne!(removed, ci, "mutation did not remove {clause}");
