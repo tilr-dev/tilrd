@@ -54,7 +54,7 @@ After GitHub assets are attached, the `cdn` job SHALL verify each built platform
 
 #### Scenario: macOS publication
 - **WHEN** both macOS builds complete and GitHub assets are attached
-- **THEN** the CDN job uploads each macOS archive and checksum before that platform's latest, without rebuilding or re-signing
+- **THEN** the CDN job uploads each macOS archive and checksum before that platform's selected channel pointer (latest for stable, beta for a candidate), without rebuilding or re-signing
 
 #### Scenario: CDN credentials
 - **WHEN** the CDN job publishes a release
