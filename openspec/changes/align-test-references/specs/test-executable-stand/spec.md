@@ -2,13 +2,11 @@
 
 ### Requirement: Warm executable installations
 Reload and update tests SHALL hardlink private installations to two reusable
-inodes. Once per test binary, the harness SHALL warm the original and each new
-inode with a successful `--version`. It SHALL reuse the original inode on the
-same filesystem, or copy it once into the tests' filesystem otherwise.
-Replacements SHALL alternate inodes so rename consumes the staged path.
-The warmed pair SHALL live in `$TMPDIR/tilr-warm-<pid>/`, owned by its test
-process. At startup, the next test binary SHALL remove pairs belonging to
-exited processes and preserve pairs belonging to live processes.
+inodes. Once per test binary, the harness SHALL warm the original and new inode
+with `--version`, reusing the original inode on the same filesystem or copying
+it once otherwise. Replacements SHALL alternate inodes so rename consumes the
+staged path. Warm pairs SHALL use `$TMPDIR/tilr-warm-<pid>/`; at startup the
+harness SHALL remove exited processes' pairs and preserve live processes' pairs.
 
 **Verified by**: `reload::warm_executable_links_reuse_inodes_and_replace_repeatedly`.
 
