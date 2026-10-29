@@ -123,7 +123,8 @@ before the delayed close arrives, then resumes and verifies recovery.
    which starts that `tilrd`): the paths the tests baked in at compile time. They run as
    root, so `crates/tilrd/tests/local.rs` also acts as another user (uid 65534).
    The filtered source snapshot also includes `scripts/`, the CI and release
-   workflows, release version helper, `.cargo/config.toml` and `.gitignore`
+   workflows, release version helper, `.cargo/config.toml`, `.gitignore`,
+   `AGENTS.md`, `README.md` and `USE_CASES.md`
    for the release and Linux script regression fixtures. The runtime gets `shasum`
    from `perl`, a dependency of `git` (verified 2026-10-21 with
    `docker run --rm ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y --no-install-recommends git >/dev/null && dpkg -S /usr/bin/shasum'`).
