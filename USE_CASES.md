@@ -13,6 +13,19 @@ failpoints (`src/fail.rs`) and are compiled only with that feature.
 
 The test's name is the statement of the use case.
 
+`python3 scripts/check_use_cases.py` checks backticked names in every Test column
+against Rust source declarations and `uc_NNN.py::function` scenario functions.
+It reads gated tests on both platforms without running them. The Cargo
+`use_cases` suite runs this check and invalid-reference fixtures, so CI and
+`bin/check` reject a missing name with its documentation line number.
+
+## Test reference map — `tests/use_cases.rs`
+
+| Use case | Test |
+|---|---|
+| Every test name in this map exists in the repository | `use_cases::every_use_case_test_reference_exists` |
+| Missing Rust and Python names, wrong module paths, and declarations found only in comments or strings are rejected with the documentation line | `use_cases::missing_use_case_test_references_are_rejected` |
+
 ## Linux build scripts — `tests/linux_script.rs`
 
 | Use case | Test |
@@ -102,6 +115,7 @@ real Linux containers with the same FIFO barrier.
 | Nor does a server with a TCP port and its socket: the socket would be left with nobody serving it | `a_server_with_a_port_does_not_reload_into_one_that_cannot_take_its_socket` |
 | † A reload refused by the check of the successor: the same connection, new connections through the socket, the lock still held | `a_refused_reload_keeps_the_socket_and_its_lock` |
 | Private test installations share warmed inodes; repeated replacements alternate them and consume the staged path | `warm_executable_links_reuse_inodes_and_replace_repeatedly` |
+| The next test process reclaims warmed executable pairs of exited processes and preserves live processes’ pairs | `reload::warm_executables_do_not_accumulate_between_processes` |
 
 ## Acknowledged input — `tests/input_delivery.rs`
 
@@ -118,6 +132,11 @@ real Linux containers with the same FIFO barrier.
 | Exec resets delivery history but preserves queued PTY bytes | `exec_resets_delivery_history_and_preserves_pending_bytes` |
 | The driver drains pending input before normal disconnect finalizes its session | `session::input_delivery_tests::normal_disconnect_drains_input_before_finalizing` |
 | Expiry removes delivery markers without discarding pending PTY bytes | `expiry_preserves_pending_bytes_without_stale_ack_markers` |
+| Input unread in the middle of a batch is replayed after reload | `unread_input_is_replayed_after_reload_in_the_middle_of_a_batch` (`failpoints`) |
+| Applied input whose acknowledgement is lost is not applied twice | `applied_input_with_a_lost_ack_is_not_applied_twice` (`failpoints`) |
+| A disconnect before application replays one copy | `disconnect_before_application_replays_one_copy` (`failpoints`) |
+| An old input acknowledgement cannot leave a later unnumbered resize stale | `an_old_input_ack_cannot_leave_a_later_unnumbered_resize_stale` (`failpoints`) |
+| A pending Hello is superseded before the pane answers | `a_pending_hello_is_superseded_before_the_pane_answers` (`failpoints`) |
 
 ## The client `tilr` — `crates/tilr/tests/client.rs`
 
@@ -167,7 +186,9 @@ real Linux containers with the same FIFO barrier.
 
 ## Outgoing WebSocket TLS — shared by Cloud control, tilrd ps, tilr --connect and tilr-driver
 
-Unit tests in `crates/tilr-websocket/src/lib.rs`; all clients use the same explicit connector, including when built separately.
+Unit tests in `crates/tilr-websocket/src/lib.rs`, with client wiring tests in
+`crates/tilr/src/conn.rs` and `crates/tilr-driver/src/session.rs`; all clients use
+the same explicit connector, including when built separately.
 
 | Use case | Test |
 |---|---|
@@ -175,6 +196,9 @@ Unit tests in `crates/tilr-websocket/src/lib.rs`; all clients use the same expli
 | The trust store contains exactly the bundled Mozilla roots | `the_trust_store_is_exactly_the_bundled_mozilla_roots` |
 | Plain WebSockets retain request headers | `plain_websockets_keep_request_headers` |
 | An explicit trusted root permits a TLS WebSocket handshake | `an_explicit_root_allows_a_verified_secure_websocket` |
+| The shared connector uses the bundled trust anchors | `tests::connect_uses_the_bundled_trust_anchors` |
+| The tilr client uses the bundled trust anchors (`crates/tilr/src/conn.rs`) | `conn::bundled_tls_tests::client_uses_the_bundled_trust_anchors` |
+| The driver client uses the bundled trust anchors (`crates/tilr-driver/src/session.rs`) | `session::bundled_tls_tests::client_uses_the_bundled_trust_anchors` |
 | Bundled roots reject an untrusted issuer | `bundled_roots_reject_an_untrusted_issuer` |
 | A trusted certificate for another hostname is rejected | `an_explicit_root_does_not_allow_a_wrong_hostname` |
 
@@ -210,7 +234,7 @@ Cloud repository.
 | Use case | Test |
 |---|---|
 | A client came back: the pane is there, the first frame is the whole screen, the shell is the same | `a_client_that_reconnects_finds_its_pane_as_it_left_it` |
-| What was printed while nobody watched is visible after coming back | `output_printed_while_nobody_watched_is_there_on_reconnect` |
+| What was printed while nobody watched is visible after coming back | `output_printed_while_nobody_watched_is_there_on_reconnect` (`failpoints`) |
 | Input echoed before the shell starts does not attach the expected output to its initial prompt | `reconnect_output_when_input_precedes_the_shell_prompt` |
 | Explicit pauses order unwatched output, accepted reconnect, subscription and full-frame enqueue | `a_test_controls_output_accept_subscribe_and_full_frame_on_reconnect` (`failpoints`) |
 | A reconnected client's reads stay paused while it can send; continuous output reaches the lag decision, then explicit resume receives full-frame recovery | `a_test_pauses_socket_reads_until_reconnected_client_lags` (`failpoints`) |
@@ -261,12 +285,15 @@ Cloud repository.
 | Repository documentation is available at runtime with the same contents as in the build snapshot | `repository_documentation_matches_the_build_snapshot` |
 | Release tags supply build versions without generated version files; the release builds each target, checks native versions against tag/commit, and packages both executables, licenses and README with a checksum | `release_tags_supply_the_version_without_release_configuration`, `a_release_builds_and_packages_every_target` |
 | Candidates run on `release/**` and stable releases on `vX.Y.Z` tag pushes; nothing merges a release back into `main` | `releases_run_only_on_release_branches` |
-| A push to `release/X.Y` without a release tags the next candidate `vX.Y.Z-rc.N` (patch after a stable release, rc after the highest one, the same tag on a re-run) and refuses a branch not named `release/X.Y` | `candidate.test.cjs` in the pinned `tilr-dev/.github` workflow, `.github/release-workflow.test.cjs`, `release::releases_run_only_on_release_branches` |
+| A push to `release/X.Y` without a release tags the next candidate `vX.Y.Z-rc.N` (patch after a stable release, rc after the highest one, the same tag on a re-run) and refuses a branch not named `release/X.Y` | `release::releases_run_only_on_release_branches` |
 | A release candidate is built, checked and attached like a release, with the tag's version in the binaries, and publishes only to the CDN beta channel | `a_release_candidate_is_built_like_a_release_and_publishes_to_beta` |
 | `release.sh` builds the version `TILR_BUILD_VERSION` names, when set, instead of the one in `Cargo.toml` | `a_release_is_named_after_the_build_version_when_given` |
 | The spec-change check compares `main` with GitHub's test merge through `spec_merge.py`, both shared scripts fetched from a fixed gitpm commit and checked against their digests | `the_spec_change_check_compares_main_with_the_test_merge` |
 | The CDN job runs after assets and uploads only built platforms | `the_cdn_job_runs_after_the_assets_and_uploads_only_what_was_built` |
 | The pinned macOS SDK is selected in clean worktrees and release workflows; the Zig installer checks it before downloading | `the_pinned_zig_selects_a_compatible_macos_sdk`, `the_macos_zig_installer_checks_its_sdk_before_download` |
+
+Candidate selection also has `candidate.test.cjs` in the pinned `tilr-dev/.github`
+workflow and `.github/release-workflow.test.cjs` in this repository.
 
 ## Version baked at build time — `tests/build_script.rs`, `crates/tilr/tests/build_script.rs`
 
@@ -597,13 +624,13 @@ pane process. The server's counters are at `GET /metrics`.
 
 | Use case | Test |
 |---|---|
-| Links split runs, share a frame URI table across rows, and disappear from unlinked frames | `tilr-screen`: `ghostty::tests::a_hyperlink_goes_with_its_run` |
-| Linked trailing spaces, including an all-space label, keep their cells | `tilr-screen`: `ghostty::tests::linked_trailing_spaces_keep_their_cells` |
-| URIs longer than 8 KiB remain plain text (the VT engine may reject them earlier) | `tilr-screen`: `ghostty::tests::an_overlong_hyperlink_is_left_out` |
-| Attach opens and closes OSC 8 around a linked run | `tilr`: `attach::tests::a_linked_run_is_drawn_inside_osc_8` |
-| The VT engine retains a 2046-byte parameter-free URI and drops a 2047-byte URI without losing the label | `tilr-screen`: `ghostty::tests::the_vt_osc_limit_keeps_text_but_drops_long_links` |
-| A URI read returning `OutOfSpace` leaves the frame URI table unchanged | `tilr-screen`: `ghostty::tests::an_out_of_space_uri_is_left_out` |
-| A URI containing invalid UTF-8 leaves its text intact | `tilr-screen`: `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` |
+| Links split runs, share a frame URI table across rows, and disappear from unlinked frames | tilr-screen: `ghostty::tests::a_hyperlink_goes_with_its_run` |
+| Linked trailing spaces, including an all-space label, keep their cells | tilr-screen: `ghostty::tests::linked_trailing_spaces_keep_their_cells` |
+| URIs longer than 8 KiB remain plain text (the VT engine may reject them earlier) | tilr-screen: `ghostty::tests::an_overlong_hyperlink_is_left_out` |
+| Attach opens and closes OSC 8 around a linked run | tilr: `attach::tests::a_linked_run_is_drawn_inside_osc_8` |
+| The VT engine retains a 2046-byte parameter-free URI and drops a 2047-byte URI without losing the label | tilr-screen: `ghostty::tests::the_vt_osc_limit_keeps_text_but_drops_long_links` |
+| A URI read returning `OutOfSpace` leaves the frame URI table unchanged | tilr-screen: `ghostty::tests::an_out_of_space_uri_is_left_out` |
+| A URI containing invalid UTF-8 leaves its text intact | tilr-screen: `ghostty::tests::a_non_utf8_hyperlink_is_plain_text` |
 
 Shared Ghostty build tooling: `ghostty_script::shared_ghostty_build_reuses_complete_toolchain_prefixes`
 checks pinned build flags, package relocation, reuse, Zig/SDK identity changes, Linux

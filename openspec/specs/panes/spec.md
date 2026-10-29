@@ -336,7 +336,7 @@ The wrappers in `<runtime dir>/shell/` are shared by all servers of the user. A 
 ### Requirement: The pane process title follows the pane
 After its start arguments, a pane process SHALL show ` [shell <shell pid> in <cwd>]`, or ` [shell <shell pid> in <cwd>: <command>]` while another process group is in the foreground of its pty (`<cwd>` is `PaneInfo.cwd`, `<command>` the group leader's command line, its process name when the command line cannot be read, or `?` when the leader is gone; at most 80 bytes). It SHALL update the title within a second of either changing and SHALL set it again after a reload.
 
-**Verified by**: `panes::the_pane_process_title_follows_the_directory_and_the_command`, `panes::the_pane_process_title_follows_exec_in_the_same_foreground_group` and `reload::the_pane_process_title_is_set_again_after_a_reload`.
+**Verified by**: `panes::the_pane_process_title_follows_the_directory_and_the_command`, `panes::the_pane_process_title_follows_exec_in_the_same_foreground_group` and `reload::the_pane_process_title_is_set_again_after_a_reload`; unit tests `title::tests::a_leader_that_is_gone_is_shown_as_a_placeholder` (Linux and macOS), `title::tests::a_zombie_leader_is_named_by_its_process` (Linux), and `title::tests::another_users_leader_is_named_by_its_process` (macOS), all in crates/tilrd/src/title.rs.
 
 #### Scenario: cd in a pane
 - **WHEN** the shell in a pane runs `cd /tmp`
