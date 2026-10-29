@@ -16,7 +16,7 @@ import sys
 
 # Skip comments and literals before counting module braces or finding functions.
 RUST_TOKEN = re.compile(
-    r'//[^\n]*|/\*.*?\*/|(?:br|r)(?P<hashes>\#*)".*?"(?P=hashes)'
+    r'//[^\n]*|(?P<block>/\*)|(?:br|r)(?P<hashes>\#*)".*?"(?P=hashes)'
     r'|b?"(?:\\.|[^"\\])*"|b?\'(?:\\.|[^\'\\])\''
     r'|\bmod\s+(?P<module>\w+)\s*\{'
     r'|\bfn\s+(?P<function>\w+)\b|(?P<brace>[{}])',
@@ -26,8 +26,21 @@ RUST_TOKEN = re.compile(
 
 def rust_functions(path, prefix):
     scopes = []
-    for token in RUST_TOKEN.finditer(path.read_text()):
-        if token['module']:
+    source = path.read_text()
+    position = 0
+    while token := RUST_TOKEN.search(source, position):
+        position = token.end()
+        if token['block']:
+            # Rust block comments nest, including documentation comments.
+            depth = 1
+            for delimiter in re.finditer(r'/\*|\*/', source[position:]):
+                depth += 1 if delimiter[0] == '/*' else -1
+                if depth == 0:
+                    position += delimiter.end()
+                    break
+            else:
+                position = len(source)
+        elif token['module']:
             scopes.append(token['module'])
         elif token['brace'] == '{':
             scopes.append(None)

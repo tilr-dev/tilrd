@@ -22,6 +22,10 @@ class References(unittest.TestCase):
 async fn reconnects() {}
 mod nested { #[test] fn gated() {} }
 // fn only_in_a_comment() {}
+/* outer
+   /* nested comment */
+   fn only_in_a_nested_comment() {}
+*/
 const EXAMPLE: &str = r#"fn only_in_a_string() {}"#;
 ''')
         self.write('crates/demo/src/title.rs', '''
@@ -64,7 +68,8 @@ mod bundled_tls_tests { #[test] fn trusts_roots() {} }
         for name in ['misspelled', 'reconnect::missing',
                      'wrong::tests::title_follows_pane', 'title::tests::missing',
                      'uc_123.py::missing', 'uc_999.py::reconnects',
-                     'only_in_a_comment', 'only_in_a_string']:
+                     'only_in_a_comment', 'only_in_a_nested_comment',
+                     'only_in_a_string']:
             with self.subTest(name=name):
                 result = self.run_checker(
                     f'| Use case | Test |\n| --- | --- |\n| Missing | `{name}` |\n'
