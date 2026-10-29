@@ -9,10 +9,11 @@ installation paths and genuine executable replacement.
 
 ### Requirement: Warm executable installations
 Reload and update tests SHALL hardlink private installations to two reusable
-inodes. Once per test binary, the harness SHALL warm the original and each new
-inode with a successful `--version`. It SHALL reuse the original inode on the
-same filesystem, or copy it once into the tests' filesystem otherwise.
-Replacements SHALL alternate inodes so rename consumes the staged path.
+inodes. Once per test binary, the harness SHALL warm the original and each new inode
+with successful `--version`, reusing the original inode on the same filesystem or copying
+it once locally otherwise. Replacements SHALL alternate inodes so rename consumes the
+staged path. Warm pairs SHALL use `$TMPDIR/tilr-warm-<pid>/`; at startup the
+harness SHALL remove exited processes' pairs and preserve live processes' pairs.
 
 **Verified by**: `reload::warm_executable_links_reuse_inodes_and_replace_repeatedly`.
 
@@ -29,6 +30,13 @@ Replacements SHALL alternate inodes so rename consumes the staged path.
 - **WHEN** Cargo's output directory is on a separate volume from test installations
 - **THEN** the harness creates and warms two local executable copies once
 - **AND** all private installations and replacements use hardlinks to that pair
+
+#### Scenario: Exited test processes leave no accumulated pairs
+- **WHEN** a new test binary initializes its warmed executable pair
+- **THEN** it removes `tilr-warm-<pid>` directories of exited processes
+- **AND** it preserves directories of live processes and uses its own process directory
+
+**Verified by**: `reload::warm_executables_do_not_accumulate_between_processes`.
 
 ### Requirement: Compatibility probes distinguish launch admission from execution
 With `failpoints`, explicitly opted-in compatibility probes SHALL wait for a
