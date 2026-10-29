@@ -30,7 +30,7 @@ The test client SHALL provide an acknowledged pause of socket reads. Once the
 pause is acknowledged it SHALL consume no further socket messages until the
 test explicitly resumes reading. Sending client messages SHALL remain possible.
 
-**Verified by**: `reconnect::a_test_pauses_socket_reads_until_reconnected_client_lags`, `reconnect::a_dropped_read_pause_fails_the_next_read`.
+**Verified by**: `reconnect::a_test_pauses_socket_reads_until_reconnected_client_lags`.
 
 #### Scenario: Pause handle disappears
 - **WHEN** a test drops the read-pause handle without resuming

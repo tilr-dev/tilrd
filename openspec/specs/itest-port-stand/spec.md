@@ -70,7 +70,7 @@ these tests run without Docker or release credentials.
 - **WHEN** dt runs the Rust `release` suite
 - **THEN** the tests can read their scripts and repository configuration
 - **AND** the snapshot includes release workflows and their build-version helper,
-  tracked Cargo configuration and Git ignore rules, AGENTS.md, README.md and USE_CASES.md
+  tracked Cargo configuration and Git ignore rules
 - **AND** the release fixtures can create and verify archive checksums
 
 #### Scenario: Linux worktree fixture runs in dt
