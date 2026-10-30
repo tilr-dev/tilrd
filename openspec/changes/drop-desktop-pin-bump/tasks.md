@@ -5,4 +5,4 @@
 
 ## 2. Validation
 - [x] 2.1 Release workflow tests assert that no desktop pin pull request is proposed.
-- [ ] 2.2 Verify checks and review the final diff.
+- [x] 2.2 Verify checks and review the final diff.
