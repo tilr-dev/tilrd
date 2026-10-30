@@ -332,35 +332,6 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
 
-  # The App token triggers ordinary desktop PR CI. No merge or approval bypass.
-  bump-desktop-pin:
-    needs: [release, upload]
-    if: startsWith(github.ref, 'refs/tags/') && needs.release.outputs.tag != '' && needs.release.outputs.is_rc == 'false'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.release.outputs.tag }}
-          persist-credentials: false
-      - uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
-        id: desktop-token
-        with:
-          app-id: ${{ vars.TILR_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.TILR_BOT_PRIVATE_KEY }}
-          owner: tilr-dev
-          repositories: desktop-mac
-          permission-contents: write
-          permission-pull-requests: write
-      - name: Propose the desktop server pin
-        env:
-          GH_TOKEN: ${{ steps.desktop-token.outputs.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-          IS_RC: ${{ needs.release.outputs.is_rc }}
-        run: bash scripts/bump-desktop-pin.sh
-
   # Publish releases to stable and candidates to beta after GitHub assets.
   cdn:
     needs: [release, upload]

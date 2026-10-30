@@ -1349,23 +1349,10 @@ stable release notes from earlier stable tags. A stable tag creates the GitHub r
 - publishes the Linux and signed, notarized macOS archives to the CDN, the R2 bucket `tilr-cdn` behind
   `https://cdn.tilr.dev`, with `scripts/release.sh --upload-only`.
 
-After the signed GitHub assets are uploaded, each newly created stable release opens
-or updates one tilr-bot PR into `tilr-dev/desktop-mac` main, titled
-`chore: bump tilrd to X.Y.Z`. The `bot/bump-tilrd` branch is refreshed from desktop
-main with a guarded force push; later stable releases update the same open PR.
-`server-release.json` takes its version from the release tag and `protocolVersion`
-from `crates/tilr-proto/src/lib.rs` at that tag; its local artifact revision (`build`)
-is retained from desktop main. Desktop CI downloads and verifies that exact signed
-release through `fetch_server.py`. Review and merge follow the ordinary process;
-the next desktop release includes the pin. Candidates do not open or update this PR.
-
-Provision the tilr-bot GitHub App installation on **desktop-mac**, with **Contents:
-read and write** and **Pull requests: read and write**. The release job mints a
-short-lived token scoped only to `desktop-mac`, using tilrd's existing
-`TILR_BOT_CLIENT_ID` repository variable and `TILR_BOT_PRIVATE_KEY` secret. No extra
-long-lived token or check bypass is needed. An App token, rather than GITHUB_TOKEN,
-lets the desktop PR run its normal CI. Installation access and permissions must be
-configured by the repository owner before the first automatic bump.
+Releases open no pull request in `tilr-dev/desktop-mac`. Tilr bundles the latest
+stable tilrd when it is built, only as an offline starting point, and keeps the
+installed tilrd and tilr on the latest release by running `tilrd update` at launch
+and from its Update tilrd button.
 
 Every push to `release/X.Y` whose commit has no stable tag on that line builds a release candidate: the pushed commit is tagged
 `vX.Y.Z-rc.N` and a GitHub prerelease of that tag gets the same archives and checksums
