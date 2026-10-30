@@ -685,8 +685,3 @@ itests/tests -p test_coverage.py`.
 - `release::manifest_signing_supports_keg_only_openssl_and_reports_unsupported_tools`
   signs with keg-only Homebrew OpenSSL on both macOS architectures and reports the
   selected binary and version when an explicit OpenSSL override cannot sign Ed25519.
-
-- `release::stable_releases_propose_desktop_pins_with_real_git`: a stable release
-  proposes its exact version and released protocol in desktop-mac; later stable
-  releases update one PR from current main, candidates do nothing, and invalid
-  metadata fails before publishing.

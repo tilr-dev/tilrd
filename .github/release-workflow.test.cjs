@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {readFileSync} = require('node:fs');
+const {readFileSync, existsSync} = require('node:fs');
 const path = require('node:path');
 const root=path.resolve(__dirname,'..');
 const workflow=readFileSync(path.join(root,'.github/workflows/release.yml'),'utf8');
@@ -28,17 +28,9 @@ test('candidates retain beta CDN publication and stable releases retain stable p
   assert.match(job('cdn'),/scripts\/release.sh --upload-only --channel/);
 });
 
-test('desktop pin proposal waits for signed assets and uses the released source and scoped App token',()=>{
-  const bump=job('bump-desktop-pin');
-  assert.match(bump,/needs: \[release, upload\]/);
-  assert.match(bump,/if: startsWith\(github.ref, 'refs\/tags\/'\) && needs.release.outputs.tag != '' && needs.release.outputs.is_rc == 'false'/);
-  assert.match(bump,/ref: \$\{\{ needs.release.outputs.tag \}\}/);
-  assert.match(bump,/persist-credentials: false/);
-  assert.match(bump,/repositories: desktop-mac/);
-  assert.match(bump,/permission-contents: write/);
-  assert.match(bump,/permission-pull-requests: write/);
-  assert.match(bump,/GH_TOKEN: \$\{\{ steps.desktop-token.outputs.token \}\}/);
-  assert.match(bump,/bash scripts\/bump-desktop-pin.sh/);
+test('releases propose no desktop pin: the app updates tilrd itself',()=>{
+  assert.doesNotMatch(workflow,/bump-desktop-pin|desktop-mac|bot\/bump-tilrd/);
+  assert.ok(!existsSync(path.join(root,'scripts/bump-desktop-pin.sh')));
 });
 
 test('stable tags trigger directly, RC tags are excluded, and publication is queued',()=>{
