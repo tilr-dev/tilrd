@@ -46,7 +46,7 @@ jobs:
           # The helper tells a conflict with main from a merge result GitHub has not updated yet,
           # and fetches refs/inspection/base and refs/inspection/merge.
           curl --fail --silent --show-error --location \
-            https://raw.githubusercontent.com/tilr-dev/gitpm/70a42369296f97ea0cd41fedb4a84f7f4c151e7d/scripts/spec_merge.py \
+            https://raw.githubusercontent.com/tilr-dev/gitpm/498f79ecfc31140f2f0399950d7e47a92b2e8d07/scripts/spec_merge.py \
             --output "$RUNNER_TEMP/spec_merge.py"
           printf 'fb9bc7642bf8483c658bbd04c06ba6b0816d5feb51ebf81a392803ba8f8fab5b  %s\n' "$RUNNER_TEMP/spec_merge.py" | sha256sum --check --strict
           python3 "$RUNNER_TEMP/spec_merge.py" \
@@ -58,11 +58,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Pin the checker that keeps trailing sections separate from requirements.
+          # Pin the checker that strictly parses own (...) specification scopes.
           curl --fail --silent --show-error --location \
-            https://raw.githubusercontent.com/tilr-dev/gitpm/70a42369296f97ea0cd41fedb4a84f7f4c151e7d/scripts/spec_change.py \
+            https://raw.githubusercontent.com/tilr-dev/gitpm/498f79ecfc31140f2f0399950d7e47a92b2e8d07/scripts/spec_change.py \
             --output "$RUNNER_TEMP/spec_change.py"
-          printf '315719f620180f0a8eb3c186d03101304b8edf8acbe150ded661e9f4dcd1e202  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
+          printf '63b77c967f83317c91ff7ca19c7d096a760c4dcc0b3b87642937bf4c00f91247  %s\n' "$RUNNER_TEMP/spec_change.py" | sha256sum --check --strict
       - name: Authorize specification changes
         if: github.event_name == 'pull_request_target'
         env:
