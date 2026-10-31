@@ -15,6 +15,8 @@
 //! # Exec: clients run programs outside a pane (see exec.rs); false does as
 //! # --no-exec. Default on.
 //! exec = true
+//! # Release channel for tilrd update: stable (default) or beta.
+//! update_channel = "stable"
 //!
 //! # The files protocol (see files.rs).
 //! [files]
@@ -51,6 +53,9 @@ pub const DEFAULT_ORIGINS: &[&str] = &[
 #[derive(Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Channel installed by tilrd update. Unset: stable.
+    #[serde(default)]
+    pub update_channel: crate::update::Channel,
     /// Browser origins allowed to connect. Unset: the built-in list.
     pub allow_origins: Option<Vec<String>>,
     /// Serve the SOCKS proxy. Unset: off.

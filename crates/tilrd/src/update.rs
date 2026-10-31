@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{PLATFORM, VERSION};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
     #[default]

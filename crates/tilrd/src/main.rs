@@ -193,9 +193,6 @@ enum Command {
     /// users: `tilr update`, which runs this in the server.
     #[command(hide = true)]
     Update {
-        /// Release channel to install (stable reads latest).
-        #[arg(long, value_enum, default_value = "stable")]
-        channel: update::Channel,
         /// Where releases are fetched from.
         #[arg(long, env = "TILR_CDN", default_value = update::DEFAULT_CDN)]
         cdn: String,
@@ -310,7 +307,10 @@ fn main() -> anyhow::Result<ExitCode> {
             CloudCommand::Logout => cloud::logout()?,
             CloudCommand::Status => cloud::status()?,
         },
-        Some(Command::Update { cdn, channel }) => update::run(&cdn, channel, exe)?,
+        Some(Command::Update { cdn }) => {
+            let config = config::load(cli.config.as_deref())?;
+            update::run(&cdn, config.update_channel, exe)?;
+        }
         Some(Command::FetchRelease {
             platform,
             out,

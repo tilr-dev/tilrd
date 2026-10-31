@@ -666,9 +666,12 @@ itests/tests -p test_coverage.py`.
   checks candidate upload order and isolation from latest/install.sh, upload-only and checksum validation.
   `release::beta_publication_failure_does_not_advance_the_pointer_or_publish_the_installer` checks failed uploads.
 - Beta updates: `update::update_selects_beta_without_changing_the_stable_default` installs a candidate
-  from a local CDN and checks the stable default, explicit stable and ignored channel environment variable.
+  from a local CDN and checks absent/empty server.toml, explicit stable and ignored channel environment variable.
   `update::update_rejects_invalid_channels_and_does_not_fall_back_from_beta` checks missing beta
-  and invalid channel failures without installation changes.
+  and invalid configuration failures before CDN access without installation changes.
+  `update::update_rejects_the_removed_channel_flag_before_contacting_cdn` checks argument rejection.
+  `update::configured_beta_stays_current_when_stable_is_older` checks an explicit config path
+  keeps an up-to-date beta installation unchanged even when stable offers an older release.
 
 ## Release upstream gate
 
