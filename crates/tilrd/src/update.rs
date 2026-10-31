@@ -42,6 +42,13 @@ pub enum Channel {
 }
 
 impl Channel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+        }
+    }
+
     fn pointer(self) -> &'static str {
         match self {
             Self::Stable => "latest",

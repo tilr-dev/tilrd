@@ -177,13 +177,21 @@ A pane SHALL be named by its full id or by a prefix that exactly one pane id sta
 - **THEN** it fails with `kill-server stops the local tilrd; a server at --connect is stopped where it runs`
 
 ### Requirement: version
-`tilr version` SHALL print `tilr <version> (<platform>)` and then `tilrd <HelloAck.server_version> at <target>`, or `tilrd is not running at <target>` when nothing listens there, and exit 0 in both cases; it SHALL start nothing.
+`tilr version` SHALL print `tilr <version> (<platform>)`, then exactly `tilrd <HelloAck.server_version> at <target>` followed by a separate `tilrd update channel: <HelloAck.update_channel>` line when that field is non-empty. An older server's empty field SHALL omit the channel line. With nothing listening it SHALL instead print `tilrd is not running at <target>`. It SHALL exit 0 in both cases and start nothing.
 
-**Verified by**: `client::the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it`.
+**Verified by**: `client::the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it`, `client::version_reports_the_configured_update_channel` and `client::version_omits_the_channel_for_an_older_server`.
 
 #### Scenario: Versions
 - **WHEN** a tilrd runs and the user runs `tilr version`
 - **THEN** the first line starts with `tilr ` and the second with `tilrd `
+
+#### Scenario: Server update channel
+- **WHEN** `tilr version` connects to a server configured for `beta` (or with the channel key absent)
+- **THEN** the server version line is unchanged and the next line is `tilrd update channel: beta` (or `tilrd update channel: stable` respectively)
+
+#### Scenario: Older server
+- **WHEN** `tilr version` receives a HelloAck with an empty update_channel
+- **THEN** it prints the server version line without a channel line
 
 ### Requirement: Server commands
 `tilr token`, `tilr cloud login [--url URL] [--name NAME]|status|logout` and `tilr update [--cdn URL]` SHALL run in the local tilrd (started if needed) as `ExecStart` with `server_command = true` and `argv` = the subcommand and its options. Output SHALL be shown as it arrives (`ExecOutput.stream` 2 on stderr, others on stdout); Ctrl+C SHALL send `ExecCancel` once. With a `--connect` target they SHALL fail with `server commands run in the local tilrd; on another machine, run tilr there`.

@@ -87,9 +87,9 @@ The server SHALL send nothing to a connection before its `HelloAck`: `PaneList` 
 - **AND** later pane changes reach it as pushed `PaneList` messages
 
 ### Requirement: HelloAck describes the server
-`HelloAck` SHALL carry `protocol_version` (the server's `PROTOCOL_VERSION`), `server_version` (the build), `features`, `clipboard_max_bytes` (0 without `"clipboard"`), `server_id`, `fs_max_bytes` (0 without `"files"`) and `seq_base`. `server_id` MUST be a UUID kept in `server-id` in the state directory, the same after a restart. `seq_base` MUST differ for every connection, its connection number in the high 32 bits (its use is in `screen-frames`).
+`HelloAck` SHALL carry `protocol_version` (server `PROTOCOL_VERSION`), `server_version` (build), `update_channel` (config channel; default `stable`), `features`, `clipboard_max_bytes`, `server_id`, `fs_max_bytes` and `seq_base`. Limits MUST be 0 without their feature. `server_id` MUST be a UUID persisted in `server-id`. `seq_base` MUST differ per connection, its connection number in the high 32 bits (see `screen-frames`). The channel field MUST NOT change the protocol version.
 
-**Verified by**: `panes::hello_announces_the_clipboard_and_its_limit`, `panes::a_server_keeps_its_id_when_it_restarts` and `metrics::a_client_that_reconnects_tells_its_input_from_before`.
+**Verified by**: `panes::hello_announces_the_clipboard_and_its_limit`, `panes::a_server_keeps_its_id_when_it_restarts`, `metrics::a_client_that_reconnects_tells_its_input_from_before` and `panes::hello_reports_the_configured_update_channel`.
 
 #### Scenario: Clipboard limit
 - **WHEN** a server started with `--clipboard-max 3MB` is greeted
@@ -102,6 +102,14 @@ The server SHALL send nothing to a connection before its `HelloAck`: `PaneList` 
 #### Scenario: Seq base per connection
 - **WHEN** a client reconnects to the same server
 - **THEN** the new connection's `seq_base` is greater than the old one's
+
+#### Scenario: Configured update channel
+- **WHEN** a server with `update_channel = "beta"` in `server.toml` is greeted
+- **THEN** `HelloAck.update_channel` is `beta` and `protocol_version` remains `PROTOCOL_VERSION`
+
+#### Scenario: Default update channel
+- **WHEN** a server whose `server.toml` has no `update_channel` key is greeted
+- **THEN** `HelloAck.update_channel` is `stable` and `protocol_version` remains `PROTOCOL_VERSION`
 
 ### Requirement: Server feature flags
 `HelloAck.features` SHALL list exactly the capabilities this server can be run without and offers, in this order: `"clipboard"` (off: `--no-clipboard`), `"files"` (`--no-files` / `[files] enabled = false`), `"host-events"` (host-events socket not up), `"agent"` (`--no-agent` / `agent = false`), `"exec"` (`--no-exec` / `exec = false`). What every server of the version has (`Ping`) MUST NOT be listed. A client MUST NOT rely on a message of a feature not listed.
