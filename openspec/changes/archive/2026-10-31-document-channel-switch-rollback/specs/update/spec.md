@@ -30,4 +30,3 @@
 #### Scenario: The channel flag is removed
 - **WHEN** `tilrd update --channel beta` runs
 - **THEN** argument parsing fails before any CDN request or installation change
-
