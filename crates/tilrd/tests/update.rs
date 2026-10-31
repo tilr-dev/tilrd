@@ -799,3 +799,150 @@ fn update_rejects_cross_channel_replay_before_downloading() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+/// Snapshot installation bytes and mtimes, including leftovers a real update removes.
+fn check_snapshot(dir: &Path) -> Vec<(String, Vec<u8>, std::time::SystemTime)> {
+    files_in(dir)
+        .into_iter()
+        .filter(|name| dir.join(name).is_file())
+        .map(|name| {
+            let path = dir.join(&name);
+            let bytes = std::fs::read(&path).unwrap();
+            let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+            (name, bytes, modified)
+        })
+        .collect()
+}
+
+#[test]
+fn check_reports_the_configured_release_without_changes() {
+    let (current, platform) = version_and_platform();
+    for configured in [None, Some(""), Some("stable"), Some("beta")] {
+        let channel = if configured == Some("beta") {
+            "beta"
+        } else {
+            "stable"
+        };
+        let pointer = if channel == "beta" { "beta" } else { "latest" };
+        for available in [current.as_str(), "9.9.9-test", "0.0.0-old"] {
+            let (dir, exe) = installed();
+            let root = dir.join("cdn");
+            manifest::write_manifest(&root, &platform, available, pointer, &"00".repeat(32));
+            std::fs::write(
+                root.join("releases").join(&platform).join(pointer),
+                available,
+            )
+            .unwrap();
+            for name in ["tilr", "app-managed.json", ".tilr-update.sentinel"] {
+                std::fs::write(dir.join(name), name).unwrap();
+            }
+            let (url, requests) = cdn::serve_files_with_requests(root);
+            let mut cmd = configured_update(&exe, configured);
+            let before = check_snapshot(&dir);
+            let names = files_in(&dir);
+            let config = dir.join("config/server.toml");
+            let config_before = std::fs::read(&config).ok();
+            let output = spawn_copied(
+                cmd.args(["update", "--check", "--cdn", &format!("{url}/")])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .wait_with_output()
+            .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if available == current { 0 } else { 2 }),
+                "{output:?}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("installed: {current}\navailable: {available}\nchannel: {channel}\n")
+            );
+            assert_eq!(
+                *requests.lock().unwrap(),
+                [
+                    format!("/releases/{platform}/{pointer}"),
+                    format!("/releases/{platform}/{pointer}.manifest.json")
+                ]
+            );
+            assert_eq!(check_snapshot(&dir), before);
+            assert_eq!(files_in(&dir), names);
+            assert_eq!(std::fs::read(config).ok(), config_before);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[test]
+fn check_rejects_invalid_metadata_without_changes() {
+    let (current, platform) = version_and_platform();
+    for channel in ["stable", "beta"] {
+        let pointer = if channel == "beta" { "beta" } else { "latest" };
+        for fault in ["missing pointer", "missing manifest", "signature"] {
+            let (dir, exe) = installed();
+            let root = dir.join("cdn");
+            manifest::write_manifest(&root, &platform, &current, pointer, &"00".repeat(32));
+            let metadata = root.join("releases").join(&platform);
+            if fault != "missing pointer" {
+                std::fs::write(metadata.join(pointer), &current).unwrap();
+            }
+            let file = metadata.join(format!("{pointer}.manifest.json"));
+            if fault == "missing manifest" {
+                std::fs::remove_file(&file).unwrap();
+            } else if fault == "signature" {
+                let mut envelope: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+                envelope["signature"] = "00".repeat(64).into();
+                std::fs::write(file, envelope.to_string()).unwrap();
+            }
+            let (url, requests) = cdn::serve_files_with_requests(root);
+            let mut cmd = configured_update(&exe, Some(channel));
+            let before = check_snapshot(&dir);
+            let names = files_in(&dir);
+            let output = spawn_copied(
+                cmd.args(["update", "--check", "--cdn", &url])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped()),
+            )
+            .wait_with_output()
+            .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{fault}: {output:?}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(match fault {
+                    "signature" => "signature",
+                    "missing manifest" => "signed manifest missing",
+                    _ => "404",
+                }),
+                "{stderr}"
+            );
+            let mut expected = vec![format!("/releases/{platform}/{pointer}")];
+            if fault != "missing pointer" {
+                expected.push(format!("/releases/{platform}/{pointer}.manifest.json"));
+            }
+            assert_eq!(*requests.lock().unwrap(), expected);
+            assert_eq!(check_snapshot(&dir), before);
+            assert_eq!(files_in(&dir), names);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[test]
+fn check_help_describes_exit_codes() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tilrd"))
+        .args(["update", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    for text in [
+        "--check",
+        "0: same version",
+        "2: different version",
+        "1: error",
+    ] {
+        assert!(help.contains(text), "{help}");
+    }
+}

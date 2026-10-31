@@ -98,6 +98,15 @@ In any shell on that machine:
 tilr update
 ```
 
+To inspect the configured channel without installing, run `tilrd update --check`.
+It prints `installed: <version>`, `available: <version>` and `channel: <stable|beta>`.
+The channel comes from `update_channel` in `server.toml` (default `stable`), using
+`--config`, `TILR_CONFIG` or the default config path as for an ordinary update.
+The pointer and signed manifest are fetched and authenticated, but no archive is
+downloaded and no files are changed. Exit status is `0` when the versions match,
+`2` when they differ (including an older available release), and `1` on error.
+`tilrd update --help` describes the flag.
+
 `tilr update` has the running server do it (it runs `tilrd update` as a child of the
 server, in its environment), then reconnects and prints the version the server reloaded
 into. It asks the CDN which version is ready for its platform, verifies the Ed25519 signature
