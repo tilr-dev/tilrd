@@ -240,6 +240,24 @@ pub fn fetch_release(cdn: &str, platform: &str, out: &Path, local: Option<&Path>
     Ok(())
 }
 
+/// Inspect the same authenticated metadata as an install, without touching disk.
+pub fn check(cdn: &str, channel: Channel) -> Result<std::process::ExitCode> {
+    let latest = latest_version(cdn.trim_end_matches('/'), PLATFORM, channel)?;
+    let channel = match channel {
+        Channel::Stable => "stable",
+        Channel::Beta => "beta",
+    };
+    println!(
+        "installed: {VERSION}\navailable: {}\nchannel: {channel}",
+        latest.version
+    );
+    Ok(std::process::ExitCode::from(if latest.version == VERSION {
+        0
+    } else {
+        2
+    }))
+}
+
 pub fn run(cdn: &str, channel: Channel, exe: &Path) -> Result<()> {
     let cdn = cdn.trim_end_matches('/');
     let latest = latest_version(cdn, PLATFORM, channel)?;

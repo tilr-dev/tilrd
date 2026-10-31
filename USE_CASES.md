@@ -308,6 +308,9 @@ workflow and `.github/release-workflow.test.cjs` in this repository.
 
 | Use case | Test |
 |---|---|
+| Check the default stable, explicit stable or configured beta channel: report both versions, exit 0 for equal or 2 for different (including older), request only authenticated metadata and change no installation files | `check_reports_the_configured_release_without_changes` |
+| Check rejects missing pointers/manifests and invalid signatures even for the installed version, with exit 1 and no installation changes | `check_rejects_invalid_metadata_without_changes` |
+| Update help describes the check flag and outcome exit codes | `check_help_describes_exit_codes` |
 | `tilrd update` installs the latest release for its platform, `tilrd` and `tilr` from one archive; an explicit reload request tells a running server to reload, the shell intact | `update_installs_the_latest_release_and_the_running_server_keeps_its_shells` |
 | The latest release is already installed: nothing is downloaded, the file is untouched | `update_does_nothing_when_the_latest_release_is_the_one_installed` |
 | The archive does not match its checksum, does not unpack (not an archive, cut short), lacks `tilrd` or `tilr`, one of them does not run, or there is no release for the platform: nothing is installed, nothing is left next to it | `update_installs_nothing_that_fails_its_checksum_or_does_not_run` |
