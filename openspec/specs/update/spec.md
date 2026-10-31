@@ -217,25 +217,29 @@ After both programs are installed, a reload request failure SHALL leave the new 
 - **THEN** the update exits 0, installs both release executables, and leaves the marker unchanged
 
 ### Requirement: The updater selects a release channel
-`tilrd update` SHALL accept `--channel stable|beta`, default to `stable`, and reject any other channel before downloading or changing the installation. No environment variable SHALL select the channel. A missing beta pointer SHALL fail without falling back to stable. The installer, `tilr update` and `fetch-release` SHALL retain their stable behavior.
+`tilrd update` SHALL read `update_channel = "stable"|"beta"` from server.toml, default to `stable` if the file or key is absent, and reject other values before CDN access or installation changes. `tilr update` SHALL follow the server's update channel. Argument parsing SHALL reject `--channel`. No environment variable SHALL select the channel. Missing beta SHALL fail without stable fallback. The installer and `fetch-release` SHALL remain on stable.
 
-**Verified by**: `update::update_selects_beta_without_changing_the_stable_default`, `update::update_rejects_invalid_channels_and_does_not_fall_back_from_beta`.
+**Verified by**: `update::update_selects_beta_without_changing_the_stable_default`, `update::update_rejects_invalid_channels_and_does_not_fall_back_from_beta`, `update::configured_beta_stays_current_when_stable_is_older`, `update::update_rejects_the_removed_channel_flag_before_contacting_cdn`.
 
 #### Scenario: A beta candidate is installed
-- **WHEN** latest names a stable release, beta names a candidate and `tilrd update --channel beta` runs
+- **WHEN** latest names a stable release, beta names a candidate and `tilrd update` runs with `update_channel = "beta"` in server.toml
 - **THEN** both installed programs come from the candidate archive
 
 #### Scenario: Stable remains the default
-- **WHEN** the channel is omitted or explicitly stable
+- **WHEN** server.toml is absent, has no update_channel key, or sets update_channel to "stable"
 - **THEN** the update reads latest, even if beta names a different candidate
 
 #### Scenario: Missing beta
 - **WHEN** beta is missing while latest exists
-- **THEN** `tilrd update --channel beta` fails and leaves both programs unchanged
+- **THEN** `tilrd update` configured for beta fails and leaves both programs unchanged
 
 #### Scenario: Invalid channel
-- **WHEN** `tilrd update --channel rc` runs
-- **THEN** argument parsing fails and changes nothing
+- **WHEN** server.toml sets `update_channel = "rc"` and `tilrd update` runs
+- **THEN** configuration loading fails with a message identifying the invalid channel before any CDN request and changes nothing
+
+#### Scenario: The channel flag is removed
+- **WHEN** `tilrd update --channel beta` runs
+- **THEN** argument parsing fails before any CDN request or installation change
 
 ### Requirement: Update metadata must be authenticated
 The updater SHALL verify Ed25519 over the envelope's exact UTF-8 `payload` using its embedded key. Metadata SHALL be at most 16 KiB with a hex signature. The payload SHALL bind a valid version, requested channel (`stable` or `beta`) and platform, expected archive basename and 64-character hex SHA-256. Missing, malformed, mismatched or untrusted metadata SHALL fail before any archive request or installation change. Unsigned checksum fallback and runtime trust-key overrides SHALL be rejected.
