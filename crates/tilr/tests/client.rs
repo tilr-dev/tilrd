@@ -834,31 +834,68 @@ struct Terminal {
     seen: String,
 }
 
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            // SAFETY: pre_exec established this child's private process group.
+            // Kill the group before reaping, while its leader's PID is still owned.
+            unsafe {
+                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            // Cleanup must also be safe during panic unwind.
+            let _ = self.child.wait();
+        }
+    }
+}
+
 impl Terminal {
     fn spawn(mut command: Command) -> Self {
-        let (mut master, mut slave) = (0, 0);
-        let mut size = libc::winsize {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Allocate close-on-exec atomically: another test may fork at any point.
+        // SAFETY: posix_openpt takes flags only and returns a new owned fd.
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+        assert!(master >= 0, "{}", std::io::Error::last_os_error());
+        // SAFETY: master is a newly allocated descriptor.
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        // SAFETY: grantpt/unlockpt operate on our owned PTY master.
+        assert_eq!(unsafe { libc::grantpt(master.as_raw_fd()) }, 0);
+        assert_eq!(unsafe { libc::unlockpt(master.as_raw_fd()) }, 0);
+        let mut name = [0 as libc::c_char; 128];
+        #[cfg(target_os = "macos")]
+        // SAFETY: TIOCPTYGNAME writes at most 128 bytes to the supplied buffer.
+        let named = unsafe {
+            libc::ioctl(
+                master.as_raw_fd(),
+                libc::TIOCPTYGNAME as _,
+                name.as_mut_ptr(),
+            )
+        };
+        #[cfg(target_os = "linux")]
+        // SAFETY: name is a writable buffer with the given size.
+        let named = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+        assert_eq!(named, 0);
+        // SAFETY: the successful name query wrote a NUL-terminated path.
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        use std::os::unix::ffi::OsStrExt;
+        // Rust's file opens set CLOEXEC atomically, including for the slave.
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(std::ffi::OsStr::from_bytes(name.to_bytes()))
+            .unwrap();
+        let size = libc::winsize {
             ws_row: 24,
             ws_col: 80,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        // SAFETY: openpty writes the two descriptors; the name, termios
-        // are null (unused).
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &raw mut size,
-            )
-        };
-        assert_eq!(opened, 0);
-        // SAFETY: openpty gave us both, owned by nothing else.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let fd = slave.as_raw_fd();
+        // SAFETY: ioctl reads a valid winsize on our PTY.
+        assert_eq!(
+            unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size) },
+            0
+        );
         command
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -866,9 +903,9 @@ impl Terminal {
         // SAFETY: setsid and ioctl are async-signal-safe.
         unsafe {
             command.pre_exec(move || {
-                libc::setsid();
-                libc::ioctl(0, libc::TIOCSCTTY as _, 0);
-                let _ = fd;
+                if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
@@ -1358,6 +1395,63 @@ fn attach_to_fake(machine: &Machine, server: &FakeServer) -> Terminal {
     let mut terminal = Terminal::spawn(command);
     terminal.expect("fake screen 1");
     terminal
+}
+
+// @spec test-client-lifetime/test-owned-client-lifetime
+#[test]
+fn terminal_drop_reaps_its_client_even_during_panic() {
+    let machine = Machine::new();
+    for panicking in [false, true] {
+        let server = FakeServer::start(vec![Serve::Fully]);
+        let terminal = attach_to_fake(&machine, &server);
+        let pid = terminal.child.id() as libc::pid_t;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _terminal = terminal;
+            if panicking {
+                panic!("controlled terminal test panic");
+            }
+        }));
+        assert_eq!(result.is_err(), panicking);
+        let mut status = 0;
+        // SAFETY: this is the exact direct child started above.
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        let error = std::io::Error::last_os_error().raw_os_error();
+        if waited == 0 {
+            // Keep the regression itself from leaking on the unfixed harness.
+            // SAFETY: waitpid just confirmed our child still exists.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+            }
+        }
+        assert_eq!(
+            (waited, error),
+            (-1, Some(libc::ECHILD)),
+            "client was not reaped (panic={panicking})"
+        );
+    }
+}
+
+// @spec test-client-lifetime/test-owned-client-lifetime
+#[test]
+fn terminal_children_do_not_inherit_pty_descriptors() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::Fully]);
+    let mut other = attach_to_fake(&machine, &server);
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        r#"for fd in /dev/fd/*; do
+case "$fd" in /dev/fd/[012]) continue ;; esac
+if test -t "${fd##*/}"; then echo "inherited tty: $fd"; exit 1; fi
+done"#,
+    ]);
+    let mut probe = Terminal::spawn(command);
+    let status = probe.child.wait().unwrap();
+    probe.read();
+    other.child.kill().unwrap();
+    other.child.wait().unwrap();
+    assert!(status.success(), "{}", probe.seen);
 }
 
 // @spec protocol/input-delivery-identities-have-a-bounded-lifetime
@@ -2013,6 +2107,9 @@ fn attach_replays_a_key_when_the_connection_ends_without_an_ack() {
         server.keys.recv_timeout(Duration::from_secs(10)).unwrap(),
         "y"
     );
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 // @spec tilr-cli/attached-terminal
@@ -2044,6 +2141,9 @@ fn reconnect_restores_terminal_size_before_subscribing() {
         "reconnect must reclaim the terminal size before Subscribe"
     );
     assert_eq!(first, (1, 80, 24));
+    terminal.write("\x1dd");
+    terminal.expect("[detached from pane");
+    assert!(terminal.child.wait().unwrap().success());
 }
 
 #[test]

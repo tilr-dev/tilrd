@@ -540,6 +540,8 @@ pane process. The server's counters are at `GET /metrics`.
 | After a test-owned server sends `READY=1`, interrupt its test by SIGTERM and by a controlled timeout; check its exact PID and macOS `pgrep`, report survivors, and clean the owned process group even on failure | `cleanup_stand::server_ready_then_wait_for_interruption` (ignored; run by `scripts/test_server_cleanup_stand.py`), `scripts/test_server_cleanup_stand_selftest.py` |
 | Test-process panic (including before startup output is parsed), SIGTERM and forced timeout stop owned supervisors, panes and shells, for original and copied executables | `cleanup_stand::owned_servers_exit_after_panic_signal_and_timeout` |
 | A panicking client test stops its copied daemon even after its command socket is removed | `client::a_panicking_test_stops_its_copied_daemon_without_a_command_socket` |
+| Dropping a live terminal client, normally or during panic, terminates and reaps it | `client::terminal_drop_reaps_its_client_even_during_panic` |
+| An executed child inherits no extra tty descriptors while another test terminal exists | `client::terminal_children_do_not_inherit_pty_descriptors` |
 
 ## Not covered
 
