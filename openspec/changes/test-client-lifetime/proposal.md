@@ -25,3 +25,8 @@ clients on drop nor prevented them from inheriting PTY master descriptors.
 
 Test harness and test documentation only. No breaking changes, protocol version
 change, feature flags, persistent state, reload or update migration.
+
+## Implementation
+
+Implemented in commit `9e64092` (terminal ownership, atomic PTY close-on-exec,
+explicit reconnect-test cleanup, and regression coverage).
