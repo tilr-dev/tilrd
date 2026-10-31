@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: The updater selects a release channel
-`tilrd update` SHALL read `update_channel = "stable"|"beta"` from its server.toml configuration, default to `stable` when the file or key is absent, and reject any other value with a configuration error before contacting the CDN or changing the installation. The `--channel` flag SHALL be rejected by argument parsing. No environment variable SHALL select the channel. A missing beta pointer SHALL fail without falling back to stable. The installer, `tilr update` and `fetch-release` SHALL retain their stable behavior.
+`tilrd update` SHALL read `update_channel = "stable"|"beta"` from its server.toml configuration, default to `stable` when the file or key is absent, and reject other values before CDN access or installation changes. The `--channel` flag SHALL be rejected by argument parsing. No environment variable SHALL select the channel. A missing beta pointer SHALL fail without falling back to stable. The installer, `tilr update` and `fetch-release` SHALL retain their stable behavior.
 
 **Verified by**: `update::update_selects_beta_without_changing_the_stable_default`, `update::update_rejects_invalid_channels_and_does_not_fall_back_from_beta`.
 
