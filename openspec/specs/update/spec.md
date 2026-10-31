@@ -229,6 +229,12 @@ After both programs are installed, a reload request failure SHALL leave the new 
 - **WHEN** server.toml is absent, has no update_channel key, or sets update_channel to "stable"
 - **THEN** the update reads latest, even if beta names a different candidate
 
+#### Scenario: Switching back to stable while an RC is installed
+- **GIVEN** a release candidate is installed and the current stable release is older than that candidate
+- **WHEN** server.toml changes from `update_channel = "beta"` to `update_channel = "stable"`, or the key is removed, and the next `tilrd update` runs
+- **THEN** both installed programs come from the current stable release, even though it is older than the installed RC
+- **AND** a running server reloads in place, preserving its shells, without requiring `--force` or applying downgrade protection
+
 #### Scenario: Missing beta
 - **WHEN** beta is missing while latest exists
 - **THEN** `tilrd update` configured for beta fails and leaves both programs unchanged

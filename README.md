@@ -1387,6 +1387,15 @@ the installer and `fetch-release` continue to use stable.
 Missing beta fails without falling back to stable. Stable
 publication leaves beta unchanged: a stable release follows beta testing.
 
+After testing an RC, setting `update_channel = "stable"` (or removing the key)
+means the next `tilrd update` installs the current stable release even if it is older
+than the installed RC. This also happens when Tilr.app runs the update at launch or
+from its Update tilrd button. A running server reloads in place and preserves its
+shells. This rollback is intentional: there is no downgrade protection and no
+`--force` flag is required or available. Before updating, run `tilrd update --check`
+to inspect the installed and available versions without installing; exit code 2
+means the versions differ, including when stable is older.
+
 Before the first signed release, provision an Ed25519 key pair outside the checkout:
 
 ```sh
