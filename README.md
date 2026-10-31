@@ -362,11 +362,15 @@ refused (403) as on the port; one without the header passes.
 
 What a machine's operator sets once lives in `~/.config/tilr/server.toml`
 (`$XDG_CONFIG_HOME/tilr/server.toml`, or `--config PATH` / `TILR_CONFIG`), read when the
-server starts (a reload starts it again, so a change takes effect on the next `tilr update`
-or SIGUSR1). A missing file is an empty configuration; one that does not parse, or names a
-key the server does not know, stops it from starting.
+server starts and by `tilrd update`. Server settings take effect on restart
+(including a reload after `tilr update` or SIGUSR1); the update channel takes effect
+on the next update. A missing default file is an empty configuration; one that does
+not parse, or names an unknown key, prevents startup and updating.
 
 ```toml
+# Release channel read by tilrd update: "stable" or "beta". Default: "stable".
+update_channel = "stable"
+
 # Browser origins allowed to connect. The Tilr app serves each of its apps
 # from tilr://<name>/ (the name from its config.yml, lower-cased); the built-in
 # list has tilr://app, tilr://tilr (the terminal) and the web client's, so add
@@ -1360,12 +1364,14 @@ Every push to `release/X.Y` whose commit has no stable tag on that line builds a
 version). The binaries say `X.Y.Z-rc.N-<commit>`. Candidates are published to the CDN beta channel: archives and checksums go under
 `releases/<version>/`, followed by `releases/<platform>/beta.manifest.json` and
 `releases/<platform>/beta`. They never change
-`latest` or `install.sh`. Install a candidate on a test machine with
+`latest` or `install.sh`. To install a candidate on a test machine,
 set `update_channel = "beta"` in `~/.config/tilr/server.toml` (or the configured
 server.toml path), then run `tilrd update`. With no file or key, or with
 `update_channel = "stable"`, it reads `latest`. Invalid values fail before CDN access.
-The command no longer accepts `--channel`. There is no channel environment variable; `tilr update` and the installer
-continue to use stable. Missing beta fails without falling back to stable. Stable
+The command no longer accepts `--channel`. There is no channel environment variable.
+`tilr update` runs `tilrd update` on the server and follows its configured update channel;
+the installer and `fetch-release` continue to use stable.
+Missing beta fails without falling back to stable. Stable
 publication leaves beta unchanged: a stable release follows beta testing.
 
 Before the first signed release, provision an Ed25519 key pair outside the checkout:
