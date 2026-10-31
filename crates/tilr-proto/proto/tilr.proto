@@ -585,6 +585,8 @@ message ServerMessage {
 message HelloAck {
   uint32 protocol_version = 1;
   string server_version = 2;
+  // Update channel from server.toml: "stable" (default) or "beta".
+  string update_channel = 9;
   // The capabilities this server can be run without and offers, in this
   // order (what is part of the protocol version, such as Ping, is never
   // listed):

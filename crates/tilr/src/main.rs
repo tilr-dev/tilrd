@@ -231,7 +231,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     if let Command::Version = command {
         println!("tilr {} ({})", env!("TILR_VERSION"), env!("TILR_PLATFORM"));
         match Conn::connect(&target, &client_id).await {
-            Ok(conn) => println!("tilrd {} at {target}", conn.server_version),
+            Ok(conn) => {
+                println!("tilrd {} at {target}", conn.server_version);
+                if !conn.update_channel.is_empty() {
+                    println!("tilrd update channel: {}", conn.update_channel);
+                }
+            }
             Err(ConnectError::NoServer(_)) => println!("tilrd is not running at {target}"),
             Err(err) => return Err(err.into()),
         }

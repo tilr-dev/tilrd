@@ -375,6 +375,7 @@ fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
         listen,
         local,
         allow_origins,
+        update_channel: config.update_channel,
         clipboard: (!cli.no_clipboard).then(|| clipboard::Limits {
             max_bytes: cli.clipboard_max,
             ttl: (cli.clipboard_ttl > 0).then(|| Duration::from_secs(cli.clipboard_ttl)),

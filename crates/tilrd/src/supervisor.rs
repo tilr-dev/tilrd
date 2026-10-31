@@ -389,6 +389,7 @@ pub struct Options {
     /// The Unix socket for local clients; `None`: none.
     pub local: Option<LocalOptions>,
     pub allow_origins: Vec<String>,
+    pub update_channel: crate::update::Channel,
     /// Ask every client for the access token.
     pub auth: bool,
     /// The `cloudflared` to run for a tunnel.
@@ -663,6 +664,7 @@ pub fn run(options: Options) -> Result<()> {
                 panes: HashMap::new(),
                 starting: HashMap::new(),
                 server_id,
+                update_channel: options.update_channel,
                 token,
                 tunnel,
                 clipboard,
@@ -1633,6 +1635,7 @@ struct Supervisor {
     panes: HashMap<PaneId, Pane>,
     starting: HashMap<PaneId, Starting>,
     server_id: Uuid,
+    update_channel: crate::update::Channel,
     /// What a client must present in `Hello`. `None`: nothing.
     token: Option<String>,
     /// The tunnel of a server linked to tilr Cloud.
@@ -2434,6 +2437,7 @@ impl Supervisor {
                 let ack = HelloAck {
                     protocol_version: PROTOCOL_VERSION,
                     server_version: crate::VERSION.into(),
+                    update_channel: self.update_channel.as_str().into(),
                     features: features
                         .into_iter()
                         .filter(|(_, on)| *on)
@@ -3783,6 +3787,7 @@ mod tests {
             panes: HashMap::new(),
             starting: HashMap::new(),
             server_id: Uuid::new_v4(),
+            update_channel: crate::update::Channel::default(),
             token: None,
             tunnel: cloud::Tunnel::off(),
             clipboard: None,

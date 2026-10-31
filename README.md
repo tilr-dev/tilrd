@@ -123,7 +123,10 @@ A legacy `app-managed.json` next to `tilrd` is ignored by the updater and remain
 
 `tilr version` prints what builds the client and the running server are: the package
 version, the commit and the platform, e.g. `0.1.0-26449dd (linux-aarch64)` (`tilr
---version`, `tilrd --version`: one each).
+--version`, `tilrd --version`: one each). The running server also reports its
+configured update channel on a separate `tilrd update channel: stable` (or `beta`)
+line, after `tilrd <version> at <target>`. Older servers that omit the channel
+produce no channel line.
 
 ## Quickstart
 
@@ -899,7 +902,8 @@ A connection starts with `Hello`, which carries the protocol version of the clie
 message first, answers with an `Error` and closes the connection. A packet that does not
 decode gets an `Error` (`bad packet: …`) and the connection stays, before `Hello` as after;
 a message of a type the server does not know is ignored. `HelloAck` carries the
-version of the server, and is the first message the client gets: nothing else is sent to it
+version of the server and `update_channel` (`stable` or `beta`, from `server.toml`,
+default `stable`), and is the first message the client gets: nothing else is sent to it
 before.
 
 The server sends a WebSocket ping every third of `--client-timeout`. Browsers and WebSocket

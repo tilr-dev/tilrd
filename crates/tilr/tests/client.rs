@@ -365,6 +365,60 @@ fn eventually(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 #[test]
+fn version_reports_the_configured_update_channel() {
+    let server_version = Command::new(Path::new(TILR).with_file_name("tilrd"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(server_version.status.success());
+    let build = String::from_utf8(server_version.stdout).unwrap();
+    let build = build.split_whitespace().nth(1).unwrap();
+    for (config, channel) in [
+        ("", "stable"),
+        ("update_channel = \"stable\"\n", "stable"),
+        ("update_channel = \"beta\"\n", "beta"),
+    ] {
+        let machine = Machine::new();
+        std::fs::create_dir_all(machine.dir.join("config")).unwrap();
+        std::fs::write(machine.dir.join("config/server.toml"), config).unwrap();
+        let stopped = machine.ok(&["version"]);
+        assert_eq!(stopped.lines().count(), 2, "{stopped}");
+        assert!(stopped.contains("tilrd is not running at "), "{stopped}");
+        assert!(!machine.socket().exists(), "version starts nothing");
+        machine.ok(&["new", "-d"]);
+        let version = machine.ok(&["version"]);
+        let lines: Vec<_> = version.lines().collect();
+        assert_eq!(lines.len(), 3, "{version}");
+        assert!(lines[0].starts_with("tilr "), "{version}");
+        assert_eq!(
+            lines[1],
+            format!("tilrd {build} at {}", machine.socket().display())
+        );
+        // Tilr.app extracts the version between these delimiters.
+        assert_eq!(
+            lines[1]
+                .strip_prefix("tilrd ")
+                .unwrap()
+                .split(" at ")
+                .next()
+                .unwrap(),
+            build
+        );
+        assert_eq!(lines[2], format!("tilrd update channel: {channel}"));
+    }
+}
+
+#[test]
+fn version_omits_the_channel_for_an_older_server() {
+    let machine = Machine::new();
+    let server = FakeServer::start(vec![Serve::Fully]);
+    let version = machine.ok(&["--connect", &server.url, "version"]);
+    let lines: Vec<_> = version.lines().collect();
+    assert_eq!(lines.len(), 2, "{version}");
+    assert_eq!(lines[1], format!("tilrd fake at {}", server.url));
+}
+
+#[test]
 fn the_first_tilr_starts_a_detached_server_and_the_next_one_uses_it() {
     let machine = Machine::new();
     assert!(

@@ -34,6 +34,7 @@ pub struct Conn {
     pub heard: Instant,
     /// What the server said it is, in `HelloAck`.
     pub server_version: String,
+    pub update_channel: String,
     pub applied_input: Vec<tilr_proto::InputAck>,
 }
 
@@ -111,6 +112,7 @@ impl Conn {
                 next_request: 0,
                 heard: Instant::now(),
                 server_version: String::new(),
+                update_channel: String::new(),
                 applied_input: Vec::new(),
             };
             conn.hello(client_id, token)
@@ -138,6 +140,7 @@ impl Conn {
         match self.recv().await? {
             server_message::Msg::HelloAck(ack) if ack.protocol_version == PROTOCOL_VERSION => {
                 self.server_version = ack.server_version;
+                self.update_channel = ack.update_channel;
                 self.applied_input = ack.applied_input;
                 Ok(())
             }
@@ -444,6 +447,7 @@ mod update_wait_tests {
             next_request: 0,
             heard: Instant::now(),
             server_version: "test".into(),
+            update_channel: String::new(),
             applied_input: Vec::new(),
         };
         let task = tokio::spawn(async move { conn.server_command(&["update".into()]).await });

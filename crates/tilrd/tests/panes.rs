@@ -1,6 +1,8 @@
 //! Use cases: connecting, and running a shell in a pane.
 
 mod common;
+#[path = "common/version.rs"]
+mod version;
 
 use common::*;
 
@@ -247,6 +249,28 @@ async fn used_at_ms_follows_subscribe_and_input() {
             .build_us
             > 0
     );
+}
+
+#[tokio::test]
+async fn hello_reports_the_configured_update_channel() {
+    for (config, channel) in [
+        (None, "stable"),
+        (Some(""), "stable"),
+        (Some("update_channel = \"stable\"\n"), "stable"),
+        (Some("update_channel = \"beta\"\n"), "beta"),
+    ] {
+        let dir = Server::scratch_dir();
+        if let Some(config) = config {
+            std::fs::create_dir_all(dir.join("config")).unwrap();
+            std::fs::write(dir.join("config/server.toml"), config).unwrap();
+        }
+        let server = Server::start_in(dir, std::path::Path::new(env!("CARGO_BIN_EXE_tilrd")), &[]);
+        let mut client = Client::connect(&server).await;
+        let ack = client.hello().await;
+        assert_eq!(ack.update_channel, channel, "config: {config:?}");
+        assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(ack.server_version, version::version_and_platform().0);
+    }
 }
 
 #[tokio::test]

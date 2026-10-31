@@ -46,6 +46,7 @@ real Linux containers with the same FIFO barrier.
 
 | Use case | Test |
 |---|---|
+| HelloAck reports stable with no channel key and stable/beta from server.toml, keeping the protocol and build versions | `hello_reports_the_configured_update_channel` |
 | A pane whose command does not exist reports a create-pane error only to its creator, stays out of pane lists and allows another creation | `a_pane_whose_command_cannot_start_is_reported_to_its_creator` |
 | A bell reaches greeted clients that do not watch the pane | `a_bell_in_an_unwatched_pane_is_reported` |
 | Bells within a second are dropped, and the next second permits a bell | `bells_are_reported_once_a_second` (`failpoints`) |
@@ -142,6 +143,8 @@ real Linux containers with the same FIFO barrier.
 
 | Use case | Test |
 |---|---|
+| Version prints the configured stable/beta channel separately, preserves the app-readable server version, and starts nothing when stopped | `version_reports_the_configured_update_channel` |
+| Version against an older server with no channel field prints only the client and server version lines | `version_omits_the_channel_for_an_older_server` |
 | Normal detach finalizes acknowledged input | `normal_detach_finalizes_its_acknowledged_input` |
 | Detach with pending input while disconnected exits promptly without finalizing | `detach_with_unacknowledged_input_while_disconnected` |
 | Detach while a connected server withholds input ACKs exits promptly without finalizing | `detach_with_unacknowledged_input_while_connected` |
