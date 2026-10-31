@@ -16,4 +16,3 @@
 #### Scenario: Older server
 - **WHEN** `tilr version` receives a HelloAck with an empty update_channel
 - **THEN** it prints the server version line without a channel line
-

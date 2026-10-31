@@ -24,4 +24,3 @@
 #### Scenario: Default update channel
 - **WHEN** a server whose `server.toml` has no `update_channel` key is greeted
 - **THEN** `HelloAck.update_channel` is `stable` and `protocol_version` remains `PROTOCOL_VERSION`
-
