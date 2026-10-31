@@ -1,9 +1,9 @@
 # test-client-lifetime Specification
 
 ## Purpose
-On 2026-10-31, the owner observed orphaned fake-server clients left running
-after successful integration test runs. The terminal harness neither reaped
-clients on drop nor prevented them from inheriting PTY master descriptors.
+Define integration-test ownership of terminal clients so ordinary cleanup and
+panic unwind terminate and reap them, and PTY descriptors cannot leak into
+executed children.
 
 ## Requirements
 
