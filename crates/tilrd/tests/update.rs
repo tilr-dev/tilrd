@@ -109,7 +109,7 @@ fn update_installs_the_latest_release_with_a_legacy_app_marker() {
 
 #[test]
 fn update_selects_beta_without_changing_the_stable_default() {
-    for channel in [None, Some("stable"), Some("beta")] {
+    for channel in [None, Some(""), Some("stable"), Some("beta")] {
         let (dir, exe) = installed();
         let (version, platform) = version_and_platform();
         let cdn = dir.join("cdn");
@@ -126,12 +126,9 @@ fn update_selects_beta_without_changing_the_stable_default() {
         std::fs::write(pointers.join("latest"), version).unwrap();
         let url = serve_files(cdn);
         let before = std::fs::read(&exe).unwrap();
-        let mut cmd = Command::new(&exe);
+        let mut cmd = configured_update(&exe, channel);
         cmd.args(["update", "--cdn", &url])
             .env("TILR_CHANNEL", "beta");
-        if let Some(channel) = channel {
-            cmd.args(["--channel", channel]);
-        }
         let output = spawn_copied(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))
             .wait_with_output()
             .unwrap();
@@ -149,18 +146,56 @@ fn update_selects_beta_without_changing_the_stable_default() {
 }
 
 #[test]
+fn configured_beta_stays_current_when_stable_is_older() {
+    let (dir, exe) = installed();
+    let (version, platform) = version_and_platform();
+    let root = dir.join("cdn");
+    let archive = release(STUB);
+    publish(&root, &platform, "0.0.1-old-stable", &archive, &archive);
+    manifest::write_manifest(&root, &platform, &version, "beta", &"0".repeat(64));
+    std::fs::write(root.join("releases").join(&platform).join("beta"), &version).unwrap();
+    let (url, requests) = cdn::serve_files_with_requests(root);
+    let before = std::fs::read(&exe).unwrap();
+    let config = dir.join("server.toml");
+    std::fs::write(&config, "update_channel = \"beta\"\n").unwrap();
+    let output = spawn_copied(
+        configured_update(&exe, None)
+            .arg("--config")
+            .arg(config)
+            .args(["update", "--cdn", &url])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("is the latest release"));
+    assert_eq!(
+        *requests.lock().unwrap(),
+        vec![
+            format!("/releases/{platform}/beta"),
+            format!("/releases/{platform}/beta.manifest.json"),
+        ]
+    );
+    assert_eq!(std::fs::read(&exe).unwrap(), before);
+    assert!(!dir.join("tilr").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn update_rejects_invalid_channels_and_does_not_fall_back_from_beta() {
     let (dir, exe) = installed();
     let (_, platform) = version_and_platform();
     let cdn = dir.join("cdn");
     let archive = release(STUB);
     publish(&cdn, &platform, "9.9.9-stable", &archive, &archive);
-    let url = serve_files(cdn);
+    let (url, requests) = cdn::serve_files_with_requests(cdn);
     let before = std::fs::read(&exe).unwrap();
     for channel in ["beta", "rc", "../latest"] {
+        requests.lock().unwrap().clear();
         let output = spawn_copied(
-            Command::new(&exe)
-                .args(["update", "--cdn", &url, "--channel", channel])
+            configured_update(&exe, Some(channel))
+                .args(["update", "--cdn", &url])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
         )
@@ -168,12 +203,53 @@ fn update_rejects_invalid_channels_and_does_not_fall_back_from_beta() {
         .unwrap();
         assert!(!output.status.success(), "{channel}: {output:?}");
         if channel != "beta" {
-            assert_eq!(output.status.code(), Some(2));
-            assert!(String::from_utf8_lossy(&output.stderr).contains("invalid value"));
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains("update_channel"), "{error}");
+            assert!(error.contains("expected `stable` or `beta`"), "{error}");
+            assert!(requests.lock().unwrap().is_empty());
         }
         assert_eq!(std::fs::read(&exe).unwrap(), before);
         assert!(!dir.join("tilr").exists());
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Use an isolated default config path, including the absent-file case.
+fn configured_update(exe: &Path, channel: Option<&str>) -> Command {
+    let config_dir = exe.parent().unwrap().join("config");
+    if let Some(channel) = channel {
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let text = if channel.is_empty() {
+            String::new()
+        } else {
+            format!("update_channel = {channel:?}\n")
+        };
+        std::fs::write(config_dir.join("server.toml"), text).unwrap();
+    }
+    let mut cmd = Command::new(exe);
+    cmd.env_remove("TILR_CONFIG")
+        .env("TILR_CONFIG_DIR", config_dir);
+    cmd
+}
+
+#[test]
+fn update_rejects_the_removed_channel_flag_before_contacting_cdn() {
+    let (dir, exe) = installed();
+    let (url, requests) = cdn::serve_files_with_requests(dir.join("cdn"));
+    let before = std::fs::read(&exe).unwrap();
+    let output = spawn_copied(
+        configured_update(&exe, None)
+            .args(["update", "--cdn", &url, "--channel", "beta"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--channel"));
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read(&exe).unwrap(), before);
+    assert!(!dir.join("tilr").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -185,7 +261,7 @@ fn update(exe: &Path, cdn: &str) -> std::process::Output {
 /// `src/fail.rs`.
 fn update_failing(exe: &Path, cdn: &str, failpoints: &str) -> Child {
     spawn_copied(
-        Command::new(exe)
+        configured_update(exe, None)
             .env_remove("RUST_LOG")
             .env("TILR_UPDATE_PUBLIC_KEY", "00".repeat(32))
             .args(["update", "--cdn", cdn])
@@ -698,8 +774,8 @@ fn update_rejects_cross_channel_replay_before_downloading() {
         .unwrap();
         let (url, requests) = cdn::serve_files_with_requests(root);
         let output = spawn_copied(
-            Command::new(&exe)
-                .args(["update", "--cdn", &url, "--channel", channel])
+            configured_update(&exe, Some(channel))
+                .args(["update", "--cdn", &url])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
         )

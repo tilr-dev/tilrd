@@ -1361,8 +1361,10 @@ version). The binaries say `X.Y.Z-rc.N-<commit>`. Candidates are published to th
 `releases/<version>/`, followed by `releases/<platform>/beta.manifest.json` and
 `releases/<platform>/beta`. They never change
 `latest` or `install.sh`. Install a candidate on a test machine with
-`tilrd update --channel beta`; `tilrd update --channel stable` (the default) reads
-`latest`. There is no channel environment variable; `tilr update` and the installer
+set `update_channel = "beta"` in `~/.config/tilr/server.toml` (or the configured
+server.toml path), then run `tilrd update`. With no file or key, or with
+`update_channel = "stable"`, it reads `latest`. Invalid values fail before CDN access.
+The command no longer accepts `--channel`. There is no channel environment variable; `tilr update` and the installer
 continue to use stable. Missing beta fails without falling back to stable. Stable
 publication leaves beta unchanged: a stable release follows beta testing.
 
@@ -1391,7 +1393,7 @@ prepares every selected manifest before uploading anything. Each archive and che
 is uploaded before its signed channel manifest and legacy pointer. Manifest envelopes
 are JSON with a `payload` string and hex `signature`; Ed25519 covers the exact UTF-8 payload
 bytes. Payload fields are `version`, `channel` (`stable` or `beta`), `platform`, `archive`, and `sha256`.
-The updater requires the signed channel to match `--channel`; intentional rollbacks and
+The updater requires the signed channel to match the configured `update_channel`; intentional rollbacks and
 replay of previously signed releases within the same channel remain possible.
 
 Old clients and the installer continue to read the unsigned pointer and `.sha256`; removal
