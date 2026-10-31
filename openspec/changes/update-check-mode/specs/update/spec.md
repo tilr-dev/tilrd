@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Check the configured release without installing it
-`tilrd update --check` SHALL use the same configured channel, CDN pointer and authenticated manifest discovery as an ordinary update. It SHALL print `installed: <version>`, `available: <version>` and `channel: <stable|beta>`. It SHALL exit 0 when the versions match, 2 when they differ (including an older available version), and 1 on discovery or authentication errors, with the same diagnostics as an ordinary update. It SHALL NOT download the release archive, create or modify files, acquire the installation lock, install programs or request a reload. `tilrd update --help` SHALL describe the flag and its outcome exit codes.
+`tilrd update --check` SHALL reuse ordinary update's configured channel and authenticated release discovery, print installed and available versions and the channel, and exit 0 for equal versions, 2 for different versions or 1 on errors. It SHALL fetch only metadata and SHALL NOT change files, lock the installation or request reload. Its help SHALL describe the flag and outcome exit codes.
 
 **Verified by**: `update::check_reports_the_configured_release_without_changes`, `update::check_rejects_invalid_metadata_without_changes`, `update::check_help_describes_exit_codes`.
 
@@ -20,3 +20,8 @@
 #### Scenario: Metadata cannot be trusted or fetched
 - **WHEN** the CDN is unavailable or its manifest has an invalid signature
 - **THEN** check fails with exit 1 and the ordinary update diagnostic, without changing files
+
+#### Scenario: Output and help
+- **WHEN** check successfully authenticates the configured release
+- **THEN** stdout contains `installed: <version>`, `available: <version>` and `channel: <stable|beta>` on separate lines
+- **AND** `tilrd update --help` describes `--check` and exit codes 0 (same version), 2 (different version) and 1 (error)
