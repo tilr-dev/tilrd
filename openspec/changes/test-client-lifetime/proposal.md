@@ -28,5 +28,5 @@ change, feature flags, persistent state, reload or update migration.
 
 ## Implementation
 
-Implemented in commit `9e64092` (terminal ownership, atomic PTY close-on-exec,
-explicit reconnect-test cleanup, and regression coverage).
+Implemented through terminal ownership, atomic PTY close-on-exec, explicit
+reconnect-test cleanup, and regression coverage.
