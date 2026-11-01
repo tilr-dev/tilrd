@@ -18,6 +18,9 @@ import asyncio
 import dataclasses
 import datetime
 import json
+import os
+from pathlib import Path
+import tempfile
 import uuid
 from typing import Annotated
 
@@ -635,7 +638,7 @@ class TilrItests:
                 results.append(Result(f"setup:{type(chunk).__name__}", "setup", "FAIL", 0, _error_text(chunk)))
             else:
                 results.extend(chunk)
-        return _report(self.runtime(), results, started)
+        return await _report(results, started)
 
 
 def _failed(get, name: str) -> bool:
@@ -653,19 +656,12 @@ def _safe(rid: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in rid)
 
 
-UNBUNDLE = ("import json, os\nfor path, text in json.load(open('/bundle.json')).items():\n"
-            "    os.makedirs(os.path.dirname(f'/out/{path}') or '/out', exist_ok=True)\n"
-            "    open(f'/out/{path}', 'w').write(text)\n")
-
-
-def _report(runtime: dagger.Container, results: list[Result], started: datetime.datetime) -> dagger.Directory:
+async def _report(results: list[Result], started: datetime.datetime) -> dagger.Directory:
     from xml.sax.saxutils import escape, quoteattr
 
     results.sort(key=lambda r: (r.status == "PASS", r.id))
     counts = {s: sum(r.status == s for r in results) for s in ("PASS", "FAIL", "BLOCKED")}
     elapsed = (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds()
-    # One file per test written by a single exec: hundreds of with_new_file layers
-    # exceed the overlayfs lower-dir limit when the directory is exported.
     files = {f"logs/{_safe(r.id)}.log": r.log for r in results}
     report = {"started": started.isoformat(), "seconds": round(elapsed, 1), "counts": counts,
               "tests": [{"id": r.id, "kind": r.kind, "status": r.status, "ms": r.ms, "metrics": r.metrics,
@@ -725,6 +721,12 @@ def _report(runtime: dagger.Container, results: list[Result], started: datetime.
     files.update({"report.json": json.dumps(report, indent=1) + "\n", "summary.txt": "\n".join(lines) + "\n",
                   "junit.xml": "\n".join(junit) + "\n",
                   "status": "ok\n" if counts["FAIL"] + counts["BLOCKED"] == 0 else "failed\n"})
-    return (runtime.with_new_file("/bundle.json", json.dumps(files))
-            .with_exec(["python3", "-c", UNBUNDLE])
-            .directory("/out"))
+    # Import files instead of embedding all logs in GraphQL arguments and telemetry.
+    # One directory snapshot also avoids hundreds of overlay filesystem layers.
+    with tempfile.TemporaryDirectory(dir=".") as temporary:
+        for name, contents in files.items():
+            path = Path(temporary) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents, encoding="utf-8")
+        # Materialize the immutable snapshot before deleting its local source.
+        return await dag.current_module().workdir(os.path.relpath(temporary)).sync()
