@@ -19,7 +19,7 @@ The CI gitleaks gate SHALL scan `pull_request.base.sha..HEAD` for pull requests 
 - **WHEN** a commit with a gitleaks finding exists only on an unmerged pull request branch and the merge queue checks a group for `main`
 - **THEN** the gitleaks job excludes that branch and passes
 
-#### Scenario: A leak in a new commit
+#### Scenario: A leak in the checked history
 - **WHEN** a pull request or merge queue group introduces a commit with a gitleaks finding, even if a later commit removes the secret
 - **THEN** the gitleaks job fails
 
