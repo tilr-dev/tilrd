@@ -1226,6 +1226,10 @@ the installer, the daemon's life, services, sockets, updates, transfers.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --all --check`, clippy with `-D warnings`,
 the suite on Linux and macOS, `cargo check` on the MSRV, `cargo deny check` and gitleaks.
+A pull request gets the quick tier: the suite on Linux only, without the slow tests (the
+nextest profile `quick` in `.config/nextest.toml`). The merge queue, pushes to `release/**`,
+the nightly run on `main` (which also runs `itests/` on a local Dagger engine) and a manual
+run get every test on both systems; a push to `main` runs nothing.
 `scripts/update-test.sh HOST VERSION` checks an update on a real machine against the real
 CDN: it installs an older release there, opens panes and updates them to the latest one.
 
