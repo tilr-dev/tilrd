@@ -37,7 +37,7 @@ case "$cmd" in
     done
     out="$HERE/results/$(date +%Y%m%dT%H%M%S)-$$"
     mkdir -p "$HERE/results"
-    call test "$@" export --path "$out" >/dev/null
+    call test "$@" export --path "$out"
     echo "$*" > "$out/args.txt"
     ln -sfn "$out" "$HERE/results/latest"
     uv run --no-project --quiet python "$HERE/tools/report.py" "$out" \

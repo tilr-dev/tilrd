@@ -429,8 +429,15 @@ Without a local report, it preserves the last run from the current `coverage.jso
 
 ## Gotchas
 
+The report transport regression runs without building the suite:
+`python3 itests/tests/report_transport.py` (requires the pinned Dagger CLI and an
+engine). It exports 710 large logs and verifies the files and summary while
+checking that log contents do not enter Dagger telemetry. The wrapper diagnostic
+test is `python3 -m unittest discover -s itests/tests -p test_dt.py`.
+
 * Hundreds of `with_new_file` in one Directory break the overlay mount on export: the
-  report is written by a single exec from a JSON bundle.
+  report is imported as one directory snapshot from the module workdir. Captured
+  logs travel as files rather than inline GraphQL arguments and telemetry.
 * Files of a lower overlay layer cannot be renamed or hard-linked: the fixture snapshot is
   copied into the container's writable layer before a case.
 * Parallel cargo in different containers: the whole `CARGO_HOME` is one cache volume.

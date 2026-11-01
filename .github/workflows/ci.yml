@@ -275,6 +275,10 @@ jobs:
           DAGGER_VERSION: 0.21.10
           DAGGER_SHA256: f9ee083767dd12cdac583f9db3fedbebbbb3064f69152998be1f121d1a6cc103
       # A 4-CPU runner: as many tests at once as CPUs, not the pb engine's 16.
+      - name: Verify integration report transport and diagnostics
+        run: |
+          python3 -m unittest discover -s itests/tests -p test_dt.py
+          python3 itests/tests/report_transport.py
       - run: itests/dt --jobs 4
         env:
           DT_ENGINE: dagger
