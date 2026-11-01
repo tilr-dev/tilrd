@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: CI gates every change
-Every pull request into `main` or `release/**`, every merge queue group, every push to `release/**`, a nightly run on `main` and a manual run SHALL run `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15 (on a pull request, the quick tier); `cargo check` with failpoints at the MSRV 1.99; `cargo deny check`; `gitleaks git` over the whole history. A push to `main` SHALL NOT run it: every commit there passed its merge queue group.
+Pull requests into `main` or `release/**`, merge queue groups, pushes to `release/**`, the nightly and manual runs SHALL run `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.99; `cargo deny check`; `gitleaks git`. A push to `main` SHALL NOT run it.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
