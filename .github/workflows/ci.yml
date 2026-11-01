@@ -244,10 +244,11 @@ jobs:
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-      # Scan HEAD's history only (the pushed commit, the PR's test merge or the merge
-      # group's commit). Without --log-opts gitleaks scans --all, and a finding on an
-      # unmerged branch fetched above would fail every run, main included.
-      - run: '"$GITLEAKS" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'
+      # PRs and merge groups scan only new commits; periodic/manual runs and
+      # release pushes retain full HEAD history. Never scan other fetched branches.
+      - run: '"$GITLEAKS" git --redact --no-banner --exit-code 1 --log-opts="$GITLEAKS_LOG_OPTS" .'
+        env:
+          GITLEAKS_LOG_OPTS: ${{ github.event_name == 'pull_request' && format('{0}..HEAD', github.event.pull_request.base.sha) || github.event_name == 'merge_group' && format('{0}..HEAD', github.event.merge_group.base_sha) || 'HEAD' }}
 
   # The black-box tests (itests/README.md) on a local Dagger engine: nightly and on a manual
   # run only, not a required check. The report summary is printed at the end of the log.

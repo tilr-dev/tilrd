@@ -666,17 +666,35 @@ objects only as data and fail closed on missing history.
 - **THEN** the check fails rather than authorizing the PR
 
 ### Requirement: CI scans secrets in the checked commit's history only
-The CI gitleaks gate SHALL scan the whole history of the commit under check (the pushed release branch commit, the pull request's test merge, the merge queue group's commit or `main` in the nightly run) and no other branch fetched with it, so that a finding on another unmerged branch does not fail the check.
+The CI gitleaks gate SHALL scan `pull_request.base.sha..HEAD` for pull requests into `main` or `release/**` (the test merge), and `merge_group.base_sha..HEAD` for merge queue groups: only commits reachable from HEAD but not the event's base. For pushes to `release/**`, nightly runs on `main` and manual runs, it SHALL scan the whole history of `HEAD`. No scan SHALL include another branch merely because checkout fetched it.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
+#### Scenario: Pull request scans new commits
+- **WHEN** a pull request into `main` or `release/**` runs CI
+- **THEN** gitleaks scans `pull_request.base.sha..HEAD`, including the test merge and all commits introduced by the pull request
+- **AND** findings reachable only from the base do not fail this gate
+
+#### Scenario: Merge queue scans the group's new commits
+- **WHEN** a merge queue group runs CI
+- **THEN** gitleaks scans `merge_group.base_sha..HEAD`, including all commits introduced by the group
+- **AND** findings reachable only from the group's base do not fail this gate
+
 #### Scenario: A leak on another pull request branch
 - **WHEN** a commit with a gitleaks finding exists only on an unmerged pull request branch and the merge queue checks a group for `main`
-- **THEN** the gitleaks job scans only the group commit's history and passes
+- **THEN** the gitleaks job excludes that branch and passes
 
 #### Scenario: A leak in the checked history
-- **WHEN** the pull request under check carries a commit with a gitleaks finding anywhere in its history
+- **WHEN** a pull request or merge queue group introduces a commit with a gitleaks finding, even if a later commit removes the secret
 - **THEN** the gitleaks job fails
+
+#### Scenario: Periodic and manual full-history scans
+- **WHEN** the nightly or manual CI run checks `main`
+- **THEN** gitleaks scans the whole history reachable from `HEAD` and fails on a finding anywhere in that history
+
+#### Scenario: Release push preserves full-history coverage
+- **WHEN** a commit is pushed to `release/**`
+- **THEN** gitleaks scans the whole history reachable from that commit and fails on a finding anywhere in that history
 
 ### Requirement: A release tag builds and attaches the binaries
 A push of the owner-created stable tag `vX.Y.Z` SHALL create a GitHub release with `tilrd` and `tilr` archives and checksums for every enabled target. Native builds SHALL have their version checked against the tag and commit. macOS builds SHALL be Developer ID signed and accepted by Apple notarization before packaging.

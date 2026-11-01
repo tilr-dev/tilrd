@@ -1018,11 +1018,13 @@ const TEST_GATES: &[&str] =
 
 const DENY_GATES: &[&str] = &["- run: '\"$CARGO_DENY\" --locked check'"];
 
-const SECRETS_GATES: &[&str] =
-    &["- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'"];
+const SECRETS_GATES: &[&str] = &[
+    "- run: '\"$GITLEAKS\" git --redact --no-banner --exit-code 1 --log-opts=\"$GITLEAKS_LOG_OPTS\" .'",
+    "GITLEAKS_LOG_OPTS: ${{ github.event_name == 'pull_request' && format('{0}..HEAD', github.event.pull_request.base.sha) || github.event_name == 'merge_group' && format('{0}..HEAD', github.event.merge_group.base_sha) || 'HEAD' }}",
+];
 
 // The same job-specific gates drive assertions and deletion mutations.
-// Gitleaks must scan only HEAD's history, even with a full-history checkout.
+// PRs and merge groups scan new commits; other events scan only HEAD's history.
 const CI_GATES: &[(&str, &[&str])] = &[
     ("msrv", MSRV_GATES),
     ("lint", LINT_GATES),
@@ -1094,6 +1096,15 @@ fn ci_runs_every_gate_of_agents_md() {
     let removed = ci.replace(&format!("  msrv:\n{}", job(&ci, "msrv")), "");
     assert_ne!(removed, ci);
     assert!(std::panic::catch_unwind(|| assert_ci_gates(&removed)).is_err());
+    // A return to HEAD on either incremental event must fail the contract.
+    for base in [
+        "github.event.pull_request.base.sha",
+        "github.event.merge_group.base_sha",
+    ] {
+        let regressed = ci.replace(&format!("format('{{0}}..HEAD', {base})"), "'HEAD'");
+        assert_ne!(regressed, ci);
+        assert!(std::panic::catch_unwind(|| assert_ci_gates(&regressed)).is_err());
+    }
     for clause in CI_GATES
         .iter()
         .flat_map(|(_, gates)| gates.iter().copied())
@@ -1104,7 +1115,7 @@ fn ci_runs_every_gate_of_agents_md() {
             " && 'quick'",
             "        if: env.SKIP != 'true'\n",
             "fetch-depth: 0",
-            " --log-opts=HEAD",
+            " --log-opts=\"$GITLEAKS_LOG_OPTS\"",
         ])
     {
         let removed = ci.replace(clause, "");
