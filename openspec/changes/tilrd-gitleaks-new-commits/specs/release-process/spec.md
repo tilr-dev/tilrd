@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: CI scans secrets in the checked commit's history only
-The CI gitleaks gate SHALL scan only commits reachable from the checked commit and not reachable from the event's base for pull requests into `main` or `release/**` and merge queue groups: `pull_request.base.sha..HEAD` for a pull request's test merge and `merge_group.base_sha..HEAD` for a merge group's commit. For pushes to `release/**`, nightly runs on `main` and manual runs, it SHALL scan the whole history of the checked commit (`HEAD`). No scan SHALL include another branch merely because checkout fetched it.
+The CI gitleaks gate SHALL scan `pull_request.base.sha..HEAD` for pull requests into `main` or `release/**` (the test merge), and `merge_group.base_sha..HEAD` for merge queue groups: only commits reachable from HEAD but not the event's base. For pushes to `release/**`, nightly runs on `main` and manual runs, it SHALL scan the whole history of `HEAD`. No scan SHALL include another branch merely because checkout fetched it.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
