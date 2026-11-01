@@ -42,7 +42,9 @@ NEXT_PACKAGE_VERSION = "0.1.1"
 # Rust integration tests also execute repository scripts and inspect release config.
 SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crates/*/target/", "!rustfmt.toml",
                  "!.rustfmt.toml", "!clippy.toml", "!scripts/", "!.github/workflows/ci.yml",
-                 "!.github/workflows/release.yml", "!.cargo/config.toml", "!.gitignore",
+                 "!.github/workflows/release.yml", "!.github/workflows/release-upstream.yml",
+                 "!.github/workflows/spec-change.yml", "!.config/nextest.toml",
+                 "!.cargo/config.toml", "!.gitignore",
                  "!AGENTS.md", "!README.md", "!USE_CASES.md",
                  "!itests/src/tilr_itests/main.py"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
@@ -372,8 +374,16 @@ class TilrItests:
     async def _rust_tests(self, sem, run_id: str, filter: str, repeat: int = 1) -> list[Result]:
         out = self.build()
         manifest = json.loads(await out.file("manifest.json").contents())
+        toolchain = dag.container().from_(RUST_IMAGE)
         base = (
             self.runtime()
+            # The release-key regression compiles build.rs into a native executable.
+            .with_exec(["sh", "-c", "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                        "--no-install-recommends gcc libc6-dev >/dev/null"])
+            .with_directory("/usr/local/rustup", toolchain.directory("/usr/local/rustup"))
+            .with_directory("/usr/local/cargo/bin", toolchain.directory("/usr/local/cargo/bin"))
+            .with_env_variable("RUSTUP_HOME", "/usr/local/rustup")
+            .with_env_variable("PATH", "/usr/local/cargo/bin:$PATH", expand=True)
             .with_directory(SRC, self.source)
             .with_directory("/out/tests", out.directory("tests"))
             .with_directory(TARGET, out.directory("rust-target"))

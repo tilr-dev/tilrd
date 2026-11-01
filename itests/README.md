@@ -122,8 +122,10 @@ before the delayed close arrives, then resumes and verifies recovery.
    `/target/debug/tilrd` and `tilr` next to it (`crates/tilr/tests` run that `tilr`,
    which starts that `tilrd`): the paths the tests baked in at compile time. They run as
    root, so `crates/tilrd/tests/local.rs` also acts as another user (uid 65534).
-   The filtered source snapshot also includes `scripts/`, the CI and release
-   workflows, release version helper, `.cargo/config.toml`, `.gitignore`,
+   The filtered source snapshot also includes `scripts/`, the CI, release,
+   upstream-release and spec-change workflows (`ci.yml`, `release.yml`,
+   `release-upstream.yml` and `spec-change.yml`), release version helper,
+   `.config/nextest.toml`, `.cargo/config.toml`, `.gitignore`,
    `AGENTS.md`, `README.md` and `USE_CASES.md`
    for the release and Linux script regression fixtures. The runtime gets `shasum`
    from `perl`, a dependency of `git` (verified 2026-10-21 with
@@ -134,6 +136,11 @@ before the delayed close arrives, then resumes and verifies recovery.
    stdout files exported in `rust-target/`. Rust runtimes restore these files at
    their compiled `/target/.../output` paths, so both `build_script` suites can
    inspect the actual test build's output without access to the shared Cargo cache.
+   Rust runtimes also copy the toolchain from the pinned `RUST_IMAGE` and install
+   `gcc` and `libc6-dev` for native linking. The
+   `tilrd/build_script::release_builds_cannot_trust_the_debug_fixture_key` regression
+   stays in the dt test set: it invokes `rustc` to compile `build.rs`, then checks
+   release and debug key acceptance. Scenario runtimes do not need this toolchain.
 3. **fixtures** — each fixture is a Dagger layer: parents' `/fx` merged, then
    `python3 -m tt fixture MODULE:NAME` (build, then its mandatory check). *Source tier*
    fixtures have no binaries in the container and survive any code change; *tilr tier*
