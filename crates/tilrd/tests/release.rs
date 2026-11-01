@@ -919,6 +919,51 @@ fn build_tools_are_pinned_by_checksum_and_used_everywhere() {
     for gate in ["DENY_SHA256:", "GITLEAKS_SHA256:", "sha256sum -c -"] {
         assert!(ci.contains(gate), "{gate}");
     }
+    // The cache wraps the script: keyed by its hash, which changes with every pinned
+    // version and checksum, and the script runs whenever the cache misses.
+    for name in ["lint", "test", "msrv"] {
+        let section = job(&ci, name);
+        for clause in [
+            "key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tools.sh') }}",
+            "path: ${{ runner.temp }}/tools",
+            "steps.tools.outputs.cache-hit != 'true'",
+            "run: scripts/install-tools.sh \"$RUNNER_TEMP/tools\"\n",
+        ] {
+            assert!(section.contains(clause), "{name}: {clause}");
+        }
+    }
+}
+
+/// Every test the `quick` nextest profile leaves out exists, so a rename does not quietly
+/// put a slow test back into the pull request tier or leave a dead entry.
+#[test]
+fn the_quick_profile_skips_only_existing_tests() {
+    let config = text_file(".config/nextest.toml");
+    let quick = config
+        .split("[profile.quick]")
+        .nth(1)
+        .expect("no quick profile");
+    let names: Vec<&str> = quick
+        .split("test(=")
+        .skip(1)
+        .map(|rest| rest.split(')').next().unwrap())
+        .collect();
+    assert!(!names.is_empty(), "the quick profile leaves nothing out");
+    let mut sources = String::new();
+    for dir in ["crates/tilrd/tests", "crates/tilr/tests"] {
+        for entry in std::fs::read_dir(root().join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                sources.push_str(&std::fs::read_to_string(path).unwrap());
+            }
+        }
+    }
+    for name in names {
+        assert!(
+            sources.contains(&format!("fn {name}(")),
+            "the quick profile names a missing test: {name}"
+        );
+    }
 }
 
 /// AGENTS.md, README, the container's default command and CI run the tests with one and
@@ -990,12 +1035,20 @@ fn assert_ci_gates(ci: &str) {
     let ci = active(ci);
     let on = ci.split("\npermissions:").next().unwrap();
     assert!(on.contains("\n  merge_group:\n"), "CI skips merge groups");
-    for event in ["pull_request", "push"] {
-        assert!(
-            on.contains(&format!("  {event}:\n    branches: [main, 'release/**']\n")),
-            "CI skips {event} of main or release/**"
-        );
-    }
+    assert!(
+        on.contains("  pull_request:\n    branches: [main, 'release/**']\n"),
+        "CI skips pull requests into main or release/**"
+    );
+    // A push to main runs nothing: the merge queue already checked it.
+    assert!(
+        on.contains("  push:\n    branches: ['release/**']\n"),
+        "CI must run on pushes to release/** and only there"
+    );
+    assert!(on.contains("\n  schedule:\n"), "CI has no nightly run");
+    assert!(
+        on.contains("\n  workflow_dispatch:\n"),
+        "CI has no manual run"
+    );
     let secrets = job(&ci, "secrets");
     let test = job(&ci, "test");
     let checkout = secrets.split("- name: Install gitleaks").next().unwrap();
@@ -1008,6 +1061,30 @@ fn assert_ci_gates(ci: &str) {
         }
     }
     assert!(test.contains("os: [ubuntu-latest, macos-15]"));
+    // The quick tier: a pull request runs the `quick` profile on Linux and skips macOS;
+    // every other event runs every test on both.
+    for clause in [
+        "NEXTEST_PROFILE: ${{ github.event_name == 'pull_request' && 'quick' || 'default' }}",
+        "SKIP: ${{ github.event_name == 'pull_request' && matrix.os == 'macos-15' }}",
+    ] {
+        assert!(test.contains(clause), "missing tier clause: {clause}");
+    }
+    let skipped = test
+        .split("\n      - ")
+        .skip(1)
+        .filter(|step| !step.contains("if: env.SKIP == 'true'"));
+    for step in skipped {
+        assert!(
+            step.contains("if: env.SKIP != 'true'"),
+            "a test step runs on the skipped macOS leg: {step}"
+        );
+    }
+    let itests = job(&ci, "itests");
+    assert!(itests.contains(
+        "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+    ));
+    assert!(itests.contains("DAGGER_SHA256:"));
+    assert!(itests.contains("- run: itests/dt"));
 }
 
 #[test]
@@ -1023,6 +1100,9 @@ fn ci_runs_every_gate_of_agents_md() {
         .chain([
             "  merge_group:\n",
             ", 'release/**'",
+            "  schedule:\n",
+            " && 'quick'",
+            "        if: env.SKIP != 'true'\n",
             "fetch-depth: 0",
             " --log-opts=HEAD",
         ])

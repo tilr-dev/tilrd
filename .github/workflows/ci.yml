@@ -1,13 +1,22 @@
-# CI: format, lint, tests, MSRV, cargo-deny and gitleaks on every PR into and every push to main
-# or a release branch release/** (fix pull requests and cherry-picks go there), and on merge groups.
+# CI: format, lint, tests, MSRV, cargo-deny and gitleaks, in two tiers under the same job names
+# (the required checks of `main`):
+# - quick, on every PR into main or a release branch release/**: the tests run on Linux only,
+#   with the nextest profile `quick` (.config/nextest.toml: all but the slow tests); the
+#   `test (macos-15)` leg skips its steps on a Linux runner and reports success;
+# - full, on merge groups (the merge queue of main), on every push to a release branch
+#   (fix pull requests and cherry-picks go there), nightly on main and on a manual run: every
+#   test on Linux and macOS. A push to main runs nothing: what lands there passed its merge group.
 # The tests run on Linux and macOS (the server's two platforms; they need only /bin/sh, ps
 # and kill, no network, tmux or ssh), with the `failpoints` feature, as in the README. The
 # matrix shows as `test (ubuntu-latest)` and `test (macos-15)`: required checks name both.
+# The nightly run on main also runs the black-box tests in itests/ on a local Dagger engine,
+# and warms the caches pull requests read (caches of merge groups are not visible to them).
 # Only `pull_request` (never pull_request_target): a PR's code runs without secrets.
 # Rust comes from the runner's rustup (no third-party toolchain action); tools are downloaded
 # at pinned versions and checked against pinned SHA-256 sums: cargo-deny and gitleaks here,
 # Zig (libghostty-vt is built with it), protoc and cargo-nextest through
-# scripts/install-tools.sh.
+# scripts/install-tools.sh. Its output directory is cached, keyed by the script's hash, so a
+# warm run restores the checked tools instead of downloading them.
 # The first build of libghostty-vt-sys clones Ghostty from GitHub (its build.rs, a pinned
 # commit); rust-cache keeps the result in target/ for later runs.
 name: ci
@@ -17,14 +26,17 @@ on:
   pull_request:
     branches: [main, 'release/**']
   push:
-    branches: [main, 'release/**']
+    branches: ['release/**']
+  schedule:
+    - cron: '23 2 * * *' # nightly, on main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A push to main or a release branch always finishes; elsewhere a newer push replaces the run.
+  # A run on main or a release branch always finishes; elsewhere a newer push replaces the run.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 env:
@@ -71,10 +83,16 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
-      - name: Install Zig and protoc
-        run: |
-          scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc
-          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: Restore Zig, protoc and cargo-nextest
+        id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tools.sh') }}
+      - name: Install Zig, protoc and cargo-nextest
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: scripts/install-tools.sh "$RUNNER_TEMP/tools"
+      - run: echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -82,7 +100,9 @@ jobs:
 
   test:
     name: test
-    runs-on: ${{ matrix.os }}
+    # On a pull request the macOS leg only reports success, on a Linux runner: a job-level `if`
+    # cannot see the matrix, and a second job under the same check name would report twice.
+    runs-on: ${{ github.event_name == 'pull_request' && matrix.os == 'macos-15' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 40
     permissions:
       contents: read
@@ -90,34 +110,55 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15]
+    env:
+      SKIP: ${{ github.event_name == 'pull_request' && matrix.os == 'macos-15' }}
     steps:
+      - name: Skip macOS on a pull request (the merge queue runs it)
+        if: env.SKIP == 'true'
+        run: echo "test (macos-15) runs in the merge queue, on release branches and nightly"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.SKIP != 'true'
         with:
           persist-credentials: false
       - name: Install Rust (stable)
+        if: env.SKIP != 'true'
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
       # As of 2026-10-19, macos-15 includes macOS 15.4 SDK in Xcode 16.3.
       # Recheck the runner-images macos-15-arm64 README; remove with the Zig SDK pin.
       - name: Select macOS 15.4 SDK
-        if: runner.os == 'macOS'
+        if: env.SKIP != 'true' && runner.os == 'macOS'
         run: |
           echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
           echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
+      - name: Restore Zig, protoc and cargo-nextest
+        id: tools
+        if: env.SKIP != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tools.sh') }}
       - name: Install Zig, protoc and cargo-nextest
-        run: |
-          scripts/install-tools.sh "$RUNNER_TEMP/tools"
-          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+        if: env.SKIP != 'true' && steps.tools.outputs.cache-hit != 'true'
+        run: scripts/install-tools.sh "$RUNNER_TEMP/tools"
+      - if: env.SKIP != 'true'
+        run: echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The whole suite: the server tests start the real binary and drive it over a
-      # WebSocket on 127.0.0.1; `failpoints` adds the tests that break an update or a
-      # reload halfway (crates/tilrd/src/fail.rs).
+        if: env.SKIP != 'true'
+      # The suite: the server tests start the real binary and drive it over a WebSocket on
+      # 127.0.0.1; `failpoints` adds the tests that break an update or a reload halfway
+      # (crates/tilrd/src/fail.rs). A pull request runs the `quick` profile (all but the
+      # slow tests, .config/nextest.toml); every other event runs them all.
       - run: cargo nextest run --workspace --features tilrd/failpoints --locked
+        if: env.SKIP != 'true'
+        env:
+          NEXTEST_PROFILE: ${{ github.event_name == 'pull_request' && 'quick' || 'default' }}
       # Smoke test of the binaries as built: `--version` names the crate version, the commit
       # and the platform (crates/tilrd/build.rs, crates/tilr/build.rs), e.g. `tilrd
       # 0.1.0-26449dd (linux-x86_64)`.
       - name: Smoke test tilrd and tilr binaries
+        if: env.SKIP != 'true'
         run: |
           cargo build -p tilrd -p tilr --locked
           for exe in tilrd tilr; do
@@ -145,10 +186,16 @@ jobs:
         run: |
           rustup toolchain install 1.99 --profile minimal
           rustup default 1.99
-      - name: Install Zig and protoc
-        run: |
-          scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc
-          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: Restore Zig, protoc and cargo-nextest
+        id: tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tools
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tools.sh') }}
+      - name: Install Zig, protoc and cargo-nextest
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: scripts/install-tools.sh "$RUNNER_TEMP/tools"
+      - run: echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --workspace --all-targets --features tilrd/failpoints --locked
 
@@ -201,3 +248,32 @@ jobs:
       # group's commit). Without --log-opts gitleaks scans --all, and a finding on an
       # unmerged branch fetched above would fail every run, main included.
       - run: '"$GITLEAKS" git --redact --no-banner --exit-code 1 --log-opts=HEAD .'
+
+  # The black-box tests (itests/README.md) on a local Dagger engine: nightly and on a manual
+  # run only, not a required check. The report summary is printed at the end of the log.
+  itests:
+    name: itests
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Dagger CLI
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/dagger.tgz" \
+            "https://github.com/dagger/dagger/releases/download/v${DAGGER_VERSION}/dagger_v${DAGGER_VERSION}_linux_amd64.tar.gz"
+          echo "${DAGGER_SHA256}  $RUNNER_TEMP/dagger.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/dagger.tgz" -C "$RUNNER_TEMP" dagger
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+        env:
+          # Keep in sync with engineVersion in itests/dagger.json.
+          DAGGER_VERSION: 0.21.10
+          DAGGER_SHA256: f9ee083767dd12cdac583f9db3fedbebbbb3064f69152998be1f121d1a6cc103
+      # A 4-CPU runner: as many tests at once as CPUs, not the pb engine's 16.
+      - run: itests/dt --jobs 4
+        env:
+          DT_ENGINE: dagger

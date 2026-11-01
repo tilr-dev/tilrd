@@ -129,7 +129,7 @@ With `--publish` and optional `--channel stable|beta` (default `stable`), `scrip
 - **THEN** no build runs and only their archives, checksums, signed beta manifests and beta pointers are uploaded
 
 ### Requirement: CI gates every change
-Every pull request into `main` or `release/**`, every merge queue group and every push to `main` or `release/**` SHALL pass `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.99; `cargo deny check`; `gitleaks git` over the whole history.
+Pull requests into `main` or `release/**`, merge queue groups, pushes to `release/**`, the nightly and manual runs SHALL run `.github/workflows/ci.yml`: `cargo fmt --all --check`; clippy `--workspace --all-targets --locked -- -D warnings`, with and without `--features tilrd/failpoints`; `cargo nextest run --workspace --features tilrd/failpoints --locked` on Linux and macOS 15; `cargo check` with failpoints at the MSRV 1.99; `cargo deny check`; `gitleaks git`. A push to `main` SHALL NOT run it.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
@@ -144,6 +144,10 @@ Every pull request into `main` or `release/**`, every merge queue group and ever
 #### Scenario: Build at the minimum supported Rust version
 - **WHEN** CI runs the MSRV job
 - **THEN** it installs Rust 1.99 and runs `cargo check --workspace --all-targets --features tilrd/failpoints --locked`
+
+#### Scenario: A merged pull request
+- **WHEN** the merge queue pushes a group's commit to `main`
+- **THEN** no CI run starts for that push
 
 ### Requirement: CI smoke-tests the built executables
 CI SHALL build `tilrd` and `tilr` in debug and check, for each, that `--version` is `<name> <package version>-<short commit> (<platform>)` and that `--help` runs.
@@ -662,13 +666,13 @@ objects only as data and fail closed on missing history.
 - **THEN** the check fails rather than authorizing the PR
 
 ### Requirement: CI scans secrets in the checked commit's history only
-The CI gitleaks gate SHALL scan the whole history of the commit under check (the pushed commit, the pull request's test merge or the merge queue group's commit) and no other branch fetched with it, so that a finding on another unmerged branch does not fail the check.
+The CI gitleaks gate SHALL scan the whole history of the commit under check (the pushed release branch commit, the pull request's test merge, the merge queue group's commit or `main` in the nightly run) and no other branch fetched with it, so that a finding on another unmerged branch does not fail the check.
 
 **Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
 
 #### Scenario: A leak on another pull request branch
-- **WHEN** a commit with a gitleaks finding exists only on an unmerged pull request branch and `main` is pushed
-- **THEN** the gitleaks job on `main` scans only `main`'s history and passes
+- **WHEN** a commit with a gitleaks finding exists only on an unmerged pull request branch and the merge queue checks a group for `main`
+- **THEN** the gitleaks job scans only the group commit's history and passes
 
 #### Scenario: A leak in the checked history
 - **WHEN** the pull request under check carries a commit with a gitleaks finding anywhere in its history
@@ -706,6 +710,45 @@ A push of the owner-created stable tag `vX.Y.Z` SHALL create a GitHub release wi
 - **WHEN** a stable tag release is created
 - **THEN** GitHub generates release notes from the highest previous stable tag on the line, or the highest previous stable tag overall when the line has none
 - **AND** the first release omits the baseline; no tracked changelog is generated
+
+### Requirement: Pull requests run the quick test tier
+On a pull request CI SHALL keep its job names, so the required checks of `main` report: `test (ubuntu-latest)` SHALL run the nextest profile `quick` of `.config/nextest.toml` (every test but the listed slow ones) and `test (macos-15)` SHALL skip its steps and succeed. Every other event SHALL run every test on Linux and macOS 15. Each test the `quick` profile leaves out SHALL exist.
+
+**Verified by**: `release::ci_runs_every_gate_of_agents_md`, `release::the_quick_profile_skips_only_existing_tests` (static: `.github/workflows/ci.yml`, `.config/nextest.toml`).
+
+#### Scenario: A pull request
+- **WHEN** a pull request into `main` is opened or updated
+- **THEN** `test (ubuntu-latest)` runs the tests with `NEXTEST_PROFILE=quick` and `test (macos-15)` reports success without building
+
+#### Scenario: The merge queue
+- **WHEN** the merge queue checks a group for `main`
+- **THEN** both test jobs run every test with failpoints
+
+#### Scenario: A renamed slow test
+- **WHEN** a test the `quick` profile leaves out is renamed or removed
+- **THEN** `release::the_quick_profile_skips_only_existing_tests` fails
+
+### Requirement: CI restores build tools from a cache
+CI jobs that need Zig, protoc or cargo-nextest SHALL cache the directory `scripts/install-tools.sh` installs into, keyed by the runner's OS and architecture and the script's hash, and SHALL run the script only when the cache misses; a change of a pinned version or checksum SHALL change the key.
+
+**Verified by**: `release::build_tools_are_pinned_by_checksum_and_used_everywhere` (static: `.github/workflows/ci.yml`).
+
+#### Scenario: Warm cache
+- **WHEN** a run finds the cache for the current `scripts/install-tools.sh`
+- **THEN** it restores the tools and skips the download
+
+#### Scenario: A bumped tool
+- **WHEN** a pinned version or checksum in `scripts/install-tools.sh` changes
+- **THEN** the cache misses and the script downloads and checks the tools again
+
+### Requirement: A nightly run checks main in full
+CI SHALL run on `main` every night and on a manual run with the full tier and SHALL also run the black-box tests of `itests/` (`itests/dt` on a local Dagger engine, the Dagger CLI downloaded at the module's engine version and checked against a pinned SHA-256); the itests job SHALL NOT run on other events.
+
+**Verified by**: `release::ci_runs_every_gate_of_agents_md` (static: `.github/workflows/ci.yml`).
+
+#### Scenario: The nightly run
+- **WHEN** the schedule fires
+- **THEN** CI runs on `main` with every test on Linux and macOS 15 and the itests job
 
 ## Notes
 

@@ -22,7 +22,12 @@ the line.
   ```
 
   CI also checks the MSRV (`rust-version` in Cargo.toml, `cargo +1.99 check --workspace
-  --all-targets --features tilrd/failpoints --locked`) and runs the tests on Linux and macOS. `scripts/linux.sh` runs
+  --all-targets --features tilrd/failpoints --locked`) and runs the tests on Linux and macOS.
+  CI has two tiers under the same job names: a pull request runs the tests on Linux only with
+  the nextest profile `quick` (`NEXTEST_PROFILE=quick`: all but the slow tests listed in
+  `.config/nextest.toml`; add a test of 3 s or more there); the merge queue, release branches
+  and the nightly run on `main` run every test on Linux and macOS. Locally run them all.
+  `scripts/linux.sh` runs
   the suite in a Linux container from another OS (`scripts/linux.sh cargo clippy ...` the
   lint), as a non-root user with a passwd entry and a home directory, like CI's `runner`
   (`scripts/linux-entrypoint.sh`): root skips file permission checks and has another login
