@@ -19,4 +19,3 @@ Rust build image and a native linker so release-key validation runs in dt.
 `tilrd/release::the_spec_change_check_compares_main_with_the_test_merge`,
 `tilrd/release::the_quick_profile_skips_only_existing_tests` and
 `tilrd/build_script::release_builds_cannot_trust_the_debug_fixture_key` via dt.
-
