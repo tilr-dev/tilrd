@@ -44,7 +44,7 @@ pub trait Screen {
 
     /// Erase the active screen, home the cursor and return to the live view.
     /// With `history`, erase scrollback too. Never sends input to the program.
-    fn erase(&mut self, history: bool);
+    fn erase(&mut self, history: bool) -> Result<()>;
 
     /// How many rows the viewport is above the live screen; 0 at the bottom.
     fn scrolled_back(&self) -> u32;

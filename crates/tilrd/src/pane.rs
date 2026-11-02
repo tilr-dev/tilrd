@@ -959,7 +959,7 @@ impl Pane {
             }
             Some(Msg::Raw(raw)) => self.pending_input.extend_from_slice(&raw.data),
             Some(Msg::ClearPane(clear)) => {
-                self.screen.erase(clear.history);
+                self.screen.erase(clear.history)?;
                 self.want_full = true;
                 self.dirty = true;
             }

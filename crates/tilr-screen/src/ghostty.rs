@@ -300,13 +300,18 @@ impl Screen for GhosttyScreen {
         self.term.scroll_viewport(ScrollViewport::Bottom);
     }
 
-    fn erase(&mut self, history: bool) {
-        // Interpret control sequences in the emulator, never in the pty.
+    fn erase(&mut self, history: bool) -> Result<()> {
+        // The mode API changes the flag without CUP's cursor side effects.
+        // Home in absolute coordinates, then restore the program's origin mode.
+        let origin = self.term.mode(Mode::ORIGIN)?;
+        self.term.set_mode(Mode::ORIGIN, false)?;
         self.term.vt_write(b"\x1b[2J\x1b[H");
+        self.term.set_mode(Mode::ORIGIN, origin)?;
         if history {
             self.term.vt_write(b"\x1b[3J");
         }
         self.scroll_to_bottom();
+        Ok(())
     }
 
     fn scrolled_back(&self) -> u32 {
@@ -2273,6 +2278,26 @@ mod tests {
         screen.feed(b"\x1b[6n");
         assert_eq!(screen.take_replies(), b"\x1b[1;1R");
         assert!(screen.take_replies().is_empty());
+    }
+
+    #[test]
+    fn erasing_homes_the_cursor_with_origin_mode_and_keeps_the_mode() {
+        for history in [false, true] {
+            let mut screen = screen();
+            screen.feed(b"\x1b[2;3r\x1b[?6hbefore");
+            screen.erase(history).unwrap();
+            let frame = screen.frame(true).unwrap().unwrap();
+            let cursor = frame.cursor.unwrap();
+            assert_eq!((cursor.x, cursor.y), (0, 0));
+            assert!(screen.term.mode(Mode::ORIGIN).unwrap());
+            screen.feed(b"next");
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 0), "next");
+            // CUP still uses the program's original top margin after clearing.
+            screen.feed(b"\x1b[Hmargin");
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 1), "margin");
+        }
     }
 
     #[test]

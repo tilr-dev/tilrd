@@ -261,6 +261,7 @@ Cloud repository.
 - `clearing_only_the_screen_keeps_history`: clearing the screen returns to the live view and leaves scrollback available.
 - `clearing_does_not_write_to_the_program_and_output_starts_at_home`: the running program receives no clearing bytes and its next output starts at the first cell.
 - `clearing_an_unknown_pane_is_an_error`: an unknown pane receives an error and the connection remains usable.
+- Screen unit test `erasing_homes_the_cursor_with_origin_mode_and_keeps_the_mode`: clearing homes the cursor even with origin mode and a scrolling region, and preserves both.
 
 ## Scrolling — `tests/scroll.rs`
 
