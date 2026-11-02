@@ -1,0 +1,2 @@
+# Unified patches contain required context markers on otherwise blank lines.
+vendor/ghostty/*.patch -whitespace

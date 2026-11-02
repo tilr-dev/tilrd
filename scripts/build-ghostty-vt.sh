@@ -4,6 +4,9 @@ set -euo pipefail
 
 # Keep in sync with libghostty-vt-sys 0.2.2 build.rs and the Cargo SDK defaults.
 revision=a887df42c56f6de86c0fe6da9c4eeca37931e083
+script_dir=$(cd "$(dirname "$0")" && pwd -P)
+patch=$script_dir/../vendor/ghostty/direct-erase.patch
+patch_id=$(git hash-object "$patch")
 host=$(uname -s)
 arch=$(uname -m)
 zig_version=$(zig version)
@@ -19,7 +22,7 @@ fi
 cache=${TILR_GHOSTTY_VT_CACHE:-$HOME/.cache/tilr/ghostty-vt}
 mkdir -p "$cache"
 cache=$(cd "$cache" && pwd -P)
-key=$(printf '%s\n' "$revision" "$zig_version" "$host" "$arch" "$sdk" "$developer" ReleaseFast baseline | git hash-object --stdin)
+key=$(printf '%s\n' "$revision" "$patch_id" "$zig_version" "$host" "$arch" "$sdk" "$developer" ReleaseFast baseline | git hash-object --stdin)
 prefix=$cache/$revision/$key
 shopt -s nullglob
 leftovers=("${prefix}".tmp.*)
@@ -58,6 +61,7 @@ work=$(mktemp -d "${prefix}.tmp.XXXXXX")
     git -C "$work/source" remote add origin https://github.com/ghostty-org/ghostty.git
     git -C "$work/source" fetch --depth 1 origin "$revision"
     git -C "$work/source" checkout --detach FETCH_HEAD
+    git -C "$work/source" apply "$patch"
     cd "$work/source"
     zig build -Demit-lib-vt=true -Doptimize=ReleaseFast -Dcpu=baseline \
         -Demit-xcframework=false -Dapp-runtime=none --prefix "$work/install" --cache-dir "$work/zig-cache"
@@ -67,6 +71,7 @@ work=$(mktemp -d "${prefix}.tmp.XXXXXX")
     pc=$work/install/share/pkgconfig/libghostty-vt-static.pc
     sed 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$pc" > "$pc.new"
     mv "$pc.new" "$pc"
+    mv "$pc" "$work/install/share/pkgconfig/libghostty-vt-static-tilr-erase-v1.pc"
     touch "$work/install/.complete"
     rm -rf "$prefix"
     mv "$work/install" "$prefix"

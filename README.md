@@ -1255,7 +1255,7 @@ cargo build --tests --locked
 
 The script prints only the prefix to stdout. Its default cache is
 `~/.cache/tilr/ghostty-vt/<ghostty-commit>/<identity-hash>/`; override the cache root
-with `TILR_GHOSTTY_VT_CACHE`. The identity includes the Ghostty commit, actual Zig
+with `TILR_GHOSTTY_VT_CACHE`. The identity includes the Ghostty commit, checked-in patch content, actual Zig
 version, OS/architecture, SDK/developer paths and ReleaseFast/baseline settings.
 It selects the same default macOS SDK as Cargo, respecting `SDKROOT` and
 `DEVELOPER_DIR`. Completed prefixes are reused; failed builds are removed.
@@ -1269,9 +1269,13 @@ the completed installation is published.
 
 `tilr-screen` enables `libghostty-vt-sys`'s pkg-config feature directly. With this
 package discoverable, clean targets link the shared static library without cloning
-or building Ghostty. Without a discoverable package, the existing Zig source build
-remains available. `GHOSTTY_SOURCE_DIR` bypasses pkg-config, so unset it when using
-the shared library. Linux containers retain their source-build path because
+or building Ghostty. The vendored bindings discover only
+`libghostty-vt-static-tilr-erase-v1`, so an upstream package without the erase API
+is ignored. Without a matching package, the Zig source build fetches the pinned
+Ghostty revision and applies `vendor/ghostty/direct-erase.patch`, exactly as the
+shared builder does. `GHOSTTY_SOURCE_DIR` bypasses pkg-config, so unset it when using
+the shared library. An override checkout must already include the checked-in
+patch; the build validates its C API without modifying the checkout. Linux containers retain their source-build path because
 `scripts/linux.sh` does not forward the host package path.
 
 The Linux image seeds Zig's package cache with the pinned ImGui, zigimg and uucode
@@ -1283,7 +1287,9 @@ and compare the response header size with Zig's `lib/std/http/Client.zig`
 `read_buffer_size`. When upgrading Ghostty, update the image's package pins too.
 
 When upgrading `libghostty-vt`, keep the direct sys dependency at the matching exact
-version. Read that version's `build.rs`, update this script's Ghostty revision and
+version and refresh both vendored crates with their provenance and licenses.
+Rebase the checked-in Ghostty patch, update its package identity if the API changes,
+and update this script's Ghostty revision and
 build flags, and rerun the script. A Zig or SDK change also selects a new prefix;
 export its package path again. To rebuild identical inputs, unset `PKG_CONFIG_PATH`,
 remove only the previously printed prefix, and rerun the script. Old prefixes may

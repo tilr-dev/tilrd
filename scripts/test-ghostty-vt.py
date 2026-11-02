@@ -8,7 +8,21 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="ghostty fixture ") as directory:
-    base = Path(directory)
+    base = Path(directory).resolve()
+    # Exercise pwd -P even when the host's temporary directory has no symlinks.
+    physical_checkout = base / "physical-checkout"
+    physical_checkout.mkdir()
+    fixture_root = base / "checkout"
+    fixture_root.symlink_to(physical_checkout, target_is_directory=True)
+    script_dir = fixture_root / "scripts"
+    script_dir.mkdir(parents=True)
+    for name in ("build-ghostty-vt.sh", "ghostty-vt-lock.py"):
+        shutil.copy2(ROOT / "scripts" / name, script_dir / name)
+    patch = fixture_root / "vendor/ghostty/direct-erase.patch"
+    patch.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / "vendor/ghostty/direct-erase.patch", patch)
+    script = script_dir / "build-ghostty-vt.sh"
+    patch_argument = script_dir.resolve() / "../vendor/ghostty/direct-erase.patch"
     tools = base / "bin"
     tools.mkdir()
     sdk = base / "MacOSX15.4.sdk"
@@ -16,9 +30,12 @@ with tempfile.TemporaryDirectory(prefix="ghostty fixture ") as directory:
     events = base / "events"
     fixtures = {
         "uname": 'case "$1" in -s) echo "${MOCK_HOST:-Darwin}" ;; -m) echo arm64 ;; esac\n',
-        "git": '''if [ "$1" = hash-object ]; then exec python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; fi
+        "git": '''if [ "$1" = hash-object ]; then
+    exec python3 -c 'import hashlib,pathlib,sys; data = sys.stdin.buffer.read() if sys.argv[1] == "--stdin" else pathlib.Path(sys.argv[1]).read_bytes(); print(hashlib.sha256(data).hexdigest())' "$2"
+fi
 printf 'git %s\\n' "$*" >> "$EVENTS"
 if [ "$1" = init ]; then mkdir -p "$3"; fi
+if [ "${3:-}" = apply ] && [ "${MOCK_PATCH_FAIL:-0}" != 0 ]; then exit 24; fi
 ''',
         "zig": '''if [ "$1" = version ]; then echo "${MOCK_ZIG:-0.15.2}"; exit; fi
 printf 'zig %s SDK=%s DEVELOPER=%s\\n' "$*" "${SDKROOT:-}" "${DEVELOPER_DIR:-}" >> "$EVENTS"
@@ -43,17 +60,19 @@ printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescript
                SDKROOT=str(sdk), DEVELOPER_DIR="/fixture/developer")
 
     def run(**overrides):
-        return subprocess.run([str(ROOT / "scripts/build-ghostty-vt.sh")],
+        return subprocess.run([str(script)],
                               env=dict(env, **overrides), text=True, capture_output=True)
 
     first = run()
     assert first.returncode == 0, first.stderr
     prefix = Path(first.stdout.strip())
     assert (prefix / ".complete").is_file()
-    pc = prefix / "share/pkgconfig/libghostty-vt-static.pc"
+    pc = prefix / "share/pkgconfig/libghostty-vt-static-tilr-erase-v1.pc"
     assert pc.read_text().startswith("prefix=${pcfiledir}/../..\n")
+    assert not (pc.parent / "libghostty-vt-static.pc").exists()
     log = events.read_text()
     assert "fetch --depth 1 origin a887df42c56f6de86c0fe6da9c4eeca37931e083" in log
+    assert log.index(f" apply {patch_argument}\n") < log.index("zig build ")
     for flag in ("-Demit-lib-vt=true", "-Doptimize=ReleaseFast", "-Dcpu=baseline",
                  "-Demit-xcframework=false", "-Dapp-runtime=none"):
         assert flag in log
@@ -61,6 +80,24 @@ printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescript
     again = run()
     assert again.returncode == 0 and again.stdout == first.stdout
     assert events.read_text() == log, "cached invocation cloned or built again"
+    original_patch = patch.read_bytes()
+    patch.write_bytes(original_patch + b"\n")
+    changed_patch = run()
+    assert changed_patch.returncode == 0, changed_patch.stderr
+    assert changed_patch.stdout != first.stdout, "changed patch reused old cache"
+    assert (Path(changed_patch.stdout.strip()) / ".complete").is_file()
+    patch.write_bytes(original_patch)
+    log = events.read_text()
+    completed = set((base / "cache").rglob(".complete"))
+    failed_patch = run(MOCK_ZIG="patch-failure", MOCK_PATCH_FAIL="1")
+    assert failed_patch.returncode == 24, failed_patch.stderr
+    failure_events = events.read_text()[len(log):]
+    assert f" apply {patch_argument}\n" in failure_events
+    assert "zig build " not in failure_events, "built source after patch failure"
+    assert set((base / "cache").rglob(".complete")) == completed
+    assert not list((base / "cache").rglob("*.lock"))
+    assert not list((base / "cache").rglob("*.tmp.*"))
+    log = events.read_text()
     # An exited child supplies a known dead PID without timing or PID guesses.
     child = subprocess.Popen(["/bin/sh", "-c", "exit 0"])
     child.wait()
@@ -111,7 +148,7 @@ printf 'prefix=%s\\nlibdir=${prefix}/lib\\nName: libghostty-vt-static\\nDescript
     ready, release = base / "ready", base / "release"
     os.mkfifo(ready)
     os.mkfifo(release)
-    builder = subprocess.Popen([str(ROOT / "scripts/build-ghostty-vt.sh")],
+    builder = subprocess.Popen([str(script)],
                                env=dict(env, READY_FIFO=str(ready), RELEASE_FIFO=str(release)),
                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

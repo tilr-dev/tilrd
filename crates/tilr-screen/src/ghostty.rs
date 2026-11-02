@@ -260,6 +260,10 @@ impl GhosttyScreen {
 }
 
 impl Screen for GhosttyScreen {
+    fn erase(&mut self, clear_history: bool) {
+        self.term.erase(clear_history);
+    }
+
     fn feed(&mut self, bytes: &[u8]) {
         self.term.vt_write(bytes);
     }

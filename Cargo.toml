@@ -41,3 +41,7 @@ opt-level = 3
 
 [profile.dev.package.crc32fast]
 opt-level = 3
+
+[patch.crates-io]
+libghostty-vt = { path = "vendor/libghostty-vt-0.2.2" }
+libghostty-vt-sys = { path = "vendor/libghostty-vt-sys-0.2.2" }

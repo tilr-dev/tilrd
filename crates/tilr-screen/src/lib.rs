@@ -21,6 +21,11 @@ pub trait Screen {
     /// Feed bytes read from the pty.
     fn feed(&mut self, bytes: &[u8]);
 
+    /// Erase the active screen and home to absolute (0,0), optionally deleting
+    /// scrollback, preserving the program parser, modes, margins and rendition.
+    /// Does not write to the PTY.
+    fn erase(&mut self, clear_history: bool);
+
     /// Bytes the terminal wants written back to the pty (replies to queries
     /// such as device attributes or cursor position reports).
     fn take_replies(&mut self) -> Vec<u8>;
