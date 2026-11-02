@@ -376,15 +376,15 @@ tilrd, tilr and tilr-driver SHALL verify outgoing secure WebSocket certificates 
 
 ### Requirement: Shared Ghostty VT development build
 
-The repository SHALL provide a script that builds the static Ghostty VT library pinned by libghostty-vt-sys, using its ReleaseFast, baseline CPU and no application runtime settings. The script SHALL select the same default macOS SDK as Cargo, and SHALL identify the shared prefix by Ghostty revision, Zig version, platform and SDK. It SHALL publish a libghostty-vt-static pkg-config file only with a completed build and SHALL reuse an already completed prefix without cloning or building again.
+The shared build script and Cargo fallback SHALL apply the checked-in patch to pinned Ghostty source. The script SHALL use ReleaseFast, baseline CPU, no application runtime and Cargo's default macOS SDK. It SHALL key prefixes by revision, patch content, Zig version, platform and SDK; publish libghostty-vt-static-tilr-erase-v1.pc only after completion; and reuse completed prefixes without cloning or rebuilding.
 
 #### Scenario: Build and reuse a shared prefix
 - **WHEN** a developer runs the shared build script with a supported Zig installation
-- **THEN** it prints a prefix containing the static library and share/pkgconfig/libghostty-vt-static.pc
+- **THEN** it prints a prefix containing the static library and share/pkgconfig/libghostty-vt-static-tilr-erase-v1.pc
 - **AND** a subsequent invocation with the same inputs reuses that prefix without cloning Ghostty or invoking zig build
 
 #### Scenario: Toolchain identity changes
-- **WHEN** the Ghostty revision, Zig version, platform or selected SDK changes
+- **WHEN** the Ghostty revision, patch content, Zig version, platform or selected SDK changes
 - **THEN** the script selects a distinct prefix
 
 #### Scenario: Failed build is retried explicitly
@@ -393,7 +393,7 @@ The repository SHALL provide a script that builds the static Ghostty VT library 
 
 ### Requirement: Cargo discovers the shared Ghostty VT library
 
-The tilr-screen dependency graph SHALL enable libghostty-vt-sys pkg-config discovery. A matching library supplied through PKG_CONFIG_PATH SHALL replace the per-target source build; when no package is discoverable, the existing source build SHALL remain available. Developer documentation SHALL explain setting PKG_CONFIG_PATH and rebuilding after a dependency or toolchain upgrade.
+The tilr-screen graph SHALL enable patched libghostty-vt-sys pkg-config discovery. A matching patched library in PKG_CONFIG_PATH SHALL replace the source build; without it, the patched source fallback SHALL remain available. Discovery SHALL reject packages without the required patch identity. Developer documentation SHALL explain PKG_CONFIG_PATH and rebuilding after dependency or toolchain upgrades.
 
 #### Scenario: Clean Cargo build with shared library
 - **WHEN** a clean cargo build --tests runs with PKG_CONFIG_PATH pointing to the shared package
@@ -401,7 +401,7 @@ The tilr-screen dependency graph SHALL enable libghostty-vt-sys pkg-config disco
 
 #### Scenario: Cargo source fallback
 - **WHEN** cargo build --tests runs without a discoverable shared package
-- **THEN** libghostty-vt-sys builds the pinned Ghostty source as before
+- **THEN** libghostty-vt-sys builds the pinned Ghostty source with the checked-in patch
 
 ### Requirement: Interrupted shared Ghostty build recovery
 
@@ -767,6 +767,24 @@ CI SHALL run on `main` every night and on a manual run with the full tier and SH
 #### Scenario: The nightly run
 - **WHEN** the schedule fires
 - **THEN** CI runs on `main` with every test on Linux and macOS 15 and the itests job
+
+### Requirement: Direct terminal screen erase
+
+The screen backend SHALL expose an erase operation that clears the active screen, moves the cursor to absolute cell (0,0), and optionally removes its scrollback. It SHALL call the native terminal API without feeding bytes through the program parser or writing to the PTY. It SHALL preserve terminal modes, scrolling margins, current rendition and incomplete program sequences.
+
+#### Scenario: Erase between program sequence chunks
+- **WHEN** erase is called between fixed chunks of CSI, OSC or DCS output
+- **THEN** the remaining chunk completes the original command and the next printable character has the intended rendition without literal command fragments
+- **AND** no PTY bytes are emitted by erase
+
+#### Scenario: Origin mode and scrolling region
+- **WHEN** erase is called with origin mode and nondefault scrolling margins
+- **THEN** the next printable character starts at absolute (0,0)
+- **AND** subsequent program cursor addressing and scrolling still use the original mode and margins
+
+#### Scenario: History policy
+- **WHEN** erase is called with history deletion disabled or enabled
+- **THEN** existing scrollback is respectively preserved or removed, and all active screen cells are erased
 
 ## Notes
 
