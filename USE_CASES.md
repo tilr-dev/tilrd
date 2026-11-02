@@ -696,3 +696,8 @@ itests/tests -p test_coverage.py`.
 - `release::manifest_signing_supports_keg_only_openssl_and_reports_unsupported_tools`
   signs with keg-only Homebrew OpenSSL on both macOS architectures and reports the
   selected binary and version when an explicit OpenSSL override cannot sign Ed25519.
+
+Direct host screen erase (`crates/tilr-screen/tests/direct_erase.rs`) preserves
+split CSI/OSC/DCS commands, rendition, origin mode, margins and paste mode,
+homes absolutely, emits no PTY data and applies both history policies on primary
+and alternate screens.
