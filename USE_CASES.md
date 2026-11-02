@@ -255,6 +255,14 @@ Cloud repository.
 | Unit: a delta already on its way when a client subscribes is not sent to it: its first frame is full and carries its own input echo, a second Subscribe meanwhile keeps that echo, other viewers keep getting frames; the wait is not counted as skipped frames and does not ask the pane for a second full frame (`src/supervisor.rs`) | `supervisor::tests::a_subscriber_gets_full_before_delta_and_keeps_its_own_input_echo` |
 | A server started from an SSH session (`tilrd &`) whose connection dropped: the terminal is closed and the process group got SIGHUP; the server, the pane processes and the shells live on, the client connects to the same pane; stopping the server still ends the shells | `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` |
 
+## Clearing a pane — `tests/clear_pane.rs`
+
+- `clearing_history_reaches_all_viewers_and_survives_reconnecting`: clearing while scrolled back sends a full blank frame to every viewer, removes history, survives reconnecting and also broadcasts when already empty.
+- `clearing_only_the_screen_keeps_history`: clearing the screen returns to the live view and leaves scrollback available.
+- `clearing_does_not_write_to_the_program_and_output_starts_at_home`: the running program receives no clearing bytes and its next output starts at the first cell.
+- `clearing_an_unknown_pane_is_an_error`: an unknown pane receives an error and the connection remains usable.
+- Screen unit test `erasing_homes_the_cursor_with_origin_mode_and_keeps_the_mode`: clearing homes the cursor even with origin mode and a scrolling region, and preserves both.
+
 ## Scrolling — `tests/scroll.rs`
 
 | Use case | Test |

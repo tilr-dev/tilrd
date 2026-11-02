@@ -876,6 +876,15 @@ the `bytes` twins of file paths, `Ping`, the bulk window paced by pongs,
 The Tilr app's `server` plugin and tilr-mac need version 1 to talk to this server;
 `tilr` and `tilr-driver` are built with it.
 
+`ClearPane{pane_id, history}` clears the active screen and homes its cursor in the
+server's emulator, without writing to the pty or stopping the program. `history: false`
+keeps scrollback; `history: true` also erases it. Both return the shared viewport to
+the live screen and send every viewer a full frame, even if already empty. A later
+`Subscribe` sees the cleared screen. Unknown panes receive `Error{message: "no such
+pane: <pane_id>"}` without disconnecting. This additive message uses protocol version 1
+and needs no feature flag; older servers ignore it. Clients regenerate their bindings
+from `crates/tilr-proto/proto/tilr.proto` in their own repositories.
+
 `Frame.links` is a table of hyperlink URIs used by its changed rows, deduplicated within
 the frame. `Run.link` is the URI's index plus one, or 0 for plain text; runs split when
 the link changes. URIs exceeding the VT engine's OSC payload limit are omitted and
@@ -1038,7 +1047,7 @@ file.
 
 The terminal pipeline can be measured end to end without synchronising clocks. A client
 names an input message by `ClientMessage.seq` (outside the `oneof`) on `KeyInput`,
-`MouseInput`, `Paste`, `RawInput`, `Scroll` or `Resize`: `HelloAck.seq_base + n`, with `n`
+`MouseInput`, `Paste`, `RawInput`, `Scroll`, `Resize` or `ClearPane`: `HelloAck.seq_base + n`, with `n`
 counting 1, 2, 3, ... on the connection. `seq_base` is the connection's own (its number in
 the high 32 bits; numbers go on across a reload of the server), so a seq says which
 connection's input it was, `seq_base <= seq < seq_base + 2^32`, even with several clients on
@@ -1046,8 +1055,8 @@ a pane or after a page reload.
 
 Every `Frame` carries `last_input_seq`: the seq of the input the pane credited last before
 it built the frame, from whichever client; 0 until there is one. Key, mouse, paste and raw
-input is credited once the pty has taken its last byte, in the order it came; `Scroll` and
-`Resize` when applied, which is at once, so they may overtake key input still waiting for
+input is credited once the pty has taken its last byte, in the order it came; `Scroll`,
+`Resize` and `ClearPane` when applied, which is at once, so they may overtake key input still waiting for
 the pty. It is the latest, not the highest: another client's input moves it, down as well.
 Every credited input gets a frame. When it changed nothing on the screen (a click the
 program ignores, a scroll that moves nothing, input not echoed), that frame has no rows:

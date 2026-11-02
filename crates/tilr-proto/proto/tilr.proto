@@ -52,8 +52,9 @@ message ClientMessage {
     ExecSignal exec_signal = 28;
     ExecCancel exec_cancel = 29;
     FinalizeInput finalize_input = 30;
+    ClearPane clear_pane = 31;
   }
-  // Names an input message (KeyInput, MouseInput, Paste, RawInput, Scroll, Resize) so the
+  // Names an input message (KeyInput, MouseInput, Paste, RawInput, Scroll, Resize, ClearPane) so the
   // client can tell which frame shows its effect: HelloAck.seq_base + n, n = 1, 2, 3, ...
   // counted by the client on its connection; echoed in Frame.last_input_seq. 0 = not named.
   // Optional; a server that does not know the field ignores it.
@@ -279,6 +280,14 @@ message Scroll {
   sint32 delta = 2;
   // Jump back to the live bottom; `delta` is ignored.
   bool to_bottom = 3;
+}
+
+// Clear the active screen and home the cursor, without writing to the pty.
+// Return the shared viewport to the live screen and send every viewer a full frame.
+message ClearPane {
+  string pane_id = 1;
+  // Also erase scrollback; false keeps history available through Scroll.
+  bool history = 2;
 }
 
 // Replace the server's clipboard, the one programs in every pane read
@@ -1007,11 +1016,11 @@ message Frame {
   // The ClientMessage.seq of the input message the pane credited last before this frame was
   // built, from whichever client it came; 0 while there is none. Key, Mouse, Paste and Raw
   // input is credited once the pty has taken its last byte, in the order it arrived; Scroll
-  // and Resize when applied, at once (ahead of key input still waiting for the pty). It is
+  // and Resize or ClearPane when applied, at once (ahead of key input still waiting for the pty). It is
   // the latest, not the highest: it can go down when another client's input comes after.
   // Inputs credited between two frames show only the last of them, so a client takes a
   // frame carrying a later seq of its own (from the same seq_base) as the echo of the
-  // earlier ones too (a Scroll or Resize may have overtaken key input still pending).
+  // earlier ones too (a Scroll, Resize or ClearPane may have overtaken key input still pending).
   // Every credited input gets a frame: when it changed nothing on the screen, a frame
   // with no rows (see below); input without a seq makes no frame of its own. A client
   // measures input latency from sending a message to the first frame that carries its
@@ -1049,7 +1058,7 @@ message FrameTiming {
   uint32 reads = 6;
   // For the input named by Frame.last_input_seq, if it is new since the previous frame:
   // from the pane process receiving it to the pty write that took its last byte returning
-  // (for Scroll and Resize: to it being applied). 0 when no new input. An input left
+  // (for Scroll, Resize and ClearPane: to it being applied). 0 when no new input. An input left
   // pending across a reload of the server counts from when the old pane process got it.
   uint32 input_us = 7;
 }

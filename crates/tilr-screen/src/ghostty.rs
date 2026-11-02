@@ -262,6 +262,7 @@ impl GhosttyScreen {
 impl Screen for GhosttyScreen {
     fn erase(&mut self, clear_history: bool) {
         self.term.erase(clear_history);
+        self.scroll_to_bottom();
     }
 
     fn feed(&mut self, bytes: &[u8]) {
@@ -2268,6 +2269,36 @@ mod tests {
         screen.feed(b"\x1b[6n");
         assert_eq!(screen.take_replies(), b"\x1b[1;1R");
         assert!(screen.take_replies().is_empty());
+    }
+
+    #[test]
+    fn erasing_homes_the_cursor_with_origin_mode_and_keeps_the_mode() {
+        for history in [false, true] {
+            let mut screen = screen();
+            screen.feed(b"\x1b[2;3r\x1b[?6hbefore");
+            screen.erase(history);
+            let frame = screen.frame(true).unwrap().unwrap();
+            let cursor = frame.cursor.unwrap();
+            assert_eq!((cursor.x, cursor.y), (0, 0));
+            assert!(screen.term.mode(Mode::ORIGIN).unwrap());
+            screen.feed(b"next");
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 0), "next");
+            // CUP still uses the program's original top margin after clearing.
+            screen.feed(b"\x1b[Hmargin");
+            let frame = screen.frame(true).unwrap().unwrap();
+            assert_eq!(row_text(&frame, 1), "margin");
+        }
+    }
+
+    #[test]
+    fn erasing_preserves_a_split_program_escape_sequence() {
+        let mut screen = screen();
+        screen.feed(b"before\x1b[31");
+        screen.erase(false);
+        screen.feed(b"mX");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "X");
     }
 
     #[test]
