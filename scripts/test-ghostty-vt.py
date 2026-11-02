@@ -8,8 +8,12 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="ghostty fixture ") as directory:
-    base = Path(directory)
+    base = Path(directory).resolve()
+    # Exercise pwd -P even when the host's temporary directory has no symlinks.
+    physical_checkout = base / "physical-checkout"
+    physical_checkout.mkdir()
     fixture_root = base / "checkout"
+    fixture_root.symlink_to(physical_checkout, target_is_directory=True)
     script_dir = fixture_root / "scripts"
     script_dir.mkdir(parents=True)
     for name in ("build-ghostty-vt.sh", "ghostty-vt-lock.py"):
@@ -18,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="ghostty fixture ") as directory:
     patch.parent.mkdir(parents=True)
     shutil.copy2(ROOT / "vendor/ghostty/direct-erase.patch", patch)
     script = script_dir / "build-ghostty-vt.sh"
-    patch_argument = script_dir / "../vendor/ghostty/direct-erase.patch"
+    patch_argument = script_dir.resolve() / "../vendor/ghostty/direct-erase.patch"
     tools = base / "bin"
     tools.mkdir()
     sdk = base / "MacOSX15.4.sdk"
