@@ -1,0 +1,82 @@
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index 26ee0c0b8..1b1f8caea 100644
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -1239,6 +1239,12 @@ GHOSTTY_API void ghostty_terminal_free(GhosttyTerminal terminal);
+  */
+ GHOSTTY_API void ghostty_terminal_reset(GhosttyTerminal terminal);
+ 
++/** Erase the active screen and home to absolute (0,0), optionally deleting
++ * scrollback. Preserves the program parser, modes, margins and rendition.
++ * Does not emit PTY data. Invalidates borrowed screen data like vt_write.
++ */
++GHOSTTY_API void ghostty_terminal_erase(GhosttyTerminal terminal, bool clear_history);
++
+ /**
+  * Resize the terminal to the given dimensions.
+  *
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index e01cdbb89..1508e1529 100644
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -257,6 +257,7 @@ comptime {
+         @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
+         @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
+         @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
++        @export(&c.terminal_erase, .{ .name = "ghostty_terminal_erase" });
+         @export(&c.terminal_resize, .{ .name = "ghostty_terminal_resize" });
+         @export(&c.terminal_set, .{ .name = "ghostty_terminal_set" });
+         @export(&c.terminal_vt_write, .{ .name = "ghostty_terminal_vt_write" });
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+index 089201276..54d6e32fa 100644
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -3141,6 +3141,20 @@ pub fn eraseLine(
+     );
+ }
+ 
++/// Host erase without touching the program stream, modes or scrolling margins.
++pub fn erase(self: *Terminal, clear_history: bool) void {
++    const screen = self.screens.active;
++    screen.clearRows(.{ .active = .{} }, null, false);
++    screen.cursor.pending_wrap = false;
++    screen.cursorAbsolute(0, 0);
++    if (clear_history) screen.eraseHistory(null);
++    screen.scroll(.{ .active = {} });
++    if (comptime build_options.kitty_graphics) {
++        screen.kitty_images.delete(screen.alloc, self, .{ .all = true });
++    }
++    self.flags.dirty.clear = true;
++}
++
+ /// Erase the display.
+ pub fn eraseDisplay(
+     self: *Terminal,
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index 37dc57684..c0bb0636e 100644
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -179,6 +179,7 @@ pub const sys_set = sys.set;
+ pub const terminal_new = terminal.new;
+ pub const terminal_free = terminal.free;
+ pub const terminal_reset = terminal.reset;
++pub const terminal_erase = terminal.erase;
+ pub const terminal_resize = terminal.resize;
+ pub const terminal_set = terminal.set;
+ pub const terminal_vt_write = terminal.vt_write;
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 1c3b9f0c5..7f87e8a37 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -683,6 +683,11 @@ pub fn resize(
+     return .success;
+ }
+ 
++pub fn erase(terminal_: Terminal, clear_history: bool) callconv(lib.calling_conv) void {
++    const t: *ZigTerminal = (terminal_ orelse return).terminal;
++    t.erase(clear_history);
++}
++
+ pub fn reset(terminal_: Terminal) callconv(lib.calling_conv) void {
+     const t: *ZigTerminal = (terminal_ orelse return).terminal;
+     t.fullReset();
