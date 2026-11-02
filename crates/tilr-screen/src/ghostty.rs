@@ -2301,6 +2301,16 @@ mod tests {
     }
 
     #[test]
+    fn erasing_preserves_a_split_program_escape_sequence() {
+        let mut screen = screen();
+        screen.feed(b"before\x1b[31");
+        screen.erase(false).unwrap();
+        screen.feed(b"mX");
+        let frame = screen.frame(true).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "X");
+    }
+
+    #[test]
     fn scrollback_viewport() {
         let mut screen = screen();
         for i in 0..10 {
