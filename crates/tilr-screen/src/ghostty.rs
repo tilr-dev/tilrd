@@ -300,6 +300,15 @@ impl Screen for GhosttyScreen {
         self.term.scroll_viewport(ScrollViewport::Bottom);
     }
 
+    fn erase(&mut self, history: bool) {
+        // Interpret control sequences in the emulator, never in the pty.
+        self.term.vt_write(b"\x1b[2J\x1b[H");
+        if history {
+            self.term.vt_write(b"\x1b[3J");
+        }
+        self.scroll_to_bottom();
+    }
+
     fn scrolled_back(&self) -> u32 {
         self.term.scrollbar().map_or(0, |bar| {
             bar.total

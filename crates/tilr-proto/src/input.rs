@@ -15,6 +15,7 @@ pub fn pane(msg: &Msg) -> Option<&str> {
         Msg::Paste(m) => Some(&m.pane_id),
         Msg::Raw(m) => Some(&m.pane_id),
         Msg::Scroll(m) => Some(&m.pane_id),
+        Msg::ClearPane(m) => Some(&m.pane_id),
         Msg::Resize(m) => Some(&m.pane_id),
         _ => None,
     }

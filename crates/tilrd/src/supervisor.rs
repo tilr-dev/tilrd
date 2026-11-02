@@ -2555,6 +2555,9 @@ impl Supervisor {
             Msg::Paste(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
             Msg::Raw(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
             Msg::Scroll(input) => self.forward(client_id, &input.pane_id, packet, Some(received)),
+            Msg::ClearPane(input) => {
+                self.forward(client_id, &input.pane_id, packet, Some(received))
+            }
             Msg::ClipboardPut(put) => self.on_clipboard_put(client_id, put),
             Msg::Ping(ping) => {
                 self.send(

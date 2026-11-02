@@ -873,7 +873,7 @@ impl Pane {
             Some(Msg::Key(_) | Msg::Mouse(_) | Msg::Paste(_) | Msg::Raw(_)) => {
                 Some(Credit::Written)
             }
-            Some(Msg::Scroll(_) | Msg::Resize(_)) => Some(Credit::Applied),
+            Some(Msg::Scroll(_) | Msg::Resize(_) | Msg::ClearPane(_)) => Some(Credit::Applied),
             _ => None,
         };
         let resize = matches!(msg.msg, Some(Msg::Resize(_)));
@@ -958,6 +958,11 @@ impl Pane {
                 self.dirty = true;
             }
             Some(Msg::Raw(raw)) => self.pending_input.extend_from_slice(&raw.data),
+            Some(Msg::ClearPane(clear)) => {
+                self.screen.erase(clear.history);
+                self.want_full = true;
+                self.dirty = true;
+            }
             Some(Msg::Scroll(scroll)) => {
                 if scroll.to_bottom {
                     self.screen.scroll_to_bottom();
