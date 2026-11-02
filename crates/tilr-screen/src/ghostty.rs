@@ -262,6 +262,7 @@ impl GhosttyScreen {
 impl Screen for GhosttyScreen {
     fn erase(&mut self, clear_history: bool) {
         self.term.erase(clear_history);
+        self.scroll_to_bottom();
     }
 
     fn feed(&mut self, bytes: &[u8]) {
@@ -302,20 +303,6 @@ impl Screen for GhosttyScreen {
 
     fn scroll_to_bottom(&mut self) {
         self.term.scroll_viewport(ScrollViewport::Bottom);
-    }
-
-    fn erase(&mut self, history: bool) -> Result<()> {
-        // The mode API changes the flag without CUP's cursor side effects.
-        // Home in absolute coordinates, then restore the program's origin mode.
-        let origin = self.term.mode(Mode::ORIGIN)?;
-        self.term.set_mode(Mode::ORIGIN, false)?;
-        self.term.vt_write(b"\x1b[2J\x1b[H");
-        self.term.set_mode(Mode::ORIGIN, origin)?;
-        if history {
-            self.term.vt_write(b"\x1b[3J");
-        }
-        self.scroll_to_bottom();
-        Ok(())
     }
 
     fn scrolled_back(&self) -> u32 {
@@ -2289,7 +2276,7 @@ mod tests {
         for history in [false, true] {
             let mut screen = screen();
             screen.feed(b"\x1b[2;3r\x1b[?6hbefore");
-            screen.erase(history).unwrap();
+            screen.erase(history);
             let frame = screen.frame(true).unwrap().unwrap();
             let cursor = frame.cursor.unwrap();
             assert_eq!((cursor.x, cursor.y), (0, 0));
@@ -2308,7 +2295,7 @@ mod tests {
     fn erasing_preserves_a_split_program_escape_sequence() {
         let mut screen = screen();
         screen.feed(b"before\x1b[31");
-        screen.erase(false).unwrap();
+        screen.erase(false);
         screen.feed(b"mX");
         let frame = screen.frame(true).unwrap().unwrap();
         assert_eq!(row_text(&frame, 0), "X");
