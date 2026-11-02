@@ -97,7 +97,7 @@
 //!
 //!        // Fill with red (R=255, G=0, B=0, A=255).
 //!        data.copy_from_slice(&[255, 0, 0, 255]);
-//!  
+//!
 //!        Some(graphics::DecodedImage {
 //!            width: 1,
 //!            height: 1,
