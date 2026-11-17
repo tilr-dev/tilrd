@@ -1004,7 +1004,7 @@ and events stay protobuf.
 | method | takes | answers |
 |---|---|---|
 | `server.info` | nothing | `server_version`, `update_channel`, `server_id`, `features` (of `clipboard`, `files`, `host-events`, `agent`, `exec`, in that order), `clipboard_max_bytes` and `fs_max_bytes` (0 without their feature), as `tilr.v1`'s `HelloAck` |
-| `server.reload` | nothing | `{}`, then the server reloads as on SIGUSR1; the owner, or the `control` right `reload` |
+| `server.reload` | nothing | `{}`, then the server reloads as on SIGUSR1; the reply can be lost when the connection ends at the reload, so a caller takes either as done; the owner, or the `control` right `reload` |
 | `server.update` | nothing | a bulk stream of `tilrd update` run as `exec.run` runs a program (below); the owner, or the `control` right `reload` |
 | `server.command` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream of the server's own executable run with `argv`, as `exec.run`; the owner on the Unix socket only, else `denied` |
 | `fs.list` | `path` | `FsEntries`: the directory's real path and its entries |
@@ -1012,13 +1012,13 @@ and events stay protobuf.
 | `fs.read` | `path`, `offset`, `length` (0: to the end) | a bulk stream of `FsData` chunks (`total_size`, `file_size` on each), each at most 256 KiB and the stream's window |
 | `fs.write` | `transfer_id`, `path`, `total_size`, `create`, `truncate`, `data`, `last` | `FsAck` per chunk once written; the file is replaced after the `last` |
 | `fs.mkdir`, `fs.rename`, `fs.delete` | `path`; `from`, `to`; `path`, `recursive` | `FsAck` once done |
-| `fs.watch` | `path` | `{watch_id}`; then events `fs.changed.<watch_id>` |
+| `fs.watch` | `path` | `{watch_id}`; then events `fs.changed.<watch_id>`, to any subscriber with the right to the subject, not only the watching connection |
 | `fs.unwatch` | `watch_id` | `FsAck`; a watch of another connection, or none, is `not_found` |
 | `exec.run` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream: `RunChunk{started{exec_id, pid}}`, then `RunChunk{output{stream, data}}` (1 stdout, 2 stderr), `End` with `ExecExit` |
-| `exec.input` | `exec_id`, `data`, `eof` | `{exec_id, taken}` once the program took the bytes |
+| `exec.input` | `exec_id`, `data`, `eof` | `{exec_id, taken}` once the program took the bytes; `bad_request` once its stdin is closed or overrun |
 | `exec.signal` | `exec_id`, `signal` | `{}` once its process group was signalled |
 | `clipboard.put` | `transfer_id`, `mime`, `total_size` (on the first chunk), `data`, `last` | `{transfer_id}` per chunk; the `last` once the panes' `xclip` and `wl-paste` read it |
-| `clipboard.get` | `transfer_id` of a `pane.copied` | a bulk stream of `ClipboardData` chunks, `pane_id`, `mime` and `total_size` on the first |
+| `clipboard.get` | `transfer_id` of a `pane.copied` | a bulk stream of `ClipboardData` chunks, `pane_id`, `mime` and `total_size` on the first; `not_found` to a caller that may not access the pane |
 
 Paths are as in `tilr.v1`: `~` is the home directory, a path outside the shared roots is
 refused, `*_bytes` carry names that are not UTF-8, and a read-only server refuses changes.
@@ -1027,11 +1027,16 @@ A chunk of `fs.write` or `clipboard.put` names its transfer by the caller's conn
 `fs_max_bytes` or `clipboard_max_bytes`, a disk error) the chunk and each later chunk of it
 are answered with the same error. Such refusals are `bad_request` with a message meant for
 the user (`<path>: outside the directories this server shares`, `<path>: already exists`,
-`too large: …`); a program that did not start is `spawn_failed`, an `exec_id` of another
-connection or none `not_found`.
+`too large: …`, `the write carries more data than it announced`); a program that did not
+start is `spawn_failed`, an `exec_id` of another connection or none `not_found` (for
+`exec.input` and `exec.signal` alike).
 
 A watch, an upload and a running program belong to the connection that made them: only it
-unwatches, feeds or signals them, and they go when it ends (a program's group is killed).
+unwatches, feeds or signals them, and they go when it ends or a connection of the same
+client supersedes it (a program's group is killed, an upload's temporary file removed). A
+connection has at most 32 watches, 16 uploads in progress (first chunk sent, `last` not yet)
+and 64 programs running; one more is `busy` (`32 watches of this connection already`,
+`16 uploads in progress already`, `64 execs running already`).
 Cancelling an `exec.run` stream kills the program's process group; a reader that credits
 slowly holds the program's output back, and more than 4 MiB of `exec.input` sent and not
 answered kills it (`reason` `input overrun`).

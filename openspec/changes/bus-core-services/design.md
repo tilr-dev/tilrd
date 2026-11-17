@@ -25,11 +25,21 @@ follows.
   one counter (`bus-broker-core`), so a connection is the "client" of `Execs`, the files'
   uploads and the clipboard `Receiver`. What a connection made (watches, uploads, programs,
   an upload of the clipboard) goes when it ends (`broker.watch_connection`, one watcher per
-  connection and service, `server::on_connection_end`).
+  connection and service, `server::on_connection_end`). A call whose connection has ended by
+  the time the supervisor takes it (`on_connection_end` answers `false`) keeps nothing and is
+  refused: a first `fs.write` chunk starts no upload, `clipboard.put` keeps no transfer,
+  `exec.run` starts no program, `fs.watch` keeps no watch.
+- **Limits per connection.** At most `fs::MAX_WATCHES_PER_CONNECTION` (32) watches, each a
+  watcher of the system's (an inotify instance on Linux, whose default limit is 128 per
+  user); `fs::MAX_UPLOADS_PER_CONNECTION` (16) uploads in progress, each with a temporary file
+  open; `exec::MAX_EXECS_PER_CLIENT` (64) programs, as on `tilr.v1`. One more is `busy`, the
+  code the broker gives a caller over its share of calls in flight.
 - **Streams split to the window.** `fs.read`, `exec.run` output and `clipboard.get` cut their
   data so that no chunk passes the stream's window (`fs::room`, `fs::split`), besides the
   256 KiB of `tilr.v1`. A cancelled `exec.run` stream cancels the program (its group is
-  killed), as `ExecCancel` does.
+  killed), as `ExecCancel` does; so does a stream whose reader is gone. The cancel guard is
+  made before the start is queued, and its cancel is queued behind the start, so a handler
+  aborted at any point after it queued the start takes the program with it.
 - **`server.update` and `server.command` are programs.** Both run the server's own executable
   (`tilrd update`; `tilrd <argv>`) through `exec.run`'s path; no protocol-free entry point is
   needed in `update.rs`.
@@ -37,28 +47,43 @@ follows.
   `reload` (the owner has it); `server.command` is for the owner on the Unix socket only
   (`denied` on TCP, even with the access token), as `tilr.v1`'s `ServerCommand`.
 - **Errors.** A refusal a user should read (outside the roots, exists, too large, read-only, a
-  disk error) is `bad_request` with the message of `tilr.v1`; a program that did not start
-  `spawn_failed`; an `exec_id`, watch or copy that is not the caller's or not there
-  `not_found`.
+  disk error, stdin closed or overrun) is `bad_request` with the message of `tilr.v1`; a
+  program that did not start `spawn_failed`; an `exec_id`, watch or copy that is not the
+  caller's or not there `not_found` (`exec.input` and `exec.signal` alike); a limit per
+  connection `busy`. `exec::Execs` tells these apart with `exec::Refusal`.
+- **Uploads clean up before they answer.** A failed or abandoned upload removes its
+  temporary file and its note of the write before the failure is answered
+  (`files::Upload::abandon`, and `finish` on failure), as `tilr.v1`'s `receive` always did; a
+  drop without either still removes them, in the background.
 - **`pane.copied`.** The hook in `Supervisor::send_copy` (`bus::core::clipboard::copied`)
   keeps the latest copy and emits `pane.copied` with scope `pane:<id>` before the `tilr.v1`
-  `ClipboardWrite`s; `clipboard.get` streams it while it is the latest.
+  `ClipboardWrite`s; `clipboard.get` streams it while it is the latest, to a caller the
+  authorizer lets access the copy's pane (`AuthzRequest::PaneAccess`, as `pane.*`); to one it
+  does not, it answers `not_found`, as for no copy.
+- **Test-only detours.** `fail::armed(name)` tells whether a test set an action for a
+  failpoint without passing it: the supervisor's task cannot block on a pause, so a chunk of
+  `fs.write` is held on a task of its own (`bus-fs-write-late`) only when a test asks.
+  `bus-exec-started` holds `exec.run` between the start and the handler taking it up.
 - **Broker files untouched**: this change uses only the broker's API (`BrokerHandle::emit`,
   `watch_connection`, `authorizer`, `principal_of`).
 
 ## Gaps
 
-- **`host.open` and `ssh_agent.*` are not done.** T6 says tilrd calls `host.open` on each
+- **`host.open` and `ssh_agent.*` are not done here.** T6 says tilrd calls `host.open` on each
   `pane.output` consumer of the pane that provides it, and `ssh_agent.request` on the one that
   opened its stream last. `BrokerHandle::call` resolves `CallOptions.target` as an identity
-  (every owner connection is `owner`), so tilrd cannot call one connection. It needs a broker
-  API such as `BrokerHandle::call_connection(conn, from, method, payload, options)`, which
-  belongs to the broker's owners (`bus-streams-events`, then `bus-reload`). Tasks 1.5 and 1.6
-  wait for it; until then both stay on `tilr.v1`.
+  (every owner connection is `owner`), so tilrd cannot call one connection. They are done by
+  a separate change (a per-connection call in the broker plus `host.open` and `ssh_agent.*`);
+  until then both stay on `tilr.v1`.
 - **The reload reply is not flushed.** `server.reload` answers, then sends the reload to the
   supervisor; nothing waits for the bus connections' queues to be written before the exec, so
-  a reply may be lost with the connection (the test sees it arrive). Draining the bus at a
-  reload is `bus-reload`'s.
+  the reply may be lost with the connection: the requirement says the caller sees the reply
+  or the end of its connection, and the test takes either. `bus-reload` drains the bus at a
+  reload and makes the reply guaranteed.
+- **`fs.changed.<watch_id>` is not scoped to its watcher.** `BrokerHandle::emit` takes a
+  scope `pane:<id>` only and delivers to every subscriber whose rights allow the subject; it
+  has no scope of one connection, and adding one is the broker's (`broker.rs`, `authz.rs`).
+  So any connection that may subscribe to `fs.changed.*` sees the changes of every watch.
 - **`pane.read` waits at most about 9.9 s**, not 25 s: T9's cap is under the broker's 10 s call
   deadline (B5). README says so; the design's 25 s stands for a later longer deadline.
 - **Requirement "The terminal is served on the bus only"** of the former single change holds
