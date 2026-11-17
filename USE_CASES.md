@@ -793,6 +793,7 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 |---|---|
 | Hello comes first (a bad first message is `expected_hello` too) and names version 1; a wrong token or a credential is denied; tilr.v1 is served as before | `bus::hello_comes_first_and_names_a_version` |
 | The first thing a participant hears is its HelloAck, nothing from before it | `bus::the_first_thing_a_participant_hears_is_its_hello_ack` |
+| A participant is callable once it has its HelloAck: held right after its greeting (failpoint `bus-greeted:<name>`), a call of its method reaches it, not `not_found` | `bus::a_participant_is_callable_once_it_has_its_hello_ack` |
 | The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
 | A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
 | `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
@@ -903,3 +904,4 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
 | `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
 | A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
+| When `bus.start` answers, the instance's methods are callable, listed by `bus.methods` and known (`unavailable` once it is stopped), though it is held right after its greeting | `bus::a_started_instance_is_callable_and_listed_when_bus_start_returns` |

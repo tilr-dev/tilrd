@@ -482,7 +482,7 @@ fn accept_hello(
     clippy::too_many_arguments,
     reason = "the parts of a connection both transports pass"
 )]
-fn greet(
+async fn greet(
     broker: &BrokerHandle,
     out: &Out,
     state: &watch::Sender<ConnState>,
@@ -548,19 +548,31 @@ fn greet(
             .unwrap_or_default(),
         server_id: broker.server_id().to_owned(),
     };
+    let identity = ack.identity.clone();
+    let (client_id, name) = (principal.client_id.clone(), principal.client_name.clone());
+    let count = provides.len();
+    // Registered before it is announced: once a participant has its HelloAck, or
+    // anybody saw the connection up, its methods are routed and listed.
+    broker.register(
+        principal,
+        provides,
+        Msg::HelloAck(ack),
+        out.clone(),
+        state.clone(),
+    );
     tracing::info!(
         target: "tilrd::bus",
         connection = id,
         %peer,
-        identity = ack.identity,
-        client_id = principal.client_id,
-        name = principal.client_name,
-        provides = provides.len(),
+        identity,
+        client_id,
+        name,
+        provides = count,
         "participant greeted"
     );
-    // Queued first: nothing the broker routes to the connection comes before it.
-    out.send(Msg::HelloAck(ack), Lane::Interactive);
-    broker.register(principal, provides, out.clone(), state.clone());
+    // Held here by a test: what the broker shows of a connection just greeted.
+    #[cfg(feature = "failpoints")]
+    crate::fail::point_async(format!("bus-greeted:{name}")).await;
     true
 }
 
@@ -750,7 +762,8 @@ where
                     broker.ready().await;
                     greeted = greet(
                         &broker, &out, &state, envelope, transport, peer, &origin, None,
-                    );
+                    )
+                    .await;
                     refused = !greeted;
                 }
             }
@@ -864,7 +877,8 @@ pub(super) fn spawn_stream(
                     peer,
                     "",
                     seat.take(),
-                );
+                )
+                .await;
                 if !greeted {
                     // Let the ConnectionError go out.
                     let _ = tokio::time::timeout(CLOSE_TIMEOUT, &mut write).await;

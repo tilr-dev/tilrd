@@ -3356,3 +3356,112 @@ async fn a_method_of_a_configured_instance_is_unavailable_while_it_is_down() {
     start_instance(&owner, "t-1").await.unwrap();
     assert_eq!(calls(&owner, "test.echo", "back").await.unwrap(), "back");
 }
+
+// ---------------------------------------------------------------------------
+// bus-greet-order
+// ---------------------------------------------------------------------------
+
+/// The failpoint `bus-greeted:<client name>` holds a connection just after it is
+/// greeted (its `HelloAck` queued, the connection announced up and logged): what the
+/// broker shows of it there is what anybody that heard of it may see.
+#[cfg(feature = "failpoints")]
+fn greet_paused(name: &str, bus_toml: Option<String>) -> (BusServer, common::PauseController) {
+    let server = BusServer::start(BusOptions {
+        bus_toml,
+        failpoints: format!("bus-greeted:{name}=pause"),
+        ..BusOptions::default()
+    });
+    let controller = common::PauseController::bind(&server.dir);
+    (server, controller)
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_participant_is_callable_once_it_has_its_hello_ack() {
+    let (server, controller) = greet_paused("late", None);
+    let owner = server.owner().await;
+    let mut late = server.raw().await;
+    late.send(Msg::Hello(Hello {
+        protocol_version: tilr_bus::PROTOCOL_VERSION,
+        client_name: "late".into(),
+        provides: vec![MethodSpec::unary("test.late")],
+        ..Hello::default()
+    }))
+    .await;
+    let point = controller.wait("bus-greeted:late").await;
+    let Some(Msg::HelloAck(_)) = late.recv().await else {
+        panic!("the first envelope is not HelloAck");
+    };
+
+    // Held right after its greeting, the participant is the provider already: the
+    // call reaches it instead of being answered `not_found`.
+    let mut call = Box::pin(owner.call("test.late", "x", CallOptions::default()));
+    let hop = within(async {
+        tokio::select! {
+            reply = &mut call => panic!(
+                "test.late was answered before its provider had the call: {:?}",
+                reply.map(|reply| text(&reply.payload))
+            ),
+            hop = late.wait_for(|msg| match msg {
+                Msg::Call(call) if call.method == "test.late" => Some(call.id),
+                _ => None,
+            }) => hop,
+        }
+    })
+    .await;
+    point.release().await;
+    late.send(Msg::Reply(WireReply {
+        id: hop,
+        result: Some(reply::Result::Payload(Bytes::from_static(b"late"))),
+        content_type: String::new(),
+    }))
+    .await;
+    assert_eq!(text(&within(call).await.unwrap().payload), "late");
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_started_instance_is_callable_and_listed_when_bus_start_returns() {
+    let (server, controller) = greet_paused(
+        "t-1",
+        Some(format!(
+            "{}{}",
+            test_module("t", &[]),
+            instance_with(
+                "t-1",
+                "t",
+                "autostart = false\n",
+                &[("provide", &["test.*"])],
+                &[]
+            )
+        )),
+    );
+    let owner = server.owner().await;
+    let mut starting = Box::pin(start_instance(&owner, "t-1"));
+    // Polled once, so the call is sent.
+    let _ = starting.as_mut().now_or_never();
+    let point = controller.wait("bus-greeted:t-1").await;
+    // t-1 is held right after its greeting; bus.start has its answer already.
+    let started = starting.await.unwrap();
+    assert!(started.pid > 0);
+
+    // A call sent now reaches t-1 (its answer waits for the release), and bus.methods,
+    // answered after the call was routed (one connection's envelopes in order), lists
+    // t-1 as a provider.
+    let mut echo = Box::pin(owner_calls(&owner, "test.echo", "back"));
+    let _ = echo.as_mut().now_or_never();
+    let methods = method_list(&owner).await;
+    let listed = methods
+        .methods
+        .iter()
+        .find(|info| info.method == "test.echo")
+        .map(|info| info.providers.clone());
+    assert_eq!(listed, Some(vec!["instance:t-1".to_owned()]), "{methods:?}");
+    point.release().await;
+    assert_eq!(echo.await.unwrap(), "back");
+
+    // What it provided is known once it is stopped: unavailable, not not_found.
+    stop_instance(&owner, "t-1", None).await.unwrap();
+    let error = calls(&owner, "test.echo", "x").await.unwrap_err();
+    assert_eq!(error.code, codes::UNAVAILABLE, "{error}");
+}

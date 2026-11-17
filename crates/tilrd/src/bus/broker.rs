@@ -978,13 +978,17 @@ impl BrokerHandle {
     // Connections
     // -----------------------------------------------------------------------
 
-    /// Take a greeted connection in: its `HelloAck` is queued already, so nothing
-    /// reaches it before. A connection of the same principal and `client_id`
-    /// still open is closed 4000 (B12).
+    /// Take a greeted connection in: it is entered as a connection and as the
+    /// provider of its methods, and `ack` (its `HelloAck`) is queued under the same
+    /// lock, so nothing the broker routes to it comes before and its methods are
+    /// there once it has it. Only then is it announced [`ConnState::Up`]. A
+    /// connection of the same principal and `client_id` still open is closed 4000
+    /// (B12).
     pub(super) fn register(
         &self,
         principal: Principal,
         provides: Vec<MethodSpec>,
+        ack: Msg,
         out: Out,
         state: watch::Sender<ConnState>,
     ) {
@@ -1015,11 +1019,13 @@ impl BrokerHandle {
             .into_iter()
             .map(|spec| (spec.method.clone(), spec))
             .collect();
-        state.send_replace(ConnState::Up);
+        let announce = state.clone();
         let mut st = self.lock();
         for method in provides.keys() {
             st.providers.entry(method.clone()).or_default().push(id);
         }
+        // Queued first: nothing the broker routes to the connection comes before it.
+        out.send(ack, Lane::Interactive);
         st.conns.insert(
             id,
             Conn {
@@ -1041,6 +1047,8 @@ impl BrokerHandle {
                 state,
             },
         );
+        drop(st);
+        announce.send_replace(ConnState::Up);
     }
 
     /// Forget a connection: the calls sent to it are answered `unavailable` (a
