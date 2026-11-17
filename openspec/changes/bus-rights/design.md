@@ -82,10 +82,10 @@ is the contract.
   `caller`, `method`, `namespace`, `target`, `subject`, `pattern`, `action`, `instance`,
   `scope`, `server`, `origin`, `time`. The policies are `acl::POLICIES`.
 - **Metadata in the signed context.** The authority block's context (signed with it) holds
-  the participant, mint and expiry times, the bound origin, the rights and, for a token a
+  the participant, the server id, mint and expiry times, the bound origin, the rights and, for a token a
   non-owner minted, its lineage (ceiling and minters' revocation ids) as JSON; the server
-  reads them without Datalog (expiry, origin, renewal, a non-owner's mint limits, revocation
-  of a minter). The same facts and checks are in the block for Datalog (not the lineage,
+  reads them without Datalog (server id, expiry, origin, renewal, a non-owner's mint limits,
+  revocation of a minter, the chain of renewals). The same facts and checks are in the block for Datalog (not the lineage,
   which only the server checks).
 - **Control methods at the call.** `bus.instances`/`bus.methods` need `list`;
   `bus.start`/`bus.stop`/`bus.reload` pass the call when the token has that action on some

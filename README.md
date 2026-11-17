@@ -1038,7 +1038,9 @@ and may do only what its token lists (least privilege; design R1-R9 in
   included); revoking the minter's token (any token of its chain of renewals) ends the
   tokens it minted, renewing it does not; an instance's end ends what it minted, its 12 h
   renewal does not.
-- **A token is bound** to this server (`check if server(<id>)`), to its expiry and, when
+- **A token is bound** to this server (`check if server(<id>)`, and the server id in its
+  signed metadata, checked also where no Datalog runs: `Hello`, `CredentialUpdate`,
+  `bus.renew`), to its expiry and, when
   minted with `origin`, to the WebSocket `Origin`. A token of another server, a malformed
   one, one over 16 KiB or 8 blocks, or one with a third-party block is `denied`.
 - **Per-call credential.** `Call.credential` authorizes that call alone, and the

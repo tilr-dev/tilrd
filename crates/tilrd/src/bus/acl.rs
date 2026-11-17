@@ -200,6 +200,10 @@ fn run_limits() -> AuthorizerLimits {
 struct Meta {
     /// `instance:<name>` or `token:<name>`.
     participant: String,
+    /// The server id it was minted by: checked without Datalog too (Hello,
+    /// `CredentialUpdate`, `bus.renew`, minting decide without it).
+    #[serde(default)]
+    server: String,
     minted_ms: u64,
     expires_ms: u64,
     /// The origin it is bound to; empty: none.
@@ -1159,6 +1163,7 @@ impl Acl {
         }
         let meta = Meta {
             participant: participant.to_string(),
+            server: self.server_id.clone(),
             minted_ms: now,
             expires_ms,
             origin: origin.to_owned(),
@@ -1316,6 +1321,11 @@ impl Acl {
     /// decision-cache hit): key epoch, revocation, the instance's connection,
     /// expiry, origin. `conn` is the connection presenting it.
     fn usable(&self, parsed: &Parsed, origin: &str, conn: ConnId) -> Result<(), Denied> {
+        if parsed.meta.server != self.server_id {
+            return Err(Denied::new(
+                "not a token of this server: it was minted by another server id",
+            ));
+        }
         let epoch = self.keys().epoch;
         if parsed.epoch != epoch {
             return Err(Denied::new(
@@ -2961,6 +2971,43 @@ mod tests {
             copy.authorize(&owner, Some(&token.bytes), &call("a.b", ""))
                 .is_err()
         );
+        // Also where no Datalog runs: Hello, a credential update, `bus.renew`.
+        let hello = Hello {
+            protocol_version: 1,
+            credential: token.bytes.clone(),
+            ..Hello::default()
+        };
+        let conn = HelloContext {
+            transport: Transport::UnixSocket,
+            peer: Peer::Unix { pid: None },
+            origin: "",
+            connection_id: 5,
+            seat: None,
+        };
+        let refused = copy.hello(&hello, &conn).unwrap_err();
+        assert!(
+            refused.message.contains("another server id"),
+            "{}",
+            refused.message
+        );
+        let on_copy = Principal {
+            identity: Identity::Token("t-1".into()),
+            ..Principal::tilrd()
+        };
+        assert!(copy.credential_update(&on_copy, &token.bytes).is_err());
+        let payload = Bytes::from(
+            wire::RenewRequest {
+                credential: token.bytes.clone(),
+            }
+            .encode_to_vec(),
+        );
+        assert_eq!(
+            copy.method_renew(&ctx(&owner, "bus.renew", None), &payload)
+                .unwrap_err()
+                .code,
+            codes::DENIED
+        );
+        assert!(f.acl.hello(&hello, &conn).is_ok());
         assert!(
             f.acl
                 .authorize(&owner, Some(&token.bytes), &call("a.b", ""))

@@ -107,9 +107,9 @@ A token minted by a participant other than the owner SHALL NOT live, also throug
 - **THEN** the new token expires with the minter's
 
 ### Requirement: A token works only on the server that made it
-A token minted by another server, one whose signature does not verify against this server's root key, or one that is malformed, MUST make the call, the `Hello` or the subscription `denied`.
+A token minted by another server, one whose signature does not verify against this server's root key, or one that is malformed, MUST make the call, the `Hello` or the subscription `denied`. A token minted under another server id with the same root key (a copied state directory) MUST be denied as well, also where no Datalog runs (`Hello`, `CredentialUpdate`, `bus.renew`, minting with it).
 
-**Verified by**: `bus_acl::a_token_of_another_server_is_refused`.
+**Verified by**: `bus_acl::a_token_of_another_server_is_refused`, `supervisor::bus::acl::tests::a_token_is_bound_to_its_server_id`.
 
 #### Scenario: Another machine's token
 - **WHEN** the owner mints a token on server A with `tilr bus token --name x --call 'test.*'` and a call on server B carries it as `credential`
