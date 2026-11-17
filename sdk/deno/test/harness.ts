@@ -263,7 +263,10 @@ export class Peer {
   #waiters: (() => void)[] = [];
   #closed = false;
 
-  constructor(readonly sendFrame: (envelope: Envelope) => void, readonly closeLink: () => void) {}
+  constructor(
+    readonly sendFrame: (envelope: Envelope) => void,
+    readonly closeLink: (code?: number, reason?: string) => void,
+  ) {}
 
   /** Called with what the client sent. */
   _deliver(envelope: Envelope | undefined): void {
@@ -299,8 +302,9 @@ export class Peer {
     return hello.hello;
   }
 
-  close(): void {
-    this.closeLink();
+  /** Close the connection; a WebSocket with `code` and `reason` (default 1000). */
+  close(code?: number, reason?: string): void {
+    this.closeLink(code, reason);
   }
 }
 
@@ -401,7 +405,7 @@ export function listenWs(
     socket.binaryType = "arraybuffer";
     const peer = new Peer(
       (envelope) => socket.send(encodeWs(envelope)),
-      () => socket.close(1000, ""),
+      (code = 1000, reason = "") => socket.close(code, reason),
     );
     socket.addEventListener(
       "message",

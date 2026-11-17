@@ -14,6 +14,7 @@ import asyncio
 import base64
 import collections
 import inspect
+import logging
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -25,6 +26,9 @@ from tilr_bus._codec import MAX_FRAME, CodecError, chunk_bytes
 from tilr_bus._names import matches, valid_method, valid_pattern, valid_subject
 from tilr_bus._transport import CloseInfo, Incoming, Link, TransportError
 from tilr_bus.proto import bus as wire
+
+#: Handler failures that end nothing (an event handler's) are logged here.
+logger = logging.getLogger("tilr_bus")
 
 PROTOCOL_VERSION = 1
 CONTENT_TYPE_PROTOBUF = "application/x-protobuf"
@@ -72,6 +76,8 @@ SEND_BUDGET = 4 << 20
 #: Events held for a subscription that is not read; more are dropped (B6).
 SUBSCRIPTION_QUEUE = 1024
 HANDSHAKE_TIMEOUT = 10.0
+#: How long a `ConnectionError` waits for the close that follows it (to keep its code).
+_CLOSE_AFTER_ERROR = 2.0
 _DEFAULT_MAX_IN_FLIGHT = 256
 _DEFAULT_STREAM_WINDOW = 1 << 20
 _MAX_STREAM_WINDOW = 16 << 20
@@ -106,7 +112,9 @@ def credential_bytes(credential: bytes | str) -> bytes:
         return bytes(credential)
     text = credential.strip().rstrip("=")
     try:
-        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        # validate=True: a character outside the alphabet is an error, not skipped.
+        standard = text.replace("-", "+").replace("_", "/") + "=" * (-len(text) % 4)
+        return base64.b64decode(standard, validate=True)
     except ValueError as err:
         raise BusError(codes.BAD_REQUEST, f"credential is not base64url: {err}") from err
 
@@ -275,10 +283,13 @@ class Context:
 class StreamWriter:
     """Writes the chunks of a provided stream, within the credit its reader gave."""
 
-    def __init__(self, bus: Bus, call_id: int, gate: _CreditGate, window: int) -> None:
+    def __init__(
+        self, bus: Bus, call_id: int, gate: _CreditGate, window: int, served: _Served
+    ) -> None:
         self.bus = bus
         self.id = call_id
         self._gate = gate
+        self._served = served
         #: The reader's initial window; no chunk may be larger.
         self.window = window
 
@@ -286,6 +297,15 @@ class StreamWriter:
     def credit(self) -> int:
         """Payload bytes this provider may send now."""
         return self._gate.credit
+
+    @property
+    def credited(self) -> int:
+        """Payload bytes the reader's `Credit`s gave back so far (beyond the window)."""
+        return self._served.credited
+
+    def would_wait(self, count: int) -> bool:
+        """Whether `write` of `count` bytes would wait for credit now."""
+        return self._gate.credit < count
 
     def _check(self, payload: Payload) -> bytes:
         data = _bytes(payload)
@@ -316,9 +336,20 @@ class StreamWriter:
 class ChunkStream:
     """The chunks of a stream, as an async iterator of payloads (decompressed when
     their producer compressed them). The call is sent when the iteration begins;
-    credit goes back as each chunk is taken. Leaving the loop early cancels the
-    stream once the stream is dropped (at once in CPython); `cancel()`, `aclose()` or
-    `async with` cancel it explicitly. `end` holds the `End` payload once it ended."""
+    credit goes back as each chunk is taken. `end` holds the `End` payload once it
+    ended.
+
+    Read it in `async with`, so leaving the block (a `break`, an exception) cancels
+    the stream at once: the provider gets `Cancel` and the call's slot is free::
+
+        async with bus.stream("demo.lines") as lines:
+            async for line in lines:
+                if done(line):
+                    break
+
+    `cancel()` and `aclose()` cancel it too. A plain `async for` left early cancels it
+    only when the stream is collected (`__del__`, at once in CPython while nothing else
+    holds it): a best effort, not a promise."""
 
     def __init__(self, bus: Bus, start: Callable[[ChunkStream], Awaitable[None]]) -> None:
         self.bus = bus
@@ -382,7 +413,7 @@ class ChunkStream:
         self.bus._release_stream(self)
 
     def __del__(self) -> None:
-        # A loop left early drops the last reference: the stream is cancelled.
+        # Best effort: a loop left early outside `async with` drops the last reference.
         if not self._done and self.id:
             try:
                 self.cancel()
@@ -439,6 +470,31 @@ class _Provided:
     spec: wire.MethodSpec
     handler: Callable[..., Any]
     stream: bool
+
+
+@dataclass
+class _Served:
+    """A call this participant is answering."""
+
+    ctx: Context
+    gate: _CreditGate | None
+    task: asyncio.Task[None] | None = None
+    #: Bytes the reader's `Credit`s gave (counted apart from the gate).
+    credited: int = 0
+
+
+@dataclass
+class _CallerStream:
+    """A stream this participant reads."""
+
+    queue: asyncio.Queue[tuple[str, Any, int]]
+    allowed: int
+    received: int = 0
+    #: Set once the `Call` is queued for the socket: a `Cancel` may follow it.
+    queued: bool = False
+    #: Cancelled before its `Call` was queued: the `Cancel` goes out after it.
+    cancelled: bool = False
+    timer: asyncio.TimerHandle | None = None
 
 
 class _ConnectDescriptor:
@@ -513,9 +569,11 @@ class Bus:
         self._in_flight = _Slots(_DEFAULT_MAX_IN_FLIGHT)
         self._next_id = 0
         self._calls: dict[int, asyncio.Future[Reply]] = {}
-        self._streams: dict[int, dict[str, Any]] = {}
+        self._streams: dict[int, _CallerStream] = {}
         self._subscriptions: dict[int, Subscription] = {}
-        self._served: dict[int, tuple[asyncio.Task[None] | None, _CreditGate | None, Context]] = {}
+        self._served: dict[int, _Served] = {}
+        self._pending_error: tuple[str, str] | None = None
+        self._pending_timer: asyncio.TimerHandle | None = None
         self._queue: collections.deque[tuple[bytes, bool]] = collections.deque()
         self._queued = 0
         self._wake_writer = asyncio.Event()
@@ -540,9 +598,13 @@ class Bus:
         select: str = "round_robin",
     ) -> Any:
         """Provide `method`, answered by `handler(payload, ctx)` (or, for a stream,
-        `handler(payload, ctx, out)`, told apart by its parameters or by `kind="stream"`);
-        only before `connect` (there is no later registration, B4). Without `handler`
-        it is a decorator."""
+        `handler(payload, ctx, out)`); only before `connect` (there is no later
+        registration, B4). Without `handler` it is a decorator.
+
+        Name the kind: `kind="stream"` for a stream handler, `kind="unary"` for one
+        that answers once. Without it, a handler whose signature has three parameters
+        or more is taken for a stream handler; a wrapped or `*args` function may not
+        show them, so pass `kind`."""
         if handler is None:
 
             def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
@@ -884,7 +946,8 @@ class Bus:
             self._next_id += 1
             call_id = self._next_id
             stream.id = call_id
-            self._streams[call_id] = {"queue": stream._items, "allowed": size, "received": 0}
+            pending = _CallerStream(queue=stream._items, allowed=size)
+            self._streams[call_id] = pending
             envelope = self._call_message(
                 call_id, method, payload, target, timeout, content_type, credential, trace_id, size
             )
@@ -895,19 +958,36 @@ class Bus:
                 self._in_flight.release()
                 stream.id = 0
                 raise
-            if timeout is not None:
+            pending.queued = True
+            if pending.cancelled:
+                # Cancelled while the Call waited for the send budget: the Cancel follows it.
+                cancel = wire.Cancel(id=call_id, reason="cancelled by the caller")
+                self._send_now(wire.Envelope(cancel=cancel))
+                return
+            if timeout is not None and self._streams.get(call_id) is pending:
                 loop = asyncio.get_running_loop()
-                loop.call_later(timeout, self._stream_timed_out, call_id, method, timeout)
+                pending.timer = loop.call_later(
+                    timeout, self._stream_timed_out, call_id, pending, method, timeout
+                )
 
         return ChunkStream(self, start)
 
-    def _stream_timed_out(self, call_id: int, method: str, timeout: float) -> None:
-        pending = self._streams.pop(call_id, None)
-        if pending is None:
+    def _stream_timed_out(
+        self, call_id: int, pending: _CallerStream, method: str, timeout: float
+    ) -> None:
+        if self._streams.get(call_id) is not pending:
             return
+        self._forget_stream(call_id)
         self._send_now(wire.Envelope(cancel=wire.Cancel(id=call_id, reason="timeout")))
         message = f"{method} did not end within {int(timeout * 1000)} ms"
-        pending["queue"].put_nowait(("error", BusError(codes.TIMEOUT, message), 0))
+        pending.queue.put_nowait(("error", BusError(codes.TIMEOUT, message), 0))
+
+    def _forget_stream(self, call_id: int) -> _CallerStream | None:
+        """A stream of this caller is over: no more of it is taken, its timer stops."""
+        pending = self._streams.pop(call_id, None)
+        if pending is not None and pending.timer is not None:
+            pending.timer.cancel()
+        return pending
 
     async def emit(
         self, subject: str, payload: Payload | None = None, content_type: str = ""
@@ -952,8 +1032,8 @@ class Bus:
                         result = handler(event)
                         if inspect.isawaitable(result):
                             await result
-                    except Exception as error:  # a handler's failure ends nothing
-                        print(f"tilr bus: handler of {pattern}: {error!r}", flush=True)
+                    except Exception:  # a handler's failure ends nothing
+                        logger.exception("tilr bus: the handler of %s failed", pattern)
 
             subscription._task = self._spawn(run())
         return subscription
@@ -1028,17 +1108,23 @@ class Bus:
         pending = self._streams.get(call_id)
         if pending is None:
             return
-        pending["allowed"] += count
+        pending.allowed += count
         self._send_now(wire.Envelope(credit=wire.Credit(id=call_id, bytes=count)))
 
     def _cancel_stream(self, call_id: int) -> None:
-        if call_id and self._streams.pop(call_id, None) is not None:
+        pending = self._forget_stream(call_id) if call_id else None
+        if pending is None:
+            return
+        # A Call still waiting for the send budget is not queued: its Cancel follows it.
+        if pending.queued:
             cancel = wire.Cancel(id=call_id, reason="cancelled by the caller")
             self._send_now(wire.Envelope(cancel=cancel))
+        else:
+            pending.cancelled = True
 
     def _release_stream(self, stream: ChunkStream) -> None:
         if stream.id:
-            self._streams.pop(stream.id, None)
+            self._forget_stream(stream.id)
             self._in_flight.release()
             stream.id = 0
 
@@ -1054,6 +1140,8 @@ class Bus:
         if self._close_info is not None:
             return
         self._close_info = info
+        if self._pending_timer is not None:
+            self._pending_timer.cancel()
         error = self._closed_error()
         for answer in self._calls.values():
             if not answer.done():
@@ -1061,17 +1149,19 @@ class Bus:
                 answer.exception()  # retrieved: a call that gave up is not "unretrieved"
         self._calls.clear()
         for pending in self._streams.values():
-            pending["queue"].put_nowait(("error", error, 0))
+            if pending.timer is not None:
+                pending.timer.cancel()
+            pending.queue.put_nowait(("error", error, 0))
         self._streams.clear()
         for subscription in self._subscriptions.values():
             subscription._deliver(None)
         self._subscriptions.clear()
-        for task, gate, ctx in self._served.values():
-            ctx.cancelled.set()
-            if task is not None:
-                task.cancel()
-            if gate is not None:
-                gate.close()
+        for served in self._served.values():
+            served.ctx.cancelled.set()
+            if served.task is not None:
+                served.task.cancel()
+            if served.gate is not None:
+                served.gate.close()
         self._served.clear()
         self._in_flight.close(error)
         self._budget.set()
@@ -1090,7 +1180,11 @@ class Bus:
         while self._close_info is None:
             incoming: Incoming = await self._link.recv()
             if incoming.closed is not None:
-                self._shutdown(incoming.closed)
+                closed = incoming.closed
+                if closed.error is None and self._pending_error is not None:
+                    # The ConnectionError that came first says why; the close keeps its code.
+                    closed = CloseInfo(closed.code, closed.reason, self._pending_error)
+                self._shutdown(closed)
                 return
             # A WebSocket keeps message boundaries: a bad one is skipped.
             if incoming.envelope is not None:
@@ -1103,9 +1197,9 @@ class Bus:
         elif which == "chunk":
             self._on_chunk(envelope.chunk)
         elif which == "end":
-            pending = self._streams.pop(envelope.end.id, None)
+            pending = self._forget_stream(envelope.end.id)
             if pending is not None:
-                pending["queue"].put_nowait(("end", envelope.end.payload, 0))
+                pending.queue.put_nowait(("end", envelope.end.payload, 0))
         elif which == "event":
             self._on_event(envelope.event)
         elif which == "call":
@@ -1113,23 +1207,29 @@ class Bus:
         elif which == "cancel":
             served = self._served.pop(envelope.cancel.id, None)
             if served is not None:
-                task, gate, ctx = served
-                ctx.cancelled.set()
-                if task is not None:
-                    task.cancel()
-                if gate is not None:
-                    gate.close()
+                served.ctx.cancelled.set()
+                if served.task is not None:
+                    served.task.cancel()
+                if served.gate is not None:
+                    served.gate.close()
         elif which == "credit":
             served = self._served.get(envelope.credit.id)
-            if served is not None and served[1] is not None:
-                served[1].add(envelope.credit.bytes)
+            if served is not None:
+                served.credited += envelope.credit.bytes
+                if served.gate is not None:
+                    served.gate.add(envelope.credit.bytes)
         elif which == "credential_update":
             self._credential = envelope.credential_update.credential
         elif which == "connection_error":
             error: Any = envelope.connection_error  # its .pyi type shadows a builtin
-            # bad_frame leaves the connection open; anything else is followed by the close.
-            if error.code != codes.BAD_FRAME:
-                self._shutdown(CloseInfo(error=(error.code, error.message)))
+            # bad_frame leaves the connection open; anything else is followed by the
+            # close, whose code is kept with this error (unless it does not come).
+            if error.code != codes.BAD_FRAME and self._pending_error is None:
+                self._pending_error = (error.code, error.message)
+                self._pending_timer = asyncio.get_running_loop().call_later(
+                    _CLOSE_AFTER_ERROR,
+                    lambda: self._shutdown(CloseInfo(error=self._pending_error)),
+                )
         # Anything else: a variant of a later version, or one a participant never gets.
 
     def _on_reply(self, reply: wire.Reply) -> None:
@@ -1142,7 +1242,7 @@ class Bus:
             else:
                 answer.set_result(Reply(reply.payload, reply.content_type))
             return
-        pending = self._streams.pop(reply.id, None)
+        pending = self._forget_stream(reply.id)
         if pending is not None:
             if reply.WhichOneof("result") == "error":
                 error = BusError(reply.error.code, reply.error.message)
@@ -1150,28 +1250,28 @@ class Bus:
                 error = BusError(
                     codes.BAD_REPLY, "a stream was answered with a reply instead of chunks"
                 )
-            pending["queue"].put_nowait(("error", error, 0))
+            pending.queue.put_nowait(("error", error, 0))
 
     def _on_chunk(self, chunk: wire.Chunk) -> None:
         pending = self._streams.get(chunk.id)
         if pending is None:
             return  # a chunk of a stream given up
         carried = len(chunk.payload)
-        pending["received"] += carried
-        if pending["received"] > pending["allowed"]:
-            self._streams.pop(chunk.id, None)
+        pending.received += carried
+        if pending.received > pending.allowed:
+            self._forget_stream(chunk.id)
             error = BusError(codes.BAD_REPLY, "the provider sent more than the stream's credit")
-            pending["queue"].put_nowait(("error", error, 0))
+            pending.queue.put_nowait(("error", error, 0))
             self._send_now(wire.Envelope(cancel=wire.Cancel(id=chunk.id, reason="credit overrun")))
             return
         try:
             data = chunk_bytes(chunk.payload, chunk.content_encoding)
         except CodecError as error:
-            self._streams.pop(chunk.id, None)
-            pending["queue"].put_nowait(("error", BusError(codes.BAD_REPLY, str(error)), 0))
+            self._forget_stream(chunk.id)
+            pending.queue.put_nowait(("error", BusError(codes.BAD_REPLY, str(error)), 0))
             self._send_now(wire.Envelope(cancel=wire.Cancel(id=chunk.id, reason="bad chunk")))
             return
-        pending["queue"].put_nowait(("chunk", data, carried))
+        pending.queue.put_nowait(("chunk", data, carried))
 
     def _on_event(self, event: wire.Event) -> None:
         delivered = Event(
@@ -1195,24 +1295,23 @@ class Bus:
             return
         window = call.window or self._stream_window
         gate = _CreditGate(window) if provided.stream else None
-        ctx = Context(self, call)
-        self._served[call.id] = (None, gate, ctx)
-        task = self._spawn(self._serve(call.id, provided, call.payload, ctx, gate, window))
-        self._served[call.id] = (task, gate, ctx)
+        served = _Served(ctx=Context(self, call), gate=gate)
+        self._served[call.id] = served
+        served.task = self._spawn(self._serve(call.id, provided, call.payload, served, window))
 
     async def _serve(
         self,
         call_id: int,
         provided: _Provided,
         payload: bytes,
-        ctx: Context,
-        gate: _CreditGate | None,
+        served: _Served,
         window: int,
     ) -> None:
+        ctx = served.ctx
         try:
             if provided.stream:
-                assert gate is not None
-                out = StreamWriter(self, call_id, gate, window)
+                assert served.gate is not None
+                out = StreamWriter(self, call_id, served.gate, window, served)
                 result = provided.handler(payload, ctx, out)
                 if inspect.isawaitable(result):
                     result = await result
@@ -1229,7 +1328,17 @@ class Bus:
                     reply = wire.Reply(id=call_id, payload=_bytes(result))
                 answer = wire.Envelope(reply=reply)
         except asyncio.CancelledError:
-            return  # cancelled: no reply
+            if ctx.cancelled.is_set():
+                return  # the caller's Cancel, or the connection's end: no reply
+            # Not the bus's cancel (the handler awaited something cancelled, or the task
+            # itself is being cancelled): the caller still gets an answer.
+            if self._served.pop(call_id, None) is not None:
+                error = wire.Error(code=codes.CANCELLED, message="the handler was cancelled")
+                self._send_now(wire.Envelope(reply=wire.Reply(id=call_id, error=error)))
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+            return
         except Exception as error:
             if ctx.cancelled.is_set():
                 return

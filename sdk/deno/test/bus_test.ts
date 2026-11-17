@@ -3,10 +3,21 @@
 // that misbehaves, against a fake broker. Use cases: USE_CASES.md, "The bus SDKs".
 
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { Bus, BusError, type BusEvent, codes, pane, resolveTransport } from "../mod.ts";
+import {
+  Bus,
+  bus as busSchema,
+  BusError,
+  type BusEvent,
+  codes,
+  pane,
+  resolveTransport,
+  SUBSCRIPTION_QUEUE,
+} from "../mod.ts";
+import { open } from "../src/transport.ts";
 import {
   listenUnix,
   listenWs,
+  type Peer,
   Runtime,
   runtimeOnFd,
   scenario,
@@ -28,6 +39,32 @@ async function rejectsWith(promise: Promise<unknown>, code: string): Promise<Bus
   const error = await assertRejects(() => promise, BusError);
   assertEquals((error as BusError).code, code, String(error));
   return error as BusError;
+}
+
+/** A Bus on an instance socket the fake broker holds. */
+async function fakeSocket(
+  scope: Scope,
+  ack: Record<string, unknown> = {},
+  setup?: (bus: Bus) => void,
+): Promise<{ bus: Bus; peer: Peer }> {
+  const dir = Deno.makeTempDirSync({ dir: "/tmp", prefix: "tb" });
+  scope.defer(() => Deno.removeSync(dir, { recursive: true }));
+  const listener = await listenUnix(scope, `${dir}/p.sock`);
+  const bus = new Bus({ socket: { path: `${dir}/p.sock`, token: "t" } });
+  setup?.(bus);
+  const connecting = bus.connect();
+  const peer = await listener.accept();
+  await peer.greet(ack);
+  await connecting;
+  scope.defer(() => bus.close());
+  return { bus, peer };
+}
+
+/** Resolves when `resolve` is called: a wait woken by what it waits for. */
+function signal<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
 }
 
 scenario("connects_over_fd_socket_and_websocket", 60_000, async (scope) => {
@@ -91,6 +128,41 @@ scenario("connects_over_fd_socket_and_websocket", 60_000, async (scope) => {
   assertEquals((await tcp.call("test.whoami")).text(), "d-unix");
   await rejectsWith(Bus.connect({ url: server.url, accessToken: "not-the-token" }), codes.DENIED);
 
+  // Explicit options beat the environment; in it, TILR_BUS_FD beats TILR_BUS_SOCK beats
+  // TILR_BUS_URL.
+  const all = {
+    TILR_BUS_FD: "3",
+    TILR_BUS_SOCK: "/s.sock",
+    TILR_BUS_TOKEN: "t",
+    TILR_BUS_URL: "ws://127.0.0.1:1/",
+  };
+  assertEquals(resolveTransport({ env: all }).target.kind, "fd");
+  assertEquals(resolveTransport({ env: { ...all, TILR_BUS_FD: "" } }).target.kind, "socket");
+  assertEquals(
+    resolveTransport({ env: { TILR_BUS_URL: "ws://127.0.0.1:1/", TILR_BUS_SOCK: "" } }).target.kind,
+    "ws",
+  );
+  assertEquals(resolveTransport({ url: "ws://127.0.0.1:2/", env: all }).target.kind, "ws");
+  assertEquals(
+    resolveTransport({ socket: { path: "/x.sock", token: "t" }, env: all }).target.kind,
+    "socket",
+  );
+
+  // A connect that fails leaves the Bus to connect again.
+  const retry = new Bus({ env: {}, clientName: "d-retry" });
+  await rejectsWith(retry.connect(), codes.UNAVAILABLE);
+  const retryDir = Deno.makeTempDirSync({ dir: "/tmp", prefix: "tb" });
+  scope.defer(() => Deno.removeSync(retryDir, { recursive: true }));
+  await rejectsWith(
+    retry.connect({ socket: { path: `${retryDir}/none.sock`, token: "t" } }),
+    codes.UNAVAILABLE,
+  );
+  const retryListener = await listenUnix(scope, `${retryDir}/r.sock`);
+  const reconnecting = retry.connect({ socket: { path: `${retryDir}/r.sock`, token: "t" } });
+  await (await retryListener.accept()).greet({ identity: "instance:d-retry" });
+  assertEquals((await reconnecting).identity, "instance:d-retry");
+  scope.defer(() => retry.close());
+
   // Nothing to connect to: unavailable, naming the variables.
   try {
     resolveTransport({ env: {} });
@@ -151,6 +223,10 @@ scenario("bytes_pass_unchanged", 30_000, async (scope) => {
   // Large enough for the broker to compress it on the WebSocket: still the same bytes.
   const large = new Uint8Array(300_000).map((_, i) => i % 7);
   assertEquals((await bus.call("test.echo", large)).payload, large);
+  // A 64-bit field keeps every bit: the broker's bus.ping echoes a nonce past 2^53.
+  const nonce = 2n ** 64n - 3n;
+  const pong = await bus.call("bus.ping", busSchema.PingRequest.encode({ nonce }));
+  assertEquals(busSchema.PingReply.decode(pong.payload).nonce, nonce);
 });
 
 scenario("errors_keep_their_codes", 30_000, async (scope) => {
@@ -161,10 +237,9 @@ scenario("errors_keep_their_codes", 30_000, async (scope) => {
   assertEquals(String(failed), "bad_request: x");
   const crashed = await rejectsWith(bus.call("test.crash"), codes.HANDLER_ERROR);
   assertEquals(String(crashed), "handler_error: Error: a plain failure");
-  // The broker's errors, with its code and message.
-  const nobody = await assertRejects(() => bus.call("nobody.here"), BusError);
+  // The broker's errors, with its code and message: a method nobody provides or knows.
+  const nobody = await rejectsWith(bus.call("nobody.here"), codes.NOT_FOUND);
   assertStringIncludes(nobody.message, "nobody.here");
-  assert(([codes.NOT_FOUND, codes.UNAVAILABLE] as string[]).includes(nobody.code), String(nobody));
   const missing = await rejectsWith(bus.call("server.nothing"), codes.NOT_FOUND);
   assertStringIncludes(missing.message, "server.nothing");
 
@@ -178,7 +253,7 @@ scenario("errors_keep_their_codes", 30_000, async (scope) => {
   scope.defer(() => client.close());
   peer.send({ msg: "call", call: { id: 5, method: "test.unknown" } });
   const answer = await peer.recv();
-  assertEquals(answer.reply.id, 5);
+  assertEquals(answer.reply.id, 5n);
   assertEquals(answer.reply.error.code, codes.NOT_SUPPORTED);
 });
 
@@ -262,29 +337,51 @@ scenario("events_are_emitted_and_received", 30_000, async (scope) => {
   await rejectsWith(subscribing, codes.DENIED);
 });
 
-scenario("streams_are_read_and_served_with_credit", 120_000, async (scope) => {
+/**
+ * `flood_state` of a runtime: once its flood waits for credit, ended, or got more than
+ * its window ahead of the reader's credit (bounded: a flood that does none of these
+ * fails the call, not the test's deadline).
+ */
+async function floodState(bus: Bus, method: string) {
+  const [state, sent, credited, ahead, window] = (await bus.call(method, "", { timeoutMs: 10_000 }))
+    .text().split(" ");
+  return {
+    state,
+    sent: Number(sent),
+    credited: Number(credited),
+    ahead: Number(ahead),
+    window: Number(window),
+  };
+}
+
+scenario("streams_are_read_and_served_with_credit", 60_000, async (scope) => {
   const server = await Tilrd.start(scope);
   await Runtime.start(scope, { TILR_BUS_URL: server.unixUrl });
   const bus = await owner(server, scope);
-  // A slow reader of 64 MiB with a 64 KiB window: everything, in order, and the
-  // provider's memory stays bounded because it waits for credit.
+  // A reader of 64 MiB with a 64 KiB window takes one chunk and stops: the provider
+  // waits for credit, sent no more than the window beyond what it was credited.
   const total = 64 << 20;
-  let received = 0;
-  let ordered = true;
-  for await (const chunk of bus.stream("test.flood", String(total), { window: 64 << 10 })) {
+  const window = 64 << 10;
+  const flood = bus.stream("test.flood", String(total), { window });
+  const first = await flood.next();
+  assert(!first.done);
+  let received = first.value.length;
+  let ordered = first.value.every((byte) => byte === 0x78);
+  const waiting = await floodState(bus, "test.flood_state");
+  assertEquals(waiting.state, "waiting", JSON.stringify(waiting));
+  assertEquals(waiting.window, window);
+  assert(waiting.sent - waiting.credited <= window, JSON.stringify(waiting));
+  // Then it reads the rest: everything, in order, never more than the window ahead.
+  for await (const chunk of flood) {
     if (chunk.some((byte) => byte !== 0x78)) ordered = false;
     received += chunk.length;
-    await new Promise((resolve) => setTimeout(resolve, 10)); // the slow consumer
   }
   assertEquals(received, total);
   assert(ordered);
-  // A Deno process holds some 45 MB before it serves anything: what is measured is
-  // what serving the stream added, which buffering it would make 64 MiB or more.
-  const [peak, before] = (await bus.call("test.memory")).text().split(" ").map(Number);
-  assert(
-    before > 0 && peak - before < 64 << 20,
-    `serving grew the provider from ${before} to ${peak} bytes`,
-  );
+  const ended = await floodState(bus, "test.flood_state");
+  assertEquals(ended.state, "ended", JSON.stringify(ended));
+  assertEquals(ended.sent, total);
+  assert(ended.ahead <= window, `the provider got ${ended.ahead} bytes ahead of its credit`);
 
   // Count: every chunk in order and the End.
   const counted: string[] = [];
@@ -359,13 +456,17 @@ scenario("pane_helpers_speak_the_pane_schema", 30_000, async (scope) => {
 
   const typing = bus.pane.typeLine("p-1", "echo hi");
   const first = (await peer.recv()).call;
-  assertEquals(text(pane.InputRequest.decode(first.payload).raw!.data!), "echo hi");
+  const raw = pane.InputRequest.decode(first.payload).input;
+  assert(raw.case === "raw");
+  assertEquals(text(raw.value.data), "echo hi");
   peer.send({
     msg: "reply",
     reply: { id: first.id, payload: pane.InputAck.encode({ paneId: "p-1" }) },
   });
   const second = (await peer.recv()).call;
-  assertEquals(pane.InputRequest.decode(second.payload).key!.named, pane.NamedKey.NAMED_KEY_ENTER);
+  const key = pane.InputRequest.decode(second.payload).input;
+  assert(key.case === "key");
+  assertEquals(key.value.named, pane.NamedKey.ENTER);
   peer.send({
     msg: "reply",
     reply: { id: second.id, payload: pane.InputAck.encode({ paneId: "p-1" }) },
@@ -378,7 +479,7 @@ scenario("pane_helpers_speak_the_pane_schema", 30_000, async (scope) => {
     msg: "reply",
     reply: {
       id: read.id,
-      payload: pane.ReadReply.encode({ seq: 3, lines: ["$ echo hi", "hi"], alive: true }),
+      payload: pane.ReadReply.encode({ seq: 3n, lines: ["$ echo hi", "hi"], alive: true }),
     },
   });
   assertEquals((await reading).lines, ["$ echo hi", "hi"]);
@@ -404,7 +505,10 @@ scenario("pane_helpers_speak_the_pane_schema", 30_000, async (scope) => {
     },
   });
   await arrived;
-  assertEquals(events[0], { paneId: "p-1", exitCode: 3 });
+  assertEquals(events[0], pane.PaneExited.create({ paneId: "p-1", exitCode: 3 }));
+  // 64-bit fields are bigint: no bit of a large one is lost.
+  const seq = 2n ** 63n + 1n;
+  assertEquals(pane.InputRequest.decode(pane.InputRequest.encode({ seq })).seq, seq);
 });
 
 scenario("a_cancel_aborts_the_handler", 30_000, async (scope) => {
@@ -442,10 +546,115 @@ scenario("a_cancel_aborts_the_handler", 30_000, async (scope) => {
   assert(seen.left! > 0 && seen.left! <= 200);
 });
 
+scenario("a_cancelled_call_gets_no_reply", 30_000, async (scope) => {
+  // One handler stops when its signal aborts, one ignores it and answers anyway: the
+  // broker's Cancel means neither answer goes out.
+  const both = [signal(), signal()];
+  const { peer } = await fakeSocket(scope, {}, (b) => {
+    b.provide("dt.stops", (_payload, ctx) => {
+      both[0].resolve();
+      return new Promise((_, reject) => {
+        ctx.signal.addEventListener("abort", () => reject(ctx.signal.reason), { once: true });
+      });
+    }, { kind: "unary" });
+    b.provide("dt.ignores", (_payload, ctx) => {
+      both[1].resolve();
+      return new Promise((resolve) => {
+        ctx.signal.addEventListener("abort", () => resolve("late"), { once: true });
+      });
+    }, { kind: "unary" });
+    b.provide("dt.marker", () => "marker", { kind: "unary" });
+  });
+  peer.send({ msg: "call", call: { id: 7, method: "dt.stops" } });
+  peer.send({ msg: "call", call: { id: 8, method: "dt.ignores" } });
+  await Promise.all(both.map((s) => s.promise));
+  peer.send({ msg: "cancel", cancel: { id: 7, reason: "timeout" } });
+  peer.send({ msg: "cancel", cancel: { id: 8, reason: "timeout" } });
+  // Handled in order: the marker's reply is the next thing the library sends.
+  peer.send({ msg: "call", call: { id: 9, method: "dt.marker" } });
+  const next = await peer.recv();
+  assertEquals(next.msg, "reply");
+  assertEquals(
+    next.reply.id,
+    9n,
+    `a cancelled call was answered: ${
+      JSON.stringify(next.reply, (_k, v) => typeof v === "bigint" ? `${v}` : v)
+    }`,
+  );
+  assertEquals(text(next.reply.payload), "marker");
+});
+
+scenario("a_subscriber_that_is_behind_drops_events", 30_000, async (scope) => {
+  const { bus, peer } = await fakeSocket(scope);
+  const got: string[] = [];
+  const first = signal();
+  const release = signal();
+  const all = signal();
+  const subscribing = bus.on("dt.*", async (event) => {
+    got.push(text(event.payload));
+    if (got.length === 1) {
+      first.resolve();
+      await release.promise; // the handler is behind
+    }
+    if (got.length === 1 + SUBSCRIPTION_QUEUE + 1) all.resolve();
+  });
+  const subscribe = (await peer.recv()).subscribe;
+  peer.send({ msg: "reply", reply: { id: subscribe.id } });
+  const subscription = await subscribing;
+  const event = (n: number) => ({
+    msg: "event",
+    event: { subject: "dt.tick", payload: new TextEncoder().encode(String(n)), from: "owner" },
+  });
+  peer.send(event(0));
+  await first.promise;
+  // While the handler is busy with the first: 1024 wait, 5 more are dropped.
+  for (let n = 1; n <= SUBSCRIPTION_QUEUE + 5; n++) peer.send(event(n));
+  // Handled in order: once the marker is answered, every event above was taken.
+  peer.send({ msg: "call", call: { id: 99, method: "dt.marker" } });
+  assertEquals((await peer.recv()).reply.error.code, codes.NOT_SUPPORTED);
+  assertEquals(subscription.dropped, 5);
+  // The subscription stays: the queued ones are handled in order, and later ones too.
+  release.resolve();
+  peer.send(event(SUBSCRIPTION_QUEUE + 6));
+  await all.promise;
+  assertEquals(got.length, 1 + SUBSCRIPTION_QUEUE + 1);
+  assertEquals(got.slice(0, 3), ["0", "1", "2"]);
+  assertEquals(got[SUBSCRIPTION_QUEUE], String(SUBSCRIPTION_QUEUE));
+  assertEquals(got.at(-1), String(SUBSCRIPTION_QUEUE + 6));
+  assertEquals(subscription.dropped, 5);
+});
+
+scenario("backpressured_writes_add_no_listeners", 30_000, async (scope) => {
+  // Each 1 MiB write is over the socket's buffer: every one waits for `drain`.
+  const dir = Deno.makeTempDirSync({ dir: "/tmp", prefix: "tb" });
+  scope.defer(() => Deno.removeSync(dir, { recursive: true }));
+  const listener = await listenUnix(scope, `${dir}/w.sock`);
+  const opening = open({ kind: "socket", path: `${dir}/w.sock` });
+  const peer = await listener.accept();
+  const link = await opening;
+  scope.defer(() => link.close());
+  // deno-lint-ignore no-explicit-any
+  const socket = (link as any).socket as { listenerCount(event: string): number };
+  const before = { close: socket.listenerCount("close"), drain: socket.listenerCount("drain") };
+  const frame = link.encode({
+    msg: "event",
+    event: { subject: "dt.big", payload: new Uint8Array(1 << 20) },
+  }, 2 << 20);
+  for (let i = 0; i < 64; i++) await link.write(frame);
+  // Two at once share one wait.
+  await Promise.all([link.write(frame), link.write(frame)]);
+  assertEquals(socket.listenerCount("close"), before.close);
+  assertEquals(socket.listenerCount("drain"), before.drain);
+  for (let i = 0; i < 66; i++) assertEquals((await peer.recv()).event.subject, "dt.big");
+});
+
 scenario("limits_are_respected", 60_000, async (scope) => {
   const server = await Tilrd.start(scope);
   await Runtime.start(scope, { TILR_BUS_URL: server.unixUrl });
   const bus = await owner(server, scope);
+  // tilrd answers `busy` past max_in_flight (256) pending calls of a connection: 1000
+  // at once all complete only because the library keeps the rest waiting.
+  assertEquals(bus.helloAck?.maxInFlight, 256);
   const replies = await Promise.all(
     Array.from({ length: 1000 }, () => bus.call("test.sleep", "20")),
   );
@@ -465,7 +674,7 @@ scenario("limits_are_respected", 60_000, async (scope) => {
   const calls = Array.from({ length: 5 }, (_, i) => client.call("test.echo", String(i)));
   const all = Promise.all(calls);
   all.catch(() => {}); // a failure below is the test's
-  const ids: number[] = [];
+  const ids: bigint[] = [];
   for (let i = 0; i < 3; i++) ids.push((await peer.recv()).call.id);
   await client.emit("dt.marker");
   assertEquals((await peer.recv()).msg, "event", "a fourth call was sent before a slot was free");
@@ -518,6 +727,11 @@ scenario("a_closed_connection_ends_pending_calls", 30_000, async (scope) => {
   peer.send({ msg: "call", call: { id: 1, method: "test.unknown" } });
   assertEquals((await peer.recv()).reply.error.code, codes.NOT_SUPPORTED);
   assertEquals(client.credential, new Uint8Array([9, 9]));
-  peer.close();
-  await client.closed;
+  // A ConnectionError and then the close: both are kept, the close's code too.
+  peer.send({ msg: "connectionError", connectionError: { code: "too_slow", message: "behind" } });
+  peer.close(4001, "too slow");
+  const closed = await client.closed;
+  assertEquals(closed.code, 4001);
+  assertEquals(closed.error, { code: "too_slow", message: "behind" });
+  await rejectsWith(client.call("test.echo"), "too_slow");
 });

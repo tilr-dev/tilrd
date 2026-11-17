@@ -2,7 +2,8 @@
 // a script creates a pane, types into it and reads its screen without encoding
 // protobuf by hand.
 
-import type { Bus, BusEvent, CallOptions, StreamOptions } from "./bus.ts";
+import type { DescMessage, MessageInitShape, MessageShape } from "@bufbuild/protobuf";
+import type { Bus, BusEvent, CallOptions, StreamOptions, Subscription } from "./bus.ts";
 import * as pane from "../gen/tilr/pane/v1.ts";
 import type { MessageCodec } from "./schema.ts";
 
@@ -20,7 +21,8 @@ const EVENTS = {
 } as const;
 
 export type PaneEventName = keyof typeof EVENTS;
-type EventPayload<E extends PaneEventName> = (typeof EVENTS)[E] extends MessageCodec<infer T> ? T
+type EventPayload<E extends PaneEventName> = (typeof EVENTS)[E] extends MessageCodec<infer D>
+  ? MessageShape<D>
   : never;
 
 /** What `pane.input` sends: text typed as is, a named key, a paste, or raw bytes. */
@@ -65,25 +67,25 @@ export class PaneOutput implements AsyncIterableIterator<pane.PaneOutput> {
 export class Panes {
   constructor(readonly bus: Bus) {}
 
-  async #call<Req, Resp>(
+  async #call<Req extends DescMessage, Resp extends DescMessage>(
     method: string,
     request: MessageCodec<Req>,
     response: MessageCodec<Resp>,
-    message: Req,
+    message: MessageInitShape<Req>,
     options?: CallOptions,
-  ): Promise<Resp> {
+  ): Promise<MessageShape<Resp>> {
     const reply = await this.bus.call(method, request.encode(message), options);
     return response.decode(reply.payload);
   }
 
   /** Create a pane (of a profile); answered with its `PaneInfo` once its program runs. */
-  create(request: pane.CreateRequest = {}, options?: CallOptions): Promise<pane.PaneInfo> {
+  create(request: pane.CreateRequestInit = {}, options?: CallOptions): Promise<pane.PaneInfo> {
     return this.#call("pane.create", pane.CreateRequest, pane.PaneInfo, request, options);
   }
 
   list(options?: CallOptions): Promise<pane.PaneInfo[]> {
     return this.#call("pane.list", pane.ListRequest, pane.ListReply, {}, options).then((reply) =>
-      reply.panes ?? []
+      reply.panes
     );
   }
 
@@ -91,31 +93,36 @@ export class Panes {
   close(paneId: string, options?: CallOptions): Promise<number> {
     return this.#call("pane.close", pane.CloseRequest, pane.CloseReply, { paneId }, options).then((
       reply,
-    ) => reply.exitCode ?? 0);
+    ) => reply.exitCode);
   }
 
   /** Send input; answered once it was applied. */
   input(paneId: string, input: PaneInput, options?: CallOptions): Promise<pane.InputAck> {
-    let request: pane.InputRequest;
-    if ("text" in input) request = { paneId, key: { text: input.text } };
-    else if ("key" in input) request = { paneId, key: { named: input.key, mods: input.mods ?? 0 } };
-    else if ("paste" in input) request = { paneId, paste: { text: input.paste } };
-    else request = { paneId, raw: { data: input.raw } };
+    let request: pane.InputRequestInit;
+    if ("text" in input) request = { paneId, input: { case: "key", value: { text: input.text } } };
+    else if ("key" in input) {
+      request = {
+        paneId,
+        input: { case: "key", value: { named: input.key, mods: input.mods ?? 0 } },
+      };
+    } else if ("paste" in input) {
+      request = { paneId, input: { case: "paste", value: { text: input.paste } } };
+    } else request = { paneId, input: { case: "raw", value: { data: input.raw } } };
     return this.#call("pane.input", pane.InputRequest, pane.InputAck, request, options);
   }
 
   /** Type `text` and press Enter, as two inputs applied in order. */
   async typeLine(paneId: string, text: string, options?: CallOptions): Promise<void> {
     await this.input(paneId, { raw: new TextEncoder().encode(text) }, options);
-    await this.input(paneId, { key: pane.NamedKey.NAMED_KEY_ENTER }, options);
+    await this.input(paneId, { key: pane.NamedKey.ENTER }, options);
   }
 
-  resize(request: pane.ResizeRequest, options?: CallOptions): Promise<pane.InputAck> {
+  resize(request: pane.ResizeRequestInit, options?: CallOptions): Promise<pane.InputAck> {
     return this.#call("pane.resize", pane.ResizeRequest, pane.InputAck, request, options);
   }
 
   /** The screen as text; with `sinceSeq` it waits for a change after it. */
-  read(request: pane.ReadRequest, options?: CallOptions): Promise<pane.ReadReply> {
+  read(request: pane.ReadRequestInit, options?: CallOptions): Promise<pane.ReadReply> {
     return this.#call("pane.read", pane.ReadRequest, pane.ReadReply, request, options);
   }
 
@@ -130,7 +137,7 @@ export class Panes {
     timeoutMs = 10_000,
   ): Promise<string> {
     const deadline = Date.now() + timeoutMs;
-    let sinceSeq: number | undefined;
+    let sinceSeq: bigint | undefined;
     for (;;) {
       const left = deadline - Date.now();
       if (left <= 0) throw new Error(`no matching line in pane ${paneId} within ${timeoutMs} ms`);
@@ -141,7 +148,7 @@ export class Panes {
       }, {
         timeoutMs: left + 1000,
       });
-      const found = (screen.lines ?? []).find(match);
+      const found = screen.lines.find(match);
       if (found !== undefined) return found;
       if (!screen.alive) throw new Error(`pane ${paneId} exited before a matching line`);
       sinceSeq = screen.seq;
@@ -151,13 +158,13 @@ export class Panes {
   profiles(options?: CallOptions): Promise<pane.ProfileInfo[]> {
     return this.#call("pane.profiles", pane.ProfilesRequest, pane.ProfilesReply, {}, options).then((
       reply,
-    ) => reply.profiles ?? []);
+    ) => reply.profiles);
   }
 
   /** The pane's screen as a stream of `PaneOutput` (frames, images). */
   output(
     paneId: string,
-    request: Omit<pane.OutputRequest, "paneId"> = {},
+    request: { cellWidthPx?: number; cellHeightPx?: number } = {},
     options: StreamOptions = {},
   ): PaneOutput {
     const payload = pane.OutputRequest.encode({ paneId, ...request });
@@ -170,8 +177,8 @@ export class Panes {
   on<E extends PaneEventName>(
     event: E,
     handler: (payload: EventPayload<E>, event: BusEvent) => void | Promise<void>,
-  ): Promise<() => void> {
-    const codec = EVENTS[event] as unknown as MessageCodec<EventPayload<E>>;
+  ): Promise<Subscription> {
+    const codec = EVENTS[event] as unknown as { decode(bytes: Uint8Array): EventPayload<E> };
     return this.bus.on(
       `pane.${event}`,
       (received) => handler(codec.decode(received.payload), received),

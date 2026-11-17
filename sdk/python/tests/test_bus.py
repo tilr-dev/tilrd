@@ -13,6 +13,7 @@ import sys
 import pytest
 
 from tilr_bus import Bus, BusError, Context, Event, Reply, StreamWriter, codes
+from tilr_bus._bus import SUBSCRIPTION_QUEUE
 from tilr_bus.proto import bus as wire
 from tilr_bus.proto import pane
 
@@ -46,16 +47,33 @@ async def raises(awaitable, code: str) -> BusError:
     return caught.value
 
 
-async def fake_socket(scope: Scope, **ack) -> tuple[Bus, Peer]:
+async def fake_socket(scope: Scope, setup=None, **ack) -> tuple[Bus, Peer]:
     """A Bus on an instance socket the fake broker holds."""
     path = f"{temp_dir(scope)}/p.sock"
     listener = await UnixListener.start(scope, path)
-    connecting = asyncio.ensure_future(Bus.connect(socket=(path, "t")))
+    bus = Bus(socket=(path, "t"))
+    if setup is not None:
+        setup(bus)
+    connecting = asyncio.ensure_future(bus.connect())
     peer = await listener.accept()
     await peer.greet(**ack)
-    bus = await connecting
+    await connecting
     scope.callback(bus.close)
     return bus, peer
+
+
+async def flood_state(bus: Bus, method: str) -> dict[str, int | str]:
+    """`flood_state` of a runtime: once its flood waits for credit, ended, or got more
+    than its window ahead of the reader's credit (bounded: a flood that does none of
+    these fails the call, not the test's deadline)."""
+    state, sent, credited, ahead, window = (await bus.call(method, timeout=10)).text().split()
+    return {
+        "state": state,
+        "sent": int(sent),
+        "credited": int(credited),
+        "ahead": int(ahead),
+        "window": int(window),
+    }
 
 
 @scenario(60)
@@ -109,6 +127,32 @@ async def test_connects_over_fd_socket_and_websocket(scope: Scope) -> None:
     assert (await tcp.call("test.whoami")).text() == "py-unix"
     await raises(Bus.connect(url=server.url, access_token="not-the-token"), codes.DENIED)
 
+    # Explicit options beat the environment; in it, TILR_BUS_FD beats TILR_BUS_SOCK beats
+    # TILR_BUS_URL.
+    every = {
+        "TILR_BUS_FD": "3",
+        "TILR_BUS_SOCK": "/s.sock",
+        "TILR_BUS_TOKEN": "t",
+        "TILR_BUS_URL": "ws://127.0.0.1:1/",
+    }
+    probe = Bus()
+    assert probe._transport({"environ": every})[0] == "fd"
+    assert probe._transport({"environ": {**every, "TILR_BUS_FD": ""}})[0] == "socket"
+    assert probe._transport({"environ": {"TILR_BUS_URL": "ws://127.0.0.1:1/"}})[0] == "ws"
+    assert probe._transport({"url": "ws://127.0.0.1:2/", "environ": every})[0] == "ws"
+    assert probe._transport({"socket": ("/x.sock", "t"), "environ": every})[0] == "socket"
+
+    # A connect that fails leaves the Bus to connect again.
+    retry = Bus(environ={}, client_name="py-retry")
+    await raises(retry.connect(), codes.UNAVAILABLE)
+    retry_dir = temp_dir(scope)
+    await raises(retry.connect(socket=(f"{retry_dir}/none.sock", "t")), codes.UNAVAILABLE)
+    retry_listener = await UnixListener.start(scope, f"{retry_dir}/r.sock")
+    reconnecting = asyncio.ensure_future(retry.connect(socket=(f"{retry_dir}/r.sock", "t")))
+    await (await retry_listener.accept()).greet(identity="instance:py-retry")
+    assert (await reconnecting).identity == "instance:py-retry"
+    scope.callback(retry.close)
+
     # Nothing to connect to: unavailable, naming the variables.
     error = await raises(Bus.connect(environ={}), codes.UNAVAILABLE)
     for name in ("TILR_BUS_FD", "TILR_BUS_SOCK", "TILR_BUS_TOKEN", "TILR_BUS_URL"):
@@ -152,6 +196,10 @@ async def test_bytes_pass_unchanged(scope: Scope) -> None:
     # Large enough that this library and the broker compress it: still the same bytes.
     large = bytes(i % 7 for i in range(300_000))
     assert (await bus.call("test.echo", large)).payload == large
+    # A 64-bit field keeps every bit: the broker's bus.ping echoes a nonce past 2^53.
+    nonce = 2**64 - 3
+    pong = await bus.call("bus.ping", wire.PingRequest(nonce=nonce).SerializeToString())
+    assert wire.PingReply.FromString(pong.payload).nonce == nonce
 
 
 @scenario(30)
@@ -164,11 +212,9 @@ async def test_errors_keep_their_codes(scope: Scope) -> None:
     crashed = await raises(bus.call("test.crash"), codes.HANDLER_ERROR)
     assert str(crashed) == "handler_error: RuntimeError: a plain failure"
     assert "Traceback" not in crashed.message
-    # The broker's errors, with its code and message.
-    with pytest.raises(BusError) as nobody:
-        await bus.call("nobody.here")
-    assert "nobody.here" in nobody.value.message
-    assert nobody.value.code in (codes.NOT_FOUND, codes.UNAVAILABLE), str(nobody.value)
+    # The broker's errors, with its code and message: a method nobody provides or knows.
+    nobody = await raises(bus.call("nobody.here"), codes.NOT_FOUND)
+    assert "nobody.here" in nobody.message
     missing = await raises(bus.call("server.nothing"), codes.NOT_FOUND)
     assert "server.nothing" in missing.message
 
@@ -292,39 +338,52 @@ async def test_events_are_emitted_and_received(scope: Scope) -> None:
     await raises(subscribing, codes.DENIED)
 
 
-@scenario(120)
+async def read_a_flood(bus: Bus, namespace: str, total: int, window: int) -> None:
+    """Read `<namespace>.flood` of `total` bytes with `window`: one chunk, then the
+    reader stops and the provider waits for credit, no more than the window beyond what
+    it was credited; then the rest, in order, never more than the window ahead."""
+    async with bus.stream(f"{namespace}.flood", str(total), window=window) as chunks:
+        first = await chunks.__anext__()
+        received = len(first)
+        ordered = first.count(b"x") == len(first)
+        waiting = await flood_state(bus, f"{namespace}.flood_state")
+        assert waiting["state"] == "waiting", waiting
+        assert waiting["window"] == window
+        assert int(waiting["sent"]) - int(waiting["credited"]) <= window, waiting
+        async for chunk in chunks:
+            ordered = ordered and chunk.count(b"x") == len(chunk)
+            received += len(chunk)
+    assert received == total
+    assert ordered
+    ended = await flood_state(bus, f"{namespace}.flood_state")
+    assert ended["state"] == "ended", ended
+    assert ended["sent"] == total
+    assert int(ended["ahead"]) <= window, f"the provider got {ended['ahead']} bytes ahead"
+
+
+@scenario(60)
 async def test_streams_are_read_and_served_with_credit(scope: Scope) -> None:
     server = await Tilrd.start(scope)
     await Runtime.start(scope, {"TILR_BUS_URL": server.unix_url}, language="deno")
     bus = await owner(server, scope)
-    # A slow reader of the Deno runtime's 64 MiB with a 64 KiB window: everything, in
-    # order, and the provider's memory stays bounded because it waits for credit.
-    total = 64 << 20
-    received = 0
-    ordered = True
-    async for chunk in bus.stream("test.flood", str(total), window=64 << 10):
-        ordered = ordered and chunk.count(b"x") == len(chunk)
-        received += len(chunk)
-        await asyncio.sleep(0.01)  # the slow consumer
-    assert received == total
-    assert ordered
-    # A Deno process holds some 45 MB before it serves anything: what is measured is
-    # what serving the stream added, which buffering it would make 64 MiB or more.
-    peak, before = map(int, (await bus.call("test.memory")).text().split())
-    assert before > 0 and peak - before < 64 << 20, f"the provider grew {before} -> {peak}"
+    # The Deno runtime's 64 MiB with a 64 KiB window, paced by this reader's credit.
+    await read_a_flood(bus, "test", 64 << 20, 64 << 10)
 
-    # Python's own runtime: count, every chunk in order and the End.
+    # Python's own runtime: its flood paced the same way; count, every chunk in order
+    # and the End.
     await Runtime.start(
         scope, {"TILR_BUS_URL": server.unix_url, "TEST_NAMESPACE": "py"}, language="python"
     )
+    await read_a_flood(bus, "py", 8 << 20, 64 << 10)
     counted = [chunk.decode() async for chunk in bus.stream("py.count", "5")]
     assert counted == ["1", "2", "3", "4", "5"]
 
-    # Leaving the loop early cancels the stream: the provider sees it.
-    async for chunk in bus.stream("py.count", "1000000", window=16):
-        assert chunk == b"1"
-        break
-    assert "cancelled py.count" in (await bus.call("py.records", "1")).text()
+    # Leaving `async with` early cancels the stream: the provider sees it.
+    async with bus.stream("py.count", "1000000", window=16) as numbers:
+        async for chunk in numbers:
+            assert chunk == b"1"
+            break
+    assert "cancelled py.count" in (await bus.call("py.records", "1", timeout=5)).text()
 
     # This library provides a stream, paced by the reader's credit.
     credits: list[int] = []
@@ -446,11 +505,127 @@ async def test_a_cancel_aborts_the_handler(scope: Scope) -> None:
     assert seen["flag"] is True
 
 
+@scenario(30)
+async def test_a_cancelled_call_gets_no_reply(scope: Scope) -> None:
+    # One handler is cancelled as the bus cancels it, one swallows the cancellation and
+    # answers anyway: the broker's Cancel means neither answer goes out.
+    started = [asyncio.Event(), asyncio.Event()]
+
+    def setup(bus: Bus) -> None:
+        @bus.provide("pt.stops", kind="unary")
+        async def stops(payload: bytes, ctx: Context) -> str:
+            started[0].set()
+            await asyncio.Event().wait()  # never set: cancelled
+            return "never"
+
+        @bus.provide("pt.ignores", kind="unary")
+        async def ignores(payload: bytes, ctx: Context) -> str:
+            started[1].set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass  # swallowed: it answers after the cancel
+            return "late"
+
+        @bus.provide("pt.marker", kind="unary")
+        def marker(payload: bytes, ctx: Context) -> str:
+            return "marker"
+
+    _bus, peer = await fake_socket(scope, setup)
+    await peer.send(wire.Envelope(call=wire.Call(id=7, method="pt.stops")))
+    await peer.send(wire.Envelope(call=wire.Call(id=8, method="pt.ignores")))
+    await asyncio.gather(*(event.wait() for event in started))
+    await peer.send(wire.Envelope(cancel=wire.Cancel(id=7, reason="timeout")))
+    await peer.send(wire.Envelope(cancel=wire.Cancel(id=8, reason="timeout")))
+    # Handled in order: the marker's reply is the next thing the library sends.
+    await peer.send(wire.Envelope(call=wire.Call(id=9, method="pt.marker")))
+    answer = await peer.recv()
+    assert answer.WhichOneof("msg") == "reply", answer
+    assert answer.reply.id == 9, f"a cancelled call was answered: {answer}"
+    assert answer.reply.payload == b"marker"
+
+
+@scenario(30)
+async def test_a_subscriber_that_is_behind_drops_events(scope: Scope) -> None:
+    bus, peer = await fake_socket(scope)
+    got: list[bytes] = []
+    first = asyncio.Event()
+    release = asyncio.Event()
+    every = asyncio.Event()
+
+    async def handler(event: Event) -> None:
+        got.append(event.payload)
+        if len(got) == 1:
+            first.set()
+            await release.wait()  # the handler is behind
+        if len(got) == 1 + SUBSCRIPTION_QUEUE + 1:
+            every.set()
+
+    subscribing = asyncio.ensure_future(bus.on("pt.*", handler))
+    subscribe = (await peer.recv()).subscribe
+    await peer.send(wire.Envelope(reply=wire.Reply(id=subscribe.id)))
+    subscription = await subscribing
+
+    def event(n: int) -> wire.Envelope:
+        sent = wire.Event(subject="pt.tick", payload=str(n).encode())
+        setattr(sent, "from", "owner")
+        return wire.Envelope(event=sent)
+
+    await peer.send(event(0))
+    await first.wait()
+    # While the handler is busy with the first: 1024 wait, 5 more are dropped.
+    for n in range(1, SUBSCRIPTION_QUEUE + 6):
+        await peer.send(event(n))
+    # Handled in order: once the marker is answered, every event above was taken.
+    await peer.send(wire.Envelope(call=wire.Call(id=99, method="pt.marker")))
+    assert (await peer.recv()).reply.error.code == codes.NOT_SUPPORTED
+    assert subscription.dropped == 5
+    # The subscription stays: the queued ones are handled in order, and later ones too.
+    release.set()
+    await peer.send(event(SUBSCRIPTION_QUEUE + 6))
+    await every.wait()
+    assert len(got) == 1 + SUBSCRIPTION_QUEUE + 1
+    assert got[:3] == [b"0", b"1", b"2"]
+    assert got[SUBSCRIPTION_QUEUE] == str(SUBSCRIPTION_QUEUE).encode()
+    assert got[-1] == str(SUBSCRIPTION_QUEUE + 6).encode()
+    assert subscription.dropped == 5
+
+
+@scenario(10)
+async def test_leaving_async_with_cancels_the_stream(scope: Scope) -> None:
+    # One slot in flight: the call after the block goes out only once the stream's slot
+    # is free, and the Cancel comes first.
+    bus, peer = await fake_socket(scope, max_in_flight=1)
+    stream = bus.stream("pt.numbers", window=16)
+    async with stream:
+        reading = asyncio.ensure_future(stream.__anext__())
+        call = (await peer.recv()).call
+        assert call.method == "pt.numbers"
+        await peer.send(wire.Envelope(chunk=wire.Chunk(id=call.id, payload=b"1")))
+        assert await reading == b"1"
+    # `stream` is still held here: the cancel is the block's, not the collector's.
+    calling = asyncio.ensure_future(bus.call("pt.after"))
+    async with asyncio.timeout(2):
+        credit = await peer.recv()
+        assert credit.WhichOneof("msg") == "credit", credit
+        cancel = await peer.recv()
+        assert cancel.WhichOneof("msg") == "cancel", cancel
+        assert cancel.cancel.id == call.id
+        after = (await peer.recv()).call
+    assert after.method == "pt.after"
+    await peer.send(wire.Envelope(reply=wire.Reply(id=after.id, payload=b"ok")))
+    assert (await calling).payload == b"ok"
+    assert stream is not None
+
+
 @scenario(60)
 async def test_limits_are_respected(scope: Scope) -> None:
     server = await Tilrd.start(scope)
     await Runtime.start(scope, {"TILR_BUS_URL": server.unix_url})
     bus = await owner(server, scope)
+    # tilrd answers `busy` past max_in_flight (256) pending calls of a connection: 1000
+    # at once all complete only because the library keeps the rest waiting.
+    assert bus.hello_ack.max_in_flight == 256
     replies = await asyncio.gather(*(bus.call("test.sleep", "20") for _ in range(1000)))
     assert all(reply.text() == "slept" for reply in replies)
     # Over max_frame: too_large, nothing sent, the connection stays.
@@ -499,7 +674,7 @@ async def test_a_closed_connection_ends_pending_calls(scope: Scope) -> None:
     # The latest CredentialUpdate is the connection's credential.
     ws = await WsListener.start(scope)
     connecting = asyncio.ensure_future(Bus.connect(url=ws.url, credential=b"\x01"))
-    peer, _ = await ws.accept()
+    peer, connection = await ws.accept()
     await peer.greet(identity="token:py-ws")
     client = await connecting
     scope.callback(client.close)
@@ -508,5 +683,11 @@ async def test_a_closed_connection_ends_pending_calls(scope: Scope) -> None:
     await peer.send(wire.Envelope(call=wire.Call(id=1, method="test.unknown")))
     assert (await peer.recv()).reply.error.code == codes.NOT_SUPPORTED
     assert client.credential == b"\x09\x09"
-    await peer.close()
-    await client.wait_closed()
+    # A ConnectionError and then the close: both are kept, the close's code too.
+    await peer.send(
+        wire.Envelope(connection_error=wire.ConnectionError(code="too_slow", message="behind"))
+    )
+    await connection.close(4001, "too slow")
+    closed = await client.wait_closed()
+    assert (closed.code, closed.error) == (4001, ("too_slow", "behind")), closed
+    await raises(client.call("test.echo"), "too_slow")

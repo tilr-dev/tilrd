@@ -6,6 +6,9 @@
 // `HelloAck.max_in_flight` of them are pending; sends wait while 4 MiB are queued for
 // the socket. Each incoming call runs as its own task, so a handler awaiting a nested
 // call holds up nobody; a `Cancel` aborts its `ctx.signal` and no reply is sent.
+//
+// Messages are protobuf-es's (`gen/`): 64-bit integers are `bigint` (call ids,
+// `Context.id`, `connectionId`, `InputRequest.seq`, ping nonces).
 
 import { chunkBytes, CodecError, type Envelope, MAX_FRAME } from "./codec.ts";
 import { matches, validMethod, validPattern, validSubject } from "./names.ts";
@@ -17,7 +20,7 @@ import {
   type Target,
   TransportError,
 } from "./transport.ts";
-import { RenewReply, RenewRequest } from "../gen/tilr/bus/v1.ts";
+import { type HelloAck, RenewReply, RenewRequest } from "../gen/tilr/bus/v1.ts";
 import { Panes } from "./pane.ts";
 
 export const PROTOCOL_VERSION = 1;
@@ -66,9 +69,13 @@ export const Select = { ROUND_ROBIN: 0, LAST_ACTIVE: 1 } as const;
 /** Bytes of envelopes queued for the socket before sends wait. */
 const SEND_BUDGET = 4 << 20;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+/** How long a `ConnectionError` waits for the close that follows it (to keep its code). */
+const CLOSE_AFTER_ERROR_MS = 2_000;
 const DEFAULT_MAX_IN_FLIGHT = 256;
 const DEFAULT_STREAM_WINDOW = 1 << 20;
 const MAX_STREAM_WINDOW = 16 << 20;
+/** Events held for a subscription whose handler is behind; more are dropped (B6). */
+export const SUBSCRIPTION_QUEUE = 1024;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -373,7 +380,7 @@ export class Context {
   constructor(
     readonly bus: Bus,
     /** The call's id on this connection. */
-    readonly id: number,
+    readonly id: bigint,
     readonly method: string,
     /** The caller's identity, set by the broker. */
     readonly from: string,
@@ -416,17 +423,32 @@ export class Context {
 
 /** Writes the chunks of a provided stream, within the credit its reader gave. */
 export class StreamWriter {
+  readonly #served: Served;
+
   constructor(
     readonly bus: Bus,
-    readonly id: number,
+    readonly id: bigint,
     readonly gate: CreditGate,
     /** The reader's initial window; no chunk may be larger. */
     readonly window: number,
-  ) {}
+    served: Served,
+  ) {
+    this.#served = served;
+  }
 
   /** Payload bytes this provider may send now. */
   get credit(): number {
     return this.gate.available;
+  }
+
+  /** Payload bytes the reader's `Credit`s gave back so far (beyond the window). */
+  get credited(): number {
+    return this.#served.credited;
+  }
+
+  /** Whether `write` of `bytes` bytes would wait for credit now. */
+  wouldWait(bytes: number): boolean {
+    return this.gate.available < bytes;
   }
 
   /** Send a chunk once the reader's credit allows it. */
@@ -464,12 +486,19 @@ interface CallerStream {
   push(item: StreamItem): void;
   allowed: number;
   received: number;
+  /** Set once the `Call` is queued for the socket: a `Cancel` may follow it. */
+  queued: boolean;
+  /** Cancelled before its `Call` was queued: the `Cancel` goes out after it. */
+  cancelled: boolean;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 /**
  * The chunks of a stream as an async iterator of payloads (decompressed when their
- * producer compressed them). Credit goes back as each chunk is taken; leaving the
- * loop early cancels the stream. `end` holds the `End` payload once it ended.
+ * producer compressed them). The call is sent when the iteration begins (the first
+ * `next()`), as in the Python library; credit goes back as each chunk is taken;
+ * leaving the loop early cancels the stream. `end` holds the `End` payload once it
+ * ended.
  */
 export class ChunkStream implements AsyncIterableIterator<Uint8Array> {
   /** The `End` payload, once the stream ended. */
@@ -478,11 +507,12 @@ export class ChunkStream implements AsyncIterableIterator<Uint8Array> {
   #items: StreamItem[] = [];
   #wake?: () => void;
   #done = false;
-  #started: Promise<void>;
+  #start?: (stream: ChunkStream) => Promise<void>;
+  #started?: Promise<void>;
   #cancelled = false;
 
   constructor(readonly bus: Bus, start: (stream: ChunkStream) => Promise<void>) {
-    this.#started = start(this).catch((error) => this._push({ error: toBusError(error) }));
+    this.#start = start;
   }
 
   /** Called by the bus with what arrives. */
@@ -501,8 +531,14 @@ export class ChunkStream implements AsyncIterableIterator<Uint8Array> {
 
   async next(): Promise<IteratorResult<Uint8Array>> {
     if (this.#done) return { done: true, value: undefined };
+    if (this.#start) {
+      const start = this.#start;
+      this.#start = undefined;
+      this.#started = start(this).catch((error) => this._push({ error: toBusError(error) }));
+    }
     await this.#started;
     while (this.#items.length === 0) {
+      if (this.#done) return { done: true, value: undefined }; // cancelled meanwhile
       await new Promise<void>((resolve) => (this.#wake = resolve));
       this.#wake = undefined;
     }
@@ -525,12 +561,14 @@ export class ChunkStream implements AsyncIterableIterator<Uint8Array> {
     return Promise.resolve({ done: true, value: undefined });
   }
 
-  /** Stop the stream (`Cancel`). */
+  /** Stop the stream (`Cancel`); a stream not begun is never sent. */
   cancel(): void {
     if (this.#done) return;
     this.#cancelled = true;
+    this.#start = undefined;
     this.bus._cancelStream(this.id);
     this.#finish();
+    this.#wake?.();
   }
 
   #finish(): void {
@@ -557,6 +595,61 @@ interface PendingCall {
 interface Served {
   abort: AbortController;
   gate?: CreditGate;
+  /** Bytes the reader's `Credit`s gave (counted apart from the gate). */
+  credited: number;
+}
+
+/** A subscription: callable to end it, with how many events it dropped. */
+export interface Subscription {
+  /** End the subscription (`Unsubscribe`). */
+  (): void;
+  unsubscribe(): void;
+  readonly pattern: string;
+  /**
+   * Events dropped because `SUBSCRIPTION_QUEUE` of them already waited for the
+   * handler (the newest are dropped; the connection and the subscription stay).
+   */
+  readonly dropped: number;
+}
+
+/** Delivers a subscription's events to its handler one at a time, in order. */
+class EventQueue {
+  #queue: BusEvent[] = [];
+  #running = false;
+  dropped = 0;
+
+  constructor(
+    readonly pattern: string,
+    readonly handler: (event: BusEvent) => void | Promise<void>,
+  ) {}
+
+  deliver(event: BusEvent): void {
+    if (this.#queue.length >= SUBSCRIPTION_QUEUE) {
+      this.dropped++;
+      return;
+    }
+    this.#queue.push(event);
+    if (!this.#running) this.#run();
+  }
+
+  close(): void {
+    this.#queue = [];
+  }
+
+  async #run(): Promise<void> {
+    this.#running = true;
+    try {
+      for (let event = this.#queue.shift(); event; event = this.#queue.shift()) {
+        try {
+          await this.handler(event);
+        } catch (error) {
+          console.error(`tilr bus: handler of ${this.pattern}: ${error}`);
+        }
+      }
+    } finally {
+      this.#running = false;
+    }
+  }
 }
 
 interface Provided {
@@ -580,15 +673,15 @@ export class Bus {
   #options: ConnectOptions;
   #provided = new Map<string, Provided>();
   #link?: Link;
-  #ack: Record<string, unknown> = {};
+  #ack?: HelloAck;
   #maxFrame = MAX_FRAME;
   #streamWindow = DEFAULT_STREAM_WINDOW;
   #inFlight = new Slots(DEFAULT_MAX_IN_FLIGHT);
   #nextId = 0;
   #calls = new Map<number, PendingCall>();
   #streams = new Map<number, CallerStream>();
-  #subscriptions = new Map<number, { pattern: string; handler: (event: BusEvent) => void }>();
-  #served = new Map<number, Served>();
+  #subscriptions = new Map<number, EventQueue>();
+  #served = new Map<bigint, Served>();
   #queue: { frame: Uint8Array; budgeted: boolean }[] = [];
   #queued = 0;
   #budgetWaiters: (() => void)[] = [];
@@ -600,6 +693,8 @@ export class Bus {
   readonly closed: Promise<CloseInfo>;
   #connecting = false;
   #panes?: Panes;
+  #pendingError?: { code: string; message: string };
+  #pendingTimer?: ReturnType<typeof setTimeout>;
 
   constructor(options: ConnectOptions = {}) {
     this.#options = options;
@@ -613,8 +708,11 @@ export class Bus {
 
   /**
    * Provide `method`, answered by `handler`; only before `connect` (there is no
-   * later registration, B4). A handler of three parameters `(payload, ctx, out)`
-   * serves a stream.
+   * later registration, B4). Name the kind: `{ kind: "stream" }` for a stream handler
+   * `(payload, ctx, out)`, `{ kind: "unary" }` (the default for a handler of fewer
+   * parameters) for one that answers once. Without `kind`, a handler declaring three
+   * parameters is taken for a stream handler; a wrapped or variadic function may not
+   * declare them, so pass `kind`.
    */
   provide(method: string, handler: Handler, options: ProvideOptions = {}): this {
     if (this.#link || this.#connecting) {
@@ -643,14 +741,22 @@ export class Bus {
   /** Connect, say `Hello` with every provided method, wait for `HelloAck`. */
   async connect(options: ConnectOptions = {}): Promise<this> {
     if (this.#link || this.#connecting) throw new BusError(codes.BAD_REQUEST, "connected already");
-    this.#connecting = true;
     const merged = { ...this.#options, ...options };
+    // Before anything is under way: a transport that cannot be named leaves the Bus
+    // as it was, to connect again.
     const { target, auth } = resolveTransport(merged);
+    this.#connecting = true;
     const timeoutMs = merged.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let link: Link | undefined;
+    let expired = false;
     const handshake = (async () => {
-      link = await open(target);
+      const opened = await open(target);
+      if (expired) {
+        opened.close(); // past the deadline: no Hello, the socket is not kept
+        throw new BusError(codes.TIMEOUT, "the handshake timed out");
+      }
+      link = opened;
       const hello = {
         protocolVersion: PROTOCOL_VERSION,
         clientName: merged.clientName ?? "",
@@ -691,12 +797,14 @@ export class Bus {
     })();
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(
-        () =>
-          reject(new BusError(codes.TIMEOUT, `no HelloAck within ${timeoutMs} ms of connecting`)),
+        () => {
+          expired = true;
+          reject(new BusError(codes.TIMEOUT, `no HelloAck within ${timeoutMs} ms of connecting`));
+        },
         timeoutMs,
       );
     });
-    let ack: Record<string, unknown>;
+    let ack: HelloAck;
     try {
       ack = await Promise.race([handshake, deadline]);
     } catch (error) {
@@ -708,10 +816,10 @@ export class Bus {
       clearTimeout(timer);
     }
     this.#ack = ack;
-    this.#maxFrame = Math.min(Number(ack.maxFrame) || MAX_FRAME, MAX_FRAME);
-    this.#streamWindow = Number(ack.streamWindow) || DEFAULT_STREAM_WINDOW;
-    this.#inFlight = new Slots(Number(ack.maxInFlight) || DEFAULT_MAX_IN_FLIGHT);
-    const minted = ack.credential as Uint8Array;
+    this.#maxFrame = Math.min(ack.maxFrame || MAX_FRAME, MAX_FRAME);
+    this.#streamWindow = ack.streamWindow || DEFAULT_STREAM_WINDOW;
+    this.#inFlight = new Slots(ack.maxInFlight || DEFAULT_MAX_IN_FLIGHT);
+    const minted = ack.credential;
     this.#credential = minted && minted.length > 0 ? minted : auth.credential;
     this.#link = link!;
     this.#connecting = false;
@@ -727,15 +835,16 @@ export class Bus {
 
   /** This connection's identity, set by the broker: `owner`, `instance:<name>`, `token:<name>`. */
   get identity(): string {
-    return String(this.#ack.identity ?? "");
+    return this.#ack?.identity ?? "";
   }
 
-  get connectionId(): number {
-    return Number(this.#ack.connectionId ?? 0);
+  /** The broker's id of this connection (0n before `connect`). */
+  get connectionId(): bigint {
+    return this.#ack?.connectionId ?? 0n;
   }
 
-  /** The `HelloAck` as received. */
-  get helloAck(): Readonly<Record<string, unknown>> {
+  /** The `HelloAck` as received; unset before `connect`. */
+  get helloAck(): Readonly<HelloAck> | undefined {
     return this.#ack;
   }
 
@@ -828,19 +937,22 @@ export class Bus {
       await this.#inFlight.acquire().catch(() => {
         throw this.#closedError();
       });
-      if (this.#closeInfo) {
+      if (this.#closeInfo || stream._cancelled) {
         this.#inFlight.release();
+        if (stream._cancelled) return;
         throw this.#closedError();
       }
       const window = requested || this.#streamWindow;
       const id = ++this.#nextId;
       stream.id = id;
-      this.#streams.set(id, { push: (item) => stream._push(item), allowed: window, received: 0 });
-      if (stream._cancelled) {
-        this.#streams.delete(id);
-        this.#inFlight.release();
-        return;
-      }
+      const pending: CallerStream = {
+        push: (item) => stream._push(item),
+        allowed: window,
+        received: 0,
+        queued: false,
+        cancelled: false,
+      };
+      this.#streams.set(id, pending);
       try {
         await this._send({
           msg: "call",
@@ -852,11 +964,15 @@ export class Bus {
         stream.id = 0;
         throw error;
       }
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      if (options.timeoutMs !== undefined) {
-        timer = setTimeout(() => {
-          const pending = this.#streams.get(id);
-          if (!pending) return;
+      pending.queued = true;
+      if (pending.cancelled) {
+        // Cancelled while the Call waited for the send budget: the Cancel follows it.
+        this._sendNow({ msg: "cancel", cancel: { id, reason: "cancelled by the caller" } });
+        return;
+      }
+      if (options.timeoutMs !== undefined && this.#streams.has(id)) {
+        pending.timer = setTimeout(() => {
+          if (this.#streams.get(id) !== pending) return;
           this.#streams.delete(id);
           this._sendNow({ msg: "cancel", cancel: { id, reason: "timeout" } });
           pending.push({
@@ -866,7 +982,6 @@ export class Bus {
             ),
           });
         }, options.timeoutMs);
-        this.closed.finally(() => clearTimeout(timer));
       }
     });
   }
@@ -903,14 +1018,16 @@ export class Bus {
   }
 
   /**
-   * Subscribe to the events matching `pattern` and call `handler` for each, in order;
-   * resolves once the broker took the subscription (`denied` if not allowed) with a
-   * function that ends it.
+   * Subscribe to the events matching `pattern` and call `handler` for each, in order,
+   * one at a time; resolves once the broker took the subscription (`denied` if not
+   * allowed) with the `Subscription`, a function that ends it. While the handler is
+   * behind, up to `SUBSCRIPTION_QUEUE` (1024) events wait for it; more are dropped and
+   * counted in `dropped`, as the broker drops them for a subscriber that does not read.
    */
   async on(
     pattern: string,
     handler: (event: BusEvent) => void | Promise<void>,
-  ): Promise<() => void> {
+  ): Promise<Subscription> {
     this.#requireOpen();
     if (!validPattern(pattern)) {
       throw new BusError(
@@ -919,13 +1036,8 @@ export class Bus {
       );
     }
     const id = ++this.#nextId;
-    let chain = Promise.resolve();
-    const deliver = (event: BusEvent) => {
-      chain = chain.then(() => handler(event)).catch((error) => {
-        console.error(`tilr bus: handler of ${pattern}: ${error}`);
-      });
-    };
-    this.#subscriptions.set(id, { pattern, handler: deliver });
+    const queue = new EventQueue(pattern, handler);
+    this.#subscriptions.set(id, queue);
     const answer = new Promise<Reply>((resolve, reject) =>
       this.#calls.set(id, { resolve, reject })
     );
@@ -938,11 +1050,17 @@ export class Bus {
       this.#calls.delete(id);
       throw toBusError(error);
     }
-    return () => {
+    const unsubscribe = () => {
+      queue.close();
       if (this.#subscriptions.delete(id)) {
         this._sendNow({ msg: "unsubscribe", unsubscribe: { id } });
       }
     };
+    return Object.defineProperties(unsubscribe, {
+      unsubscribe: { value: unsubscribe },
+      pattern: { value: pattern },
+      dropped: { get: () => queue.dropped },
+    }) as Subscription;
   }
 
   /** Tell the broker this participant is now the user's active one for its `LAST_ACTIVE` methods (B11). */
@@ -1035,18 +1153,29 @@ export class Bus {
 
   /** @internal */
   _cancelStream(id: number): void {
-    if (id && this.#streams.delete(id)) {
+    const pending = id ? this.#streams.get(id) : undefined;
+    if (!pending) return;
+    this.#forgetStream(id, pending);
+    // A Call still waiting for the send budget is not queued: its Cancel follows it.
+    if (pending.queued) {
       this._sendNow({ msg: "cancel", cancel: { id, reason: "cancelled by the caller" } });
-    }
+    } else pending.cancelled = true;
   }
 
   /** @internal */
   _releaseStream(stream: ChunkStream): void {
     if (stream.id) {
-      this.#streams.delete(stream.id);
+      const pending = this.#streams.get(stream.id);
+      if (pending) this.#forgetStream(stream.id, pending);
       this.#inFlight.release();
       stream.id = 0;
     }
+  }
+
+  /** A stream of this caller is over: no more of it is taken, its timer stops. */
+  #forgetStream(id: number, pending: CallerStream): void {
+    this.#streams.delete(id);
+    clearTimeout(pending.timer);
   }
 
   #closedError(): BusError {
@@ -1061,11 +1190,16 @@ export class Bus {
   #shutdown(info: CloseInfo): void {
     if (this.#closeInfo) return;
     this.#closeInfo = info;
+    clearTimeout(this.#pendingTimer);
     const error = this.#closedError();
     for (const call of this.#calls.values()) call.reject(error);
     this.#calls.clear();
-    for (const stream of this.#streams.values()) stream.push({ error });
+    for (const stream of this.#streams.values()) {
+      clearTimeout(stream.timer);
+      stream.push({ error });
+    }
     this.#streams.clear();
+    for (const subscription of this.#subscriptions.values()) subscription.close();
     this.#subscriptions.clear();
     for (const served of this.#served.values()) {
       served.abort.abort(error);
@@ -1085,7 +1219,11 @@ export class Bus {
 
   #receive(incoming: Incoming): void {
     if (incoming.kind === "closed") {
-      this.#shutdown(incoming.info);
+      // The ConnectionError that came first says why; the close keeps its code.
+      const info = incoming.info;
+      this.#shutdown(
+        info.error || !this.#pendingError ? info : { ...info, error: this.#pendingError },
+      );
       return;
     }
     // A WebSocket keeps message boundaries: a bad one is skipped.
@@ -1099,9 +1237,10 @@ export class Bus {
         this.#onChunk(envelope.chunk);
         break;
       case "end": {
-        const stream = this.#streams.get(Number(envelope.end.id));
+        const id = Number(envelope.end.id);
+        const stream = this.#streams.get(id);
         if (stream) {
-          this.#streams.delete(Number(envelope.end.id));
+          this.#forgetStream(id, stream);
           stream.push({ end: envelope.end.payload });
         }
         break;
@@ -1113,7 +1252,7 @@ export class Bus {
         this.#onCall(envelope.call);
         break;
       case "cancel": {
-        const id = Number(envelope.cancel.id);
+        const id: bigint = envelope.cancel.id;
         const served = this.#served.get(id);
         if (served) {
           this.#served.delete(id);
@@ -1122,17 +1261,28 @@ export class Bus {
         }
         break;
       }
-      case "credit":
-        this.#served.get(Number(envelope.credit.id))?.gate?.add(Number(envelope.credit.bytes));
+      case "credit": {
+        const served = this.#served.get(envelope.credit.id);
+        if (served) {
+          served.credited += envelope.credit.bytes;
+          served.gate?.add(envelope.credit.bytes);
+        }
         break;
+      }
       case "credentialUpdate":
         this.#credential = envelope.credentialUpdate.credential;
         break;
       case "connectionError": {
         const error = envelope.connectionError;
-        // bad_frame leaves the connection open; anything else is followed by the close.
-        if (error.code !== codes.BAD_FRAME) {
-          this.#shutdown({ reason: "", error: { code: error.code, message: error.message } });
+        // bad_frame leaves the connection open; anything else is followed by the
+        // close, whose code is kept with this error (unless it does not come).
+        if (error.code !== codes.BAD_FRAME && !this.#pendingError) {
+          const pending = { code: error.code, message: error.message };
+          this.#pendingError = pending;
+          this.#pendingTimer = setTimeout(
+            () => this.#shutdown({ reason: "", error: pending }),
+            CLOSE_AFTER_ERROR_MS,
+          );
         }
         break;
       }
@@ -1154,7 +1304,7 @@ export class Bus {
     }
     const stream = this.#streams.get(id);
     if (stream) {
-      this.#streams.delete(id);
+      this.#forgetStream(id, stream);
       stream.push({
         error: reply.result === "error"
           ? new BusError(reply.error.code, reply.error.message)
@@ -1171,7 +1321,7 @@ export class Bus {
     const carried = chunk.payload.length;
     stream.received += carried;
     if (stream.received > stream.allowed) {
-      this.#streams.delete(id);
+      this.#forgetStream(id, stream);
       stream.push({
         error: new BusError(codes.BAD_REPLY, "the provider sent more than the stream's credit"),
       });
@@ -1182,7 +1332,7 @@ export class Bus {
     try {
       bytes = chunkBytes(chunk.payload, chunk.contentEncoding ?? "");
     } catch (error) {
-      this.#streams.delete(id);
+      this.#forgetStream(id, stream);
       stream.push({ error: new BusError(codes.BAD_REPLY, `chunk: ${(error as Error).message}`) });
       this._sendNow({ msg: "cancel", cancel: { id, reason: "bad chunk" } });
       return;
@@ -1200,13 +1350,13 @@ export class Bus {
       scope: event.scope ?? "",
     };
     for (const subscription of this.#subscriptions.values()) {
-      if (matches(subscription.pattern, delivered.subject)) subscription.handler(delivered);
+      if (matches(subscription.pattern, delivered.subject)) subscription.deliver(delivered);
     }
   }
 
   // deno-lint-ignore no-explicit-any
   #onCall(call: any): void {
-    const id = Number(call.id);
+    const id: bigint = call.id;
     const provided = this.#provided.get(call.method);
     if (!provided) {
       this._sendNow({
@@ -1224,7 +1374,8 @@ export class Bus {
     const window = Number(call.window) || this.#streamWindow;
     const abort = new AbortController();
     const gate = provided.stream ? new CreditGate(window) : undefined;
-    this.#served.set(id, { abort, gate });
+    const served: Served = { abort, gate, credited: 0 };
+    this.#served.set(id, served);
     const ctx = new Context(
       this,
       id,
@@ -1236,21 +1387,21 @@ export class Bus {
       call.credential ?? new Uint8Array(),
       abort.signal,
     );
-    this.#serve(id, provided, call.payload ?? new Uint8Array(), ctx, gate, window);
+    this.#serve(id, provided, call.payload ?? new Uint8Array(), ctx, served, window);
   }
 
   async #serve(
-    id: number,
+    id: bigint,
     provided: Provided,
     payload: Uint8Array,
     ctx: Context,
-    gate: CreditGate | undefined,
+    served: Served,
     window: number,
   ): Promise<void> {
     let answer: Envelope;
     try {
       if (provided.stream) {
-        const out = new StreamWriter(this, id, gate!, window);
+        const out = new StreamWriter(this, id, served.gate!, window, served);
         const end = await provided.stream(payload, ctx, out);
         answer = { msg: "end", end: { id, payload: bytesOf(end ?? undefined) } };
       } else {

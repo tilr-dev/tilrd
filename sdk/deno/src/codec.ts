@@ -8,9 +8,9 @@
 //
 // An envelope is at most MAX_FRAME bytes after decompression, both ways.
 
-import { decompress } from "fzstd";
-import protobuf from "protobufjs/light.js";
-import { codec, root } from "./schema.ts";
+import { Decompress } from "fzstd";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { EnvelopeSchema } from "../gen/pb/bus_pb.ts";
 
 /** Largest envelope after decompression (`HelloAck.max_frame`). */
 export const MAX_FRAME = 16 << 20;
@@ -19,11 +19,14 @@ export const FLAG_ZSTD = 1;
 /** `Chunk.contentEncoding` of a payload its producer compressed with zstd. */
 export const ENCODING_ZSTD = "zstd";
 
-/** One envelope, as decoded: `msg` names the variant set (`"call"`, `"reply"`, ...). */
+/**
+ * One envelope as this library handles it: `msg` names the variant set (`"call"`,
+ * `"reply"`, ...) and the field of that name holds it, as protobuf-es decodes it
+ * (64-bit ids are `bigint`). A `reply`'s oneof is flat too: `result` is `"payload"` or
+ * `"error"`, and `payload` or `error` is set.
+ */
 // deno-lint-ignore no-explicit-any
 export type Envelope = { msg?: string } & Record<string, any>;
-
-export const EnvelopeCodec = codec<Envelope>("tilr.bus.v1.Envelope");
 
 /** Why an envelope could not be framed or read. */
 export class CodecError extends Error {
@@ -33,22 +36,64 @@ export class CodecError extends Error {
   }
 }
 
-const EnvelopeType = root.lookupType("tilr.bus.v1.Envelope");
-
-/**
- * Encode an envelope after `prefix` bytes (the flag byte, or the length) into one
- * buffer, so a chunk's payload is copied once.
- */
-function encodeAfter(envelope: Envelope, prefix: 1 | 4, maxFrame: number): Uint8Array {
-  const writer = protobuf.Writer.create();
-  if (prefix === 1) writer.uint32(FLAG_PLAIN); // one byte, 0
-  else writer.fixed32(0); // four bytes, overwritten with the length
-  const out = EnvelopeType.encode(EnvelopeType.fromObject(envelope), writer).finish();
-  const len = out.length - prefix;
-  if (len > maxFrame) {
-    throw new CodecError(`an envelope of ${len} bytes is over the limit of ${maxFrame}`, true);
+/** The protobuf-es message of an envelope (`msg: { case, value }`). */
+function toMessage(envelope: Envelope) {
+  const which = envelope.msg;
+  if (!which) return create(EnvelopeSchema);
+  let value = envelope[which] ?? {};
+  if (which === "reply") {
+    const { result: _result, payload, error, ...rest } = value;
+    value = {
+      ...rest,
+      result: error !== undefined
+        ? { case: "error", value: error }
+        : payload !== undefined
+        ? { case: "payload", value: payload }
+        : { case: undefined },
+    };
   }
-  if (prefix === 4) new DataView(out.buffer, out.byteOffset, 4).setUint32(0, len);
+  // deno-lint-ignore no-explicit-any
+  return create(EnvelopeSchema, { msg: { case: which, value } as any });
+}
+
+/** An envelope as this library handles it, from its encoding. */
+export function decodeEnvelope(body: Uint8Array): Envelope {
+  let message;
+  try {
+    message = fromBinary(EnvelopeSchema, body);
+  } catch (err) {
+    throw new CodecError(`protobuf: ${(err as Error).message}`);
+  }
+  const which = message.msg.case;
+  if (!which) return {};
+  // deno-lint-ignore no-explicit-any
+  let value: any = message.msg.value;
+  if (which === "reply") {
+    const { result, ...rest } = value;
+    value = { ...rest, result: result.case };
+    if (result.case) value[result.case] = result.value;
+  }
+  return { msg: which, [which]: value };
+}
+
+/** An envelope's encoding, after `prefix` bytes (the flag byte, or the length). */
+function encodeAfter(envelope: Envelope, prefix: 1 | 4, maxFrame: number): Uint8Array {
+  let body: Uint8Array;
+  try {
+    body = toBinary(EnvelopeSchema, toMessage(envelope));
+  } catch (err) {
+    throw new CodecError(`protobuf: ${(err as Error).message}`);
+  }
+  if (body.length > maxFrame) {
+    throw new CodecError(
+      `an envelope of ${body.length} bytes is over the limit of ${maxFrame}`,
+      true,
+    );
+  }
+  const out = new Uint8Array(prefix + body.length);
+  if (prefix === 1) out[0] = FLAG_PLAIN;
+  else new DataView(out.buffer).setUint32(0, body.length);
+  out.set(body, prefix);
   return out;
 }
 
@@ -57,17 +102,76 @@ export function encodeWs(envelope: Envelope, maxFrame = MAX_FRAME): Uint8Array {
   return encodeAfter(envelope, 1, maxFrame);
 }
 
+/**
+ * The size a zstd frame declares (its content size, else its window), checked against
+ * `limit` before anything is decompressed: a frame that claims more is refused
+ * without allocating for it.
+ */
+function checkZstdHeader(data: Uint8Array, limit: number): void {
+  if (data.length < 5) return; // too short for a header: the decompressor says why
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (view.getUint32(0, true) !== 0xfd2fb528) return;
+  const descriptor = data[4];
+  const fcsFlag = descriptor >> 6;
+  const singleSegment = (descriptor >> 5) & 1;
+  const didSize = [0, 1, 2, 4][descriptor & 3];
+  let at = 5;
+  let declared: number | undefined;
+  if (!singleSegment) {
+    const window = data[at++];
+    if (window === undefined) return;
+    const log = 10 + (window >> 3);
+    const base = 2 ** log;
+    declared = base + (base / 8) * (window & 7);
+  }
+  at += didSize;
+  const fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : [0, 2, 4, 8][fcsFlag];
+  if (fcsSize > 0 && at + fcsSize <= data.length) {
+    if (fcsSize === 1) declared = data[at];
+    else if (fcsSize === 2) declared = view.getUint16(at, true) + 256;
+    else if (fcsSize === 4) declared = view.getUint32(at, true);
+    else declared = Number(view.getBigUint64(at, true));
+  }
+  if (declared !== undefined && declared > limit) {
+    throw new CodecError(`a zstd frame of ${declared} bytes is over the limit of ${limit}`, true);
+  }
+}
+
+/** Decompress zstd data, failing as soon as it comes to more than `limit` bytes. */
+export function decompressBounded(data: Uint8Array, limit = MAX_FRAME): Uint8Array {
+  checkZstdHeader(data, limit);
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  const stream = new Decompress((chunk) => {
+    size += chunk.length;
+    if (size > limit) {
+      throw new CodecError(`zstd data of more than ${limit} bytes is over the limit`, true);
+    }
+    parts.push(chunk.slice());
+  });
+  try {
+    stream.push(data, true);
+  } catch (err) {
+    if (err instanceof CodecError) throw err;
+    throw new CodecError(`zstd: ${(err as Error).message}`);
+  }
+  if (parts.length === 1) return parts[0];
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
 /** Read one binary WebSocket message. */
 export function decodeWs(message: Uint8Array): Envelope {
   if (message.length === 0) throw new CodecError("empty packet");
   const flag = message[0];
   let body = message.subarray(1);
   if (flag === FLAG_ZSTD) {
-    try {
-      body = decompress(body);
-    } catch (err) {
-      throw new CodecError(`zstd: ${(err as Error).message}`);
-    }
+    body = decompressBounded(body, MAX_FRAME);
   } else if (flag !== FLAG_PLAIN) {
     throw new CodecError(`unknown packet flag ${flag}`);
   }
@@ -77,11 +181,7 @@ export function decodeWs(message: Uint8Array): Envelope {
       true,
     );
   }
-  try {
-    return EnvelopeCodec.decode(body);
-  } catch (err) {
-    throw new CodecError(`protobuf: ${(err as Error).message}`);
-  }
+  return decodeEnvelope(body);
 }
 
 /** Frame an envelope for a stream socket: u32 big-endian length, then the envelope. */
@@ -109,12 +209,7 @@ export class StreamDecoder {
       throw new CodecError(`envelope of ${len} bytes is over the limit of ${MAX_FRAME}`, true);
     }
     if (this.#length < 4 + len) return undefined;
-    const frame = this.#take(4 + len).subarray(4);
-    try {
-      return EnvelopeCodec.decode(frame);
-    } catch (err) {
-      throw new CodecError(`protobuf: ${(err as Error).message}`);
-    }
+    return decodeEnvelope(this.#take(4 + len).subarray(4));
   }
 
   #peek(n: number): Uint8Array {
@@ -162,7 +257,5 @@ export function chunkBytes(payload: Uint8Array, contentEncoding: string): Uint8A
       `chunk has an unknown content encoding ${JSON.stringify(contentEncoding)}`,
     );
   }
-  const plain = decompress(payload);
-  if (plain.length > MAX_FRAME) throw new CodecError("chunk is over 16 MiB", true);
-  return plain;
+  return decompressBounded(payload, MAX_FRAME);
 }

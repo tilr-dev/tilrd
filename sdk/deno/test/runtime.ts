@@ -20,8 +20,8 @@
 // | `record` | records the payload, answers how many are recorded |
 // | `records` | every record, one per line, once there are at least `<n>` (default 0) |
 // | `count` | stream: chunks `1` .. `<n>`, then `End`; a cancel is recorded |
-// | `flood` | stream: `<bytes>` (default 64 MiB) in chunks of the window (at most 64 KiB), waiting for credit |
-// | `memory` | `<peak> <before>`: the largest resident set size seen while flooding and the one when the last flood began, in bytes |
+// | `flood` | stream: `<bytes>` (default 64 MiB) in chunks of the window (at most 64 KiB), waiting for credit; records how far it got ahead of the reader's credit |
+// | `flood_state` | `<state> <sent> <credited> <ahead> <window>` of the last flood once it waits for credit, ended, or got more than its window ahead (`state`: `waiting`, `ended`, `ahead`; `ahead`: the most of `sent - credited` seen) |
 // | `fail` | the error `<code> <message>` (default `bad_request x`) |
 // | `crash` | throws a plain `Error`: `handler_error` |
 // | `emit` | emits `<subject> <payload>` |
@@ -39,8 +39,8 @@ const decoder = new TextDecoder();
 
 const records: string[] = [];
 const changed: (() => void)[] = [];
-let peakRss = 0;
-let floodStartRss = 0;
+/** The last flood: what it sent, what its reader credited, how far ahead it got. */
+const flood = { state: "none", sent: 0, credited: 0, ahead: 0, window: 0 };
 
 function record(line: string): number {
   records.push(line);
@@ -122,21 +122,35 @@ bus.provide(m("flood"), async (payload: Uint8Array, ctx: Context, out: StreamWri
   const total = number(payload, 64 << 20, ctx.method);
   const size = Math.max(1, Math.min(out.window, 64 << 10));
   const block = new Uint8Array(size).fill(0x78);
-  let sent = 0;
-  floodStartRss = Deno.memoryUsage().rss;
+  Object.assign(flood, { state: "sending", sent: 0, credited: 0, ahead: 0, window: out.window });
+  const note = (state?: string) => {
+    flood.credited = out.credited;
+    flood.ahead = Math.max(flood.ahead, flood.sent - flood.credited);
+    if (state) flood.state = state;
+    else if (flood.ahead > flood.window) flood.state = "ahead";
+    for (const wake of changed.splice(0)) wake();
+  };
   try {
-    while (sent < total) {
-      const len = Math.min(size, total - sent);
+    while (flood.sent < total) {
+      const len = Math.min(size, total - flood.sent);
+      // About to wait for the reader's credit: what `flood_state` waits for.
+      note(out.wouldWait(len) ? "waiting" : undefined);
       await out.write(len === size ? block : block.subarray(0, len));
-      sent += len;
-      peakRss = Math.max(peakRss, Deno.memoryUsage().rss);
+      flood.sent += len;
+      if (flood.state === "waiting") flood.state = "sending";
+      note();
     }
+    note("ended");
   } catch (error) {
+    note("ended");
     if (ctx.signal.aborted) record(`cancelled ${ctx.method} ${ctx.id}`);
     throw error;
   }
 });
-bus.provide(m("memory"), () => `${peakRss} ${floodStartRss}`);
+bus.provide(m("flood_state"), async () => {
+  await waitFor(() => ["waiting", "ended", "ahead"].includes(flood.state));
+  return `${flood.state} ${flood.sent} ${flood.credited} ${flood.ahead} ${flood.window}`;
+});
 bus.provide(m("fail"), (payload) => {
   const value = text(payload);
   const space = value.indexOf(" ");

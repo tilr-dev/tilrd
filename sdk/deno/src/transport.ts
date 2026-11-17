@@ -109,6 +109,7 @@ interface NodeSocket {
   write(data: Uint8Array): boolean;
   on(event: string, listener: (...args: unknown[]) => void): void;
   once(event: string, listener: (...args: unknown[]) => void): void;
+  off(event: string, listener: (...args: unknown[]) => void): void;
   end(): void;
   destroy(): void;
   destroyed: boolean;
@@ -148,6 +149,8 @@ class StreamLink implements Link {
   #inbox = new Inbox();
   #decoder = new StreamDecoder();
   #ended = false;
+  /** The wait for `drain` that every backpressured write shares. */
+  #drained?: Promise<void>;
 
   constructor(readonly socket: NodeSocket) {
     socket.on("data", (data) => {
@@ -190,10 +193,23 @@ class StreamLink implements Link {
   write(frame: Uint8Array): Promise<void> {
     if (this.socket.destroyed) return Promise.reject(new Error("the socket is closed"));
     if (this.socket.write(frame)) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const onDrain = () => resolve();
+    // One pair of listeners for all writes waiting, removed when the wait is over.
+    return this.#drained ??= new Promise<void>((resolve, reject) => {
+      const done = () => {
+        this.socket.off("drain", onDrain);
+        this.socket.off("close", onClose);
+        this.#drained = undefined;
+      };
+      const onDrain = () => {
+        done();
+        resolve();
+      };
+      const onClose = () => {
+        done();
+        reject(new Error("the socket is closed"));
+      };
       this.socket.once("drain", onDrain);
-      this.socket.once("close", () => reject(new Error("the socket is closed")));
+      this.socket.once("close", onClose);
     });
   }
 

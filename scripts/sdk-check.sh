@@ -4,7 +4,10 @@
 #   scripts/sdk-check.sh
 #
 # 1. scripts/gen-bus-sdk.sh --check: the generated schema code matches crates/tilr-bus/proto/;
-# 2. sdk/deno: deno fmt --check, deno lint, deno check, deno test -A;
+# 2. sdk/deno: deno fmt --check, deno lint, deno check, that nothing the library runs
+#    builds code at run time (`eval(`, `Function(`: its modules, its generated code and
+#    the npm packages they reach; a page with a strict Content-Security-Policy could not
+#    run it), deno test -A;
 # 3. sdk/python: ruff format --check, ruff check, mypy, pytest (through uv run, uv.lock
 #    frozen).
 #
@@ -29,6 +32,7 @@ cd "$root/sdk/deno"
 deno fmt --check
 deno lint
 deno check --frozen mod.ts test/ tools/
+deno run --quiet --frozen --allow-run --allow-read tools/check_no_eval.ts
 deno test --frozen -A test/
 
 step "sdk/python"

@@ -9,10 +9,15 @@
 # Python: `*_pb2.py` and `*_pb2.pyi` by protoc (the version scripts/install-tools.sh
 # pins: its output differs between versions) in `tilr_bus.proto._gen`, imports
 # rewritten into it, and a module per package (`tilr_bus.proto.pane` holds every
-# message of tilr.pane.v1). Deno: tools/gen.ts with protobufjs (pinned in
-# sdk/deno/deno.lock).
+# message of tilr.pane.v1). Deno: protoc's descriptor set of the same files, turned
+# into static code by tools/gen.ts with protobuf-es (protoc-gen-es, pinned in
+# sdk/deno/deno.json and deno.lock) in sdk/deno/gen/pb/, and a module per package
+# (sdk/deno/gen/tilr/pane/v1.ts).
 # Needs protoc 36.2 and deno on PATH (scripts/install-tools.sh DIR protoc deno).
 set -eu
+# Sorted by byte: find's list and the globs below.
+LC_ALL=C
+export LC_ALL
 
 PROTOC_VERSION=36.2
 
@@ -69,7 +74,8 @@ for dir in "$py"/_gen/tilr/*/v1; do
         echo
         echo '# ruff: noqa: F403'
         [ "$ns" = bus ] && echo 'from tilr_bus.proto._gen.bus_pb2 import *'
-        for file in $(cd "$dir" && ls ./*_pb2.py | sed 's|^\./||; s|\.py$||' | LC_ALL=C sort); do
+        for file in "$dir"/*_pb2.py; do
+            file=$(basename "$file" .py)
             echo "from tilr_bus.proto._gen.tilr.$ns.v1.$file import *"
         done
     } > "$py/$ns.py"
@@ -77,7 +83,9 @@ done
 
 # Deno
 deno_out="$tmp/deno"
-(cd "$root/sdk/deno" && deno run --quiet --frozen --allow-read --allow-write tools/gen.ts "$proto" "$deno_out")
+# shellcheck disable=SC2046 # the file names have no spaces
+protoc -I "$proto" --include_source_info --descriptor_set_out="$tmp/schemas.pb" $(cat "$tmp/protos")
+(cd "$root/sdk/deno" && deno run --quiet --frozen --allow-read --allow-write --allow-env tools/gen.ts "$tmp/schemas.pb" "$deno_out")
 
 python_dir="$root/sdk/python/src/tilr_bus/proto"
 deno_dir="$root/sdk/deno/gen"

@@ -20,7 +20,13 @@ namespace `TEST_NAMESPACE` (default `test`):
 | `record` | records the payload, answers how many are recorded |
 | `records` | every record, one per line, once there are at least `<n>` (default 0) |
 | `count` | stream: chunks `1` .. `<n>`, then `End`; a cancel is recorded |
-| `flood` | stream: `<bytes>` (default 64 MiB) in chunks of the window (at most 64 KiB) |
+| `flood` | stream: `<bytes>` (default 64 MiB) in chunks of the window (64 KiB at most) |
+| `flood_state` | `<state> <sent> <credited> <ahead> <window>` of the last flood |
+
+`flood` waits for credit and records how far it got ahead of the reader's credit
+(`ahead`, the most of `sent - credited` seen); `flood_state` answers once that flood
+waits for credit (`waiting`), ended (`ended`) or got more than its window ahead
+(`ahead`).
 | `fail` | the error `<code> <message>` (default `bad_request x`) |
 | `crash` | raises a plain `RuntimeError`: `handler_error` |
 | `emit` | emits `<subject> <payload>` |
@@ -35,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from dataclasses import dataclass
 
 from tilr_bus import Bus, BusError, Context, StreamWriter
 
@@ -45,6 +52,20 @@ CLIENT_NAME = (
 
 records: list[str] = []
 changed = asyncio.Condition()
+
+
+@dataclass
+class Flood:
+    """The last flood: what it sent, what its reader credited, how far ahead it got."""
+
+    state: str = "none"
+    sent: int = 0
+    credited: int = 0
+    ahead: int = 0
+    window: int = 0
+
+
+last_flood = Flood()
 
 
 async def record(line: str) -> int:
@@ -149,20 +170,47 @@ async def count(payload: bytes, ctx: Context, out: StreamWriter) -> None:
         raise
 
 
-@bus.provide(m("flood"))
+@bus.provide(m("flood"), kind="stream")
 async def flood(payload: bytes, ctx: Context, out: StreamWriter) -> None:
+    global last_flood
     total = number(payload, 64 << 20, ctx.method)
     size = max(1, min(out.window, 64 << 10))
     block = b"x" * size
-    sent = 0
+    state = last_flood = Flood(state="sending", window=out.window)
+
+    async def note(now: str | None = None) -> None:
+        async with changed:
+            state.credited = out.credited
+            state.ahead = max(state.ahead, state.sent - state.credited)
+            if now is not None:
+                state.state = now
+            elif state.ahead > state.window:
+                state.state = "ahead"
+            changed.notify_all()
+
     try:
-        while sent < total:
-            length = min(size, total - sent)
+        while state.sent < total:
+            length = min(size, total - state.sent)
+            # About to wait for the reader's credit: what `flood_state` waits for.
+            await note("waiting" if out.would_wait(length) else None)
             await out.write(block if length == size else block[:length])
-            sent += length
+            state.sent += length
+            if state.state == "waiting":
+                state.state = "sending"
+            await note()
+        await note("ended")
     except asyncio.CancelledError:
+        await note("ended")
         await record(f"cancelled {ctx.method} {ctx.id}")
         raise
+
+
+@bus.provide(m("flood_state"))
+async def flood_state(payload: bytes, ctx: Context) -> str:
+    async with changed:
+        await changed.wait_for(lambda: last_flood.state in ("waiting", "ended", "ahead"))
+    state = last_flood
+    return f"{state.state} {state.sent} {state.credited} {state.ahead} {state.window}"
 
 
 @bus.provide(m("fail"))

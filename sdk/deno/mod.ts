@@ -11,8 +11,12 @@
  * console.log((await bus.call("demo.echo", "hi")).text());
  * ```
  *
- * The schemas of the core's methods are generated (`gen/`, `scripts/gen-bus-sdk.sh`):
- * `pane`, `server`, `fs`, ... each export an interface and a codec per message.
+ * The schemas of the core's methods are generated (`gen/`, `scripts/gen-bus-sdk.sh`)
+ * with protobuf-es as static code (no `eval`: it runs under a strict
+ * Content-Security-Policy): `pane`, `server`, `fs`, ... each export a type, a schema
+ * and a codec per message (`pane.CreateRequest.encode({ profile: "demo" })`) and each
+ * enum. 64-bit integers are `bigint` (`InputRequest.seq`, `PingRequest.nonce`,
+ * `Context.id`, `Bus.connectionId`), a oneof is `{ case, value }`.
  *
  * @module
  */
@@ -44,6 +48,8 @@ export {
   type StreamHandler,
   type StreamOptions,
   StreamWriter,
+  type Subscription,
+  SUBSCRIPTION_QUEUE,
   type UnaryHandler,
 } from "./src/bus.ts";
 export { type CloseInfo, SUBPROTOCOL } from "./src/transport.ts";
