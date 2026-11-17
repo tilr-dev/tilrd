@@ -33,5 +33,6 @@ not (
   | test(=the_pane_process_title_follows_exec_in_the_same_foreground_group)
   | test(=an_instance_that_ignores_sigterm_is_killed_after_3_s)
   | test(=a_socket_instance_connects_once_with_its_token)
+  | test(=an_instance_is_stopped_and_started)
 )
 '''
