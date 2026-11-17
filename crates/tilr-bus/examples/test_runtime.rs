@@ -12,11 +12,12 @@
 //! | `test.from` | the caller's identity (`from`) |
 //! | `test.env` | JSON `{"env": {...}, "fds": [...]}`: its environment and the descriptors open when it started |
 //! | `test.sleep` | `slept` after `<ms>` (default 10000); an abort is recorded |
+//! | `test.started` | `started` once the handler of call `<id>` of `test.sleep`, `test.count`, `test.flood` or `test.bulk` has started, so a cancel sent after it finds it running |
 //! | `test.nested` | `<wait_ms> <method> [<target>]`: waits, then calls `method` with the time left and answers its reply |
 //! | `test.deadline` | the `timeout_ms` it was called with |
 //! | `test.close_bus` | `closing`, then closes its bus connection and keeps running |
 //! | `test.record` | records the payload, answers how many are recorded |
-//! | `test.records` | every record, one per line, in order |
+//! | `test.records` | every record, one per line, in order, once there are at least `<n>` (default 0) |
 //! | `test.count` | stream: chunks `1` .. `<n>`, then `End`; a cancel is recorded |
 //! | `test.flood` | stream (interactive): `<bytes>` (default: until cancelled) in chunks of 16 KiB, waiting for credit |
 //! | `test.bulk` | stream (bulk): `<bytes>` (default 64 MiB) in chunks of 64 KiB, waiting for credit |
@@ -32,7 +33,7 @@
 //! unless `test.close_bus` closed it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -41,24 +42,54 @@ use tilr_bus::{
     Bus, BusError, CallOptions, ConnectOptions, Handler, Reply, Request, StreamWriter, Transport,
     codes,
 };
+use tokio::sync::watch;
 
 static RECORDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The calls whose handler has started (`test.started`).
+static STARTED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+/// Bumped whenever RECORDS or STARTED changes, for the methods that wait for them.
+static CHANGED: LazyLock<watch::Sender<()>> = LazyLock::new(|| watch::Sender::new(()));
 static FDS_AT_START: OnceLock<Vec<i32>> = OnceLock::new();
 static CLIENT_NAME: OnceLock<String> = OnceLock::new();
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
-fn record(line: impl Into<String>) -> usize {
-    let mut records = RECORDS
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    records.push(line.into());
-    records.len()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn record(line: impl Into<String>) -> usize {
+    let len = {
+        let mut records = lock(&RECORDS);
+        records.push(line.into());
+        records.len()
+    };
+    CHANGED.send_modify(|_| {});
+    len
+}
+
+/// Wait until `ready` holds, woken by every change of RECORDS or STARTED.
+async fn wait_until(ready: impl Fn() -> bool) {
+    let mut changed = CHANGED.subscribe();
+    while !ready() {
+        if changed.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Records `what` unless disarmed: a handler aborted by a cancel never disarms it.
 struct OnAbort(Option<String>);
 
 impl OnAbort {
+    /// Arm the guard of call `id`'s handler, which has now started.
+    fn start(id: u64, what: String) -> Self {
+        lock(&STARTED).push(id);
+        CHANGED.send_modify(|_| {});
+        OnAbort(Some(what))
+    }
+
     fn disarm(mut self) {
         self.0 = None;
     }
@@ -136,7 +167,7 @@ async fn env(_: Request) -> Result<String, BusError> {
 
 async fn sleep(request: Request) -> Result<&'static str, BusError> {
     let ms: u64 = number(&request, 10_000)?;
-    let guard = OnAbort(Some(format!("aborted test.sleep {}", request.id)));
+    let guard = OnAbort::start(request.id, format!("aborted test.sleep {}", request.id));
     tokio::time::sleep(Duration::from_millis(ms)).await;
     guard.disarm();
     Ok("slept")
@@ -166,7 +197,7 @@ async fn nested(request: Request) -> Result<Reply, BusError> {
 
 async fn count(request: Request, out: StreamWriter) -> Result<Option<Bytes>, BusError> {
     let n: u64 = number(&request, 0)?;
-    let guard = OnAbort(Some(format!("cancelled test.count {}", request.id)));
+    let guard = OnAbort::start(request.id, format!("cancelled test.count {}", request.id));
     for i in 1..=n {
         out.write(i.to_string()).await?;
     }
@@ -181,7 +212,10 @@ async fn flood(
     chunk: usize,
 ) -> Result<Option<Bytes>, BusError> {
     let total: u64 = number(&request, default)?;
-    let guard = OnAbort(Some(format!("cancelled {} {}", request.method, request.id)));
+    let guard = OnAbort::start(
+        request.id,
+        format!("cancelled {} {}", request.method, request.id),
+    );
     let chunk = chunk.min(out.window() as usize).max(1);
     let block = Bytes::from(vec![b'x'; chunk]);
     let mut sent = 0u64;
@@ -281,11 +315,18 @@ fn options(client_name: &str) -> ConnectOptions {
         )
         .provide(
             unary("test.records"),
-            Handler::unary(|_| async {
-                let records = RECORDS
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                Ok(records.join("\n"))
+            Handler::unary(|request: Request| async move {
+                let at_least: usize = number(&request, 0)?;
+                wait_until(|| lock(&RECORDS).len() >= at_least).await;
+                Ok(lock(&RECORDS).join("\n"))
+            }),
+        )
+        .provide(
+            unary("test.started"),
+            Handler::unary(|request: Request| async move {
+                let id: u64 = number(&request, 0)?;
+                wait_until(|| lock(&STARTED).contains(&id)).await;
+                Ok("started")
             }),
         )
         .provide(

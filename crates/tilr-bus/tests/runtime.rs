@@ -129,6 +129,8 @@ async fn the_test_runtime_provides_its_methods_over_an_instance_socket() {
         "test.deadline",
         "test.close_bus",
         "test.record",
+        "test.records",
+        "test.started",
         "test.fail",
     ] {
         assert!(
@@ -202,23 +204,21 @@ async fn the_test_runtime_provides_its_methods_over_an_instance_socket() {
         ..Default::default()
     }))
     .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Once it has started, the cancel aborts a running handler, whose guard records it.
+    assert_eq!(
+        call(&mut peer, 12, "test.started", "11").await.unwrap(),
+        "started"
+    );
     peer.send(Msg::Cancel(Cancel {
         id: 11,
         reason: "timeout".into(),
     }))
     .await;
-    let mut records = String::new();
-    for attempt in 12..40 {
-        records =
-            String::from_utf8_lossy(&call(&mut peer, attempt, "test.records", "").await.unwrap())
-                .into_owned();
-        if records.contains("aborted test.sleep 11") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(records, "a\nb\naborted test.sleep 11");
+    // test.records 3 answers once the third record, the abort, is in.
+    assert_eq!(
+        call(&mut peer, 13, "test.records", "3").await.unwrap(),
+        "a\nb\naborted test.sleep 11"
+    );
 }
 
 #[tokio::test]

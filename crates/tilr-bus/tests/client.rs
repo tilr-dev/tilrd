@@ -731,14 +731,16 @@ async fn emitting_activating_and_renewing_send_their_envelopes() {
         credential: Bytes::from_static(b"renewed"),
     }))
     .await;
-    let renewed = Some(Credential::from_bytes(&b"renewed"[..]));
-    for _ in 0..100 {
-        if bus.credential() == renewed {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(bus.credential(), renewed);
+    // A reply after it: once it is in, the update before it was handled.
+    let (reply, ()) = tokio::join!(bus.call("test.echo", "", CallOptions::default()), async {
+        let call = expect_call(&mut peer).await;
+        peer.send(ok(call.id, b"")).await;
+    });
+    reply.unwrap();
+    assert_eq!(
+        bus.credential(),
+        Some(Credential::from_bytes(&b"renewed"[..]))
+    );
 }
 
 #[tokio::test]
