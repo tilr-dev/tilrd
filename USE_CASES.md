@@ -838,6 +838,7 @@ two lanes, `busy` instead of growth, events dropped for a lagging subscriber
 | A chunk larger than the window ends a latest-wins stream `too_large`; `try_send` is `Closed`, not `Full` | `supervisor::bus::broker::tests::a_chunk_larger_than_the_window_ends_a_latest_wins_stream` |
 | A latest-wins producer waits for credit for its whole chunk, not a byte, and learns the window | `supervisor::bus::broker::tests::a_latest_wins_producer_waits_for_credit_for_its_chunk` |
 | `caught_up` waits for a spent connection window: a latest-wins bulk producer does not spin | `supervisor::bus::broker::tests::caught_up_waits_for_the_connection_window` |
+| A producer waiting in `caught_up` on a reader that does not read returns once the reader's connection ends, and its stream is closed | `supervisor::bus::broker::tests::a_producer_waiting_in_caught_up_returns_when_its_readers_connection_ends` |
 | A provider that overruns a stream's credit is cancelled and its reader gets `bad_reply`, on either lane | `bus::a_stream_that_overruns_its_credit_is_ended` |
 | An empty chunk is relayed like any other; empty chunks that pile up for a reader that does not read end their stream `bad_reply` (each counts as 1 KiB held), and the reader stays | `bus::an_empty_chunk_is_relayed_and_a_flood_of_tiny_ones_ends_the_stream` |
 | A chunk the broker cannot relay within the frame limit ends its stream `too_large`, the provider is cancelled | `bus::a_chunk_too_large_to_relay_ends_its_stream` |

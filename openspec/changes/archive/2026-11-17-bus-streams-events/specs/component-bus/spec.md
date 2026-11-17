@@ -29,7 +29,7 @@ A call SHALL be answered `busy` when its caller has 256 (`max_in_flight`) calls 
 ### Requirement: Deadlines and cancellation reach the callee
 A call's deadline SHALL be `min(Call.timeout_ms, call_timeout_ms)` (10 s unless configured; `timeout_ms` 0 takes `call_timeout_ms`, and 0 there means none); a stream's SHALL be its own `timeout_ms` only, none if 0. A forwarded call SHALL carry the time left in `timeout_ms`; at the deadline, on the caller's `Cancel` or when the caller's connection ends, the callee SHALL get `Cancel{id}` and a later `Reply`, `Chunk` or `End` SHALL be dropped.
 
-**Verified by**: `bus::a_nested_call_gets_the_time_that_is_left_and_a_cancel`, `bus::late_answers_after_a_timeout_or_a_cancel_are_dropped`, unit test `a_native_call_past_its_deadline_is_answered_timeout_and_cancelled` (crates/tilrd/src/bus/broker.rs).
+**Verified by**: `bus::a_nested_call_gets_the_time_that_is_left_and_a_cancel`, `bus::late_answers_after_a_timeout_or_a_cancel_are_dropped`, unit tests `a_native_call_past_its_deadline_is_answered_timeout_and_cancelled`, `a_producer_waiting_in_caught_up_returns_when_its_readers_connection_ends` (crates/tilrd/src/bus/broker.rs).
 
 #### Scenario: Nested deadline
 - **WHEN** the owner calls `test.nested` on `t-1` with `timeout_ms` 1000 and `t-1` waits 400 ms before calling `test.deadline` on `t-2`

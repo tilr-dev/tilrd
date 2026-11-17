@@ -883,7 +883,10 @@ thing a participant hears: its identity (`owner`), the connection id, the server
 the frame limit. The broker sets `from` of every call and event to the sender's
 identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
 `clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
-`bus.ping`.
+`bus.ping`. A call goes to the provider named by `target`, else round robin over the
+providers, or to the one that activated last for a method declared `LAST_ACTIVE`; calls
+between two participants keep their order. A newer connection with the same `client_id`
+supersedes the older (close 4000).
 
 ### Streams and events
 

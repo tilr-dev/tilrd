@@ -3410,6 +3410,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_producer_waiting_in_caught_up_returns_when_its_readers_connection_ends() {
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel::<()>();
+        let (returned_tx, returned_rx) = tokio::sync::oneshot::channel::<bool>();
+        let slots = Arc::new(Mutex::new(Some((waiting_tx, returned_tx))));
+        let broker = BrokerHandle::new(BrokerOptions {
+            authz: default_authorizer(&AuthzConfig::default()),
+            server_id: "server-1".into(),
+            next_connection_id: Arc::new(AtomicU64::new(1)),
+            client_timeout: None,
+        });
+        broker.install(vec![NativeMethod::stream(
+            "test.flood",
+            Lane::Interactive,
+            move |_, _, out| {
+                let (waiting, returned) = slots.lock().unwrap().take().expect("one call");
+                async move {
+                    // The producer outlives the handler, which the end of the
+                    // reader's connection aborts.
+                    tokio::spawn(async move {
+                        // Fill the reader's interactive lane: it does not read,
+                        // so its writer cannot write it out.
+                        loop {
+                            match out.try_send(Chunk::new(vec![b'f'; 64 << 10])) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => break,
+                                Err(TrySendError::Closed) => panic!("closed before it waited"),
+                            }
+                        }
+                        // On the test's one thread this task goes on into
+                        // `caught_up` and parks there before the test runs again.
+                        waiting.send(()).unwrap();
+                        out.caught_up().await;
+                        let closed = matches!(
+                            out.try_send(Chunk::new(Bytes::from_static(b"late"))),
+                            Err(TrySendError::Closed)
+                        );
+                        let _ = returned.send(closed);
+                    });
+                    std::future::pending::<()>().await;
+                }
+            },
+        )]);
+        let mut reader = Peer0::attach(&broker).await;
+        reader.call_with(1, "test.flood", "", 16 << 20).await;
+        within(waiting_rx).await.unwrap();
+        drop(reader);
+        assert!(
+            within(returned_rx).await.unwrap(),
+            "the stream is not closed once caught_up returned"
+        );
+    }
+
+    #[tokio::test]
     async fn a_draining_provider_is_unavailable() {
         let broker = broker();
         let (mut provider, provider_id) =
