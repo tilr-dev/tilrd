@@ -1083,7 +1083,7 @@ and may do only what its token lists (least privilege; design R1-R9 in
 
   | key | allows | forms |
   |---|---|---|
-  | `call` | calls and streams | `m.x`, `m.*`, `*` (`*` is never `bus.*`) |
+  | `call` | calls and streams | `m.x`, `m.*`, `*` (`*` reaches no control method) |
   | `provide` | methods in `Hello.provides` | as `call` |
   | `emit` | events (never in `bus`, `pane`, `server`, `fs`, `exec`, `clipboard`) | as `call` |
   | `subscribe` | subscription patterns inside the right | `pane.*` (also `pane.bell`, `pane.>`), `*` |
@@ -1108,9 +1108,11 @@ and may do only what its token lists (least privilege; design R1-R9 in
   `bus.renew`), to its expiry and, when
   minted with `origin`, to the WebSocket `Origin`. A token of another server, a malformed
   one, one over 16 KiB or 8 blocks, or one with a third-party block is `denied`.
-- **Per-call credential.** `Call.credential` authorizes that call alone, and the
-  per-instance checks of a control method for it, whatever the caller's own token allows;
-  `from` stays the caller, and audit lines name both (`from=… bearer=…`).
+- **Per-call credential.** `Call.credential` authorizes that call alone, and the checks
+  its method makes for it (the per-instance checks of a control method, the pane checks of
+  a `pane.*` call), whatever the caller's own token allows; `from` stays the caller, and
+  audit lines name both (`from=… bearer=…`). A `bus.*` name that is not a control method is
+  a plain call: `not_found` to whom `call` rights cover it, `denied` to others.
 - **Attenuation.** A holder appends a block of checks without the server
   (`Credential::attenuate` in `tilr-bus`, its feature `attenuate`), e.g.
   `check if target("token:t-2");`. An appended block holds checks only (`check if`,
@@ -1124,6 +1126,13 @@ and may do only what its token lists (least privilege; design R1-R9 in
   The server reads a block from its signed bytes (the facts, rules and checks the
   authorizer runs), never from its printed source, and refuses one it cannot read whole. So
   a check costs the same whatever it joins, and every block is enforced; none adds a right.
+  An appended check applies to every check made for a call: the call's own and those its
+  method makes (the per-instance checks of a control method, the pane checks of `pane.*`),
+  each with the facts available to it, the call's `method`, `namespace` and `target`
+  among them. So `check if method("pane.list")` lets `pane.list` list the panes and
+  nothing else, and `reject if instance($i), !$i.starts_with("s-");` narrows the control
+  methods to the instances `s-*` (a check that needs `instance` fails the call's own
+  check, which has none).
 - **Expiry and renewal.** A token lives at most 24 h (`bus.token` `ttl_ms`, 0 = 24 h). The
   server renews an instance's token 12 h after minting it and sends the new one to the
   instance in a `CredentialUpdate` (as after a rotation). An outside participant calls

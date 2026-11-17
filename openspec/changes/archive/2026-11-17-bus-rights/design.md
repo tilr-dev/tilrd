@@ -63,8 +63,10 @@ symbol table, exactly what the authorizer runs, never from its printed source: B
 prints symbols unescaped and its parser skips comments, so a fact named
 `check if kind("bus");/*f` and a predicate named `X*/check if kind` print 30 facts and a
 5-way join as two checks on `kind` (15 s per decision). A block with a field the schema does
-not know, a schema version above biscuit-auth's, an unknown check kind or operation, a
-`trusting` scope (block or rule) or a public key is refused too.
+not know (a block must be its own canonical encoding byte for byte, so an unknown field
+cannot stand in for a missing required one of the same size), a schema version above
+biscuit-auth's, an unknown check kind or operation, a `trusting` scope (block or rule) or a
+public key is refused too.
 The decision cache is keyed by a SHA-256 of the token's hash and the request's
 length-prefixed parts, so an entry is the same size whatever a call names; a `Call.target`
 over 512 bytes (a participant's name is far shorter) is denied before it is decided, cached
@@ -99,7 +101,10 @@ is the contract.
   their action; `server.reload` needs the action `server.reload` and `server.update` the
   action `server.update` (owner's decisions: actions of their own, not the instances'
   `reload`; `call = ["*"]` or `["server.*"]` covers neither). `bus.ping` and `bus.renew` need a
-  valid token only. Any other `bus.*` method is denied.
+  valid token only. Only these exact names are control methods: any other `bus.*` method
+  (`bus.absent`, a look-alike such as `bus.Token`) is a plain call, allowed to whom `call`
+  rights cover it (the owner, `*`, `bus.*`) and answered `not_found` by the broker, and
+  `denied` to others.
 - **`server.command` is no right** (owner's decision): it is allowed to tilrd and to the owner
   on the Unix socket only, never on TCP (with the access token or `--no-auth`), never for a
   token (the connection's or per call), whatever `call` or `control` it lists. The handler of
@@ -126,9 +131,14 @@ is the contract.
   holder has always ends the chain. An instance's family is revoked when its connection ends.
   Revoking the authority id of a later token of a chain (read from its bytes, never
   answered by the server) ends that token and what is attenuated from it only.
-- **Per-call credential and control.** A non-empty `Call.credential` decides the call and
-  every `AuthzRequest::Control` the method checks with it; it is refused for anything else
-  (provide, emit, subscribe, events, pane requests). Audit lines of such a decision name
+- **Per-call credential and follow-up checks.** A non-empty `Call.credential` decides the
+  call and every check its method makes with it: each `AuthzRequest::Control` of a control
+  method and the pane checks (`PaneCreate`, `PaneAccess`) of a `pane.*` call; it is refused
+  for anything else (provide, emit, subscribe, events). Each such follow-up check carries
+  the call's `method`, `namespace` and `target` (`ForCall`) besides its own facts, and its
+  decision cache key holds them, so an appended check such as `check if
+  method("pane.list")` decides the pane checks of `pane.list` as it decides the call, and a
+  cached allow for one call is never reused for another. Audit lines of such a decision name
   `from=<caller> bearer=<the token's participant>`.
 - **The revocation file** is written whole (staged under a name unique to the process, a
   counter and the time, fsynced, renamed, the directory fsynced) by one writer at a time: a
