@@ -1,5 +1,0 @@
-schema: spec-driven
-created: 2026-11-17
-# Phase 7 as one change (owner, session TILR-892, 2026-11-17). Folds in the first-round drafts
-# pane-profiles, sandboxed-pane (created 2026-10-18, deferred with skip_specs until 2026-11-17),
-# component-bus, bus-acl-biscuit, bus-runtime-sdks and bus-panes; bus-gateway deferred.

@@ -1,0 +1,14 @@
+# Tasks
+
+Shared design: `openspec/design/unified-bus.md`. Numbers in brackets are the tasks of the
+former `unified-bus` (its `tasks.md` at 75fc8ce0).
+
+## 1. Panes on the bus
+
+- [ ] 1.1 [4.1] `crates/tilrd/src/bus/core/panes.rs`: the participant `tilrd` with `pane.create|list|close|resize|input|applied|input_finalize`, `pane.output` (frames forwarded unchanged, latest-wins on lag or spent credit, `End` on exit), `pane.read`, the pane events with scope (T2, T4, T5, T9) on the supervisor's existing paths through the handle; `seq_base` from `connection_id`; `PaneInfo.created_by` stamped; verify `bus_terminal::a_pane_is_created_listed_and_closed_by_calls`, `bus_terminal::pane_changes_are_events`, `bus_terminal::watching_a_pane_is_a_stream_of_frames`, `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen`, `bus_terminal::input_is_acknowledged_after_it_is_applied`, `bus_terminal::reading_a_pane_and_waiting_for_a_change`; unit test for the text rendering in `crates/tilr-screen`; every existing `tilr.v1` test green unchanged
+- [ ] 1.2 [2.1] `bus/core/json.rs`: JSON for the core's methods (B9); verify `bus::payloads_pass_byte_for_byte`, `bus::core_methods_answer_json_to_json`, and the `tilrd` clause of `bus::participants_and_methods_are_listed`; USE_CASES.md entries (own section)
+
+## 2. Checks and archive
+
+- [ ] 2.1 [12.1] Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green and every existing test passes under its name
+- [ ] 2.2 [12.2] Update this change's row in `openspec/ROADMAP.md`, record the commit in proposal.md and archive; verify `openspec validate --all --strict`
