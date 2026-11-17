@@ -48,7 +48,7 @@ SOURCE_IGNORE = ["*", "!Cargo.toml", "!Cargo.lock", "!crates/", "!tests/", "crat
                  "!.github/workflows/release.yml", "!.github/workflows/release-upstream.yml",
                  "!.github/workflows/spec-change.yml", "!.config/nextest.toml",
                  "!.cargo/config.toml", "!.gitignore",
-                 "!AGENTS.md", "!README.md", "!USE_CASES.md",
+                 "!AGENTS.md", "!README.md", "!USE_CASES.md", "!vendor/",
                  "!itests/src/tilr_itests/main.py"]
 ITESTS_IGNORE = ["sdk/", ".venv/", "results/", "**/__pycache__/", "src/"]
 
@@ -186,7 +186,9 @@ for line in p.stdout.splitlines():
         # Tests bake OUT_DIR into their executable and read Cargo's saved stdout
         # beside it. Snapshot only this test build's results, including cached ones,
         # before the next build can change the shared target cache.
-        output = os.path.join(os.path.dirname(m["out_dir"]), "output")
+        # Cargo 1.100's build-dir layout keeps it in run/stdout, older Cargo in output.
+        build = os.path.dirname(m["out_dir"])
+        output = next(p for p in (f"{build}/run/stdout", f"{build}/output") if os.path.exists(p))
         dest = f"{out}/rust-target/{os.path.relpath(output, '/target')}"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copy2(output, dest)

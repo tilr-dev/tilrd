@@ -31,10 +31,5 @@ not (
   | test(=a_link_cloud_revokes_stops_the_tunnel_until_linked_again)
   | test(=an_idle_client_that_is_still_there_stays_connected)
   | test(=the_pane_process_title_follows_exec_in_the_same_foreground_group)
-  | test(=a_nested_call_gets_the_time_that_is_left_and_a_cancel)
-  | test(=a_slow_participant_does_not_hold_up_the_others)
-  | test(=streams_are_paced_by_the_readers_credit)
-  | test(=bulk_data_in_the_network_is_bounded_per_connection)
-  | test(=interactive_traffic_goes_ahead_of_bulk_traffic)
 )
 '''
