@@ -377,7 +377,7 @@ async fn last_active_goes_to_the_provider_that_activated_last() {
     let gone = format!("connection={} ", w1.connection_id());
     drop(w1);
     server
-        .wait_log("w-1 is not gone", |lines| {
+        .wait_logged_event("w-1 is not gone", |lines| {
             lines
                 .iter()
                 .any(|line| line.contains("bus participant gone") && line.contains(&gone))

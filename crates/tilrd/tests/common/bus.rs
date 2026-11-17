@@ -106,17 +106,14 @@ impl BusServer {
             &options.failpoints,
             &env,
         );
+        // The server binds its Unix socket before it logs `listening on`, which
+        // `start_full` waited for: the socket takes connections from here on.
         let bus = Self { server };
-        let socket = bus.socket();
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        while std::os::unix::net::UnixStream::connect(&socket).is_err() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no Unix socket at {}",
-                socket.display()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(
+            bus.socket().exists(),
+            "no Unix socket at {}",
+            bus.socket().display()
+        );
         bus
     }
 
@@ -211,14 +208,30 @@ impl BusServer {
     /// Wait until a participant named `client_name` is greeted again, `before`
     /// being [`greeted`](Self::greeted) earlier.
     pub async fn wait_greeted(&self, client_name: &str, before: usize) {
-        let deadline = tokio::time::Instant::now() + TIMEOUT;
-        while self.greeted(client_name) <= before {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "{client_name} was not greeted:\n{}",
-                self.log_lines().join("\n")
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        self.wait_logged_event(&format!("{client_name} was not greeted"), |_| {
+            self.greeted(client_name) > before
+        })
+        .await;
+    }
+
+    /// Wait up to [`TIMEOUT`] for the server's log so far to satisfy `done`, woken
+    /// by each line it logs (`Server::log_changed`); fails with `what` and the log.
+    pub async fn wait_logged_event(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+        let met = tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let changed = self.log_changed.notified();
+                tokio::pin!(changed);
+                // Registered before the look, so a line logged in between wakes it.
+                changed.as_mut().enable();
+                if done(&self.log_lines()) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        if met.is_err() {
+            panic!("{what}:\n{}", self.log_lines().join("\n"));
         }
     }
 
@@ -240,11 +253,8 @@ impl BusServer {
         };
         let before = resumed(&self.log_lines());
         self.signal("-USR1");
-        let deadline = tokio::time::Instant::now() + TIMEOUT;
-        while resumed(&self.log_lines()) <= before {
-            assert!(tokio::time::Instant::now() < deadline, "no reload");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        self.wait_logged_event("no reload", |lines| resumed(lines) > before)
+            .await;
     }
 
     /// Kill the server outright.
