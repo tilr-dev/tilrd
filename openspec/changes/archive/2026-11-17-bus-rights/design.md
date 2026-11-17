@@ -113,8 +113,11 @@ is the contract.
 - **Minting by a non-owner.** A participant with `control = ["token"]` mints only rights it
   holds itself (verbatim, or under its `*` of the same kind), and only with a token without
   appended blocks (as `bus.renew`: the narrowing would not reach the child). The child is named
-  `<minter name>.<name>` (`token:app` mints `token:app.child`; the name rule of `bus.token`
-  stays `[A-Za-z0-9_.:-]`, up to 128), so it cannot pass for another participant; a minter
+  `<minter kind>.<minter name>.<name>` (owner's decision, as Kubernetes names a service
+  account `system:serviceaccount:<ns>:<name>`: `token:app` mints `token:token.app.child`,
+  `instance:app` mints `token:instance.app.child`; the name rule of `bus.token` stays
+  `[A-Za-z0-9_.:-]`, up to 128, the prefix included), so it cannot pass for another
+  participant, nor for the child of a minter of the other kind with the same name; a minter
   bound to an origin mints for that origin only (an empty `origin` takes it, another is
   denied). The child's signed metadata holds a ceiling (the minter's expiry: no renewal goes
   past it) and its minters' families (below): revoking a minter ends its children, as it ends

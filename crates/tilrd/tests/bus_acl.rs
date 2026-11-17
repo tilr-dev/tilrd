@@ -516,11 +516,15 @@ async fn control_methods_need_control_rights() {
     )
     .await;
     let bus = participant(&server, &minter, "minter").await;
-    let (child, _) = try_mint(&bus, "minter.child", Rights::default().call(&["test.*"]))
-        .await
-        .expect("a right the minter holds");
+    let (child, _) = try_mint(
+        &bus,
+        "token.minter.child",
+        Rights::default().call(&["test.*"]),
+    )
+    .await
+    .expect("a right the minter holds");
     calls(&owner, "test.echo", "c", with(&child)).await.unwrap();
-    let error = try_mint(&bus, "minter.wide", Rights::default().call(&["*"]))
+    let error = try_mint(&bus, "token.minter.wide", Rights::default().call(&["*"]))
         .await
         .unwrap_err();
     assert_eq!(error.code, codes::DENIED, "{error}");
@@ -802,13 +806,17 @@ async fn a_minted_token_lives_within_its_minter() {
     .await;
     let bus = participant(&server, &minter, "app").await;
     // No longer than the minter's token, under its name.
-    let (first, reply) = try_mint(&bus, "app.first", Rights::default().call(&["test.*"]))
+    let (first, reply) = try_mint(&bus, "token.app.first", Rights::default().call(&["test.*"]))
         .await
         .unwrap();
     assert_eq!(reply.expires_at_ms, minter_reply.expires_at_ms);
-    let (second, _) = try_mint(&bus, "app.second", Rights::default().call(&["test.*"]))
-        .await
-        .unwrap();
+    let (second, _) = try_mint(
+        &bus,
+        "token.app.second",
+        Rights::default().call(&["test.*"]),
+    )
+    .await
+    .unwrap();
     let error = try_mint(&bus, "owner-like", Rights::default().call(&["test.*"]))
         .await
         .unwrap_err();
@@ -829,7 +837,7 @@ async fn a_minted_token_lives_within_its_minter() {
         .call_typed::<_, wire::TokenReply>(
             "bus.token",
             &wire::TokenRequest {
-                name: "app.n".into(),
+                name: "token.app.n".into(),
                 call: vec!["test.*".into()],
                 ..wire::TokenRequest::default()
             },
@@ -866,16 +874,20 @@ async fn a_minted_token_lives_within_its_minter() {
     )
     .await
     .unwrap();
-    let (bound, _) = try_mint(&page, "web.child", Rights::default().call(&["test.*"]))
-        .await
-        .unwrap();
+    let (bound, _) = try_mint(
+        &page,
+        "token.web.child",
+        Rights::default().call(&["test.*"]),
+    )
+    .await
+    .unwrap();
     let error = connect(&server, &bound, ConnectOptions::new("elsewhere"))
         .await
         .unwrap_err();
     assert!(error.message.starts_with("origin"), "{error}");
     let error = try_mint(
         &page,
-        "web.other",
+        "token.web.other",
         Rights {
             origin: "http://localhost:7891".into(),
             ..Rights::default().call(&["test.*"])
@@ -884,6 +896,59 @@ async fn a_minted_token_lives_within_its_minter() {
     .await
     .unwrap_err();
     assert_eq!(error.code, codes::DENIED, "{error}");
+}
+
+/// A child's name holds its minter's kind: the instance `a` and the token `a`
+/// minting `x` make `token:instance.a.x` and `token:token.a.x`, and neither may
+/// name the other's; each child dies with its own minter only.
+#[tokio::test]
+async fn children_of_an_instance_and_a_token_of_one_name_differ() {
+    let (file, _scratch) = token_file("a");
+    let minter_rights: &[(&str, &[&str])] = &[("call", &["test.*"]), ("control", &["token"])];
+    let server = start_with_instances(&socket_instance("a", &file, minter_rights));
+    let owner = server.owner().await;
+    let instance = as_instance(&server, "a", &file).await;
+    let (token, token_reply) = mint(
+        &owner,
+        "a",
+        Rights::default().control(&["token"]).call(&["test.*"]),
+    )
+    .await;
+    let token = participant(&server, &token, "a").await;
+    let wanted = || Rights::default().call(&["test.*"]);
+
+    let (of_instance, _) = try_mint(&instance, "instance.a.x", wanted())
+        .await
+        .expect("the instance's child");
+    let (of_token, _) = try_mint(&token, "token.a.x", wanted())
+        .await
+        .expect("the token's child");
+    assert_eq!(
+        participant(&server, &of_instance, "ix").await.identity(),
+        "token:instance.a.x"
+    );
+    assert_eq!(
+        participant(&server, &of_token, "tx").await.identity(),
+        "token:token.a.x"
+    );
+    // Neither names the other's children, nor one without its kind.
+    for (minter, name) in [
+        (&instance, "token.a.y"),
+        (&instance, "a.y"),
+        (&token, "instance.a.y"),
+        (&token, "a.y"),
+    ] {
+        let error = try_mint(minter, name, wanted()).await.unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{name}: {error}");
+    }
+
+    // The token `a` revoked: its child with it, the instance's child lives.
+    revoke_id(&owner, &token_reply.revocation_id).await.unwrap();
+    let reason = denied(calls(&owner, "bus.ping", "", with(&of_token)).await);
+    assert_eq!(reason, "revoked: the token of its minter was revoked");
+    calls(&owner, "bus.ping", "", with(&of_instance))
+        .await
+        .expect("the instance's child is not the token's");
 }
 
 #[tokio::test]
@@ -1644,9 +1709,13 @@ async fn a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry() {
     .await;
     let minter = participant(&server, &minter, "m").await;
     // Asked for a day, given the minter's two hours.
-    let (child, reply) = try_mint(&minter, "m.child", Rights::default().call(&["test.*"]))
-        .await
-        .unwrap();
+    let (child, reply) = try_mint(
+        &minter,
+        "token.m.child",
+        Rights::default().call(&["test.*"]),
+    )
+    .await
+    .unwrap();
     assert_eq!(reply.expires_at_ms, minter_reply.expires_at_ms);
     assert_eq!(reply.expires_at_ms, START_US / 1000 + 2 * 3_600_000);
 

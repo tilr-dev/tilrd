@@ -770,9 +770,11 @@ fn rights_within(wanted: &RightsText, held: &RightsText) -> bool {
 
 /// What a token minted by `minter`, a participant other than the owner, inherits
 /// (its [`Lineage`]). Refused: a minter with appended blocks (its narrowing would
-/// not reach the child), a name outside the minter's own (`<minter name>.<name>`,
-/// so a child cannot pass for another participant), and an origin other than the
-/// one the minter is bound to (a bound minter's child is bound to it too).
+/// not reach the child), a name outside the minter's own (`<minter kind>.<minter
+/// name>.<name>`: `instance.a.x` for `instance:a`, `token.a.x` for `token:a`, so a
+/// child cannot pass for another participant, nor the child of a minter of the other
+/// kind with the same name), and an origin other than the one the minter is bound to
+/// (a bound minter's child is bound to it too).
 fn child_lineage(minter: &Parsed, name: &str, origin: &mut String) -> Result<Lineage, BusError> {
     let refuse = |message: String| BusError::new(codes::DENIED, message);
     if minter.attenuated() {
@@ -781,17 +783,20 @@ fn child_lineage(minter: &Parsed, name: &str, origin: &mut String) -> Result<Lin
                 .into(),
         ));
     }
-    let own = match &minter.identity {
-        Identity::Token(own) | Identity::Instance(own) => own.as_str(),
-        _ => "",
+    let (kind, own) = match &minter.identity {
+        Identity::Token(own) => ("token", own.as_str()),
+        Identity::Instance(own) => ("instance", own.as_str()),
+        _ => ("", ""),
     };
     let under = name
-        .strip_prefix(own)
+        .strip_prefix(kind)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_prefix(own))
         .and_then(|rest| rest.strip_prefix('.'))
         .is_some_and(|rest| !rest.is_empty());
     if own.is_empty() || !under {
         return Err(refuse(format!(
-            "{} mints tokens named {own}.<name> only, not {name:?}",
+            "{} mints tokens named {kind}.{own}.<name> only, not {name:?}",
             minter.identity
         )));
     }
@@ -4218,10 +4223,10 @@ mod tests {
         // Its own name only.
         let refused = mint_by(&f, &by, token_request("other", &wanted, "", 0)).unwrap_err();
         assert_eq!(refused.code, codes::DENIED);
-        assert!(refused.message.contains("app.<name>"), "{refused}");
+        assert!(refused.message.contains("token.app.<name>"), "{refused}");
         // Bound to the minter's origin, and never past its token.
-        let child = mint_by(&f, &by, token_request("app.child", &wanted, "", 0)).unwrap();
-        assert_eq!(child.identity(), &Identity::Token("app.child".into()));
+        let child = mint_by(&f, &by, token_request("token.app.child", &wanted, "", 0)).unwrap();
+        assert_eq!(child.identity(), &Identity::Token("token.app.child".into()));
         assert_eq!(child.parsed.meta.origin, "tilr://app");
         assert_eq!(child.expires_ms(), minter_expires);
         assert_eq!(child.parsed.meta.lineage.ceiling_ms, minter_expires);
@@ -4229,7 +4234,7 @@ mod tests {
         let refused = mint_by(
             &f,
             &by,
-            token_request("app.c2", &wanted, "http://localhost:7891", 0),
+            token_request("token.app.c2", &wanted, "http://localhost:7891", 0),
         )
         .unwrap_err();
         assert_eq!(refused.code, codes::DENIED);
@@ -4238,7 +4243,7 @@ mod tests {
             &f,
             &by,
             token_request(
-                "app.m",
+                "token.app.m",
                 &rights(|r| {
                     r.call = strings(&["test.*"]);
                     r.control = strings(&["token"]);
@@ -4254,7 +4259,7 @@ mod tests {
         let grandchild = mint_by(
             &f,
             &ctx(&cp, "bus.token", None),
-            token_request("app.m.g", &wanted, "", 0),
+            token_request("token.token.app.m.g", &wanted, "", 0),
         )
         .unwrap();
         assert_eq!(grandchild.parsed.meta.lineage.parents.len(), 2);
@@ -4280,7 +4285,8 @@ mod tests {
                 None,
             ),
         ] {
-            let refused = mint_by(&f, &by, token_request("app.n", &wanted, "", 0)).unwrap_err();
+            let refused =
+                mint_by(&f, &by, token_request("token.app.n", &wanted, "", 0)).unwrap_err();
             assert_eq!(refused.code, codes::DENIED);
             assert!(refused.message.contains("appended blocks"), "{refused}");
         }
@@ -4310,8 +4316,8 @@ mod tests {
         let p = holder(minter);
         let wanted = rights(|r| r.call = strings(&["test.*"]));
         let by = ctx(&p, "bus.token", None);
-        let first = mint_by(&f, &by, token_request("t-1.a", &wanted, "", 0)).unwrap();
-        let second = mint_by(&f, &by, token_request("t-1.b", &wanted, "", 0)).unwrap();
+        let first = mint_by(&f, &by, token_request("token.t-1.a", &wanted, "", 0)).unwrap();
+        let second = mint_by(&f, &by, token_request("token.t-1.b", &wanted, "", 0)).unwrap();
         let owner = owner_on(Transport::UnixSocket);
         let echo = call("test.echo", "");
         let ok = |bytes: &Bytes| f.acl.authorize(&owner, Some(bytes), &echo);
@@ -4372,7 +4378,7 @@ mod tests {
             &f,
             &ctx(&minter, "bus.token", None),
             token_request(
-                "t-1.c",
+                "token.t-1.c",
                 &rights(|r| r.call = strings(&["test.*"])),
                 "",
                 2 * hour,
@@ -4501,7 +4507,7 @@ mod tests {
         let child = mint_by(
             &f,
             &ctx(&minter, "bus.token", None),
-            token_request("t-1.c", &wanted, "", 0),
+            token_request("token.t-1.c", &wanted, "", 0),
         )
         .unwrap();
         NOW.store(start + 13 * hour, Ordering::SeqCst);
@@ -4512,7 +4518,7 @@ mod tests {
         let later = mint_by(
             &f,
             &ctx(&holder(renewed), "bus.token", None),
-            token_request("t-1.d", &wanted, "", 0),
+            token_request("token.t-1.d", &wanted, "", 0),
         )
         .unwrap();
         revoke(&f, What::Credential(renewed_bytes.clone()));
@@ -4543,7 +4549,7 @@ mod tests {
         let child = mint_by(
             &f,
             &ctx(&first, "bus.token", None),
-            token_request("i.c", &wanted, "", 0),
+            token_request("instance.i.c", &wanted, "", 0),
         )
         .unwrap();
         let next = f

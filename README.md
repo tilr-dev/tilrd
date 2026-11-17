@@ -1098,7 +1098,9 @@ and may do only what its token lists (least privilege; design R1-R9 in
 
   `server.command` is no right: only the owner on the Unix socket may call it (not on TCP, not
   with any token). A participant other than the owner with `control = ["token"]` mints only
-  rights it holds itself, with a token without appended blocks, named `<its name>.<name>`,
+  rights it holds itself, with a token without appended blocks, named
+  `<its kind>.<its name>.<name>` (`instance:a` mints `token:instance.a.x`, `token:a`
+  `token:token.a.x`),
   bound to its own origin if it has one, for no longer than its own token lives (renewals
   included); revoking the minter's token (any token of its chain of renewals) ends the
   tokens it minted, renewing it does not; an instance's end ends what it minted, its 12 h

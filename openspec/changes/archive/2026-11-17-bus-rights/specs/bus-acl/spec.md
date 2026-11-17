@@ -93,13 +93,13 @@ A `Hello` that provides a method not covered by its token's `provide` rights MUS
 - **THEN** it is `denied`
 
 ### Requirement: A minter other than the owner cannot widen what it holds
-A participant other than the owner with `control = ["token"]` SHALL mint only rights its own token holds and MUST NOT mint with a token that has appended blocks; it SHALL name the new participant `<its own name>.<name>`, and when its token is bound to an origin the new token SHALL be bound to it too (another origin MUST be `denied`).
+A participant other than the owner with `control = ["token"]` SHALL mint only rights its own token holds and MUST NOT mint with a token that has appended blocks; it SHALL name the new participant `<its kind>.<its own name>.<name>` (`instance.a.x` for `instance:a`, `token.a.x` for `token:a`, so the children of an instance and a token of one name differ), and when its token is bound to an origin the new token SHALL be bound to it too (another origin MUST be `denied`).
 
-**Verified by**: `bus_acl::a_minted_token_lives_within_its_minter`, `supervisor::bus::acl::tests::a_minter_mints_under_its_name_origin_and_life`.
+**Verified by**: `bus_acl::a_minted_token_lives_within_its_minter`, `bus_acl::children_of_an_instance_and_a_token_of_one_name_differ`, `supervisor::bus::acl::tests::a_minter_mints_under_its_name_origin_and_life`.
 
 #### Scenario: Another participant's name
 - **WHEN** `token:app` with `control = ["token"]` mints a token named `owner-like`
-- **THEN** it is `denied`; one named `app.child` is minted
+- **THEN** it is `denied`, and so is one named `app.child` or `instance.app.child`; one named `token.app.child` is minted
 
 ### Requirement: A minted token lives within its minter
 A token minted by a participant other than the owner SHALL NOT live, also through renewals, past the minter's token, and SHALL be refused once the minter's token, or any token of the minter's chain of renewals, is revoked (for an instance: once its connection ends); renewing the minter's token (`bus.renew`, or an instance's renewal by the server) SHALL leave it working; revoking the minted token alone SHALL leave the minter's working.
