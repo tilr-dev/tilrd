@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+// Things a program in a pane asks the client to do (feature "host-events").
+// Provided by clients, called by tilrd:
+//
+//   host.open  OpenRequest  -> OpenReply
+//
+// tilrd calls it on each pane.output consumer of the pane that provides
+// host.open; with none, the program is told no client is attached. What to do
+// is up to the client.
+
+package tilr.host.v1;
+
+// `tilr edit <file>` asks to open a file. Keeps the field numbers of tilr.v1
+// HostEvent.
+message OpenRequest {
+  // The pane the program runs in.
+  string pane_id = 1;
+  // What is asked: "open".
+  string name = 2;
+  // What it is about: "file" (`path` is an absolute path on the server's
+  // machine), "url" (`path` is the URL), or another kind the program names.
+  string kind = 3;
+  string path = 4;
+  // Anything else the program gave.
+  repeated string args = 5;
+}
+
+message OpenReply {}

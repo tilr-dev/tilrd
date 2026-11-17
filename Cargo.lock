@@ -1506,6 +1506,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilr-bus"
+version = "0.2.1"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-util",
+ "libc",
+ "prost",
+ "prost-build",
+ "tilr-websocket",
+ "tokio",
+ "tokio-tungstenite",
+ "zstd",
+]
+
+[[package]]
 name = "tilr-driver"
 version = "0.2.1"
 dependencies = [

@@ -199,6 +199,7 @@ the same explicit connector, including when built separately.
 | The trust store contains exactly the bundled Mozilla roots | `the_trust_store_is_exactly_the_bundled_mozilla_roots` |
 | Plain WebSockets retain request headers | `plain_websockets_keep_request_headers` |
 | An explicit trusted root permits a TLS WebSocket handshake | `an_explicit_root_allows_a_verified_secure_websocket` |
+| A configured limit lets a 17 MiB message through wss, which the default limit refuses | `a_configured_limit_lets_a_large_message_through_wss` |
 | The shared connector uses the bundled trust anchors | `tests::connect_uses_the_bundled_trust_anchors` |
 | The tilr client uses the bundled trust anchors (`crates/tilr/src/conn.rs`) | `conn::bundled_tls_tests::client_uses_the_bundled_trust_anchors` |
 | The driver client uses the bundled trust anchors (`crates/tilr-driver/src/session.rs`) | `session::bundled_tls_tests::client_uses_the_bundled_trust_anchors` |
@@ -709,3 +710,69 @@ Direct host screen erase (`crates/tilr-screen/tests/direct_erase.rs`) preserves
 split CSI/OSC/DCS commands, rendition, origin mode, margins and paste mode,
 homes absolutely, emits no PTY data and applies both history policies on primary
 and alternate screens.
+
+## The bus crate — `crates/tilr-bus`
+
+The wire of `tilr.bus.v1`, its payload schemas and the Rust client, tested without a server:
+the client tests drive a partner in the test that plays the broker (`tests/common/mod.rs`).
+
+| Use case | Test |
+|---|---|
+| Every envelope kind survives framing for a WebSocket and for a stream socket | `codec::tests::every_envelope_kind_round_trips_on_both_transports` |
+| An envelope under 256 bytes goes plain behind flag 0 | `codec::tests::small_envelopes_stay_plain` |
+| A larger envelope is compressed with zstd behind flag 1 and comes back the same | `codec::tests::large_envelopes_are_compressed` |
+| A chunk whose payload its producer compressed goes plain, the payload unchanged | `codec::tests::a_compressed_chunk_is_not_compressed_again` |
+| An envelope that does not compress goes plain, one byte over its encoding | `codec::tests::an_envelope_that_does_not_compress_goes_plain` |
+| An empty message, an unknown flag, bad zstd and bad protobuf are refused | `codec::tests::rejects_garbage` |
+| A stream frame cut short waits for the rest; two frames in one read come apart | `codec::tests::a_truncated_stream_frame_waits_for_the_rest`, `codec::tests::two_stream_frames_in_one_read_come_apart` |
+| An envelope over 16 MiB is refused both ways, a length prefix over it before its body, a zstd bomb at the limit | `codec::tests::a_frame_over_the_limit_is_refused` |
+| An envelope of exactly 16 MiB passes | `codec::tests::a_frame_at_the_limit_passes` |
+| Envelope variants and fields of a later version are ignored | `codec::tests::unknown_envelope_variants_are_ignored` |
+| Methods and subjects are two or more segments of `[a-z0-9_-]` | `names::tests::methods_and_subjects_have_two_or_more_segments` |
+| Patterns match as NATS subjects (`*` one segment, a trailing `>` one or more) | `names::tests::patterns_match_as_nats_subjects`, `names::tests::a_pattern_is_segments_stars_and_a_trailing_tail` |
+| `bus`, `pane`, `server`, `fs`, `exec` and `clipboard` are the core's namespaces | `names::tests::the_core_namespaces_are_reserved`, `methods::tests::every_core_method_is_a_valid_name_in_a_reserved_namespace` |
+| The bulk streams are `server.update`, `server.command`, `fs.read`, `exec.run` and `clipboard.get`; `pane.output` is interactive | `methods::tests::bulk_streams_are_the_ones_design_t3_names` |
+| The core's event subjects are valid | `methods::tests::event_subjects_are_valid` |
+| A `tilr.v1` `Frame` decodes as `tilr.pane.v1.Frame` and encodes back to the same bytes | `schema::a_tilr_v1_frame_decodes_as_a_pane_frame` |
+| A `tilr.v1` `PaneList` decodes as the reply of `pane.list` | `schema::a_tilr_v1_pane_list_decodes_as_the_reply_of_pane_list` |
+| A `tilr.v1` key message decodes as `pane.input` with its seq and input_seq | `schema::a_tilr_v1_key_message_decodes_as_pane_input` |
+| The internal input fields of `tilr.v1` do not exist on the bus | `schema::the_internal_input_fields_of_tilr_v1_do_not_exist_on_the_bus` |
+| The environment names the transport (fd, instance socket, WebSocket, the Unix socket); without one, connecting is `unavailable` naming the variables | `client::tests::the_environment_names_the_transport`, `client::tests::without_a_bus_in_the_environment_connecting_is_unavailable` |
+| A credential is base64url as `tilr bus token` prints it and is never shown | `client::tests::a_credential_is_base64url_and_never_shown` |
+| The bus descriptor must be an open socket: a file or a closed number is refused and left alone | `client::tests::the_bus_descriptor_must_be_an_open_socket` |
+| The bus descriptor is taken once; a second take is refused | `client::tests::the_bus_descriptor_is_taken_once` |
+| A transport's debug form never shows its tokens | `client::tests::a_transport_never_shows_its_tokens` |
+| A zstd chunk is decompressed on reading | `client::tests::a_zstd_chunk_is_decompressed_on_reading` |
+| Hello comes first with the version, name, client id and provided methods; the identity is the broker's | `client::hello_comes_first_and_the_identity_is_the_brokers_answer` |
+| A refused Hello is an error with the broker's code | `client::a_refused_hello_is_an_error_with_the_brokers_code` |
+| A server that accepts and says nothing times the handshake out | `client::a_server_that_accepts_and_says_nothing_times_out_the_handshake` |
+| A Call read together with HelloAck is answered | `client::a_call_that_comes_with_hello_ack_is_answered` |
+| A call carries target, timeout, content type, credential and trace id and is answered with its reply | `client::a_call_is_answered_with_its_reply` |
+| A failed call says why with the code and message | `client::a_failed_call_says_why_with_the_code_and_message` |
+| A typed call sends and reads protobuf; a reply that does not decode is `bad_reply` | `client::a_typed_call_sends_and_reads_protobuf` |
+| A call that times out or is dropped is cancelled; a late reply is dropped | `client::a_call_that_is_given_up_is_cancelled` |
+| The end of the connection fails pending calls `unavailable` | `client::the_end_of_the_connection_fails_pending_calls_unavailable` |
+| A `ConnectionError` reaches pending calls with its code | `client::a_connection_error_reaches_pending_calls_with_its_code` |
+| Calls beyond `max_in_flight` wait for a slot | `client::calls_wait_for_a_slot_beyond_max_in_flight` |
+| A payload over the limit is refused as `too_large` without sending | `client::a_payload_over_the_limit_is_refused_without_sending` |
+| A stream is read chunk by chunk, credit goes back as chunks are taken, `End` carries its payload | `client::a_stream_is_read_chunk_by_chunk_and_credit_goes_back` |
+| A stream answered with an error ends with it | `client::a_stream_answered_with_an_error_ends_with_it` |
+| A provider that overruns the credit ends the stream as `bad_reply` and is cancelled | `client::a_provider_that_overruns_the_credit_ends_the_stream_as_bad_reply` |
+| Leaving a stream early cancels it | `client::leaving_a_stream_early_cancels_it` |
+| A stream that ended with End or an error frees its `max_in_flight` slot while still held | `client::a_stream_that_ended_frees_its_slot` |
+| A provided method answers and sees the caller, its time left and its credential | `client::a_provided_method_answers_and_sees_who_called` |
+| A method not provided is answered `not_supported` | `client::a_method_not_provided_is_answered_not_supported` |
+| A handler's error keeps its code; a panic is `handler_error` | `client::a_handlers_error_keeps_its_code_and_a_panic_is_a_handler_error` |
+| A handler that panics before returning its future is `handler_error`, for a method and a stream | `client::a_handler_that_panics_before_its_future_is_a_handler_error` |
+| A cancelled handler stops without a reply | `client::a_cancelled_handler_stops_without_a_reply` |
+| A provided stream is paced by the reader's credit | `client::a_provided_stream_is_paced_by_the_readers_credit` |
+| Events reach the subscriptions whose pattern matches; dropping one unsubscribes | `client::events_reach_the_subscriptions_whose_pattern_matches` |
+| A denied subscription fails with `denied`; a bad pattern is `bad_request` | `client::a_denied_subscription_fails_with_denied` |
+| A full subscription keeps 1024 events and counts those it dropped | `client::a_full_subscription_counts_the_events_it_dropped` |
+| Emitting, activating and renewing send their envelopes; a renewal from the broker replaces the token | `client::emitting_activating_and_renewing_send_their_envelopes` |
+| The same call works over an instance socket and a WebSocket with subprotocol, access token, credential and origin | `client::the_same_call_works_over_fd_socket_and_websocket` |
+| A bad WebSocket message is skipped; a close code (4000) is reported | `client::a_bad_websocket_message_is_skipped_and_a_close_code_is_reported` |
+| Dropping the last handle closes the connection | `client::dropping_the_last_handle_closes_the_connection` |
+| The test runtime connects over an instance socket with its token and provides its methods | `runtime::the_test_runtime_provides_its_methods_over_an_instance_socket` |
+| The test runtime's flood waits for credit | `runtime::the_test_runtimes_flood_waits_for_credit` |
+| The test runtime with `TEST_NO_HELLO` says nothing | `runtime::the_test_runtime_without_hello_says_nothing` |

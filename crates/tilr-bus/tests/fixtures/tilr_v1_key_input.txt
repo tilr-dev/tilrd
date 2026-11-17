@@ -1,0 +1,3 @@
+key { pane_id: "p-1" action: KEY_ACTION_PRESS mods: 4 codepoint: 99 text: "c" code: "KeyC" }
+seq: 5
+input_seq: 6

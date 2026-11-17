@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+// Running programs without a pane or a shell (feature "exec"), provided by tilrd:
+//
+//   exec.run     RunRequest     => RunChunk chunks, End ExecExit   stream, bulk lane
+//   exec.input   InputRequest   -> InputReply
+//   exec.signal  SignalRequest  -> SignalReply
+//
+// The first chunk of exec.run is `started` (or the stream is answered with an
+// error Reply if the program did not start), then `output` chunks in order per
+// stream, then End with ExecExit. Cancelling the stream kills the program's
+// process group (the former ExecCancel). A reader that credits slowly holds the
+// program back. server.command and server.update (server.proto) answer with the
+// same chunks.
+//
+// Requests keep the field numbers of the tilr.v1 message they replace; data types
+// copied from tilr.v1 keep theirs.
+
+package tilr.exec.v1;
+
+message RunRequest {
+  // tilr.v1 ExecStart.request_id: the call id does its job.
+  reserved 1;
+  // The program and its arguments, as they are: no shell, nothing expanded.
+  // argv[0] is looked up in the server's PATH unless it has a "/".
+  repeated string argv = 2;
+  // Directory to run in; it must exist. Empty = the home directory.
+  string cwd = 3;
+  // "NAME=value", added to the server's environment.
+  repeated string env = 4;
+  // The program's stdin is fed by exec.input. Without, it reads end of file.
+  bool stdin = 5;
+  // The program and its process group are killed (SIGKILL) after this long, and
+  // its ExecExit says timed_out. 0 = no limit.
+  uint32 timeout_ms = 6;
+  // tilr.v1 ExecStart.server_command: now the method server.command.
+  reserved 7;
+}
+
+message RunChunk {
+  oneof chunk {
+    ExecStarted started = 1;
+    ExecOutput output = 2;
+  }
+}
+
+message ExecStarted {
+  // tilr.v1 request_id; `error` is now an error Reply.
+  reserved 1, 4;
+  // Chosen by the server, never used again while it runs.
+  uint64 exec_id = 2;
+  // Of the program on the server's machine; the id of its process group too.
+  uint32 pid = 3;
+}
+
+// Output of a program, at most 64 KiB in one chunk, in order per stream.
+message ExecOutput {
+  uint64 exec_id = 1;
+  // 1 stdout, 2 stderr.
+  uint32 stream = 2;
+  bytes data = 3;
+}
+
+// The program ended, and its output did: the End payload of exec.run.
+message ExecExit {
+  uint64 exec_id = 1;
+  // Its exit status, if it exited; 0 if a signal killed it.
+  int32 code = 2;
+  // The signal that killed it, 0 if none.
+  int32 signal = 3;
+  // Killed for its time limit (RunRequest.timeout_ms).
+  bool timed_out = 4;
+  // Killed because the stream was cancelled.
+  bool cancelled = 5;
+  // Why the server killed it on its own: "reload", "shutdown", "input overrun".
+  // Empty otherwise.
+  string reason = 6;
+}
+
+// Bytes for the program's stdin, of an exec started with `stdin`; `eof` closes it
+// after them. A caller keeps at most 4 MiB sent and not yet answered; more kills
+// the program (ExecExit.reason "input overrun"). The stdin of server.command
+// goes here too, by the exec_id of its first chunk. Only the caller of exec.run
+// (or server.command) may feed it.
+message InputRequest {
+  uint64 exec_id = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+// Answered once the program took the bytes (the former ExecInputAck).
+message InputReply {
+  uint64 exec_id = 1;
+  // Bytes taken in all, of the data sent for this exec.
+  uint64 taken = 2;
+}
+
+// Send a signal (its number: 2 SIGINT, 15 SIGTERM, ...) to the program's process
+// group, as a terminal does for Ctrl+C.
+message SignalRequest {
+  uint64 exec_id = 1;
+  int32 signal = 2;
+}
+
+message SignalReply {}

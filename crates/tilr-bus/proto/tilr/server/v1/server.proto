@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+// The server itself, provided by tilrd:
+//
+//   server.info     InfoRequest     -> InfoReply
+//   server.reload   ReloadRequest   -> ReloadReply     owner or control "reload"
+//   server.update   UpdateRequest   => tilr.exec.v1.RunChunk chunks, End ExecExit
+//                                      stream, bulk lane; owner or control "reload"
+//   server.command  CommandRequest  => tilr.exec.v1.RunChunk chunks, End ExecExit
+//                                      stream, bulk lane; owner on the Unix socket only
+
+package tilr.server.v1;
+
+message InfoRequest {}
+
+// Keeps the field numbers of tilr.v1 HelloAck.
+message InfoReply {
+  // tilr.v1 HelloAck.protocol_version: now HelloAck of the bus.
+  reserved 1;
+  string server_version = 2;
+  // The capabilities this server can be run without and offers, in this order:
+  // "clipboard", "files", "host-events", "agent", "exec", "sandbox". The methods
+  // of a feature not listed are not provided.
+  repeated string features = 3;
+  // Largest content clipboard.put accepts. 0 without the "clipboard" feature.
+  uint64 clipboard_max_bytes = 4;
+  // UUID of this server: made when it first ran on the machine, the same after a
+  // restart (as HelloAck.server_id).
+  string server_id = 5;
+  // Largest content one fs.read returns or one fs.write takes. 0 without the
+  // "files" feature.
+  uint64 fs_max_bytes = 6;
+  // tilr.v1 HelloAck.seq_base (now HelloAck.connection_id << 32) and
+  // applied_input (now pane.applied).
+  reserved 7, 8;
+  // Update channel from server.toml: "stable" (default) or "beta".
+  string update_channel = 9;
+}
+
+// Reloads the server as SIGUSR1 does; answered before the exec.
+message ReloadRequest {}
+
+message ReloadReply {}
+
+// Streams the output of `tilrd update` and ends with its exit; a successful
+// update then reloads the server as today.
+message UpdateRequest {}
+
+// Runs the server's own executable with `argv` (`token`, `cloud login`, ...), as
+// exec.run does (the former ExecStart.server_command). Keeps the field numbers of
+// tilr.v1 ExecStart.
+message CommandRequest {
+  reserved 1, 7;
+  repeated string argv = 2;
+  string cwd = 3;
+  repeated string env = 4;
+  // stdin is fed by exec.input with the exec_id of the first chunk.
+  bool stdin = 5;
+  uint32 timeout_ms = 6;
+}

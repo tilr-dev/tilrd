@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+// The server's clipboard, the one programs in every pane read through the
+// `xclip` and `wl-paste` the server puts on their PATH (feature "clipboard"),
+// provided by tilrd:
+//
+//   clipboard.put  PutRequest  -> PutReply   one call per chunk
+//   clipboard.get  GetRequest  => ClipboardData chunks (at most 256 KiB each), End
+//                                 stream, bulk lane
+//
+// A copy made in a pane is the event pane.copied (tilr.pane.v1.Copied); its
+// content is fetched with clipboard.get.
+//
+// Requests keep the field numbers of the tilr.v1 message they replace.
+
+package tilr.clipboard.v1;
+
+// Replaces the server's clipboard. Content goes up in calls of one chunk each,
+// sharing one `transfer_id`; the first chunk empties the clipboard, and the
+// content is readable once the call with `last` is answered. More than
+// server.info.clipboard_max_bytes is refused (an error Reply, and the
+// clipboard stays empty).
+message PutRequest {
+  // Chosen by the client, distinct from its previous transfer.
+  uint64 transfer_id = 1;
+  // MIME type of the content, e.g. "image/png". First chunk only.
+  string mime = 2;
+  // Size of the whole content in bytes. First chunk only.
+  uint64 total_size = 3;
+  bytes data = 4;
+  bool last = 5;
+}
+
+// The answer to each chunk (the last one's: the former ClipboardAck).
+message PutReply {
+  uint64 transfer_id = 1;
+  // tilr.v1 ClipboardAck.ok and error: now an error Reply.
+  reserved 2, 3;
+}
+
+// The content of the copy `transfer_id` (pane.copied); `not_found` once a newer
+// copy replaced it.
+message GetRequest {
+  uint64 transfer_id = 1;
+}
+
+// Keeps the field numbers of tilr.v1 ClipboardWrite. `pane_id`, `mime` and
+// `total_size` are set on the first chunk.
+message ClipboardData {
+  uint64 transfer_id = 1;
+  string pane_id = 2;
+  string mime = 3;
+  uint64 total_size = 4;
+  bytes data = 5;
+  // tilr.v1 ClipboardWrite.last: now the stream's End.
+  reserved 6;
+}

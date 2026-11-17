@@ -1,0 +1,185 @@
+syntax = "proto3";
+
+// Screen frames: the chunks of the stream pane.output. Copied from tilr.v1 with
+// their field numbers (a tilr.v1 Frame decodes as tilr.pane.v1.Frame).
+
+package tilr.pane.v1;
+
+// A chunk of pane.output. A frame whose encoding would pass max_frame is split
+// by the pane process: its images come first, in `images` chunks, then the frame
+// without them. The chunk is usually compressed by the pane process
+// (Chunk.content_encoding "zstd") and forwarded unchanged.
+message PaneOutput {
+  oneof output {
+    Frame frame = 1;
+    FrameImages images = 2;
+  }
+}
+
+// Images of the frame that follows.
+message FrameImages {
+  repeated Image images = 1;
+}
+
+// Absent Color = terminal default.
+message Color {
+  oneof value {
+    uint32 palette = 1;
+    // 0xRRGGBB
+    fixed32 rgb = 2;
+  }
+}
+
+enum Underline {
+  UNDERLINE_NONE = 0;
+  UNDERLINE_SINGLE = 1;
+  UNDERLINE_DOUBLE = 2;
+  UNDERLINE_CURLY = 3;
+  UNDERLINE_DOTTED = 4;
+  UNDERLINE_DASHED = 5;
+}
+
+message Style {
+  Color fg = 1;
+  Color bg = 2;
+  Color underline_color = 3;
+  // 1 bold, 2 italic, 4 faint, 8 blink, 16 inverse, 32 invisible,
+  // 64 strikethrough, 128 overline (`tilr_bus::pane::attrs`)
+  uint32 attrs = 4;
+  Underline underline = 5;
+}
+
+// A stretch of consecutive cells sharing one style.
+message Run {
+  // Index into Frame.styles plus one; 0 = default style.
+  uint32 style = 1;
+  // Unless `cluster` is set: one codepoint per cell.
+  // With `cluster`: the whole text is one cell (multi-codepoint grapheme).
+  string text = 2;
+  // Every cell of this run is two columns wide.
+  bool wide = 3;
+  bool cluster = 4;
+  // Index into Frame.links plus one; 0 = no hyperlink.
+  uint32 link = 5;
+}
+
+// Replaces viewport row `y` entirely. Columns past the last run are blank.
+message Row {
+  uint32 y = 1;
+  repeated Run runs = 2;
+}
+
+enum CursorShape {
+  CURSOR_SHAPE_BLOCK = 0;
+  CURSOR_SHAPE_BAR = 1;
+  CURSOR_SHAPE_UNDERLINE = 2;
+  CURSOR_SHAPE_BLOCK_HOLLOW = 3;
+}
+
+message Cursor {
+  bool visible = 1;
+  uint32 x = 2;
+  uint32 y = 3;
+  CursorShape shape = 4;
+  bool blinking = 5;
+}
+
+// Screen update for one pane. `full` frames carry every row and reset the
+// client's copy; otherwise only changed rows are present.
+//
+// A consumer that lags (its connection's interactive lane held a packet over
+// 250 ms, or its stream credit is spent) is not sent every frame: its frames are
+// skipped and, once it caught up, it gets a full frame of the screen as it is
+// then, whose `last_input_seq` is its own latest echoed seq. `seq` then jumps.
+message Frame {
+  // Hyperlink URIs used by changed rows, deduplicated within this frame.
+  // Run.link indexes this table plus one.
+  repeated string links = 20;
+  string pane_id = 1;
+  uint64 seq = 2;
+  bool full = 3;
+  uint32 cols = 4;
+  uint32 rows = 5;
+  repeated Style styles = 6;
+  repeated Row changed = 7;
+  Cursor cursor = 8;
+  // Present only when the title changed (always on full frames).
+  optional string title = 9;
+  // The application in the pane wants mouse events.
+  bool mouse_tracking = 10;
+  bool alt_screen = 11;
+  // Kitty graphics. Set when the placements in view changed and on every full
+  // frame; `placements` is then the complete list, and unset means the last list
+  // still holds.
+  bool placements_changed = 12;
+  repeated Placement placements = 13;
+  // The images the placements use: each sent once per (id, generation) to a
+  // consumer, and all of those in view again on a full frame.
+  repeated Image images = 14;
+  // The cell the placements are measured in (the last resize's, or 10x20).
+  uint32 cell_width_px = 15;
+  uint32 cell_height_px = 16;
+  // Rows of history above the viewport's first row.
+  uint32 viewport_top = 17;
+  // The seq of the input (pane.input / pane.resize `seq`) the pane credited last
+  // before this frame was built, from whichever participant it came; 0 while
+  // there is none. Every credited input with a seq gets a frame: when it changed
+  // nothing on the screen, a frame with no rows.
+  uint64 last_input_seq = 18;
+  // How the pane produced this frame, for performance measurement. Always present.
+  FrameTiming timing = 19;
+}
+
+// Timing of one frame's production inside the pane process, in microseconds on
+// the pane's own clock; a duration too long for the field is u32::MAX.
+message FrameTiming {
+  // From the first pty output after the previous frame to the start of this
+  // frame's build. 0 for a frame not caused by output.
+  uint32 wait_us = 1;
+  // Time spent feeding pty output into the screen model since the previous frame.
+  uint32 parse_us = 2;
+  // Turning the screen model into this frame.
+  uint32 build_us = 3;
+  // Encoding and compression of the previous frame from this pane; 0 on the first.
+  uint32 encode_us = 4;
+  // Pty output consumed since the previous frame: bytes, and read() calls.
+  uint32 output_bytes = 5;
+  uint32 reads = 6;
+  // For the input named by Frame.last_input_seq, if new since the previous frame:
+  // from the pane process receiving it to it being applied. 0 when no new input.
+  uint32 input_us = 7;
+}
+
+// One image shown on the screen, as cells of the viewport.
+message Placement {
+  uint32 image_id = 1;
+  uint64 image_generation = 2;
+  // The top-left cell; the row is negative when the top is scrolled out of view.
+  int32 col = 3;
+  int32 row = 4;
+  uint32 cols = 5;
+  uint32 rows = 6;
+  // The part of the image shown, in image pixels.
+  uint32 source_x = 7;
+  uint32 source_y = 8;
+  uint32 source_width = 9;
+  uint32 source_height = 10;
+  // Offset of the top-left within its cell, in pixels of the frame's cell.
+  uint32 x_offset = 11;
+  uint32 y_offset = 12;
+  // Stacking: negative is under the text, zero and up above it.
+  int32 z = 13;
+  // The size to draw at, in pixels of the frame's cell.
+  uint32 pixel_width = 14;
+  uint32 pixel_height = 15;
+}
+
+// An image a program sent over the Kitty graphics protocol, re-encoded as PNG.
+message Image {
+  uint32 id = 1;
+  // Changes when the program sends the image again under the same id.
+  uint64 generation = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  bytes png = 5;
+}

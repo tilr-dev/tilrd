@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{
-    Error, client::IntoClientRequest, handshake::client::Response,
+    Error, client::IntoClientRequest, handshake::client::Response, protocol::WebSocketConfig,
 };
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
@@ -29,17 +29,30 @@ pub async fn connect<R>(
 where
     R: IntoClientRequest + Unpin,
 {
-    connect_with_roots(request, bundled_roots()).await
+    connect_with_roots(request, bundled_roots(), None).await
+}
+
+/// [`connect`] with the connection's limits (message and frame sizes); `None`
+/// keeps tungstenite's defaults.
+pub async fn connect_with_config<R>(
+    request: R,
+    config: Option<WebSocketConfig>,
+) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), Error>
+where
+    R: IntoClientRequest + Unpin,
+{
+    connect_with_roots(request, bundled_roots(), config).await
 }
 
 async fn connect_with_roots<R>(
     request: R,
     roots: RootCertStore,
+    config: Option<WebSocketConfig>,
 ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), Error>
 where
     R: IntoClientRequest + Unpin,
 {
-    tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector(roots)))
+    tokio_tungstenite::connect_async_tls_with_config(request, config, false, Some(connector(roots)))
         .await
 }
 
@@ -172,13 +185,55 @@ mod tests {
             ws.send(Message::text("verified")).await.unwrap();
         };
         let client = async {
-            let (mut ws, _) = connect_with_roots(format!("wss://localhost:{port}"), roots)
+            let (mut ws, _) = connect_with_roots(format!("wss://localhost:{port}"), roots, None)
                 .await
                 .unwrap();
             assert!(matches!(ws.get_ref(), MaybeTlsStream::Rustls(_)));
             assert_eq!(ws.next().await.unwrap().unwrap(), Message::text("verified"));
         };
         tokio::join!(server, client);
+    }
+
+    /// One binary message of 17 MiB over wss: past tungstenite's default frame
+    /// limit of 16 MiB, within a configured one of 32 MiB.
+    async fn receive_a_large_message(config: Option<WebSocketConfig>) -> Result<usize, Error> {
+        let (certificate, server_config) = test_identity();
+        let mut roots = RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = async {
+            let (socket, _) = listener.accept().await.unwrap();
+            let stream = tokio_rustls::TlsAcceptor::from(server_config)
+                .accept(socket)
+                .await
+                .unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = ws.send(Message::binary(vec![7u8; 17 << 20])).await;
+            let _ = ws.next().await;
+        };
+        let client = async {
+            let (mut ws, _) = connect_with_roots(format!("wss://localhost:{port}"), roots, config)
+                .await
+                .unwrap();
+            let result = ws.next().await.unwrap().map(|message| message.len());
+            drop(ws);
+            result
+        };
+        let ((), result) = tokio::join!(server, client);
+        result
+    }
+
+    #[tokio::test]
+    async fn a_configured_limit_lets_a_large_message_through_wss() {
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(32 << 20))
+            .max_frame_size(Some(32 << 20));
+        assert_eq!(
+            receive_a_large_message(Some(config)).await.unwrap(),
+            17 << 20
+        );
+        assert!(receive_a_large_message(None).await.is_err());
     }
 
     #[tokio::test]
@@ -223,7 +278,7 @@ mod tests {
             );
         };
         let client = async {
-            let err = connect_with_roots(format!("wss://{address}"), roots)
+            let err = connect_with_roots(format!("wss://{address}"), roots, None)
                 .await
                 .unwrap_err();
             assert_certificate_error(err, |err| {

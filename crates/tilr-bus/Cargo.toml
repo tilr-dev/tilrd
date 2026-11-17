@@ -1,0 +1,29 @@
+[package]
+name = "tilr-bus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The tilr bus (tilr.bus.v1): envelope and payload schemas, framing for WebSocket and stream sockets, and an async client"
+readme = "../../README.md"
+keywords = ["terminal", "protocol", "protobuf", "websocket", "tilr"]
+categories = ["network-programming", "encoding"]
+
+[dependencies]
+tilr-websocket.workspace = true
+base64 = "0.23"
+bytes.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+libc = "0.2"
+prost.workspace = true
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+tokio-tungstenite = "0.30"
+zstd.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
+
+[build-dependencies]
+prost-build.workspace = true

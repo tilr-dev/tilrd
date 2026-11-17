@@ -1,0 +1,230 @@
+syntax = "proto3";
+
+// The tilr bus, protocol tilr.bus.v1 (WebSocket subprotocol "tilr.bus.v1").
+//
+// Every participant (tilrd's core, instances from bus.toml, the owner, outside
+// participants with a credential) talks to the broker in tilrd with Envelopes.
+//
+// Framing:
+//   WebSocket (TCP port, Unix socket): one binary message = a flag byte (0 plain,
+//     1 zstd) + one Envelope. Envelopes of 256 bytes or more are compressed with
+//     zstd unless they carry a payload that is compressed already
+//     (Chunk.content_encoding "zstd").
+//   Stream sockets (instance fd 3, instance socket): u32 big-endian length + one
+//     Envelope, never compressed.
+//   An Envelope is at most HelloAck.max_frame (16 MiB) after decompression, in
+//   both directions; a longer one is a protocol error.
+//
+// Both sides ignore Envelope variants and fields they do not know.
+//
+// PROTOCOL_VERSION (Hello / HelloAck `protocol_version`, now 1) is one contract:
+// before the first public release every change keeps version 1; afterward, bump
+// only for a change incompatible with a peer of the previous public release, once
+// per release.
+//
+// WebSocket close codes the server ends a connection with, besides the standard
+// ones (see `tilr_bus::close`):
+//   4000 "superseded" - a newer connection of the same principal and Hello.client_id
+//   4001 "too slow"   - the participant did not take what it was sent
+//   4002 "timeout"    - the participant went silent or stopped answering pings
+//   4003 "credential" - the connection's token expired, was revoked or rotated away
+//
+// Error codes (Error.code, ConnectionError.code): see `tilr_bus::codes`.
+
+package tilr.bus.v1;
+
+message Envelope {
+  oneof msg {
+    Hello hello = 1;
+    HelloAck hello_ack = 2;
+    Call call = 3;
+    Reply reply = 4;
+    Cancel cancel = 5;
+    Event event = 6;
+    Subscribe subscribe = 7;
+    Unsubscribe unsubscribe = 8;
+    Chunk chunk = 9;
+    End end = 10;
+    Credit credit = 11;
+    CredentialUpdate credential_update = 12;
+    Activate activate = 13;
+    ConnectionError connection_error = 14;
+  }
+}
+
+// The first envelope on a connection. Anything else first, another version, a
+// wrong access_token, instance_token or credential: ConnectionError and close.
+message Hello {
+  // The PROTOCOL_VERSION the participant was built against.
+  uint32 protocol_version = 1;
+  string client_name = 2;
+  // Names this participant (a window, a process) for as long as it runs, the same
+  // on every connection it makes; a Hello with the client_id of a connection still
+  // open for the same principal closes that one with 4000. Empty = no identity.
+  // Numbered input (pane.input with input_seq) needs one.
+  string client_id = 3;
+  // The server's access token, for the owner on the TCP port.
+  string access_token = 4;
+  // A Biscuit token of this server, for an outside participant.
+  bytes credential = 5;
+  // TILR_BUS_TOKEN, for an instance on its instance socket.
+  string instance_token = 6;
+  // The methods this participant provides; there is no later registration.
+  repeated MethodSpec provides = 7;
+}
+
+message MethodSpec {
+  // `<namespace>.<name>`: segments of [a-z0-9_-], at least two.
+  string method = 1;
+  Kind kind = 2;
+  // The lane of the consumer's connection its replies and chunks go on.
+  Lane lane = 3;
+  // How a call without a target picks among several providers.
+  Select select = 4;
+}
+
+enum Kind {
+  UNARY = 0;
+  // Answered with Chunk* then End, or an error Reply.
+  STREAM = 1;
+}
+
+enum Lane {
+  INTERACTIVE = 0;
+  BULK = 1;
+}
+
+enum Select {
+  // In turn, in connection order.
+  ROUND_ROBIN = 0;
+  // The provider that sent Activate last, else the last connected.
+  LAST_ACTIVE = 1;
+}
+
+message HelloAck {
+  uint32 protocol_version = 1;
+  // Set by the broker: "tilrd", "owner", "instance:<name>" or "token:<name>".
+  string identity = 2;
+  // Different for every connection, growing across reconnects and reloads; a
+  // client's seq_base for pane input is connection_id << 32.
+  uint64 connection_id = 3;
+  // Largest Envelope after decompression, both ways (16 MiB).
+  uint32 max_frame = 4;
+  // Calls and streams one connection may have pending (256).
+  uint32 max_in_flight = 5;
+  // A stream's window when Call.window is 0 (1 MiB).
+  uint32 stream_window = 6;
+  // Bulk payload bytes sent to this connection and not yet credited (1 MiB).
+  uint32 connection_window = 7;
+  // The token minted for an instance at its start; empty for others.
+  bytes credential = 8;
+  // UUID of this server, as server.info.server_id.
+  string server_id = 9;
+}
+
+message Call {
+  // Chosen by the caller, unique among its pending calls, streams and
+  // subscriptions on this connection.
+  uint64 id = 1;
+  // A participant's identity, or empty: routed by method.
+  string target = 2;
+  string method = 3;
+  bytes payload = 4;
+  // Set by the broker to the caller's identity; whatever a sender writes is
+  // overwritten.
+  string from = 5;
+  string trace_id = 6;
+  // 0 = the broker's call_timeout_ms (10 s); streams have no default deadline.
+  // A forwarded call carries the time its caller has left.
+  uint32 timeout_ms = 7;
+  // "application/x-protobuf" when empty.
+  string content_type = 8;
+  // Authorizes this call alone (a bearer); the connection's token is not consulted.
+  bytes credential = 9;
+  // A stream's initial credit in payload bytes; 0 = HelloAck.stream_window; at most
+  // 16 MiB.
+  uint32 window = 10;
+}
+
+message Reply {
+  uint64 id = 1;
+  oneof result {
+    bytes payload = 2;
+    Error error = 3;
+  }
+  string content_type = 4;
+}
+
+// One part of a stream's answer, with the call's id.
+message Chunk {
+  uint64 id = 1;
+  bytes payload = 2;
+  // "zstd": the producer compressed the payload; the WebSocket framing then sends
+  // this envelope plain.
+  string content_encoding = 3;
+}
+
+// The end of a stream, with an optional final payload.
+message End {
+  uint64 id = 1;
+  bytes payload = 2;
+}
+
+// More credit for a stream, in payload bytes, from its reader.
+message Credit {
+  uint64 id = 1;
+  uint32 bytes = 2;
+}
+
+// The caller no longer wants the call or stream `id` (from the caller), or the
+// broker tells a callee to stop (deadline, caller gone).
+message Cancel {
+  uint64 id = 1;
+  string reason = 2;
+}
+
+message Event {
+  // `<segment>(.<segment>)+`, segments [a-z0-9_-]+.
+  string subject = 1;
+  bytes payload = 2;
+  string content_type = 3;
+  // Set by the broker to the emitter's identity.
+  string from = 4;
+  // Set only by the core: "pane:<id>"; delivered only to subscribers that may
+  // access the resource.
+  string scope = 5;
+}
+
+// Answered with an empty Reply{id}, or an error Reply.
+message Subscribe {
+  uint64 id = 1;
+  // Segments, `*` for one segment, a trailing `>` for one or more (NATS subjects).
+  string pattern = 2;
+}
+
+message Unsubscribe {
+  uint64 id = 1;
+}
+
+// A new token for this connection: from the broker (an instance's renewal or a
+// key rotation), or from the participant (after bus.renew).
+message CredentialUpdate {
+  bytes credential = 1;
+}
+
+// This provider is now the user's active one for its LAST_ACTIVE methods.
+message Activate {}
+
+// The connection is refused or broken at the protocol level: expected_hello,
+// unsupported_version, denied, reserved, bad_frame. Except bad_frame on a
+// WebSocket, the connection is closed after it.
+message ConnectionError {
+  string code = 1;
+  string message = 2;
+}
+
+message Error {
+  string code = 1;
+  // Meant for the user; names the participant or method.
+  string message = 2;
+}

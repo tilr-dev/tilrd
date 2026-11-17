@@ -1,0 +1,21 @@
+links: "https://example.com/"
+pane_id: "6f1c2a9e-3b7d-4c1f-9a52-0e8d7b61c3f4"
+seq: 42
+full: true
+cols: 80
+rows: 2
+styles { fg { palette: 1 } bg { rgb: 0x102030 } attrs: 5 underline: UNDERLINE_CURLY }
+changed { y: 0 runs { style: 1 text: "hello" link: 1 } runs { text: "\344\270\226" wide: true } }
+changed { y: 1 runs { text: "e\314\201" cluster: true } }
+cursor { visible: true x: 3 y: 1 shape: CURSOR_SHAPE_BAR blinking: true }
+title: "vim"
+mouse_tracking: true
+alt_screen: true
+placements_changed: true
+placements { image_id: 7 image_generation: 2 col: 1 row: -1 cols: 4 rows: 3 source_width: 40 source_height: 30 z: -1 pixel_width: 40 pixel_height: 60 }
+images { id: 7 generation: 2 width: 40 height: 30 png: "\211PNG" }
+cell_width_px: 10
+cell_height_px: 20
+viewport_top: 100
+last_input_seq: 4294967297
+timing { wait_us: 1 parse_us: 2 build_us: 3 encode_us: 4 output_bytes: 5 reads: 6 input_us: 4294967295 }
