@@ -31,5 +31,9 @@ not (
   | test(=a_link_cloud_revokes_stops_the_tunnel_until_linked_again)
   | test(=an_idle_client_that_is_still_there_stays_connected)
   | test(=the_pane_process_title_follows_exec_in_the_same_foreground_group)
+  | test(=a_lagging_watcher_skips_to_the_latest_screen)
+  | test(=a_watcher_behind_when_the_pane_exits_gets_its_last_screen)
+  | test(=a_read_the_pane_process_does_not_answer_ends)
+  | test(=a_stuck_pane_is_closed_by_pane_applied)
 )
 '''

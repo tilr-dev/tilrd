@@ -182,7 +182,7 @@ async fn unknown_envelopes_are_ignored_and_bad_ones_reported() {
     raw.send_raw(vec![0, 0x9a, 0x06, 0x00]).await;
     let mut known = codec_plain(Msg::Call(Call {
         id: 5,
-        method: "pane.list".into(),
+        method: "bus.absent".into(),
         ..Call::default()
     }));
     // Envelope.call is field 3, length-delimited: append field 99 to its body.
@@ -190,7 +190,7 @@ async fn unknown_envelopes_are_ignored_and_bad_ones_reported() {
     known.extend_from_slice(&[0x98, 0x06, 0x01]);
     raw.send_raw(known).await;
 
-    // The connection stays: the call is answered (no pane.* method yet).
+    // The connection stays: the call is answered (tilrd has no such method).
     let reply = raw
         .wait_for(|msg| match msg {
             Msg::Reply(reply) => Some(reply.clone()),
@@ -199,7 +199,7 @@ async fn unknown_envelopes_are_ignored_and_bad_ones_reported() {
         .await;
     assert_eq!(reply.id, 5);
     let Some(reply::Result::Error(error)) = reply.result else {
-        panic!("pane.list is not provided yet: {reply:?}");
+        panic!("bus.absent is not provided: {reply:?}");
     };
     assert_eq!(error.code, codes::NOT_FOUND);
 }
@@ -667,4 +667,142 @@ async fn the_end_of_a_relayed_bulk_stream_comes_after_its_chunks() {
         }
         assert_eq!(chunks, CHUNKS, "the end came before the last chunk");
     }
+}
+
+// ---------------------------------------------------------------------------
+// bus-core-panes
+// ---------------------------------------------------------------------------
+
+/// `len` bytes that are not text, the same in every run (xorshift).
+fn noise(len: usize) -> Bytes {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect::<Vec<u8>>()
+        .into()
+}
+
+#[tokio::test]
+async fn payloads_pass_byte_for_byte() {
+    let server = start();
+    let _t1 = server.test_runtime("t-1", &[]).await;
+    let owner = server.owner().await;
+    let cases = [
+        (noise(1 << 20), "application/octet-stream"),
+        (Bytes::new(), "application/octet-stream"),
+        (Bytes::from_static(&[0xff, 0xfe, 0x00, 0x80]), ""),
+        (
+            Bytes::from_static(b"{\"not\": \"read\"}"),
+            "application/json",
+        ),
+    ];
+    for (payload, content_type) in cases {
+        let mut options = CallOptions::default();
+        if !content_type.is_empty() {
+            options = options.content_type(content_type);
+        }
+        let reply = owner
+            .call("test.echo", payload.clone(), options)
+            .await
+            .unwrap();
+        assert!(
+            reply.payload == payload,
+            "{} bytes came back changed",
+            payload.len()
+        );
+        assert_eq!(reply.content_type, content_type);
+    }
+}
+
+#[tokio::test]
+async fn core_methods_answer_json_to_json() {
+    use base64::Engine;
+    use serde_json::{Value, json};
+    let server = start();
+    let owner = server.owner().await;
+    let json_call = async |method: &str, request: Value| -> Result<Value, BusError> {
+        let reply = owner
+            .call(
+                method,
+                request.to_string(),
+                CallOptions::default().content_type(tilr_bus::CONTENT_TYPE_JSON),
+            )
+            .await?;
+        assert_eq!(reply.content_type, tilr_bus::CONTENT_TYPE_JSON, "{method}");
+        Ok(serde_json::from_slice(&reply.payload).unwrap())
+    };
+
+    let listed = json_call("pane.list", json!({})).await.unwrap();
+    assert_eq!(listed["panes"], json!([]));
+
+    let created = json_call(
+        "pane.create",
+        json!({"cols": 90, "rows": 20, "command": ["/bin/sh", "-c", "PS1='$ ' exec /bin/sh"]}),
+    )
+    .await
+    .unwrap();
+    let pane_id = created["paneId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        (created["cols"].clone(), created["rows"].clone()),
+        (json!(90), json!(20))
+    );
+    assert_eq!(created["createdBy"], "owner");
+    // 64-bit integers are strings in proto3 JSON.
+    assert!(
+        created["createdAtMs"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
+
+    let data = base64::engine::general_purpose::STANDARD.encode("echo j''son\n");
+    let ack = json_call(
+        "pane.input",
+        json!({"paneId": pane_id, "raw": {"data": data}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ack, json!({"paneId": pane_id, "seq": "0"}));
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let text = json_call("pane.read", json!({"paneId": pane_id}))
+            .await
+            .unwrap();
+        assert_eq!(text["alive"], true);
+        if text["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line == "json")
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{text}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let listed = json_call("pane.list", json!({})).await.unwrap();
+    assert_eq!(listed["panes"][0]["paneId"], pane_id.as_str());
+    // A protobuf caller still gets protobuf.
+    let reply = owner
+        .call("pane.list", Bytes::new(), CallOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(reply.content_type, "");
+    let panes = reply.decode::<tilr_bus::pane::ListReply>().unwrap().panes;
+    assert_eq!(panes[0].pane_id, pane_id);
+    // JSON that is not the request is bad_request.
+    let error = json_call("pane.list", json!([1])).await.unwrap_err();
+    assert_eq!(error.code, codes::BAD_REQUEST);
+    let closed = json_call("pane.close", json!({"paneId": pane_id}))
+        .await
+        .unwrap();
+    assert!(closed["exitCode"].is_number(), "{closed}");
 }
