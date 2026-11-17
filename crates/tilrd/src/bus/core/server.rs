@@ -174,43 +174,55 @@ where
 #[derive(Default)]
 struct Ends(HashMap<&'static str, HashSet<u64>>);
 
-/// On the supervisor's task: run `f` there once the connection `conn` ends
-/// (at once if it has), once per namespace `what` and connection, however
-/// often this is called. For what a caller leaves behind: watches, uploads,
-/// programs.
+/// On the supervisor's task: run `f` there once the connection `conn` ends,
+/// once per namespace `what` and connection, however often this is called.
+/// For what a caller leaves behind: watches, uploads, programs. `false` when
+/// the connection is gone already (`f` is not run then): the caller keeps
+/// nothing for it and refuses the call, since nothing would clean it up.
+#[must_use]
 pub(super) fn on_connection_end(
     s: &mut Supervisor,
     what: &'static str,
     conn: u64,
     f: fn(&mut Supervisor, u64),
-) {
-    if !s.bus.slot::<Ends>().0.entry(what).or_default().insert(conn) {
-        return;
-    }
+) -> bool {
     let Some(broker) = s.bus.broker().cloned() else {
-        return;
+        return false;
     };
-    let supervisor = s.bus.slot::<HandleSlot>().0.clone();
-    let Some(supervisor) = supervisor else {
-        return;
+    let Some(supervisor) = s.bus.slot::<HandleSlot>().0.clone() else {
+        return false;
     };
-    let ended = move |s: &mut Supervisor| {
-        if let Some(conns) = s.bus.slot::<Ends>().0.get_mut(what) {
-            conns.remove(&conn);
-        }
-        f(s, conn);
-    };
-    match broker.watch_connection(conn) {
-        Some(mut state) => {
-            tokio::spawn(async move {
-                let _ = state
-                    .wait_for(|state| matches!(state, ConnState::Ended(_)))
-                    .await;
-                let _ = supervisor.with(ended);
-            });
-        }
-        None => ended(s),
+    if s.bus
+        .slot::<Ends>()
+        .0
+        .get(what)
+        .is_some_and(|conns| conns.contains(&conn))
+    {
+        // Watched already; an end seen meanwhile is queued behind this and
+        // cleans up what the caller keeps now.
+        return true;
     }
+    let Some(mut state) = broker.watch_connection(conn) else {
+        return false;
+    };
+    s.bus.slot::<Ends>().0.entry(what).or_default().insert(conn);
+    tokio::spawn(async move {
+        let _ = state
+            .wait_for(|state| matches!(state, ConnState::Ended(_)))
+            .await;
+        let _ = supervisor.with(move |s: &mut Supervisor| {
+            if let Some(conns) = s.bus.slot::<Ends>().0.get_mut(what) {
+                conns.remove(&conn);
+            }
+            f(s, conn);
+        });
+    });
+    true
+}
+
+/// A connection's share of something limited is used up: `busy`.
+pub(super) fn limit(message: impl Into<String>) -> BusError {
+    BusError::new(tilr_bus::codes::BUSY, message)
 }
 
 /// The supervisor's handle, for what runs on its task and needs to queue more.

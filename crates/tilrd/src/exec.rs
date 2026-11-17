@@ -59,7 +59,7 @@ const CHUNK: usize = 64 * 1024;
 /// taken; more is an overrun, and the exec is killed.
 pub const INPUT_WINDOW: usize = 4 << 20;
 /// Execs one client may have running at once.
-const MAX_EXECS_PER_CLIENT: usize = 64;
+pub const MAX_EXECS_PER_CLIENT: usize = 64;
 /// How long after the program's group is gone its output is still waited
 /// for: a process that left the group (`setsid`) may hold the pipes open.
 /// Only the time spent waiting on the pipe counts, not waiting for room on
@@ -135,6 +135,24 @@ pub trait Report: Send + Sync + 'static {
     fn exit(&self, exit: Exit) -> Pending<'_, ()>;
     /// The end, without waiting: a stop that gave up on the exec.
     fn exit_now(&self, exit: Exit);
+}
+
+/// Why [`Execs`] did not do what it was asked; its text is for the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// No exec of that id is the client's.
+    NoExec(String),
+    /// The client has [`MAX_EXECS_PER_CLIENT`] running.
+    Limit(String),
+    /// The program did not start, its stdin is closed, or it was overrun.
+    Refused(String),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::NoExec(text) | Self::Limit(text) | Self::Refused(text)) = self;
+        f.write_str(text)
+    }
 }
 
 /// Why the server killed a program on its own (or as asked).
@@ -248,9 +266,15 @@ impl Execs {
                 self.start(client, client_id, program, report)
                     .err()
                     .map(|error| {
+                        tracing::info!(
+                            client,
+                            client_id,
+                            request = start.request_id,
+                            "exec refused: {error}"
+                        );
                         server_message::Msg::ExecStarted(ExecStarted {
                             request_id: start.request_id,
-                            error,
+                            error: error.to_string(),
                             ..ExecStarted::default()
                         })
                     })
@@ -277,32 +301,28 @@ impl Execs {
 
     /// Start a program for `client` (a `tilr.v1` client or a bus connection,
     /// whose ids do not overlap). Its [`Report::started`] is told here, ahead
-    /// of any output; `Err` says why it did not start.
+    /// of any output; `Ok` is its exec id, `Err` says why it did not start
+    /// (the caller logs it).
     pub fn start(
         &mut self,
         client: u64,
         client_id: &str,
         program: Program,
         report: Arc<dyn Report>,
-    ) -> Result<(), String> {
-        let refused = |error: String| {
-            tracing::info!(client, client_id, "exec refused: {error}");
-            Err(error)
-        };
+    ) -> Result<u64, Refusal> {
         let running = self
             .runs
             .values()
             .filter(|run| run.client == client)
             .count();
         if running >= MAX_EXECS_PER_CLIENT {
-            return refused(format!("{MAX_EXECS_PER_CLIENT} execs running already"));
+            return Err(Refusal::Limit(format!(
+                "{MAX_EXECS_PER_CLIENT} execs running already"
+            )));
         }
-        let mut child = match spawn(&program) {
-            Ok(child) => child,
-            Err(err) => return refused(err),
-        };
+        let mut child = spawn(&program).map_err(Refusal::Refused)?;
         let Some(pid) = child.id() else {
-            return refused("the program is gone".into());
+            return Err(Refusal::Refused("the program is gone".into()));
         };
         let exec_id = self.next_exec;
         self.next_exec += 1;
@@ -310,7 +330,7 @@ impl Execs {
             tracing::debug!(client, "exec dropped: the client is not taking packets");
             kill_group(pid, libc::SIGKILL);
             (self.sink)(Output::Stuck { client });
-            return Ok(());
+            return Ok(exec_id);
         }
         tracing::info!(
             client,
@@ -381,7 +401,7 @@ impl Execs {
                 helpers,
             },
         );
-        Ok(())
+        Ok(exec_id)
     }
 
     /// Stdin for a program of `client`: queued for it, then the end of it if
@@ -394,16 +414,18 @@ impl Execs {
         data: Bytes,
         eof: bool,
         taken: Option<oneshot::Sender<u64>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let Some(run) = self
             .runs
             .get_mut(&exec_id)
             .filter(|run| run.client == client)
         else {
-            return Err(format!("no exec {exec_id} of this client"));
+            return Err(Refusal::NoExec(format!("no exec {exec_id} of this client")));
         };
         let Some(stdin) = &run.stdin else {
-            return Err(format!("exec {exec_id}: its stdin is closed"));
+            return Err(Refusal::Refused(format!(
+                "exec {exec_id}: its stdin is closed"
+            )));
         };
         let len = data.len();
         if len > 0 && stdin.queued.fetch_add(len, Ordering::Relaxed) + len > INPUT_WINDOW {
@@ -414,9 +436,9 @@ impl Execs {
             );
             run.stdin = None;
             let _ = run.control.send(Control::Kill(End::InputOverrun));
-            return Err(format!(
+            return Err(Refusal::Refused(format!(
                 "exec {exec_id}: more than {INPUT_WINDOW} bytes of stdin not taken yet: killed"
-            ));
+            )));
         }
         if len > 0 || taken.is_some() {
             let _ = stdin.tx.send((data, taken));
@@ -429,10 +451,10 @@ impl Execs {
     }
 
     /// Signal the process group of a program of `client`.
-    pub fn signal(&mut self, client: u64, exec_id: u64, signal: i32) -> Result<(), String> {
+    pub fn signal(&mut self, client: u64, exec_id: u64, signal: i32) -> Result<(), Refusal> {
         let run = self
             .owned(client, exec_id)
-            .ok_or_else(|| format!("no exec {exec_id} of this client"))?;
+            .ok_or_else(|| Refusal::NoExec(format!("no exec {exec_id} of this client")))?;
         let _ = run.control.send(Control::Signal(signal));
         Ok(())
     }

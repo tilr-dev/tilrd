@@ -27,7 +27,9 @@ use tilr_bus::{BusError, codes, methods};
 use tokio::sync::{mpsc, oneshot};
 
 use super::json;
-use super::server::{asked, conn_of, json_message, on_connection_end, queue, refused, unary};
+use super::server::{
+    asked, conn_of, json_message, limit, on_connection_end, queue, refused, unary,
+};
 use super::{Core, Registry, SupervisorHandle};
 use crate::bus::identity::{CallCtx, Identity};
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut};
@@ -104,8 +106,15 @@ json_message!(FsInfo {
     path_bytes: bytes "pathBytes",
 });
 
+/// Watches one connection may have at once (each is a watcher of the
+/// system's: an inotify instance on Linux, an FSEvents stream on macOS).
+pub const MAX_WATCHES_PER_CONNECTION: usize = 32;
+/// Uploads one connection may have in progress at once (each holds a
+/// temporary file open).
+pub const MAX_UPLOADS_PER_CONNECTION: usize = 16;
+
 /// A chunk of an upload, and who waits for its answer.
-type Piece = (WriteRequest, oneshot::Sender<Result<(), String>>);
+type Piece = (WriteRequest, oneshot::Sender<Result<(), BusError>>);
 
 /// What this module keeps on the supervisor (`CoreState::slot`).
 #[derive(Default)]
@@ -168,6 +177,13 @@ pub fn register(registry: &mut Registry, core: &Core) {
         Lane::Bulk,
         move |ctx, payload, out| read(reader.clone(), ctx, payload, out),
     ));
+    #[cfg(feature = "failpoints")]
+    {
+        let handle = core.supervisor.clone();
+        let _ = core.supervisor.with(move |s| {
+            s.bus.slot::<LateWrites>().0 = Some(handle);
+        });
+    }
     let supervisor = core.supervisor.clone();
     registry.add(unary(
         methods::FS_WRITE.name,
@@ -179,8 +195,7 @@ pub fn register(registry: &mut Registry, core: &Core) {
             async move {
                 queued?;
                 rx.await
-                    .map_err(|_| BusError::unavailable("the upload was dropped"))?
-                    .map_err(refused)?;
+                    .map_err(|_| BusError::unavailable("the upload was dropped"))??;
                 Ok(FsAck {})
             }
         },
@@ -357,27 +372,88 @@ pub(super) fn split(data: Bytes, room: usize) -> Vec<Bytes> {
 }
 
 /// A chunk of `fs.write`, on the supervisor's task: to the upload of its
-/// transfer, started by the first.
+/// transfer, started by the first. A first chunk of a connection that has
+/// ended, or that has [`MAX_UPLOADS_PER_CONNECTION`] uploads in progress, is
+/// refused and starts nothing.
 fn write(
     s: &mut Supervisor,
     conn: u64,
     chunk: WriteRequest,
-    reply: oneshot::Sender<Result<(), String>>,
+    reply: oneshot::Sender<Result<(), BusError>>,
+) {
+    // A test holds the chunk here until the caller's connection has ended.
+    #[cfg(feature = "failpoints")]
+    if crate::fail::armed(WRITE_LATE)
+        && let Some(supervisor) = s.bus.slot::<LateWrites>().0.clone()
+    {
+        tokio::spawn(async move {
+            crate::fail::point_async(WRITE_LATE.into()).await;
+            let _ = supervisor.with(move |s| write_now(s, conn, chunk, reply));
+        });
+        return;
+    }
+    write_now(s, conn, chunk, reply);
+}
+
+/// The failpoint that holds a chunk of `fs.write` before the supervisor
+/// takes it.
+#[cfg(feature = "failpoints")]
+const WRITE_LATE: &str = "bus-fs-write-late";
+
+/// The supervisor's handle, for a chunk held by [`WRITE_LATE`].
+#[cfg(feature = "failpoints")]
+#[derive(Default)]
+struct LateWrites(Option<SupervisorHandle>);
+
+fn write_now(
+    s: &mut Supervisor,
+    conn: u64,
+    chunk: WriteRequest,
+    reply: oneshot::Sender<Result<(), BusError>>,
 ) {
     let Some(access) = s.files.as_ref().map(files::Files::access) else {
-        let _ = reply.send(Err("files are turned off on this server".into()));
+        let _ = reply.send(Err(BusError::unavailable(
+            "files are turned off on this server",
+        )));
         return;
     };
-    on_connection_end(s, "fs", conn, forget_connection);
     let key = (conn, chunk.transfer_id);
     let last = chunk.last;
-    let st = state(s);
-    let pieces = st.writes.entry(key).or_insert_with(|| {
+    if !state(s).writes.contains_key(&key) {
+        if !on_connection_end(s, "fs", conn, forget_connection) {
+            tracing::info!(conn, "fs.write refused: the connection ended");
+            let _ = reply.send(Err(BusError::unavailable("the connection ended")));
+            return;
+        }
+        let open = state(s)
+            .writes
+            .keys()
+            .filter(|(owner, _)| *owner == conn)
+            .count();
+        if open >= MAX_UPLOADS_PER_CONNECTION {
+            let _ = reply.send(Err(limit(format!(
+                "{MAX_UPLOADS_PER_CONNECTION} uploads in progress already"
+            ))));
+            return;
+        }
+        if last {
+            // One chunk: nothing to keep between calls.
+            tokio::spawn(async move {
+                let (tx, rx) = mpsc::unbounded_channel();
+                let _ = tx.send((chunk, reply));
+                drop(tx);
+                upload(access, rx).await;
+            });
+            return;
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(upload(access, rx));
-        tx
-    });
-    let _ = pieces.send((chunk, reply));
+        state(s).writes.insert(key, tx);
+    }
+    let st = state(s);
+    if let Some(pieces) = st.writes.get(&key) {
+        let _ = pieces.send((chunk, reply));
+    }
     if last {
         st.writes.remove(&key);
     }
@@ -385,7 +461,8 @@ fn write(
 
 /// One upload: each chunk answered once written; once one failed, it and
 /// every later one are answered with that failure, and the file stays as it
-/// was. Ends after the last chunk, or when the caller's connection ends.
+/// was (its temporary file removed before the failure is answered). Ends
+/// after the last chunk, or when the caller's connection ends.
 async fn upload(access: Access, mut pieces: mpsc::UnboundedReceiver<Piece>) {
     let mut upload: Result<Option<Upload>, String> = Ok(None);
     while let Some((chunk, reply)) = pieces.recv().await {
@@ -394,13 +471,18 @@ async fn upload(access: Access, mut pieces: mpsc::UnboundedReceiver<Piece>) {
             Err(failed) => Err(failed.clone()),
             Ok(open) => take(&access, open, chunk).await,
         };
-        if let Err(failed) = &result {
-            upload = Err(failed.clone());
+        if let Err(failed) = &result
+            && let Ok(Some(open)) = std::mem::replace(&mut upload, Err(failed.clone()))
+        {
+            open.abandon().await;
         }
-        let _ = reply.send(result);
+        let _ = reply.send(result.map_err(refused));
         if last {
             return;
         }
+    }
+    if let Ok(Some(open)) = upload {
+        open.abandon().await;
     }
 }
 
@@ -435,27 +517,57 @@ async fn take(
 /// stop.
 fn forget_connection(s: &mut Supervisor, conn: u64) {
     let st = state(s);
+    let (uploads, watches) = (st.writes.len(), st.watches.len());
     st.writes.retain(|&(owner, _), _| owner != conn);
     st.watches.retain(|_, (owner, _)| *owner != conn);
+    let (uploads, watches) = (uploads - st.writes.len(), watches - st.watches.len());
+    tracing::info!(
+        conn,
+        uploads,
+        watches,
+        "fs: the connection ended, its uploads and watches went"
+    );
 }
 
-/// `fs.watch`: answered once the server watches.
+/// How many watches `conn` has.
+fn watches_of(st: &FsState, conn: u64) -> usize {
+    st.watches
+        .values()
+        .filter(|(owner, _)| *owner == conn)
+        .count()
+}
+
+fn too_many_watches() -> BusError {
+    limit(format!(
+        "{MAX_WATCHES_PER_CONNECTION} watches of this connection already"
+    ))
+}
+
+/// `fs.watch`: answered once the server watches. A connection that ended,
+/// or has [`MAX_WATCHES_PER_CONNECTION`] watches, gets none.
 fn watch(
     core: Core,
     conn: u64,
     request: WatchRequest,
 ) -> impl Future<Output = Result<WatchReply, BusError>> + Send + 'static {
     let begun = queue(&core.supervisor, move |s| {
-        let access = s.files.as_ref().map(files::Files::access);
-        on_connection_end(s, "fs", conn, forget_connection);
+        let access = s
+            .files
+            .as_ref()
+            .map(files::Files::access)
+            .ok_or_else(|| BusError::unavailable("files are turned off on this server"))?;
+        if watches_of(state(s), conn) >= MAX_WATCHES_PER_CONNECTION {
+            return Err(too_many_watches());
+        }
+        if !on_connection_end(s, "fs", conn, forget_connection) {
+            return Err(BusError::unavailable("the connection ended"));
+        }
         let st = state(s);
         st.next_watch += 1;
-        (access, st.next_watch)
+        Ok((access, st.next_watch))
     });
     async move {
-        let (access, watch_id) = asked(begun?).await?;
-        let access =
-            access.ok_or_else(|| BusError::unavailable("files are turned off on this server"))?;
+        let (access, watch_id) = asked(begun?).await??;
         let path: OsString = files::requested(&request.path, &request.path_bytes);
         let broker = core.broker.clone();
         let subject = format!("fs.changed.{watch_id}");
@@ -473,6 +585,8 @@ fn watch(
                 path_bytes: path_bytes.into(),
                 watch_id,
             };
+            // Unscoped: the broker's API has no scope of one connection, so
+            // any subscriber with the right to `fs.changed.*` gets it.
             broker.emit(
                 Identity::Tilrd,
                 &subject,
@@ -483,19 +597,23 @@ fn watch(
         let named = request.path.clone();
         let handle = blocking(move || access.watch(&path, &named, sink)).await?;
         let kept = queue(&core.supervisor, move |s| {
-            // A connection that ended meanwhile gets no watch.
+            // A connection that ended meanwhile gets no watch; the limit is
+            // checked again, for watches set up side by side.
             let alive = s
                 .bus
                 .broker()
                 .is_some_and(|broker| broker.principal_of(conn).is_some());
-            if alive {
-                state(s).watches.insert(watch_id, (conn, handle));
+            if !alive {
+                return Err(BusError::unavailable("the connection ended"));
             }
-            alive
+            let st = state(s);
+            if watches_of(st, conn) >= MAX_WATCHES_PER_CONNECTION {
+                return Err(too_many_watches());
+            }
+            st.watches.insert(watch_id, (conn, handle));
+            Ok(())
         });
-        if !asked(kept?).await? {
-            return Err(BusError::unavailable("the connection ended"));
-        }
+        asked(kept?).await??;
         Ok(WatchReply { watch_id })
     }
 }

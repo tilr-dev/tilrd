@@ -10,8 +10,9 @@
 //! [`copied`] (in `Supervisor::send_copy`, beside the `tilr.v1`
 //! `ClipboardWrite`s): it is kept here as the latest copy and announced as
 //! `pane.copied {pane_id, transfer_id, mime, total_size}` with scope
-//! `pane:<id>`; `clipboard.get {transfer_id}` streams it until a newer copy
-//! replaces it, then answers `not_found`.
+//! `pane:<id>`; `clipboard.get {transfer_id}` streams it, to a caller that may
+//! access the pane, until a newer copy replaces it, then answers `not_found`
+//! (as it does to one that may not).
 
 use bytes::Bytes;
 use prost::Message;
@@ -104,7 +105,9 @@ pub fn register(registry: &mut Registry, core: &Core) {
             let transfer_id = request.transfer_id;
             // Queued now: the chunks of one caller keep their order.
             let taken = queue(&supervisor, move |s| {
-                on_connection_end(s, "clipboard", conn, forget_connection);
+                if !on_connection_end(s, "clipboard", conn, forget_connection) {
+                    return Taken::Refused("the connection ended".into());
+                }
                 let put = Put {
                     transfer_id: request.transfer_id,
                     mime: request.mime,
@@ -149,7 +152,14 @@ fn forget_connection(s: &mut Supervisor, conn: u64) {
 async fn get(supervisor: SupervisorHandle, ctx: CallCtx, payload: Bytes, out: StreamOut) {
     let result = async {
         let request = json::decode::<GetRequest>(&ctx, &payload)?;
-        let latest = queue(&supervisor, |s| s.bus.slot::<Latest>().0.clone())?;
+        let caller = super::panes::Caller::of(&ctx);
+        let latest = queue(&supervisor, move |s| {
+            let copy = s.bus.slot::<Latest>().0.clone()?;
+            // A copy of a pane the caller may not access is answered as none.
+            let pane_id = copy.pane_id.parse().ok()?;
+            super::panes::may_access(s, &caller, pane_id).ok()?;
+            Some(copy)
+        })?;
         let copy = asked(latest)
             .await?
             .filter(|copy| copy.transfer_id == request.transfer_id)

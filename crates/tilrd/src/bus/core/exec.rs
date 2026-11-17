@@ -11,7 +11,7 @@
 //! reader that credits slowly holds the program back. `server.update` and
 //! `server.command` stream through [`stream_exec`] too.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use prost::Message;
@@ -25,11 +25,11 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::fs::{room, split};
 use super::json;
-use super::server::{asked, conn_of, json_message, on_connection_end, queue, unary};
+use super::server::{asked, conn_of, json_message, limit, on_connection_end, queue, unary};
 use super::{Core, Registry, SupervisorHandle};
 use crate::bus::identity::CallCtx;
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut};
-use crate::exec::{Exit, Pending, Program, Report};
+use crate::exec::{Exit, Pending, Program, Refusal, Report};
 use crate::supervisor::Supervisor;
 
 json_message!(RunRequest {
@@ -112,13 +112,6 @@ pub fn register(registry: &mut Registry, core: &Core) {
                 execs(s, |execs| {
                     execs.signal(conn, request.exec_id, request.signal)
                 })
-                .map_err(|err| {
-                    if err.code == codes::BAD_REQUEST {
-                        BusError::new(codes::NOT_FOUND, err.message)
-                    } else {
-                        err
-                    }
-                })
             });
             async move {
                 asked(signalled?).await??;
@@ -128,16 +121,22 @@ pub fn register(registry: &mut Registry, core: &Core) {
     ));
 }
 
-/// Run `f` on the server's execs; its `Err` is `bad_request`.
+/// Run `f` on the server's execs; its `Err` is `not_found` for an exec that
+/// is not the caller's, `busy` at [`crate::exec::MAX_EXECS_PER_CLIENT`],
+/// `bad_request` else.
 fn execs<T>(
     s: &mut Supervisor,
-    f: impl FnOnce(&mut crate::exec::Execs) -> Result<T, String>,
+    f: impl FnOnce(&mut crate::exec::Execs) -> Result<T, Refusal>,
 ) -> Result<T, BusError> {
     let execs = s
         .execs
         .as_mut()
         .ok_or_else(|| BusError::unavailable("tilrd is shutting down"))?;
-    f(execs).map_err(BusError::bad_request)
+    f(execs).map_err(|refusal| match refusal {
+        Refusal::NoExec(why) => BusError::new(codes::NOT_FOUND, why),
+        Refusal::Limit(why) => limit(why),
+        Refusal::Refused(why) => BusError::bad_request(why),
+    })
 }
 
 /// The caller's connection ended: its programs are killed.
@@ -212,24 +211,33 @@ fn run_chunk(chunk: run_chunk::Chunk) -> Chunk {
 }
 
 /// Cancels the exec when the stream's handler goes before its end (the
-/// broker aborts it when the caller cancels).
+/// broker aborts it when the caller cancels or its connection ends). Made
+/// before the start is queued: the cancel is queued behind the start, so a
+/// handler that goes at any point takes the program with it.
 struct CancelOnDrop {
     supervisor: SupervisorHandle,
     conn: u64,
-    exec_id: Option<u64>,
+    /// The exec's id, set by the start on the supervisor's task.
+    exec_id: Arc<OnceLock<u64>>,
+    armed: bool,
 }
 
 impl CancelOnDrop {
-    /// Kill the exec as cancelled, now.
+    /// Kill the exec as cancelled (once it started), now.
     fn cancel(&mut self) {
-        if let Some(exec_id) = self.exec_id.take() {
-            let conn = self.conn;
+        if std::mem::take(&mut self.armed) {
+            let (conn, exec_id) = (self.conn, Arc::clone(&self.exec_id));
             let _ = self.supervisor.with(move |s| {
-                if let Some(execs) = &mut s.execs {
+                if let (Some(execs), Some(&exec_id)) = (&mut s.execs, exec_id.get()) {
                     execs.cancel(conn, exec_id);
                 }
             });
         }
+    }
+
+    /// The exec ended: nothing to cancel.
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -239,10 +247,16 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// The failpoint between the start of a program and the stream's handler
+/// taking up its answer.
+#[cfg(feature = "failpoints")]
+const STARTED: &str = "bus-exec-started";
+
 /// Run `program` for the caller and stream it: `started`, the `output`
 /// chunks (split to the stream's window), `End` with the `ExecExit`; a program
-/// that did not start is an error `spawn_failed`. Cancelling the stream kills
-/// the program's group.
+/// that did not start is an error `spawn_failed` (`busy` at the limit of a
+/// connection's programs). Cancelling the stream, or a stream whose reader is
+/// gone, kills the program's group.
 pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out: StreamOut) {
     let conn = conn_of(&ctx);
     let client_id = ctx.principal.client_id.clone();
@@ -252,15 +266,36 @@ pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out:
         items: items_tx,
         now: now_tx,
     });
+    let mut guard = CancelOnDrop {
+        supervisor: core.supervisor.clone(),
+        conn,
+        exec_id: Arc::new(OnceLock::new()),
+        armed: true,
+    };
+    let exec_id = Arc::clone(&guard.exec_id);
     let started = queue(&core.supervisor, move |s| {
-        on_connection_end(s, "exec", conn, forget_connection);
-        execs(s, |execs| execs.start(conn, &client_id, program, report))
+        if !on_connection_end(s, "exec", conn, forget_connection) {
+            return Err(BusError::unavailable("the connection ended"));
+        }
+        let started = execs(s, |execs| execs.start(conn, &client_id, program, report));
+        match &started {
+            Ok(id) => {
+                let _ = exec_id.set(*id);
+            }
+            Err(err) => tracing::info!(conn, client_id, "exec refused: {}", err.message),
+        }
+        started
     });
     let started = match started {
         Ok(rx) => asked(rx).await.and_then(|started| started),
         Err(err) => Err(err),
     };
+    #[cfg(feature = "failpoints")]
+    if crate::fail::armed(STARTED) {
+        crate::fail::point_async(STARTED.into()).await;
+    }
     if let Err(err) = started {
+        guard.disarm();
         let err = if err.code == codes::BAD_REQUEST {
             BusError::new(codes::SPAWN_FAILED, err.message)
         } else {
@@ -268,11 +303,6 @@ pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out:
         };
         return out.fail(err);
     }
-    let mut guard = CancelOnDrop {
-        supervisor: core.supervisor.clone(),
-        conn,
-        exec_id: None,
-    };
     let output_room = room(
         out.window(),
         RunChunk {
@@ -291,7 +321,7 @@ pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out:
             biased;
             exit = now.recv(), if now_open => match exit {
                 Some(exit) => {
-                    guard.exec_id = None;
+                    guard.disarm();
                     return out.end(exec_exit(exit).encode_to_vec().into());
                 }
                 None => now_open = false,
@@ -303,15 +333,20 @@ pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out:
             }
             item = items.recv() => match item {
                 Some(Item::Started { exec_id, pid }) => {
-                    guard.exec_id = Some(exec_id);
                     if cancelled {
-                        guard.cancel();
                         continue;
                     }
                     let started = run_chunk::Chunk::Started(ExecStarted { exec_id, pid });
-                    let _ = out.send(run_chunk(started)).await;
+                    if out.send(run_chunk(started)).await.is_err() {
+                        // Nobody reads it: the program goes.
+                        cancelled = true;
+                        guard.cancel();
+                    }
                 }
                 Some(Item::Output(output)) => {
+                    if cancelled {
+                        continue;
+                    }
                     for data in split(output.data, output_room) {
                         let chunk = run_chunk::Chunk::Output(ExecOutput {
                             exec_id: output.exec_id,
@@ -319,16 +354,18 @@ pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out:
                             data,
                         });
                         if out.send(run_chunk(chunk)).await.is_err() {
+                            cancelled = true;
+                            guard.cancel();
                             break;
                         }
                     }
                 }
                 Some(Item::Exit(exit)) => {
-                    guard.exec_id = None;
+                    guard.disarm();
                     return out.end(exec_exit(exit).encode_to_vec().into());
                 }
                 None => {
-                    guard.exec_id = None;
+                    guard.disarm();
                     return out.fail(BusError::unavailable("the program's end was not told"));
                 }
             },

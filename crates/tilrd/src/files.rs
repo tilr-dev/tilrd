@@ -492,13 +492,19 @@ async fn receive(
     let mut chunk = first;
     loop {
         if let Err(error) = upload.take(&chunk.data).await {
+            // Its temporary file is gone before the failure is told.
+            upload.abandon().await;
             return Some((request_id, error));
         }
         if chunk.last {
             break;
         }
         // The client left in the middle: nobody to answer.
-        chunk = chunks.recv().await?;
+        let Some(next) = chunks.recv().await else {
+            upload.abandon().await;
+            return None;
+        };
+        chunk = next;
     }
     Some((request_id, upload.finish().await.err().unwrap_or_default()))
 }
@@ -588,7 +594,48 @@ impl Upload {
     }
 
     /// Check the content is whole, put it on disk and rename it over the file.
+    /// The temporary file (if the write failed) and the note of the write
+    /// are gone before this returns.
     pub async fn finish(mut self) -> Result<(), String> {
+        let outcome = self.commit().await;
+        self.clean().await;
+        outcome
+    }
+
+    /// Give the write up: its temporary file and its note are removed before
+    /// this returns, and the file stays as it was.
+    pub async fn abandon(mut self) {
+        self.clean().await;
+    }
+
+    /// Remove what the write leaves behind now, off the runtime's threads.
+    async fn clean(&mut self) {
+        if let Some(clean) = self.leftovers() {
+            let _ = tokio::task::spawn_blocking(clean).await;
+        }
+    }
+
+    /// What removes the temporary file (unless it was renamed over the file)
+    /// and the note; `None` if nothing is left. Taken once.
+    fn leftovers(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+        let temp = (!std::mem::replace(&mut self.committed, true)).then(|| self.temp.clone());
+        let note = self.note.take();
+        if temp.is_none() && note.is_none() {
+            return None;
+        }
+        let file = self.file.take();
+        Some(move || {
+            drop(file);
+            if let Some(temp) = temp {
+                let _ = fs::remove_file(temp);
+            }
+            if let Some(note) = note {
+                let _ = fs::remove_file(note);
+            }
+        })
+    }
+
+    async fn commit(&mut self) -> Result<(), String> {
         let path = Named(&self.path);
         let (written, total) = (self.written, self.total);
         if written != total {
@@ -623,20 +670,8 @@ impl Upload {
 
 impl Drop for Upload {
     fn drop(&mut self) {
-        let temp = (!self.committed).then(|| self.temp.clone());
-        let note = self.note.take();
-        if temp.is_none() && note.is_none() {
+        let Some(clean) = self.leftovers() else {
             return;
-        }
-        let file = self.file.take();
-        let clean = move || {
-            drop(file);
-            if let Some(temp) = temp {
-                let _ = fs::remove_file(temp);
-            }
-            if let Some(note) = note {
-                let _ = fs::remove_file(note);
-            }
         };
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => drop(runtime.spawn_blocking(clean)),
@@ -771,21 +806,25 @@ impl Access {
             written: 0,
             committed: false,
         };
-        let named = Named(&upload.path);
         let mut options = tokio::fs::OpenOptions::new();
         options.write(true).create_new(true);
         let file = match options.open(&upload.temp).await {
             Ok(file) => file,
             Err(err) => {
-                // Not ours: nothing to remove.
+                // Not ours: nothing to remove but the note.
                 upload.committed = true;
-                return Err(failed(named, &err));
+                let error = failed(Named(&upload.path), &err);
+                upload.abandon().await;
+                return Err(error);
             }
         };
-        if let Some(mode) = mode {
-            file.set_permissions(fs::Permissions::from_mode(mode))
-                .await
-                .map_err(|err| failed(named, &err))?;
+        if let Some(mode) = mode
+            && let Err(err) = file.set_permissions(fs::Permissions::from_mode(mode)).await
+        {
+            let error = failed(Named(&upload.path), &err);
+            upload.file = Some(file);
+            upload.abandon().await;
+            return Err(error);
         }
         upload.file = Some(file);
         Ok(upload)
