@@ -17,6 +17,9 @@
 //! exec = true
 //! # Release channel for tilrd update: stable (default) or beta.
 //! update_channel = "stable"
+//! # Where launch profiles live (see profile.rs): absolute or starting with ~.
+//! # Default: `profiles/` next to this file.
+//! profiles_dir = "~/.config/tilr/profiles"
 //!
 //! # The files protocol (see files.rs).
 //! [files]
@@ -67,6 +70,8 @@ pub struct Config {
     /// The files protocol.
     #[serde(default)]
     pub files: FilesConfig,
+    /// Where launch profiles live. Unset: `profiles/` next to the configuration file.
+    pub profiles_dir: Option<String>,
 }
 
 /// `[files]`: what clients may do with the files of this machine.
@@ -162,6 +167,27 @@ pub fn allow_origins(cli: Vec<String>, config: &Config) -> Vec<String> {
     }
 }
 
+/// The directory launch profiles are read from: the file's `profiles_dir` (absolute
+/// or `~`), else `profiles/` in the directory of the configuration file in use (`path`
+/// is `--config`; without it the default one).
+pub fn profiles_dir(path: Option<&Path>, config: &Config) -> Result<PathBuf> {
+    if let Some(dir) = &config.profiles_dir {
+        let home = crate::profile::home();
+        return crate::profile::resolve_dir(dir, home.as_deref())
+            .map_err(|err| anyhow::anyhow!("profiles_dir {dir:?}: {err}"));
+    }
+    let file = match path {
+        Some(path) => Some(path.to_path_buf()),
+        None => default_path(),
+    };
+    let dir = file
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    Ok(dir.join("profiles"))
+}
+
 /// Whether to serve the SOCKS proxy: `--socks` turns it on, else the file
 /// says, else it is off.
 pub fn socks(cli: bool, config: &Config) -> bool {
@@ -193,6 +219,23 @@ mod tests {
             vec!["http://x"]
         );
         assert_eq!(allow_origins(vec![], &Config::default()), DEFAULT_ORIGINS);
+    }
+
+    #[test]
+    fn profiles_dir_defaults_next_to_the_configuration_file() {
+        let config = Config::default();
+        assert_eq!(
+            profiles_dir(Some(Path::new("/etc/tilr/my.toml")), &config).unwrap(),
+            Path::new("/etc/tilr/profiles")
+        );
+        let config: Config = toml::from_str("profiles_dir = \"/srv/profiles\"").unwrap();
+        assert_eq!(
+            profiles_dir(Some(Path::new("/etc/tilr/my.toml")), &config).unwrap(),
+            Path::new("/srv/profiles")
+        );
+        let config: Config = toml::from_str("profiles_dir = \"relative\"").unwrap();
+        let err = profiles_dir(None, &config).unwrap_err().to_string();
+        assert!(err.contains("profiles_dir"), "{err}");
     }
 
     #[test]

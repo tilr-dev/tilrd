@@ -15,6 +15,7 @@ mod metrics;
 mod notify;
 mod outbox;
 mod pane;
+mod profile;
 mod ps;
 mod pty;
 mod reload;
@@ -381,6 +382,7 @@ fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
     });
     let config = config::load(cli.config.as_deref())?;
     let allow_origins = config::allow_origins(cli.allow_origins, &config);
+    profile::set_dir(config::profiles_dir(cli.config.as_deref(), &config)?);
     Ok(supervisor::Options {
         listen,
         local,
