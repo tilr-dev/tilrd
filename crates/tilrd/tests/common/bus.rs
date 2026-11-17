@@ -64,47 +64,22 @@ pub enum TcpAuth {
     Credential(Credential),
 }
 
-/// The test runtime, `<target>/<profile>/examples/test_runtime` beside this test's
-/// executable (`<target>/<profile>/deps/`). Built here once per test process with
-/// `cargo build -p tilr-bus --example test_runtime --locked` for the same target
-/// directory and profile, so a test never runs a missing or stale one; cargo's
-/// lock serializes the processes that build it at once, and a fresh one is a no-op.
+/// The test runtime, `<target>/<profile>/examples/test_runtime` beside `tilrd`
+/// (`<target>/<profile>/tilrd`, wherever Cargo keeps this test's executable: in
+/// `<profile>/deps/` before Cargo 1.100, under its build directory from 1.100 on).
+/// A workspace test run builds it with tilr-bus's tests (`cargo nextest run
+/// --workspace`); the test does not run cargo itself, whose builds from inside a
+/// test see the test's environment and rebuild what the outer build made.
 pub fn test_runtime_path() -> PathBuf {
-    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let exe = std::env::current_exe().unwrap();
-            let profile_dir = exe.parent().unwrap().parent().unwrap();
-            let target_dir = profile_dir.parent().unwrap();
-            // `debug` is the directory of the profile `dev`.
-            let profile = match profile_dir.file_name().unwrap().to_str().unwrap() {
-                "debug" => "dev",
-                other => other,
-            };
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let status = Command::new(cargo)
-                .args([
-                    "build",
-                    "-p",
-                    "tilr-bus",
-                    "--example",
-                    "test_runtime",
-                    "--locked",
-                ])
-                .arg("--profile")
-                .arg(profile)
-                .arg("--target-dir")
-                .arg(target_dir)
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .stdin(Stdio::null())
-                .status()
-                .expect("run cargo to build the test runtime");
-            assert!(status.success(), "building the test runtime failed");
-            let path = profile_dir.join("examples").join("test_runtime");
-            assert!(path.exists(), "{} was not built", path.display());
-            path
-        })
-        .clone()
+    let profile_dir = Path::new(env!("CARGO_BIN_EXE_tilrd")).parent().unwrap();
+    let name = format!("test_runtime{}", std::env::consts::EXE_SUFFIX);
+    let path = profile_dir.join("examples").join(&name);
+    assert!(
+        path.is_file(),
+        "no {}: cargo build -p tilr-bus --example test_runtime (a workspace test run builds it)",
+        path.display()
+    );
+    path
 }
 
 impl BusServer {
@@ -131,17 +106,14 @@ impl BusServer {
             &options.failpoints,
             &env,
         );
+        // The server binds its Unix socket before it logs `listening on`, which
+        // `start_full` waited for: the socket takes connections from here on.
         let bus = Self { server };
-        let socket = bus.socket();
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        while std::os::unix::net::UnixStream::connect(&socket).is_err() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no Unix socket at {}",
-                socket.display()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(
+            bus.socket().exists(),
+            "no Unix socket at {}",
+            bus.socket().display()
+        );
         bus
     }
 
@@ -236,14 +208,30 @@ impl BusServer {
     /// Wait until a participant named `client_name` is greeted again, `before`
     /// being [`greeted`](Self::greeted) earlier.
     pub async fn wait_greeted(&self, client_name: &str, before: usize) {
-        let deadline = tokio::time::Instant::now() + TIMEOUT;
-        while self.greeted(client_name) <= before {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "{client_name} was not greeted:\n{}",
-                self.log_lines().join("\n")
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        self.wait_logged_event(&format!("{client_name} was not greeted"), |_| {
+            self.greeted(client_name) > before
+        })
+        .await;
+    }
+
+    /// Wait up to [`TIMEOUT`] for the server's log so far to satisfy `done`, woken
+    /// by each line it logs (`Server::log_changed`); fails with `what` and the log.
+    pub async fn wait_logged_event(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+        let met = tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let changed = self.log_changed.notified();
+                tokio::pin!(changed);
+                // Registered before the look, so a line logged in between wakes it.
+                changed.as_mut().enable();
+                if done(&self.log_lines()) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        if met.is_err() {
+            panic!("{what}:\n{}", self.log_lines().join("\n"));
         }
     }
 
@@ -265,11 +253,8 @@ impl BusServer {
         };
         let before = resumed(&self.log_lines());
         self.signal("-USR1");
-        let deadline = tokio::time::Instant::now() + TIMEOUT;
-        while resumed(&self.log_lines()) <= before {
-            assert!(tokio::time::Instant::now() < deadline, "no reload");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        self.wait_logged_event("no reload", |lines| resumed(lines) > before)
+            .await;
     }
 
     /// Kill the server outright.

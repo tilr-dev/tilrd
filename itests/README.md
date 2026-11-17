@@ -127,14 +127,16 @@ before the delayed close arrives, then resumes and verifies recovery.
    `release-upstream.yml` and `spec-change.yml`), release version helper,
    `.config/nextest.toml`, `.cargo/config.toml`, `.gitignore`,
    `AGENTS.md`, `README.md` and `USE_CASES.md`
-   for the release and Linux script regression fixtures. The runtime gets `shasum`
+   for the release and Linux script regression fixtures, and `vendor/`, the patched
+   Ghostty crates `[patch.crates-io]` in `Cargo.toml` builds from. The runtime gets `shasum`
    from `perl`, a dependency of `git` (verified 2026-10-21 with
    `docker run --rm ubuntu:24.04 sh -c 'apt-get update -qq && apt-get install -y --no-install-recommends git >/dev/null && dpkg -S /usr/bin/shasum'`).
    Those fixtures use substitutes for Docker and upload tools and need no release
    credentials.
    Cargo's `build-script-executed` messages also select the saved build-script
    stdout files exported in `rust-target/`. Rust runtimes restore these files at
-   their compiled `/target/.../output` paths, so both `build_script` suites can
+   their compiled paths (`/target/.../output`, or `.../run/stdout` with Cargo 1.100's
+   build-dir layout), so both `build_script` suites can
    inspect the actual test build's output without access to the shared Cargo cache.
    Rust runtimes also copy the toolchain from the pinned `RUST_IMAGE` and install
    `gcc` and `libc6-dev` for native linking. The

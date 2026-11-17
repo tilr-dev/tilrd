@@ -38,7 +38,10 @@ class BuildTest(unittest.TestCase):
                 (crate / "tests").mkdir()
                 (crate / "tests/build_script.rs").write_text(
                     '#[test]\nfn reads_real_build_stdout() {\n'
-                    'let path = std::path::Path::new(env!("OUT_DIR")).parent().unwrap().join("output");\n'
+                    # Cargo 1.100's build-dir layout keeps it in run/stdout, older Cargo in output.
+                    'let build = std::path::Path::new(env!("OUT_DIR")).parent().unwrap();\n'
+                    'let path = [build.join("run/stdout"), build.join("output")]\n'
+                    '    .into_iter().find(|p| p.exists()).expect("build script stdout");\n'
                     'let output = std::fs::read_to_string(path).unwrap();\n'
                     'assert!(output.contains("cargo:rerun-if-changed=build.rs"));\n}\n')
 
@@ -61,9 +64,12 @@ class BuildTest(unittest.TestCase):
                        TT_NEXT_PACKAGE_VERSION="0.1.1", CARGO_NET_OFFLINE="true")
             subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=source,
                            env=env, capture_output=True, check=True)
-            stale = root / "target/debug/build/stale-hash/output"
-            stale.parent.mkdir(parents=True)
-            stale.write_text("must not be exported")
+            # A stale build-script result in each layout: older Cargo and Cargo 1.100.
+            stale = [root / "target/debug/build/stale-hash/output",
+                     root / "target/debug/build/stale/stale-hash/run/stdout"]
+            for path in stale:
+                path.parent.mkdir(parents=True)
+                path.write_text("must not be exported")
             for phase in ("initial", "cached"):
                 with self.subTest(phase=phase):
                     shutil.rmtree(root / "out", ignore_errors=True)
@@ -71,7 +77,8 @@ class BuildTest(unittest.TestCase):
                                            env=env, capture_output=True, text=True)
                     self.assertEqual(built.returncode, 0, built.stderr)
                     snapshot = root / "out/rust-target"
-                    self.assertFalse((snapshot / stale.relative_to(root / "target")).exists())
+                    for path in stale:
+                        self.assertFalse((snapshot / path.relative_to(root / "target")).exists())
                     # Hide all original Cargo artifacts and restore only the export.
                     cache = root / "hidden-cache"
                     (root / "target").rename(cache)

@@ -765,15 +765,18 @@ the client tests drive a partner in the test that plays the broker (`tests/commo
 | A handler's error keeps its code; a panic is `handler_error` | `client::a_handlers_error_keeps_its_code_and_a_panic_is_a_handler_error` |
 | A handler that panics before returning its future is `handler_error`, for a method and a stream | `client::a_handler_that_panics_before_its_future_is_a_handler_error` |
 | A cancelled handler stops without a reply | `client::a_cancelled_handler_stops_without_a_reply` |
+| A handler can close the connection after its reply, which goes out first | `client::a_handler_can_close_the_connection_after_its_reply` |
 | A provided stream is paced by the reader's credit | `client::a_provided_stream_is_paced_by_the_readers_credit` |
 | Events reach the subscriptions whose pattern matches; dropping one unsubscribes | `client::events_reach_the_subscriptions_whose_pattern_matches` |
 | A denied subscription fails with `denied`; a bad pattern is `bad_request` | `client::a_denied_subscription_fails_with_denied` |
+| A subscription that cannot be sent (`too_large`, a closed connection) leaves nothing pending | `client::tests::a_subscribe_that_cannot_be_sent_leaves_nothing_pending` |
 | A full subscription keeps 1024 events and counts those it dropped | `client::a_full_subscription_counts_the_events_it_dropped` |
 | Emitting, activating and renewing send their envelopes; a renewal from the broker replaces the token | `client::emitting_activating_and_renewing_send_their_envelopes` |
 | The same call works over an instance socket and a WebSocket with subprotocol, access token, credential and origin | `client::the_same_call_works_over_fd_socket_and_websocket` |
 | A bad WebSocket message is skipped; a close code (4000) is reported | `client::a_bad_websocket_message_is_skipped_and_a_close_code_is_reported` |
 | Dropping the last handle closes the connection | `client::dropping_the_last_handle_closes_the_connection` |
 | The test runtime connects over an instance socket with its token and provides its methods | `runtime::the_test_runtime_provides_its_methods_over_an_instance_socket` |
+| The test runtime answers `test.close_bus`, then closes its connection and keeps running | `runtime::the_test_runtime_answers_close_bus_before_it_closes_the_connection` |
 | The test runtime's flood waits for credit | `runtime::the_test_runtimes_flood_waits_for_credit` |
 | The test runtime with `TEST_NO_HELLO` says nothing | `runtime::the_test_runtime_without_hello_says_nothing` |
 
@@ -793,9 +796,10 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
 | A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
 | `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
-| Calls go round robin over the providers; no provider is `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
+| Calls go round robin over the providers; a method nobody provides is `not_found`, a target that is not connected `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
 | `LAST_ACTIVE` goes to the provider that activated last, then to the next | `bus::last_active_goes_to_the_provider_that_activated_last` |
 | Methods in a reserved namespace cannot be provided, nor events emitted there | `bus::reserved_namespaces_cannot_be_provided` |
+| A Hello that provides more than 1024 methods is refused `bad_request`; 1024 are accepted | `bus::a_hello_provides_at_most_1024_methods` |
 | 1000 calls between two participants arrive in the order sent | `bus::calls_between_two_participants_keep_their_order` |
 | A stream is a call answered in chunks and End; a cancel reaches the provider; a reply to a stream is `bad_reply` | `bus::a_stream_is_a_call_answered_in_chunks` |
 | Events reach the subscribers connected now, by NATS patterns, once each, without history | `bus::events_reach_the_subscribers_connected_now` |
@@ -844,3 +848,40 @@ Helpers: `tests/common/bus_panes.rs`.
 | Unit: the pane messages map to proto3 JSON and back | `supervisor::bus::core::json::tests::pane_messages_map_to_proto3_json_and_back` |
 | Unit: the screen reads as text with its history, cursor and title (`crates/tilr-screen`) | `ghostty::tests::the_screen_reads_as_text_with_its_history` |
 | Unit: the text of a screen is bounded: history past the bound left out, a viewport over it an error (`crates/tilr-screen`) | `ghostty::tests::the_text_of_a_screen_is_bounded` |
+
+## The bus's bounds — `tests/bus.rs`
+
+Why a call failed, deadlines and cancellation, credits per stream and per connection, the
+two lanes, `busy` instead of growth, events dropped for a lagging subscriber
+(`tilrd_bus_events_dropped_total`). Helpers in `tests/common/bus_streams.rs`.
+
+| Use case | Test |
+|---|---|
+| A failed call says why: `not_found` for a method nobody provides (a name only a participant that is gone provided is forgotten), `unavailable` for a method of windows with none open, also on a fresh server, and once its providers are gone, `timeout` at the deadline (the callee gets `Cancel`), `bad_request` for a window over 16 MiB; a call that names no deadline gets 10 s | `bus::a_failed_call_says_why` |
+| A provider that is draining gets no call: `unavailable` | `supervisor::bus::broker::tests::a_draining_provider_is_unavailable` |
+| tilrd's own call keeps the deadline it gives, over `call_timeout_ms`; without one it gets `call_timeout_ms` and the callee `Cancel` | `supervisor::bus::broker::tests::a_native_callers_own_deadline_is_kept` |
+| The broker sends a connection a `CredentialUpdate` and tells when a connection ends | `supervisor::bus::broker::tests::the_broker_sends_a_credential_update_and_tells_when_a_connection_ends` |
+| A call outside the caller's rights is `denied`, naming the method | `supervisor::bus::broker::tests::a_call_outside_its_rights_is_denied_naming_the_method` |
+| 256 calls stay pending per caller and more are `busy`; a callee whose queue is full gets no more calls (`busy`) and is not closed | `bus::a_full_queue_is_answered_busy` |
+| A nested call gets the time that is left; the callee is cancelled at the deadline and when the caller's connection ends | `bus::a_nested_call_gets_the_time_that_is_left_and_a_cancel` |
+| A late `Reply`, `Chunk` or `End` after a timeout or a cancel is dropped | `bus::late_answers_after_a_timeout_or_a_cancel_are_dropped` |
+| A native call past its deadline is answered `timeout` and its handler stopped | `supervisor::bus::broker::tests::a_native_call_past_its_deadline_is_answered_timeout_and_cancelled` |
+| A lagging subscriber loses events, counted in the metric, not its connection | `bus::a_lagging_subscriber_loses_events_not_its_connection` |
+| A participant that stops reading does not hold up calls between the others | `bus::a_slow_participant_does_not_hold_up_the_others` |
+| A stream sends its reader's window, then waits for credit; the connection keeps answering | `bus::streams_are_paced_by_the_readers_credit` |
+| A native stream sends no more than its credit; a chunk larger than its window ends it `too_large` | `supervisor::bus::broker::tests::a_native_stream_sends_no_more_than_its_credit` |
+| The end of a native stream needs no credit | `supervisor::bus::broker::tests::the_end_of_a_native_stream_needs_no_credit` |
+| A native bulk stream waits for the connection window, then goes on when credited | `supervisor::bus::broker::tests::a_native_bulk_stream_waits_for_the_connection_window` |
+| A chunk larger than the window ends a latest-wins stream `too_large`; `try_send` is `Closed`, not `Full` | `supervisor::bus::broker::tests::a_chunk_larger_than_the_window_ends_a_latest_wins_stream` |
+| A latest-wins producer waits for credit for its whole chunk, not a byte, and learns the window | `supervisor::bus::broker::tests::a_latest_wins_producer_waits_for_credit_for_its_chunk` |
+| `caught_up` waits for a spent connection window: a latest-wins bulk producer does not spin | `supervisor::bus::broker::tests::caught_up_waits_for_the_connection_window` |
+| A producer waiting in `caught_up` on a reader that does not read returns once the reader's connection ends, and its stream is closed | `supervisor::bus::broker::tests::a_producer_waiting_in_caught_up_returns_when_its_readers_connection_ends` |
+| A provider that overruns a stream's credit is cancelled and its reader gets `bad_reply`, on either lane | `bus::a_stream_that_overruns_its_credit_is_ended` |
+| An empty chunk is relayed like any other; empty chunks that pile up for a reader that does not read end their stream `bad_reply` (each counts as 1 KiB held), and the reader stays | `bus::an_empty_chunk_is_relayed_and_a_flood_of_tiny_ones_ends_the_stream` |
+| A chunk the broker cannot relay within the frame limit ends its stream `too_large`, the provider is cancelled | `bus::a_chunk_too_large_to_relay_ends_its_stream` |
+| Bulk data sent and not credited is at most 1 MiB per connection, across streams; interactive streams still flow | `bus::bulk_data_in_the_network_is_bounded_per_connection` |
+| A bulk stream that ends uncredited gives the connection window back | `bus::a_bulk_stream_that_ends_uncredited_gives_the_window_back` |
+| The end of a relayed bulk stream (End, an error, a timeout, its provider gone) waits behind the chunks the broker holds | `bus::the_end_of_a_relayed_bulk_stream_waits_behind_held_chunks` |
+| A reader that never credits cannot grow what the broker holds of its streams: past 16 MiB a new stream is `busy` | `bus::a_reader_that_never_credits_cannot_grow_the_relay` |
+| A reader that stops reading large interactive chunks is closed 4001 past 32 MiB queued | `bus::a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow` |
+| Interactive traffic goes ahead of bulk traffic: an echo is answered before the next megabyte of a bulk stream | `bus::interactive_traffic_goes_ahead_of_bulk_traffic` |

@@ -234,6 +234,19 @@ pub fn render(
         );
     }
 
+    out.family(
+        "tilrd_bus_events_dropped_total",
+        "counter",
+        "Bus events not delivered to a subscriber whose connection lagged, by subject (the subjects past the first 1000 as other).",
+    );
+    for (subject, count) in crate::bus::events::dropped() {
+        out.sample(
+            "tilrd_bus_events_dropped_total",
+            &[("subject", &subject)],
+            count,
+        );
+    }
+
     out.histogram(
         "tilrd_route_seconds",
         "From the supervisor reading a pane's packet to its WebSocket write to a client returning.",

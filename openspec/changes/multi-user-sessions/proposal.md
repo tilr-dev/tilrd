@@ -37,7 +37,7 @@ Today one tilrd serves one user: it runs as that user, its sockets and directori
 - PAM sessions (`pam_open_session`: limits, logind sessions, `XDG_RUNTIME_DIR` of the user), password or Kerberos login: out of scope for the first step (Q3, Q6).
 - SSH-key authentication of TCP clients (Q3 option d) — a later change if chosen.
 - A sudoers-like allow list ("alice may run as deploy") — later (Q4 option b).
-- Panes as root over TCP; sandboxing (change `sandboxed-pane`); several system daemons per machine.
+- Panes as root over TCP; sandboxing (changes `sandbox-linux`, `sandbox-macos`); several system daemons per machine.
 - Windows; macOS audit sessions / launchd bootstrap namespaces beyond what `setuid` gives (keychain access in a pane may differ from a login; noted in design).
 - SOCKS proxy on a system server (recommended off, design Q9).
 - Implementation: this is a Research task; implementation tasks are cut from tasks.md after the owner's decision.

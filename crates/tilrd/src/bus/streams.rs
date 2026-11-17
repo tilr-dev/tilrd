@@ -1,14 +1,26 @@
 //! The native participant's methods and the provider side of its streams (design
 //! B7; change `bus-broker-core`, "Traits").
 //!
-//! Owner: `bus-broker-core`, then `bus-streams-events`, which adds credits (a
-//! [`StreamOut::send`] that waits for them), lanes bounded in bytes, deadlines and
-//! "no credit" as lagging behind these types.
+//! Owner: `bus-broker-core`, then `bus-streams-events` (credits, the connection
+//! window, deadlines, "no credit" as lagging).
 //!
-//! In this change a stream has unlimited credit: chunks of an interactive stream go
-//! on the consumer connection's interactive lane (1024 envelopes, full: the
-//! connection is closed 4001), chunks of a bulk stream wait for room in its bulk
-//! lane (4 MiB).
+//! A stream's producer sends at most the credit its reader gave: `Call.window` (0:
+//! 1 MiB, at most 16 MiB) plus what the reader returned with `Credit` (B7).
+//! Credit counts `Chunk.payload` bytes as the producer hands them over: the
+//! payload of a [`Chunk::zstd`] counts as compressed, as `tilr-bus` counts it on
+//! both ends; the compression of WebSocket messages never counts.
+//! [`StreamOut::send`] waits for it, and for a bulk stream also for the reader's
+//! connection window (1 MiB sent and not yet credited over all its bulk streams)
+//! and for room in its bulk lane (1024 envelopes queued); [`StreamOut::try_send`]
+//! does not wait. A chunk larger than the stream's [`window`](StreamOut::window)
+//! (and than the credit it holds) can never be sent: the stream ends with
+//! `too_large`, and `send` and `try_send` answer `Closed` (never `Full`), so a
+//! latest-wins producer does not loop on it; split to the window. An empty
+//! chunk is sent like any other. Checked, taken and queued under one
+//! lock: a chunk never comes after its stream's end. Chunks of an interactive
+//! stream go on the reader connection's interactive lane (1024 envelopes or
+//! 32 MiB, full: the connection is closed 4001). The end ([`StreamOut::end`],
+//! [`StreamOut::fail`]) never waits for credit.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -143,8 +155,8 @@ impl std::fmt::Display for Closed {
 /// Why [`StreamOut::try_send`] did not send.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TrySendError {
-    /// Sending would wait (no room, or no credit once `bus-streams-events`
-    /// enforces it); the chunk is handed back.
+    /// Sending would wait (no credit, no connection window, or no room in the
+    /// bulk lane); the chunk is handed back.
     Full(Chunk),
     Closed,
 }
@@ -161,6 +173,8 @@ pub struct StreamOut {
     /// This call of `id`, so a late drop does not end a newer call of the same id.
     pub(super) generation: u64,
     pub(super) lane: Lane,
+    /// The window the reader opened the stream with.
+    pub(super) window: u64,
     pub(super) cancel: CancelToken,
     pub(super) done: bool,
 }
@@ -171,30 +185,52 @@ impl StreamOut {
         self.id
     }
 
-    /// Send a chunk; waits for room in a bulk lane (and for credit once
-    /// `bus-streams-events` enforces it).
+    /// Send a chunk; waits for the reader's credit (and for a bulk stream, for
+    /// its connection window and room in its bulk lane). `Closed` once the stream
+    /// is over (cancelled, timed out, ended with `too_large`, its reader gone).
     pub async fn send(&self, chunk: Chunk) -> Result<(), Closed> {
         self.broker
             .stream_chunk(self.conn, self.id, self.generation, self.lane, chunk)
             .await
     }
 
-    /// Send a chunk if that does not wait.
+    /// The window the reader opened the stream with: no chunk may be larger
+    /// (unless the credit it holds is), a latest-wins producer splits to it.
+    pub fn window(&self) -> u64 {
+        self.window
+    }
+
+    /// Send a chunk if that does not wait: `Full` (the chunk handed back) when
+    /// it would, `Closed` once the stream is over or the chunk can never go.
     pub fn try_send(&self, chunk: Chunk) -> Result<(), TrySendError> {
         self.broker
             .try_stream_chunk(self.conn, self.id, self.generation, self.lane, chunk)
     }
 
     /// Whether the consumer lags: its connection's interactive lane has held a
-    /// packet for over 250 ms (`bus-streams-events` adds "no credit").
+    /// packet for over 250 ms, or the stream has no credit left (a bulk stream:
+    /// or the connection window is spent).
     pub fn is_lagging(&self) -> bool {
-        self.broker.conn_lagging(self.conn)
+        self.broker
+            .stream_lagging(self.conn, self.id, self.generation)
     }
 
-    /// Returns once the consumer's interactive lane is written out (T4: then a
-    /// full frame is due); at once when it is, or when the connection is gone.
+    /// Returns once the consumer's interactive lane is written out and the stream
+    /// has some credit again, at least a byte (and for a bulk stream the
+    /// connection window and the bulk lane have room) (T4: then a full frame is
+    /// due); at once when the stream or the connection is gone. A producer
+    /// whose next chunk is larger waits with [`caught_up_for`](Self::caught_up_for).
     pub async fn caught_up(&self) {
-        self.broker.conn_caught_up(self.conn).await;
+        self.caught_up_for(1).await;
+    }
+
+    /// [`caught_up`](Self::caught_up) for a chunk of `bytes`: returns once one
+    /// could be sent now; at once when `bytes` is larger than the window (a
+    /// send of it ends the stream `too_large`).
+    pub async fn caught_up_for(&self, bytes: u64) {
+        self.broker
+            .stream_caught_up(self.conn, self.id, self.generation, bytes)
+            .await;
     }
 
     /// Cancelled when the caller cancels the stream or its connection ends.
