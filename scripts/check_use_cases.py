@@ -3,7 +3,9 @@
 
 Run directly, or through the Cargo use_cases integration suite (and bin/check).
 Rust references resolve to function declarations in crates/*/{tests,src}; Python
-references use uc_NNN.py::function in itests/scenarios. Feature/platform gates do
+references use uc_NNN.py::function in itests/scenarios. The bus SDKs' tests are
+named by their file: sdk/deno/test/FILE.ts::name (a `Deno.test("name"` or
+`scenario("name"`) and sdk/python/tests/FILE.py::test_name. Feature/platform gates do
 not remove declarations from this source check. `failpoints` is an annotation,
 not a reference. Other coverage tools are documented outside the Test column.
 """
@@ -107,8 +109,24 @@ def known_names(root):
     return names
 
 
+DENO_TEST = re.compile(r'\b(?:Deno\.test|scenario)\(\s*"(?P<name>[^"]+)"')
+
+
+def sdk_names(root):
+    """The bus SDKs' tests, by their path from the repository root."""
+    for path in sorted((root / 'sdk' / 'deno' / 'test').glob('*_test.ts')):
+        for match in DENO_TEST.finditer(path.read_text()):
+            yield f'{path.relative_to(root).as_posix()}::{match["name"]}'
+    for path in sorted((root / 'sdk' / 'python' / 'tests').glob('test_*.py')):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name.startswith('test_'):
+                yield f'{path.relative_to(root).as_posix()}::{node.name}'
+
+
 def check(root):
-    names = known_names(root)
+    names = known_names(root) | set(sdk_names(root))
     errors = []
     test_column = None
     for number, line in enumerate((root / 'USE_CASES.md').read_text().splitlines(), 1):

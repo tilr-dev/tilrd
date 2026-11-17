@@ -810,3 +810,26 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
 | Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
 | An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |
+
+## The bus SDKs — `sdk/deno`, `sdk/python`
+
+The Deno (and browser) library and the Python library, each against a real tilrd in
+temporary directories, its own test runtime and, for what the server does not do yet or a
+broker that misbehaves, a fake broker; the Python tests also run the Deno runtime. Run by
+`scripts/sdk-check.sh` (CI's job `sdk`). A test marked "skipped" waits for the server side
+of the changes it names.
+
+| Use case | Test |
+|---|---|
+| The libraries connect over an inherited descriptor, an instance socket and a WebSocket (the owner's Unix socket, TCP with the access token, a credential); a wrong token is denied; with nothing set, `unavailable` names the variables | `sdk/deno/test/bus_test.ts::connects_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_connects_over_fd_socket_and_websocket` |
+| Instances of `bus.toml` and a token participant answer `whoami` with their identities (skipped: bus-instances, bus-rights) | `sdk/deno/test/bus_test.ts::instances_and_a_token_participant_connect_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_instances_and_a_token_participant_connect_over_fd_socket_and_websocket` |
+| Calls and replies carry bytes and content type unchanged, compressed or not | `sdk/deno/test/bus_test.ts::bytes_pass_unchanged`, `sdk/python/tests/test_bus.py::test_bytes_pass_unchanged` |
+| A thrown `BusError` keeps its code, another error is `handler_error` without a traceback, the broker's errors come with its code, a call for a method not provided is `not_supported` | `sdk/deno/test/bus_test.ts::errors_keep_their_codes`, `sdk/python/tests/test_bus.py::test_errors_keep_their_codes` |
+| A handler awaiting a nested call holds up no other call; a chain back into the same participant completes, also from Python to Deno and back | `sdk/deno/test/bus_test.ts::nested_and_crossing_calls_complete`, `sdk/python/tests/test_bus.py::test_nested_and_crossing_calls_complete`, `sdk/python/tests/test_bus.py::test_python_calls_deno_and_back` |
+| Events are emitted and received with subject, payload and `from`; unsubscribing stops them; a denied subscription is `denied` | `sdk/deno/test/bus_test.ts::events_are_emitted_and_received`, `sdk/python/tests/test_bus.py::test_events_are_emitted_and_received` |
+| A slow reader gets 64 MiB in order while the provider's memory stays bounded by credit; leaving the loop early cancels the stream; a provided stream is paced by the reader's credit | `sdk/deno/test/bus_test.ts::streams_are_read_and_served_with_credit`, `sdk/python/tests/test_bus.py::test_streams_are_read_and_served_with_credit` |
+| A script creates a pane of a profile, types a line, reads it back and hears `pane.exited` (skipped: bus-core-panes, pane-profiles) | `sdk/deno/test/bus_test.ts::a_script_drives_a_terminal`, `sdk/python/tests/test_bus.py::test_a_script_drives_a_terminal` |
+| The pane helpers send and decode `tilr.pane.v1` (create, typed line, read, events) | `sdk/deno/test/bus_test.ts::pane_helpers_speak_the_pane_schema`, `sdk/python/tests/test_bus.py::test_pane_helpers_speak_the_pane_schema` |
+| A caller's timeout cancels the handler, which gets no reply out; a handler sees its deadline; `ctx.call` passes the time left and the trace id on | `sdk/deno/test/bus_test.ts::a_cancel_aborts_the_handler`, `sdk/python/tests/test_bus.py::test_a_cancel_aborts_the_handler` |
+| 1000 calls at once all complete within `max_in_flight`; a call over `max_frame` is `too_large` unsent and the connection stays | `sdk/deno/test/bus_test.ts::limits_are_respected`, `sdk/python/tests/test_bus.py::test_limits_are_respected` |
+| A closed connection fails every pending call and stream `unavailable` and completes the closed signal; the latest `CredentialUpdate` is the credential | `sdk/deno/test/bus_test.ts::a_closed_connection_ends_pending_calls`, `sdk/python/tests/test_bus.py::test_a_closed_connection_ends_pending_calls` |

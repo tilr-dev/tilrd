@@ -19,7 +19,15 @@ the line.
   cargo nextest run --workspace --features tilrd/failpoints --locked
   cargo deny check
   gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .
+  cargo build -p tilrd --locked && scripts/sdk-check.sh   # the bus SDKs in sdk/
   ```
+
+  `scripts/sdk-check.sh` (CI's job `sdk`, two tiers as `test`) checks that the generated
+  schema code under `sdk/` is what `crates/tilr-bus/proto/` generates
+  (`scripts/gen-bus-sdk.sh --check`; after a schema change run `scripts/gen-bus-sdk.sh`
+  and commit the result), then runs `deno fmt --check`, `deno lint`, `deno check` and
+  `deno test -A` in `sdk/deno`, and `ruff format --check`, `ruff check`, `mypy` and `pytest` (all
+  through `uv run`) in `sdk/python`, against `target/debug/tilrd` (or `TILRD`).
 
   CI also checks the MSRV (`rust-version` in Cargo.toml, `cargo +1.99 check --workspace
   --all-targets --features tilrd/failpoints --locked`) and runs the tests on Linux and macOS.
@@ -43,6 +51,10 @@ the line.
 - Rust (stable; MSRV in `rust-version`), [Zig](https://ziglang.org) 0.15.2 (libghostty-vt-sys
   builds Ghostty with it) and `protoc` (tilr-proto's build.rs). `scripts/install-tools.sh DIR`
   installs the pinned Zig, protoc and cargo-nextest (which runs the tests), as CI does.
+- The bus SDKs (`sdk/`) need [Deno](https://deno.com) and [uv](https://docs.astral.sh/uv/)
+  (which fetches Python 3.12 and the locked packages of `sdk/python/uv.lock`), and protoc
+  36.2 for `scripts/gen-bus-sdk.sh`: `scripts/install-tools.sh DIR deno uv protoc` installs
+  the pinned ones. Python runs through `uv run`.
 - Without a shared package, the first build needs network access: libghostty-vt-sys clones
   Ghostty at a pinned commit. `scripts/build-ghostty-vt.sh` builds a shared package once;
   set PKG_CONFIG_PATH to its share/pkgconfig directory (README, "Build").
