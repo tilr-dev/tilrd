@@ -34,5 +34,9 @@ not (
   | test(=an_instance_that_ignores_sigterm_is_killed_after_3_s)
   | test(=a_socket_instance_connects_once_with_its_token)
   | test(=an_instance_is_stopped_and_started)
+  | test(=a_lagging_watcher_skips_to_the_latest_screen)
+  | test(=a_watcher_behind_when_the_pane_exits_gets_its_last_screen)
+  | test(=a_read_the_pane_process_does_not_answer_ends)
+  | test(=a_stuck_pane_is_closed_by_pane_applied)
 )
 '''

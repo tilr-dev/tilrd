@@ -74,7 +74,26 @@ pub mod kind {
     pub const ACTIVITY: u8 = 7;
     /// A private PaneInputAck, routed only to its authenticated identity.
     pub const INPUT_ACK: u8 = 8;
+    /// The answer to a [`READ_TEXT`] request: its id (u64 LE), a status byte,
+    /// then with [`TEXT_OK`](super::TEXT_OK) a `tilr.pane.v1.ReadReply`, else
+    /// a UTF-8 message (`pane.read`,
+    /// change `bus-core-panes`).
+    pub const TEXT: u8 = 9;
 }
+
+/// Status of a [`kind::TEXT`] answer: the text follows.
+pub const TEXT_OK: u8 = 0;
+/// Status of a [`kind::TEXT`] answer: the viewport alone is over
+/// `tilr_screen::MAX_TEXT_BYTES`; why follows.
+pub const TEXT_TOO_LARGE: u8 = 1;
+/// Status of a [`kind::TEXT`] answer: the screen could not be read; why follows.
+pub const TEXT_FAILED: u8 = 2;
+
+/// First byte of a packet from the supervisor that asks for the screen as text
+/// instead of carrying a `tilr_proto` packet (whose first byte, its flag, is 0 or
+/// 1): then a request id (u64 LE) and the rows of history wanted (u32 LE). The
+/// pane process answers with a [`kind::TEXT`] packet.
+pub const READ_TEXT: u8 = 0x10;
 
 /// What a `FRAME` packet says of its frame ahead of the `ServerMessage`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

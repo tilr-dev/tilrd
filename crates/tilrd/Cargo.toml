@@ -21,6 +21,7 @@ tilr-proto.workspace = true
 tilr-bus = { path = "../tilr-bus" }
 tilr-screen.workspace = true
 anyhow.workspace = true
+base64 = "0.23"
 bytes.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
@@ -43,5 +44,4 @@ ureq = "3"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-base64 = "0.23"
 tokio = { version = "1", features = ["test-util"] }
