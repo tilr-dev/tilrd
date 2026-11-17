@@ -82,7 +82,7 @@ Calls, events and streams between participants SHALL be routed while another par
 ## MODIFIED Requirements
 
 ### Requirement: Events reach the subscribers connected now
-An `Event` SHALL be delivered at most once to every connection that holds, at the time it is emitted, a subscription whose pattern matches its subject (segments, `*` for one segment, a trailing `>` for one or more) and that is allowed to receive it, in emit order per emitter, with `from` set by the broker. A subscriber that falls behind SHALL lose events instead: they are not delivered to it and are counted in `tilrd_bus_events_dropped_total`, and its connection MUST stay open. The broker MUST NOT store events: a subscriber that connects or subscribes later SHALL NOT receive earlier events.
+An `Event` SHALL be delivered at most once to every connection holding, when it is emitted, an allowed subscription whose pattern matches its subject (segments, `*` for one, a trailing `>` for one or more), in emit order per emitter, with `from` set by the broker; a subscriber that falls behind SHALL lose events, counted, and keep its connection. The broker MUST NOT store events: a later subscriber SHALL NOT receive earlier events.
 
 **Verified by**: `bus::events_reach_the_subscribers_connected_now`, `bus::a_lagging_subscriber_loses_events_not_its_connection`, unit test `events::tests::patterns_match_as_nats_subjects` (crates/tilrd/src/bus/events.rs).
 
