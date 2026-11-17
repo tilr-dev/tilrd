@@ -17,6 +17,10 @@ for the `participant greeted` line and call at once failed now and then for the 
 - A greeted connection is entered as a connection and as the provider of its methods, and
   its `HelloAck` is queued, under one hold of the broker's lock; the `HelloAck` stays the
   first envelope it gets. Only then is it announced up and `participant greeted` logged.
+- An instance being stopped or reloaded is marked draining in the broker before its state
+  turns `draining`, so whoever sees it `draining` in `bus.instances` sees it offered no new
+  calls (`bus.methods` lists it no longer), as the main spec's "Draining is not offered"
+  already says; `participants_and_methods_are_listed` saw the two apart now and then.
 - A test-only failpoint `bus-greeted:<client name>` holds a connection right after its
   greeting, so tests can look at what the broker shows of it there.
 - Two bus tests that raced the test itself are fixed: `an_instance_is_stopped_and_started`
@@ -37,4 +41,5 @@ for the `participant greeted` line and call at once failed now and then for the 
 ## Impact
 
 `crates/tilrd/src/bus/broker.rs` and `crates/tilrd/src/bus/transport.rs` (the greeting),
+`crates/tilrd/src/bus/runner.rs` (the order of an instance's drain),
 `crates/tilrd/tests/bus.rs`. Protocol: version 1, no flag. No public API changes.
