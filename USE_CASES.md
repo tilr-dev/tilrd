@@ -822,19 +822,33 @@ black-box scenario UC-0S1 come with `pane.create` for profiles.
 | Use case | Test |
 |---|---|
 | A grant over the state, runtime or configuration directory, inside one, or through `..` or a link to one, is refused naming it | `sandbox::tests::a_grant_covering_a_server_directory_is_refused` |
-| A sandboxed pane's environment is made from scratch: the base variables, `TMPDIR`, `PATH`, the passed names, then `[env]`; never `TILR_*` or `SSH_AUTH_SOCK` | `sandbox::tests::a_sandboxed_pane_gets_only_its_variables` |
+| A sandboxed pane's environment is made from scratch: the base variables, `TMPDIR`, `PATH`, the passed names, then `[env]`; never `TILR_*` or `SSH_AUTH_SOCK`, from the server or from `[env]` | `sandbox::tests::a_sandboxed_pane_gets_only_its_variables` |
+| The server's executable is protected from `read_write` grants (not `read_only`); a `--config` file's directory and a profiles directory elsewhere are protected too | `sandbox::tests::the_servers_executable_and_configuration_are_protected` |
+| A grant of `/dev/pts` (or a path over or in it) is warned about, naming the pane | `sandbox::tests::a_grant_of_the_users_terminals_is_warned_about` |
 | A pane's private directory is 0700; it is removed when the pane ends, and those of panes that no longer run at start | `sandbox::tests::a_sandboxed_panes_directory_is_private_and_removed` |
-| The request reaches the pane process whole on its command line | `sandbox::tests::a_request_crosses_the_command_line_whole` |
+| The request reaches the pane process whole in a 0600 file its command line names, with no `[env]` value on the command line; the file goes with the pane | `sandbox::tests::a_request_reaches_the_pane_process_in_a_private_file` |
 | A kernel without signal scoping is named in a warning with the pane | `sandbox::tests::a_kernel_without_signal_scoping_is_named_in_a_warning` |
-| Each network mode has a seccomp filter that assembles | `sandbox::linux::tests::every_network_mode_has_a_filter_that_assembles` |
+| Each network mode has a seccomp filter, for x86_64 and aarch64, whose jumps stay inside it and whose every path returns | `sandbox::linux::tests::every_network_mode_has_a_filter_that_assembles` |
+| The filter of each architecture answers each refused syscall as the sandbox says (another ABI, x32, io_uring, namespaces, keyrings, sockets, netlink, `listen`) | `sandbox::linux::tests::the_filter_refuses_what_the_sandbox_does_not_allow` |
+| The filter's syscall numbers are the host's | `sandbox::linux::tests::the_filters_syscall_numbers_are_the_hosts` |
 | A sandboxed program writes only under `read_write`, reads `read_only`, neither reads nor lists elsewhere | `sandbox::tests::linux::a_sandboxed_program_writes_only_where_it_may` |
 | A grandchild of the sandboxed program is restricted too | `sandbox::tests::linux::a_child_of_the_sandboxed_program_is_restricted_too` |
 | Only granted programs run: a program of the user's elsewhere is refused, an `executables` path or name (looked up in `PATH`) runs | `sandbox::tests::linux::only_granted_programs_run_in_a_sandbox` |
 | A script and a binary made in a `read_write` directory run there | `sandbox::tests::linux::a_script_and_a_binary_made_inside_run_inside` |
 | `none` opens no socket, `client` connects out and cannot listen (UDP free, SCTP refused), `server` accepts | `sandbox::tests::linux::network_follows_the_request` |
-| No Unix-domain socket (`socketpair` works), no state file, and a grant over the server's directories starts nothing | `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server` |
+| No Unix-domain socket (a stream `socketpair` works), no state file, and a grant over the server's directories starts nothing | `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server` |
 | A sandboxed program sees only its variables | `sandbox::tests::linux::a_sandboxed_program_has_only_its_variables` |
 | A sandboxed pane opens its own terminal and `/dev/tty`, not another terminal of the user | `sandbox::tests::linux::a_sandboxed_pane_cannot_open_another_terminal` |
+| With `/dev/pts` granted a terminal made inside works, and another terminal of the user opens too (the documented risk) | `sandbox::tests::linux::a_profile_granting_dev_pts_can_make_terminals` |
+| `socketpair` makes no Unix datagram socket (on ABI 4 too), only connected streams and sequenced packets; nothing reaches a named or abstract datagram socket | `sandbox::tests::linux::a_unix_datagram_socket_cannot_be_made_with_socketpair` |
+| Netlink opens only as `NETLINK_ROUTE`; `getaddrinfo` with `AI_ADDRCONFIG` works | `sandbox::tests::linux::only_routing_netlink_opens_in_a_sandbox` |
+| No user or other namespace (`unshare`, `clone`: `EPERM`; `clone3`: `ENOSYS`); fork, threads and `subprocess` work | `sandbox::tests::linux::no_namespace_can_be_made_in_a_sandbox` |
+| io_uring (`EACCES`), the keyrings, `bpf`, `perf_event_open`, `userfaultfd` and `setns` (`EPERM`) are refused | `sandbox::tests::linux::kernel_interfaces_a_pane_does_not_need_are_refused` |
+| A descriptor of the pane process without close-on-exec does not reach the program | `sandbox::tests::linux::no_descriptor_of_the_pane_process_reaches_the_program` |
+| A grant that became a link to a server directory (or a `read_write` one to the server's executable) is refused by what is opened for it | `sandbox::tests::linux::a_grant_that_became_a_link_to_a_server_directory_is_refused` |
+| Metadata outside the grants can be changed (the token's mode, a file's times), contents not read (a limit) | `sandbox::tests::linux::metadata_outside_the_grants_can_be_changed` |
+| A directory not granted cannot be listed, but an inotify watch on it learns the names made there (a limit) | `sandbox::tests::linux::names_in_a_directory_not_granted_can_be_watched` |
+| A readable program runs from memory too: readable implies runnable (a limit) | `sandbox::tests::linux::a_readable_program_runs_from_memory_too` |
 | A terminal made inside a sandbox opens its master, not its slave (a limit) | `sandbox::tests::linux::a_terminal_made_inside_a_sandbox_cannot_be_opened` |
 | The private `TMPDIR` is writable | `sandbox::tests::linux::the_private_tmpdir_is_writable` |
 | A restriction that cannot be installed runs nothing and leaves no directory | `sandbox::tests::linux::a_sandbox_that_cannot_be_applied_starts_nothing` |

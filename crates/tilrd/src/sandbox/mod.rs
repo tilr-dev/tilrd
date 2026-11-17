@@ -10,9 +10,10 @@
 //!
 //! Nothing here knows of profiles or the bus. The input is a [`Request`], plain data
 //! with the meaning of the profile's `[sandbox]` table and `[env]`; the pane process
-//! gets it as JSON on its command line (`tilrd pane --sandbox`) and hands it to
-//! `pty::spawn_shell`, which calls [`plan`] before it forks and [`Plan::apply_in_child`]
-//! between fork and exec.
+//! gets it, with the server's [`Dirs`], in a private file its command line names
+//! (`tilrd pane --sandbox <file>`, [`Handover`]: no value of `[env]` shows in `ps`) and
+//! hands it to `pty::spawn_shell`, which calls
+//! [`plan`] before it forks and [`Plan::apply_in_child`] between fork and exec.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -66,8 +67,24 @@ pub struct Request {
     pub env: Vec<(String, String)>,
 }
 
-impl Request {
-    /// The request as the pane process takes it on its command line.
+/// What the server hands the pane process of a sandboxed pane: the request and the
+/// server's directories (with those of a `--config` elsewhere, which the pane process
+/// cannot know), in a private file its command line names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Handover {
+    pub request: Request,
+    pub dirs: Dirs,
+}
+
+impl Handover {
+    /// Hand it to the pane process of pane `pane_id`: write it to its file in the
+    /// runtime directory (`<runtime>/sandbox/<pane id>.request`, 0600, in a 0700
+    /// directory no grant may cover) and return the arguments that name it,
+    /// `--sandbox <file>`. The values of `[env]` stay out of the pane process's command
+    /// line, which any process of the user can read (`ps`, `/proc/<pid>/cmdline`). A
+    /// reload execs the pane process with the same arguments; the file stays until the
+    /// pane ends ([`remove_pane_dir`]).
     #[cfg_attr(
         not(test),
         expect(
@@ -75,15 +92,42 @@ impl Request {
             reason = "pane.create (bus-core-panes) starts sandboxed panes with it"
         )
     )]
-    pub fn to_arg(&self) -> String {
-        serde_json::to_string(self).expect("a sandbox request serializes")
+    pub fn write(&self, pane_id: &str) -> Result<[OsString; 2], String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        check_pane_id(pane_id)?;
+        let runtime = &self.dirs.runtime;
+        let parent = runtime.join("sandbox");
+        crate::clipboard::private_dir(&parent).map_err(|err| format!("sandbox: {err:#}"))?;
+        let path = request_path(runtime, pane_id);
+        remove_entry(&path);
+        let json = serde_json::to_vec(self).expect("a sandbox request serializes");
+        std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)
+            .and_then(|mut file| file.write_all(&json))
+            .map_err(|err| format!("sandbox: write {}: {err}", path.display()))?;
+        Ok(["--sandbox".into(), path.into_os_string()])
     }
 
-    /// The request from the pane process's command line.
-    pub fn from_arg(arg: &str) -> Result<Self, String> {
-        serde_json::from_str(arg).map_err(|err| format!("sandbox: the request: {err}"))
+    /// What the file the pane process's command line names holds.
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|err| format!("sandbox: the request {}: {err}", path.display()))?;
+        serde_json::from_slice(&bytes).map_err(|err| format!("sandbox: the request: {err}"))
     }
 }
+
+/// The file the request of pane `pane_id` is handed over in.
+pub fn request_path(runtime: &Path, pane_id: &str) -> PathBuf {
+    runtime.join("sandbox").join(format!("{pane_id}{REQUEST}"))
+}
+
+/// The suffix of a request's file beside the per-pane directories.
+const REQUEST: &str = ".request";
 
 /// What the start-up check found the platform can enforce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,10 +152,13 @@ trait Platform {
     /// The start-up check: what this host can enforce, or why it cannot.
     fn check() -> Result<Features, String>;
     /// Build the restriction for `grants` and `network` in the process that forks.
+    /// Every grant with `checked` set is checked by what was opened for it
+    /// ([`refuse_opened`]), not by its path again.
     fn prepare(
         grants: &[Grant],
         network: Network,
         features: Features,
+        dirs: &Dirs,
     ) -> Result<Self::Prepared, String>;
     /// Install the restriction on the calling process. Runs between fork and exec, so
     /// only async-signal-safe calls; an error makes the spawn fail before the exec.
@@ -132,7 +179,7 @@ impl Platform for Current {
     fn check() -> Result<Features, String> {
         Err("this system has no sandbox for panes".into())
     }
-    fn prepare(_: &[Grant], _: Network, _: Features) -> Result<Unsupported, String> {
+    fn prepare(_: &[Grant], _: Network, _: Features, _: &Dirs) -> Result<Unsupported, String> {
         Err("this system has no sandbox for panes".into())
     }
     fn apply_in_child(_: &Unsupported) -> io::Result<()> {
@@ -157,6 +204,9 @@ enum Access {
 struct Grant {
     path: PathBuf,
     access: Access,
+    /// A grant of the request (a grant path, an executable, the program), checked
+    /// against the server's directories; not the pane's own `TMPDIR` and terminal.
+    checked: bool,
 }
 
 /// The start-up check (S9), once per process: `Ok` means `sandbox` is listed in
@@ -202,8 +252,32 @@ fn scoping_warning(features: Features, pane_id: &str) -> Option<String> {
     })
 }
 
+/// Where the user's terminals are: one pane's slave is `/dev/pts/N`.
+const TERMINALS: &str = "/dev/pts";
+
+/// The warning when a grant of the profile covers the user's terminals (or one of
+/// them): the way to run tmux or `script` inside, at the price of every terminal of the
+/// user being open to the pane.
+fn terminals_warning(request: &Request, pane_id: &str) -> Option<String> {
+    let terminals = Path::new(TERMINALS);
+    let grant = request
+        .read_only
+        .iter()
+        .chain(&request.read_write)
+        .find(|grant| {
+            forms(grant)
+                .iter()
+                .any(|form| terminals.starts_with(form) || form.starts_with(terminals))
+        })?;
+    Some(format!(
+        "sandbox: the grant {} covers {TERMINALS}: pane {pane_id} can open every terminal \
+         of the user, read what is typed there and write to it",
+        grant.display()
+    ))
+}
+
 /// A directory a grant must not expose (S6), and what is in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Protected {
     pub path: PathBuf,
     /// Says what the directory holds: "the state directory", say.
@@ -211,27 +285,47 @@ pub struct Protected {
 }
 
 /// The server's directories as the sandbox needs them: where the per-pane directories
-/// go, and which directories no grant may cover.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// go, which directories no grant may cover, and which files no `read_write` grant may.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dirs {
     /// The runtime directory; per-pane directories are `<runtime>/sandbox/<pane id>/`.
     pub runtime: PathBuf,
     pub protected: Vec<Protected>,
+    /// Paths a grant may read but not write: the server's own executable, which a
+    /// reload execs outside the sandbox.
+    pub write_protected: Vec<Protected>,
 }
 
 impl Dirs {
     /// This server's, from its environment: the runtime directory and the directory of
     /// the socket (sockets), the state directory (token, root key) and the default
-    /// configuration directory (`server.toml`, `bus.toml`, profiles). A server started
-    /// with `--config` elsewhere or another `profiles_dir` adds those with [`protect`].
+    /// configuration directory (`server.toml`, `bus.toml`, profiles); and, from
+    /// `read_write` grants, the server's executable. A server started with `--config`
+    /// elsewhere or another profiles directory adds those with [`protect_config_file`]
+    /// and [`protect_profiles_dir`].
     ///
-    /// [`protect`]: Dirs::protect
+    /// [`protect_config_file`]: Dirs::protect_config_file
+    /// [`protect_profiles_dir`]: Dirs::protect_profiles_dir
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pane.create (bus-core-panes) hands them to the pane process"
+        )
+    )]
     pub fn current() -> Self {
         let runtime = crate::clipboard::runtime_dir();
         let mut dirs = Dirs {
             runtime: runtime.clone(),
             protected: Vec::new(),
+            write_protected: Vec::new(),
         };
+        if let Some(exe) = own_executable() {
+            dirs.write_protected.push(Protected {
+                path: exe,
+                what: "the server's executable".into(),
+            });
+        }
         dirs.protect(runtime, "the runtime directory (sockets)");
         let socket = tilr_proto::local::socket_path();
         if let Some(parent) = socket.parent() {
@@ -268,6 +362,50 @@ impl Dirs {
             });
         }
     }
+
+    /// The server's configuration file, given with `--config`: its directory holds
+    /// `server.toml`, `bus.toml` and the profiles beside it. A relative path is taken
+    /// from the current directory.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pane.create (pane-profiles) passes the server's --config"
+        )
+    )]
+    pub fn protect_config_file(&mut self, file: &Path) {
+        let file = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
+        if let Some(dir) = file.parent() {
+            self.protect(dir.to_path_buf(), "the configuration directory (--config)");
+        }
+    }
+
+    /// The directory the server reads launch profiles from, where it is not the
+    /// configuration directory.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pane.create (pane-profiles) passes the profiles directory"
+        )
+    )]
+    pub fn protect_profiles_dir(&mut self, dir: &Path) {
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+        self.protect(dir, "the profiles directory");
+    }
+}
+
+/// This process's executable, with links resolved: the server's (the pane process is
+/// the same file). `None` where it cannot be told.
+fn own_executable() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // An executable replaced on disk (an update) reads as `<path> (deleted)`; the path
+    // is what a reload execs.
+    let exe = match exe.to_str().and_then(|exe| exe.strip_suffix(" (deleted)")) {
+        Some(path) => PathBuf::from(path),
+        None => exe,
+    };
+    std::fs::canonicalize(&exe).ok().or(Some(exe))
 }
 
 /// `path` with `.` and `..` folded lexically, absolute.
@@ -297,35 +435,86 @@ fn forms(path: &Path) -> Vec<PathBuf> {
     forms
 }
 
+/// The protected paths with the forms they are compared in: every protected directory,
+/// and for a grant that writes the write-protected files too.
+fn guarded(dirs: &Dirs, write: bool) -> Vec<(Vec<PathBuf>, &Protected)> {
+    let write_protected = dirs.write_protected.iter().filter(|_| write);
+    dirs.protected
+        .iter()
+        .chain(write_protected)
+        .map(|p| (forms(&p.path), p))
+        .collect()
+}
+
+/// The protected path a grant at `form` would cover or lie inside.
+fn exposed<'a>(form: &Path, guarded: &[(Vec<PathBuf>, &'a Protected)]) -> Option<&'a Protected> {
+    guarded
+        .iter()
+        .find(|(paths, _)| {
+            paths
+                .iter()
+                .any(|dir| dir.starts_with(form) || form.starts_with(dir))
+        })
+        .map(|(_, p)| *p)
+}
+
+fn exposing(grant: &Path, p: &Protected) -> String {
+    format!(
+        "sandbox: {} would expose {} {}",
+        grant.display(),
+        p.what,
+        p.path.display()
+    )
+}
+
 /// Refuse a grant that covers a protected directory, or lies inside one (S6): Landlock
 /// grants by allow list only, so a grant of `~` cannot carve the state directory out.
+/// A grant that writes (`true`) must not cover the server's executable either.
 fn refuse_exposing<'a>(
-    grants: impl IntoIterator<Item = &'a Path>,
+    grants: impl IntoIterator<Item = (&'a Path, bool)>,
     dirs: &Dirs,
 ) -> Result<(), String> {
-    let protected: Vec<(Vec<PathBuf>, &Protected)> =
-        dirs.protected.iter().map(|p| (forms(&p.path), p)).collect();
-    for grant in grants {
+    let (read, write) = (guarded(dirs, false), guarded(dirs, true));
+    for (grant, writes) in grants {
         if !grant.is_absolute() {
             return Err(format!(
                 "sandbox: {} is not an absolute path",
                 grant.display()
             ));
         }
+        let guarded = if writes { &write } else { &read };
         for form in forms(grant) {
-            for (paths, p) in &protected {
-                if paths
-                    .iter()
-                    .any(|dir| dir.starts_with(&form) || form.starts_with(dir))
-                {
-                    return Err(format!(
-                        "sandbox: {} would expose {} {}",
-                        grant.display(),
-                        p.what,
-                        p.path.display()
-                    ));
-                }
+            if let Some(p) = exposed(&form, guarded) {
+                return Err(exposing(grant, p));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a grant by what was opened for it, where the platform opens grants itself
+/// (Linux): `opened` is the kernel's path of the descriptor and `id` its device and
+/// inode, so a path changed after [`refuse_exposing`] looked at it is caught here.
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(dead_code, reason = "Linux opens grants")
+)]
+fn refuse_opened(
+    grant: &Path,
+    opened: &Path,
+    id: (u64, u64),
+    write: bool,
+    dirs: &Dirs,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let guarded = guarded(dirs, write);
+    if let Some(p) = exposed(opened, &guarded) {
+        return Err(exposing(grant, p));
+    }
+    // The same directory mounted elsewhere too.
+    for (_, p) in &guarded {
+        if std::fs::metadata(&p.path).is_ok_and(|meta| (meta.dev(), meta.ino()) == id) {
+            return Err(exposing(grant, p));
         }
     }
     Ok(())
@@ -333,7 +522,7 @@ fn refuse_exposing<'a>(
 
 /// Whether `path` is under (or is) a protected directory.
 fn is_protected(path: &Path, dirs: &Dirs) -> bool {
-    refuse_exposing([path], dirs).is_err()
+    refuse_exposing([(path, false)], dirs).is_err()
 }
 
 /// The per-pane directory (`TMPDIR`) of pane `pane_id`.
@@ -341,17 +530,20 @@ pub fn pane_dir(runtime: &Path, pane_id: &str) -> PathBuf {
     runtime.join("sandbox").join(pane_id)
 }
 
-/// Make the pane's directory, 0700, empty.
-fn create_pane_dir(runtime: &Path, pane_id: &str) -> Result<PathBuf, String> {
+fn check_pane_id(pane_id: &str) -> Result<(), String> {
     if pane_id.is_empty() || pane_id.contains('/') || pane_id.starts_with('.') {
         return Err(format!("sandbox: bad pane id {pane_id:?}"));
     }
+    Ok(())
+}
+
+/// Make the pane's directory, 0700, empty.
+fn create_pane_dir(runtime: &Path, pane_id: &str) -> Result<PathBuf, String> {
+    check_pane_id(pane_id)?;
     let parent = runtime.join("sandbox");
     crate::clipboard::private_dir(&parent).map_err(|err| format!("sandbox: {err:#}"))?;
     let dir = pane_dir(runtime, pane_id);
-    if dir.symlink_metadata().is_ok() {
-        remove_dir(&dir);
-    }
+    remove_entry(&dir);
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -360,18 +552,26 @@ fn create_pane_dir(runtime: &Path, pane_id: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn remove_dir(dir: &Path) {
-    if let Err(err) = std::fs::remove_dir_all(dir)
+/// Remove a directory with what is in it, or a file; a link is removed, not followed.
+fn remove_entry(path: &Path) {
+    let removed = match path.symlink_metadata() {
+        Err(err) => Err(err),
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+    };
+    if let Err(err) = removed
         && err.kind() != io::ErrorKind::NotFound
     {
-        tracing::warn!("sandbox: remove {}: {err}", dir.display());
+        tracing::warn!("sandbox: remove {}: {err}", path.display());
     }
 }
 
-/// Remove what the sandbox made for pane `pane_id` (S8), when the pane ends.
+/// Remove what the sandbox made for pane `pane_id` (S8), when the pane ends: its
+/// directory and the file its request was handed over in.
 pub fn remove_pane_dir(runtime: &Path, pane_id: &str) {
-    if !pane_id.is_empty() && !pane_id.contains('/') && !pane_id.starts_with('.') {
-        remove_dir(&pane_dir(runtime, pane_id));
+    if check_pane_id(pane_id).is_ok() {
+        remove_entry(&pane_dir(runtime, pane_id));
+        remove_entry(&request_path(runtime, pane_id));
     }
 }
 
@@ -383,10 +583,11 @@ pub fn remove_leftovers(runtime: &Path, running: impl Fn(&str) -> bool) {
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(id) = name.to_str() else { continue };
+        let Some(name) = name.to_str() else { continue };
+        let id = name.strip_suffix(REQUEST).unwrap_or(name);
         if !running(id) {
             tracing::info!("sandbox: removing the leftovers of pane {id}");
-            remove_dir(&entry.path());
+            remove_entry(&entry.path());
         }
     }
 }
@@ -435,8 +636,8 @@ pub struct Plan {
     pub program: PathBuf,
     /// The pane's private `TMPDIR` (S8), removed when the pane ends.
     pub tmpdir: PathBuf,
-    /// The line to log for this pane, if its sandbox is weaker than asked (S5).
-    pub warning: Option<String>,
+    /// The lines to log for this pane: where its sandbox is weaker than it looks (S5).
+    pub warnings: Vec<String>,
     prepared: <Current as Platform>::Prepared,
     /// `sandbox-apply`: installing the restriction fails in the child.
     fail_apply: bool,
@@ -514,8 +715,8 @@ fn plan_for(
         request
             .read_only
             .iter()
-            .chain(&request.read_write)
-            .map(PathBuf::as_path),
+            .map(|path| (path.as_path(), false))
+            .chain(request.read_write.iter().map(|path| (path.as_path(), true))),
         dirs,
     )?;
     let lookup_path = request
@@ -543,7 +744,7 @@ fn plan_for(
             None => tracing::info!("sandbox: executable {} not found, skipped", exe.display()),
         }
     }
-    refuse_exposing(executables.iter().map(PathBuf::as_path), dirs)?;
+    refuse_exposing(executables.iter().map(|path| (path.as_path(), false)), dirs)?;
 
     let tmpdir = create_pane_dir(&dirs.runtime, start.pane_id)?;
     let result = (|| {
@@ -572,40 +773,51 @@ fn plan_for(
                 start.program
             ));
         };
-        refuse_exposing([program.as_path()], dirs)?;
+        refuse_exposing([(program.as_path(), false)], dirs)?;
         let mut grants: Vec<Grant> = Vec::new();
-        let mut grant = |path: &Path, access| {
+        let mut grant = |path: &Path, access, checked| {
             grants.push(Grant {
                 path: path.to_path_buf(),
                 access,
+                checked,
             })
         };
         for path in &request.read_only {
-            grant(path, Access::ReadOnly);
+            grant(path, Access::ReadOnly, true);
         }
         for path in &request.read_write {
-            grant(path, Access::ReadWrite);
+            grant(path, Access::ReadWrite, true);
         }
         for path in executables.iter().chain([&program]) {
-            grant(path, Access::Program);
+            grant(path, Access::Program, true);
         }
-        grant(&tmpdir, Access::ReadWrite);
+        grant(&tmpdir, Access::ReadWrite, false);
         if let Some(terminal) = &start.terminal {
-            grant(terminal, Access::Terminal);
+            grant(terminal, Access::Terminal, false);
         }
-        let prepared = Current::prepare(&grants, request.network, features)
-            .map_err(|err| format!("sandbox: {err}"))?;
+        let prepared =
+            Current::prepare(&grants, request.network, features, dirs).map_err(|err| {
+                if err.starts_with("sandbox: ") {
+                    err
+                } else {
+                    format!("sandbox: {err}")
+                }
+            })?;
+        let warnings = [
+            scoping_warning(features, start.pane_id),
+            terminals_warning(request, start.pane_id),
+        ];
         Ok(Plan {
             env,
             program,
             tmpdir: tmpdir.clone(),
-            warning: scoping_warning(features, start.pane_id),
+            warnings: warnings.into_iter().flatten().collect(),
             prepared,
             fail_apply: crate::fail::point("sandbox-apply").is_err() || tests_fail_apply(),
         })
     })();
     if result.is_err() {
-        remove_dir(&tmpdir);
+        remove_entry(&tmpdir);
     }
     result
 }

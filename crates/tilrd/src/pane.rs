@@ -58,9 +58,11 @@ pub struct Args {
     /// Working directory of the shell. Empty = this process's own.
     #[arg(long, default_value = "")]
     pub cwd: String,
-    /// The sandbox of a pane of a sandboxed profile: a `sandbox::Request` as JSON.
+    /// The sandbox of a pane of a sandboxed profile: the file its request was handed over
+    /// in (`sandbox::Handover`), not the request itself, so no value of the profile's
+    /// `[env]` is on this process's command line.
     #[arg(long, hide = true)]
-    pub sandbox: Option<String>,
+    pub sandbox: Option<PathBuf>,
     /// Command to run instead of the shell.
     #[arg(last = true)]
     pub command: Vec<String>,
@@ -343,7 +345,7 @@ async fn serve(
         let sandbox = args
             .sandbox
             .as_deref()
-            .map(crate::sandbox::Request::from_arg)
+            .map(crate::sandbox::Handover::read)
             .transpose();
         let pty::Spawned { master, child } = match sandbox
             .as_ref()

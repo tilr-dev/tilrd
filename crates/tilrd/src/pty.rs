@@ -262,15 +262,10 @@ pub fn spawn_shell(
     cwd: &str,
     cols: u16,
     rows: u16,
-    sandbox: Option<&crate::sandbox::Request>,
+    sandbox: Option<&crate::sandbox::Handover>,
 ) -> Result<Spawned> {
-    match sandbox {
-        None => spawn_with(pane_id, command, cwd, cols, rows, None),
-        Some(request) => {
-            let dirs = crate::sandbox::Dirs::current();
-            spawn_with(pane_id, command, cwd, cols, rows, Some((request, &dirs)))
-        }
-    }
+    let sandbox = sandbox.map(|handover| (&handover.request, &handover.dirs));
+    spawn_with(pane_id, command, cwd, cols, rows, sandbox)
 }
 
 /// [`spawn_shell`], with the server's directories given for a sandboxed pane.
@@ -403,7 +398,7 @@ fn spawn_sandboxed(
         terminal: Some(tty_name(&slave)?),
     };
     let plan = crate::sandbox::plan(request, &start, dirs).map_err(anyhow::Error::msg)?;
-    if let Some(warning) = &plan.warning {
+    for warning in &plan.warnings {
         tracing::warn!(pane = pane_id, "{warning}");
     }
     let mut cmd = Command::new(&plan.program);

@@ -36,6 +36,7 @@ impl Tree {
         let mut dirs = Dirs {
             runtime: root.join("runtime"),
             protected: Vec::new(),
+            write_protected: Vec::new(),
         };
         dirs.protect(root.join("runtime"), "the runtime directory (sockets)");
         dirs.protect(root.join("state"), "the state directory (token, root key)");
@@ -76,7 +77,7 @@ impl Drop for Tree {
 #[test]
 fn a_grant_covering_a_server_directory_is_refused() {
     let tree = Tree::new("refused");
-    let refuse = |path: PathBuf| refuse_exposing([path.as_path()], &tree.dirs);
+    let refuse = |path: PathBuf| refuse_exposing([(path.as_path(), false)], &tree.dirs);
     // Over the state directory (a home granted when the state is under it).
     let err = refuse(tree.root.clone()).unwrap_err();
     assert!(err.starts_with("sandbox: "), "{err}");
@@ -124,6 +125,8 @@ fn a_sandboxed_pane_gets_only_its_variables() {
         ],
         env: vec![
             ("GREETING".into(), "hi".into()),
+            ("TILR_SOCKET".into(), "/elsewhere.sock".into()),
+            ("SSH_AUTH_SOCK".into(), "/agent.sock".into()),
             ("TERM".into(), "dumb".into()),
         ],
         ..Request::default()
@@ -165,7 +168,14 @@ fn a_sandboxed_pane_gets_only_its_variables() {
         get("PATH"),
         Some("/opt/tool/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     );
-    for never in ["SECRET", "TILR_SHIMS", "SSH_AUTH_SOCK", "UNSET"] {
+    // Neither from the server nor from the profile's [env].
+    for never in [
+        "SECRET",
+        "TILR_SHIMS",
+        "TILR_SOCKET",
+        "SSH_AUTH_SOCK",
+        "UNSET",
+    ] {
         assert_eq!(get(never), None, "{never}");
     }
     let names: Vec<&str> = env.iter().map(|(n, _)| n.as_str()).collect();
@@ -204,21 +214,140 @@ fn a_sandboxed_panes_directory_is_private_and_removed() {
 }
 
 #[test]
-fn a_request_crosses_the_command_line_whole() {
-    let request = Request {
-        read_only: vec!["/a".into()],
-        read_write: vec!["/b".into()],
-        executables: vec!["git".into(), "/c".into()],
-        pass_env: vec!["LANG".into()],
-        network: Network::Client,
-        env: vec![("A".into(), "1".into())],
-    };
-    assert_eq!(Request::from_arg(&request.to_arg()).unwrap(), request);
+fn the_servers_executable_and_configuration_are_protected() {
+    let tree = Tree::new("own");
+    // This process's executable is the server's (the pane process is the same file).
+    let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
     assert!(
-        Request::from_arg("{\"read_onlyy\":[]}")
-            .unwrap_err()
-            .starts_with("sandbox: ")
+        Dirs::current()
+            .write_protected
+            .iter()
+            .any(|p| p.path == exe && p.what == "the server's executable")
     );
+    // A grant may read the executable's directory, not write it.
+    std::fs::write(tree.path("x/tilrd"), "").unwrap();
+    let mut dirs = tree.dirs.clone();
+    dirs.write_protected.push(Protected {
+        path: tree.path("x/tilrd"),
+        what: "the server's executable".into(),
+    });
+    let refuse =
+        |path: PathBuf, write: bool, dirs: &Dirs| refuse_exposing([(path.as_path(), write)], dirs);
+    let err = refuse(tree.path("x"), true, &dirs).unwrap_err();
+    assert!(
+        err.contains("would expose the server's executable"),
+        "{err}"
+    );
+    refuse(tree.path("x"), false, &dirs).unwrap();
+    refuse(tree.path("x/tilrd"), false, &dirs).unwrap();
+    // A configuration file given with --config elsewhere, a profiles directory of its own.
+    dirs.protect_config_file(&tree.path("o/conf/server.toml"));
+    dirs.protect_profiles_dir(&tree.path("r/profiles"));
+    let err = refuse(tree.path("o"), false, &dirs).unwrap_err();
+    assert!(
+        err.contains("the configuration directory (--config)"),
+        "{err}"
+    );
+    let err = refuse(tree.path("r/profiles/p.toml"), false, &dirs).unwrap_err();
+    assert!(err.contains("the profiles directory"), "{err}");
+    refuse(tree.path("o/elsewhere"), true, &dirs).unwrap();
+}
+
+#[test]
+fn a_request_reaches_the_pane_process_in_a_private_file() {
+    let tree = Tree::new("handover");
+    let mut dirs = tree.dirs.clone();
+    // A server started with --config elsewhere: the pane process learns it from the file.
+    dirs.protect_config_file(&tree.path("o/conf/server.toml"));
+    let handover = Handover {
+        request: Request {
+            read_only: vec!["/a".into()],
+            read_write: vec!["/b".into()],
+            executables: vec!["git".into(), "/c".into()],
+            pass_env: vec!["LANG".into()],
+            network: Network::Client,
+            env: vec![("API_TOKEN".into(), "value-only-in-the-file".into())],
+        },
+        dirs,
+    };
+    let runtime = &tree.dirs.runtime;
+    let args = handover.write("p1").unwrap();
+    // The pane process's command line names the file; no name or value of [env] is on it.
+    let line = args.join(std::ffi::OsStr::new(" "));
+    let line = line.to_str().unwrap();
+    assert!(
+        !line.contains("value-only-in-the-file") && !line.contains("API_TOKEN"),
+        "{line}"
+    );
+    let file = request_path(runtime, "p1");
+    assert_eq!(args, [OsString::from("--sandbox"), file.clone().into()]);
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&file), 0o600);
+    assert_eq!(mode(file.parent().unwrap()), 0o700);
+    // In the runtime directory, which no grant covers, and not in the pane's TMPDIR.
+    assert!(file.starts_with(runtime));
+    assert!(!file.starts_with(pane_dir(runtime, "p1")));
+    // The pane process takes those arguments, and the request whole from the file.
+    #[derive(clap::Parser)]
+    struct Pane {
+        #[command(flatten)]
+        args: crate::pane::Args,
+    }
+    let id = "00000000-0000-0000-0000-000000000001";
+    let pane = <Pane as clap::Parser>::try_parse_from(
+        [OsString::from("pane"), "--id".into(), id.into()]
+            .into_iter()
+            .chain(args),
+    )
+    .unwrap();
+    assert_eq!(pane.args.sandbox.as_deref(), Some(file.as_path()));
+    assert_eq!(Handover::read(&file).unwrap(), handover);
+    // Handed over again (a pane id reused), the file is replaced.
+    let again = Handover {
+        request: Request::default(),
+        dirs: tree.dirs.clone(),
+    };
+    again.write("p1").unwrap();
+    assert_eq!(Handover::read(&file).unwrap(), again);
+    // It goes when the pane ends, or at start when its pane does not run.
+    remove_pane_dir(runtime, "p1");
+    assert!(!file.exists());
+    handover.write("p2").unwrap();
+    remove_leftovers(runtime, |id| id == "p3");
+    assert!(!request_path(runtime, "p2").exists());
+    std::fs::write(&file, "{\"request\":{\"read_onlyy\":[]}}").unwrap();
+    assert!(Handover::read(&file).unwrap_err().starts_with("sandbox: "));
+    assert!(handover.write("../x").is_err());
+}
+
+#[test]
+fn a_grant_of_the_users_terminals_is_warned_about() {
+    let warn = |read_only: &[&str], read_write: &[&str]| {
+        let request = Request {
+            read_only: read_only.iter().map(PathBuf::from).collect(),
+            read_write: read_write.iter().map(PathBuf::from).collect(),
+            ..Request::default()
+        };
+        terminals_warning(&request, "p1")
+    };
+    assert_eq!(
+        warn(&[], &["/dev/pts"]).as_deref(),
+        Some(
+            "sandbox: the grant /dev/pts covers /dev/pts: pane p1 can open every terminal of \
+             the user, read what is typed there and write to it"
+        )
+    );
+    for (read_only, read_write) in [
+        (&["/dev"][..], &[][..]),
+        (&["/dev/pts/3"], &[]),
+        (&[], &["/"]),
+    ] {
+        assert!(
+            warn(read_only, read_write).is_some(),
+            "{read_only:?} {read_write:?}"
+        );
+    }
+    assert_eq!(warn(&["/usr/share"], &["/dev/null"]), None);
 }
 
 #[test]
@@ -240,7 +369,7 @@ fn a_kernel_without_signal_scoping_is_named_in_a_warning() {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::io::Read;
-    use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -669,11 +798,13 @@ mod linux {
     #[tokio::test]
     async fn signals_follow_the_kernels_scoping() {
         let tree = Tree::new("signals");
-        let mut outside = std::process::Command::new("/bin/sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
-        let script = format!("kill -0 {} && echo reached || echo refused", outside.id());
+        let outside = Killed(
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let script = format!("kill -0 {} && echo reached || echo refused", outside.0.id());
         let features = features().expect("this host offers the sandbox");
         let (_, out) = run(&tree, &tree.request(Network::None), &script).await;
         if features.signal_scoping() {
@@ -687,8 +818,346 @@ mod linux {
         ABI.set(None);
         assert_eq!(code, Some(0), "{out}");
         assert!(out.contains("reached"), "{out}");
-        outside.kill().unwrap();
-        outside.wait().unwrap();
+    }
+
+    /// A process of a test, killed and reaped however the test ends.
+    struct Killed(std::process::Child);
+
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A datagram socket made with `socketpair` is unbound and could `sendto` any named
+    /// or abstract Unix socket where Landlock does not govern that (before ABI 6 for
+    /// abstract ones): only connected streams and sequenced packets are made.
+    #[tokio::test]
+    async fn a_unix_datagram_socket_cannot_be_made_with_socketpair() {
+        use std::os::linux::net::SocketAddrExt;
+        let tree = Tree::new("dgram");
+        let named = tree.path("o/d.sock");
+        let receiver = std::os::unix::net::UnixDatagram::bind(&named).unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let name = format!("tilrd-sandbox-{}", std::process::id());
+        let abstract_name =
+            std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+        let abstract_receiver =
+            std::os::unix::net::UnixDatagram::bind_addr(&abstract_name).unwrap();
+        abstract_receiver.set_nonblocking(true).unwrap();
+        let named = named.display().to_string();
+        let code = format!(
+            "{TRY}\
+             def dgram(kind):\n\
+             \x20   a, b = socket.socketpair(socket.AF_UNIX, kind)\n\
+             \x20   a.sendto(b'named', {named:?}); a.sendto(b'abstract', b'\\0{name}')\n\
+             attempt('dgram', lambda: dgram(socket.SOCK_DGRAM))\n\
+             attempt('dgram-cloexec', lambda: dgram(socket.SOCK_DGRAM | socket.SOCK_CLOEXEC))\n\
+             attempt('stream', lambda: socket.socketpair())\n\
+             def seqpacket():\n\
+             \x20   a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)\n\
+             \x20   a.sendto(b'x', {named:?}); assert b.recv(8) == b'x'\n\
+             attempt('seqpacket', seqpacket)\n\
+             def stream_sendto():\n\
+             \x20   a, b = socket.socketpair(); a.sendto(b'x', {named:?})\n\
+             attempt('stream-sendto', stream_sendto)\n"
+        );
+        // ABI 4 as well: no Landlock rule there for abstract sockets or named datagrams.
+        for abi in [None, Some(4)] {
+            ABI.set(abi);
+            let out = python(&tree, &tree.request(Network::None), &code).await;
+            ABI.set(None);
+            assert!(
+                out.contains("dgram EACCES\n") && out.contains("dgram-cloexec EACCES"),
+                "{abi:?}: {out}"
+            );
+            assert!(
+                out.contains("stream ok") && out.contains("seqpacket ok"),
+                "{abi:?}: {out}"
+            );
+            // A connected pair sends only to its peer.
+            assert!(out.contains("stream-sendto EISCONN"), "{abi:?}: {out}");
+            let mut buf = [0u8; 16];
+            assert!(receiver.recv(&mut buf).is_err(), "{abi:?}: {out}");
+            assert!(abstract_receiver.recv(&mut buf).is_err(), "{abi:?}: {out}");
+        }
+    }
+
+    /// The netlink a name lookup needs (routes and addresses) opens; another does not.
+    #[tokio::test]
+    async fn only_routing_netlink_opens_in_a_sandbox() {
+        let tree = Tree::new("netlink");
+        let code = format!(
+            "{TRY}\
+             raw = socket.SOCK_RAW\n\
+             attempt('route', lambda: socket.socket(socket.AF_NETLINK, raw, 0))\n\
+             attempt('sock_diag', lambda: socket.socket(socket.AF_NETLINK, raw, 4))\n\
+             attempt('audit', lambda: socket.socket(socket.AF_NETLINK, raw, 9))\n\
+             attempt('lookup', lambda: socket.getaddrinfo('localhost', 80, \
+                 flags=socket.AI_ADDRCONFIG))\n"
+        );
+        let out = python(&tree, &tree.request(Network::Client), &code).await;
+        assert!(
+            out.contains("route ok") && out.contains("lookup ok"),
+            "{out}"
+        );
+        assert!(
+            out.contains("sock_diag EACCES") && out.contains("audit EACCES"),
+            "{out}"
+        );
+    }
+
+    /// A user namespace would give the pane capabilities of its own: `unshare` and
+    /// `clone` with a namespace flag are refused, `clone3` does not exist, and forks,
+    /// threads and `subprocess` (glibc falls back to `clone`) work as before.
+    #[tokio::test]
+    async fn no_namespace_can_be_made_in_a_sandbox() {
+        let tree = Tree::new("namespaces");
+        let code = format!(
+            "import ctypes, os, subprocess, threading\n\
+             libc = ctypes.CDLL(None, use_errno=True)\n\
+             def call(label, nr, *args):\n\
+             \x20   ctypes.set_errno(0); rc = libc.syscall(nr, *args)\n\
+             \x20   if rc == 0 and label == 'clone': os._exit(0)\n\
+             \x20   print(label, rc, ctypes.get_errno(), flush=True)\n\
+             call('unshare', {unshare}, 0x10000000)\n\
+             call('unshare-net', {unshare}, 0x40000000)\n\
+             call('clone', {clone}, 0x10000000 | 17, 0, 0, 0, 0)\n\
+             call('clone3', {clone3}, 0, 0)\n\
+             pid = os.fork()\n\
+             if pid == 0: os._exit(7)\n\
+             print('fork', os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]), flush=True)\n\
+             t = threading.Thread(target=lambda: print('thread ok', flush=True)); t.start(); t.join()\n\
+             print('subprocess', subprocess.run(['/bin/echo', 'ran'], capture_output=True).stdout, flush=True)\n",
+            unshare = libc::SYS_unshare,
+            clone = libc::SYS_clone,
+            clone3 = libc::SYS_clone3,
+        );
+        let out = python(&tree, &tree.request(Network::None), &code).await;
+        for label in ["unshare", "unshare-net", "clone"] {
+            assert!(out.contains(&format!("{label} -1 1\n")), "{label}: {out}");
+        }
+        assert!(out.contains("clone3 -1 38\n"), "{out}");
+        assert!(out.contains("fork 7") && out.contains("thread ok"), "{out}");
+        assert!(out.contains("subprocess b'ran\\n'"), "{out}");
+    }
+
+    /// What a terminal program does not need of the kernel: io_uring (`EACCES`, as the
+    /// socket rules), the keyrings, BPF, perf events, userfaultfd and `setns` (`EPERM`).
+    #[tokio::test]
+    async fn kernel_interfaces_a_pane_does_not_need_are_refused() {
+        let tree = Tree::new("kernel");
+        let calls = [
+            ("io_uring_setup", libc::SYS_io_uring_setup, "1, params"),
+            ("keyctl", libc::SYS_keyctl, "0, -4, 0"),
+            ("add_key", libc::SYS_add_key, "b'user', b'k', b'v', 1, -4"),
+            (
+                "request_key",
+                libc::SYS_request_key,
+                "b'user', b'k', None, 0",
+            ),
+            ("bpf", libc::SYS_bpf, "0, params, 72"),
+            (
+                "perf_event_open",
+                libc::SYS_perf_event_open,
+                "params, 0, -1, -1, 0",
+            ),
+            ("userfaultfd", libc::SYS_userfaultfd, "0"),
+            ("setns", libc::SYS_setns, "0, 0"),
+        ];
+        let mut code = "import ctypes\n\
+             libc = ctypes.CDLL(None, use_errno=True)\n\
+             params = ctypes.create_string_buffer(256)\n"
+            .to_owned();
+        for (label, nr, args) in calls {
+            code.push_str(&format!(
+                "ctypes.set_errno(0); rc = libc.syscall({nr}, {args}); \
+                 print('{label}', rc, ctypes.get_errno(), flush=True)\n"
+            ));
+        }
+        let out = python(&tree, &tree.request(Network::None), &code).await;
+        assert!(out.contains("io_uring_setup -1 13\n"), "{out}");
+        for (label, _, _) in &calls[1..] {
+            assert!(out.contains(&format!("{label} -1 1\n")), "{label}: {out}");
+        }
+    }
+
+    /// A descriptor the pane process holds without close-on-exec does not reach the
+    /// program: the child marks every one above 2 before the exec.
+    #[tokio::test]
+    async fn no_descriptor_of_the_pane_process_reaches_the_program() {
+        let tree = Tree::new("fds");
+        let file = std::fs::File::open("/dev/null").unwrap();
+        // SAFETY: plain fcntl calls on a descriptor this test owns.
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 100) };
+        assert!(fd >= 100);
+        // SAFETY: `fd` was just made and is closed at the end of the test.
+        let held = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let script = format!("[ -e /proc/self/fd/{fd} ] && echo held || echo closed");
+        let (_, out) = run(&tree, &tree.request(Network::None), &script).await;
+        assert_eq!(out, "closed\n");
+        drop(held);
+    }
+
+    /// The check of a grant is made on what is opened for the rule: a path that became a
+    /// link to a server directory after the request was looked at is refused.
+    #[test]
+    fn a_grant_that_became_a_link_to_a_server_directory_is_refused() {
+        let tree = Tree::new("swap");
+        std::os::unix::fs::symlink(tree.path("state"), tree.path("w/late")).unwrap();
+        std::fs::write(tree.path("x/tilrd"), "").unwrap();
+        std::os::unix::fs::symlink(tree.path("x"), tree.path("w/bin")).unwrap();
+        let mut dirs = tree.dirs.clone();
+        dirs.write_protected.push(Protected {
+            path: tree.path("x/tilrd"),
+            what: "the server's executable".into(),
+        });
+        let features = features().expect("this host offers the sandbox");
+        let prepare = |path: &str, access| {
+            let grants = [Grant {
+                path: tree.path(path),
+                access,
+                checked: true,
+            }];
+            Current::prepare(&grants, Network::None, features, &dirs).err()
+        };
+        let err = prepare("w/late", Access::ReadOnly).expect("the grant is refused");
+        assert!(err.contains("would expose the state directory"), "{err}");
+        let err = prepare("w/bin", Access::ReadWrite).expect("the grant is refused");
+        assert!(
+            err.contains("would expose the server's executable"),
+            "{err}"
+        );
+        assert_eq!(prepare("w/bin", Access::ReadOnly), None);
+        assert_eq!(prepare("w", Access::ReadWrite), None);
+    }
+
+    /// The way around the default for a profile that wants tmux or `script` inside, and
+    /// its price: with `/dev/pts` granted, a terminal made inside works, and so does
+    /// another terminal of the user.
+    #[tokio::test]
+    async fn a_profile_granting_dev_pts_can_make_terminals() {
+        let tree = Tree::new("pts");
+        let (other_master, other_slave) = crate::pty::open_pty(80, 24).unwrap();
+        let other = std::fs::read_link(format!("/proc/self/fd/{}", other_slave.as_raw_fd()))
+            .unwrap()
+            .display()
+            .to_string();
+        let mut request = tree.request(Network::None);
+        request.read_write.push("/dev/pts".into());
+        let code = format!(
+            "import os\n\
+             m, s = os.openpty(); os.write(s, b'inner\\n'); print('openpty', os.read(m, 64), flush=True)\n\
+             f = os.open({other:?}, os.O_RDWR | os.O_NOCTTY); os.write(f, b'INTO-THE-OTHER\\n')\n\
+             print('other ok', flush=True)\n"
+        );
+        let (code, out) = start(&tree, &request, &["python3", "-I", "-c", &code])
+            .unwrap()
+            .finish()
+            .await;
+        assert_eq!(code, Some(0), "{out}");
+        assert!(out.contains("openpty b'inner\\r\\n'"), "{out}");
+        assert!(out.contains("other ok"), "{out}");
+        // The other terminal got what the pane wrote.
+        let mut poll = libc::pollfd {
+            fd: other_master.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = i32::try_from(LIMIT.as_millis()).unwrap();
+        // SAFETY: one valid pollfd.
+        assert_eq!(unsafe { libc::poll(&raw mut poll, 1, ms) }, 1);
+        let mut buf = [0u8; 64];
+        // SAFETY: `buf` is valid for writes of its length.
+        let n = unsafe { libc::read(other_master.as_raw_fd(), buf.as_mut_ptr().cast(), 64) };
+        let got = String::from_utf8_lossy(&buf[..usize::try_from(n).unwrap()]).to_string();
+        assert!(got.contains("INTO-THE-OTHER"), "{got:?}");
+    }
+
+    /// A limit: Landlock has no right for metadata, so a sandboxed program changes the
+    /// mode, times and extended attributes of any file of the user, the server's token
+    /// included, though it can read or write the contents of neither.
+    #[tokio::test]
+    async fn metadata_outside_the_grants_can_be_changed() {
+        let tree = Tree::new("metadata");
+        for file in ["o/f", "state/token"] {
+            std::fs::write(tree.path(file), "x").unwrap();
+            std::fs::set_permissions(tree.path(file), std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        let (f, token) = (tree.text("o/f"), tree.text("state/token"));
+        let script = format!(
+            "chmod 0644 {token} && echo chmod-token; touch -m -d 2000-01-01 {f} && echo touch; \
+             cat {token} || echo no-read"
+        );
+        let (_, out) = run(&tree, &tree.request(Network::None), &script).await;
+        assert!(
+            out.contains("chmod-token") && out.contains("touch"),
+            "{out}"
+        );
+        assert!(out.contains("no-read"), "{out}");
+        let mode = std::fs::metadata(tree.path("state/token"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644);
+        let mtime = std::fs::metadata(tree.path("o/f"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(mtime < std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000));
+    }
+
+    /// A limit: a directory that is not granted cannot be listed, but an inotify watch on
+    /// it learns the names made there.
+    #[tokio::test]
+    async fn names_in_a_directory_not_granted_can_be_watched() {
+        let tree = Tree::new("inotify");
+        let o = tree.text("o");
+        let code = format!(
+            "import ctypes, os\n\
+             libc = ctypes.CDLL(None, use_errno=True)\n\
+             try:\n\
+             \x20   os.listdir({o:?}); print('listed', flush=True)\n\
+             except OSError as err:\n\
+             \x20   print('list', err.errno, flush=True)\n\
+             fd = libc.inotify_init()\n\
+             print('watch', libc.inotify_add_watch(fd, {o:?}.encode(), 0x100), flush=True)\n\
+             event = os.read(fd, 4096)\n\
+             print('event', event[16:].rstrip(b'\\0'), flush=True)\n"
+        );
+        let mut term = start(
+            &tree,
+            &tree.request(Network::None),
+            &["python3", "-I", "-c", &code],
+        )
+        .unwrap();
+        term.expect("list 13\n");
+        term.expect("watch 1\n");
+        std::fs::write(tree.path("o/a-name"), "").unwrap();
+        term.expect("event b'a-name'");
+        let (code, out) = term.finish().await;
+        assert_eq!(code, Some(0), "{out}");
+    }
+
+    /// A limit: what a sandboxed program can read it can run, here from memory
+    /// (`memfd_create` and `execve`), as it could copy it into its `TMPDIR`.
+    #[tokio::test]
+    async fn a_readable_program_runs_from_memory_too() {
+        let tree = Tree::new("memfd");
+        copy_program(&tree.path("r/tool"));
+        let code = format!(
+            "import os\n\
+             fd = os.memfd_create('tool')\n\
+             os.write(fd, open({:?}, 'rb').read())\n\
+             os.execve(fd, ['tool', 'ran-from-memory'], {{}})\n",
+            tree.text("r/tool")
+        );
+        let out = python(&tree, &tree.request(Network::None), &code).await;
+        assert_eq!(out, "ran-from-memory\n");
     }
 
     /// An interactive bash in a sandbox, at its prompt.
@@ -730,9 +1199,11 @@ mod linux {
         let tree = Tree::new("jobs");
         std::fs::write(
             tree.path("r/job.py"),
-            "import signal\n\
-             signal.signal(signal.SIGCONT, lambda *_: print('RESUMED', flush=True))\n\
-             print('STARTED', flush=True)\n\
+            // os.write, not print: Ctrl+Z may stop the program inside the write of
+            // STARTED, and the handler must not reenter a buffered stdout.
+            "import os, signal\n\
+             signal.signal(signal.SIGCONT, lambda *_: os.write(1, b'RESUMED\\n'))\n\
+             os.write(1, b'STARTED\\n')\n\
              while True:\n    signal.pause()\n",
         )
         .unwrap();
