@@ -3230,3 +3230,88 @@ async fn the_control_methods_answer_json() {
     let config = json("bus.reload_config", "{}").await.unwrap();
     assert_eq!(config["kept"], serde_json::json!(["t-1"]));
 }
+
+#[tokio::test]
+async fn call_timeout_ms_of_bus_toml_bounds_every_call() {
+    let file = |timeout_ms: u32| {
+        format!(
+            "call_timeout_ms = {timeout_ms}\n{}{}",
+            test_module("t", &[]),
+            instance("t-1", "t")
+        )
+    };
+    let server = instances_server(file(200), &[]);
+    let owner = server.owner().await;
+    wait_up(&server, &owner, "t-1").await;
+    let sleep = |ms: &'static str, options: CallOptions| {
+        let owner = owner.clone();
+        async move { bounded("test.sleep", owner.call("test.sleep", ms, options)).await }
+    };
+
+    // Read at start: a call that names no deadline gets call_timeout_ms, and one that
+    // names a longer deadline is held to it as well.
+    let error = sleep("5000", CallOptions::default()).await.unwrap_err();
+    assert_eq!(error.code, codes::TIMEOUT, "{error}");
+    let error = sleep(
+        "5000",
+        CallOptions::default().timeout(Duration::from_secs(60)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, codes::TIMEOUT, "{error}");
+
+    // Applied by bus.reload_config to new calls: 0 is no default deadline, and a call
+    // keeps the deadline it names.
+    write_bus_toml(&server, &file(0));
+    let done = reload_config(&owner).await.unwrap();
+    assert_eq!(done.kept, ["t-1"]);
+    let slept = sleep("400", CallOptions::default()).await.unwrap();
+    assert_eq!(text(&slept.payload), "slept");
+    let error = sleep(
+        "5000",
+        CallOptions::default().timeout(Duration::from_millis(200)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, codes::TIMEOUT, "{error}");
+}
+
+#[tokio::test]
+async fn a_method_of_a_configured_instance_is_unavailable_while_it_is_down() {
+    let server = instances_server(
+        format!(
+            "{}{}{}",
+            test_module("t", &[]),
+            instance("t-1", "t"),
+            instance_with(
+                "t-2",
+                "t",
+                "autostart = false\n",
+                &[("provide", &["other.ping", "more.*"])],
+                &[]
+            )
+        ),
+        &[],
+    );
+    let owner = server.owner().await;
+    wait_up(&server, &owner, "t-1").await;
+
+    // A method a configured instance's rights name exactly is known before the
+    // instance ever ran; a pattern names no method; any other name is not_found.
+    let error = calls(&owner, "other.ping", "").await.unwrap_err();
+    assert_eq!(error.code, codes::UNAVAILABLE, "{error}");
+    let error = calls(&owner, "more.thing", "").await.unwrap_err();
+    assert_eq!(error.code, codes::NOT_FOUND, "{error}");
+    let error = calls(&owner, "nobody.provides", "").await.unwrap_err();
+    assert_eq!(error.code, codes::NOT_FOUND, "{error}");
+
+    // What an instance provided stays known once it is stopped: unavailable.
+    stop_instance(&owner, "t-1", None).await.unwrap();
+    for method in ["test.echo", "test.sleep"] {
+        let error = calls(&owner, method, "").await.unwrap_err();
+        assert_eq!(error.code, codes::UNAVAILABLE, "{method}: {error}");
+    }
+    // And again once it is up.
+    start_instance(&owner, "t-1").await.unwrap();
+    assert_eq!(calls(&owner, "test.echo", "back").await.unwrap(), "back");
+}

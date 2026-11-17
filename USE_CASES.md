@@ -899,3 +899,5 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | A reload whose exec fails leaves the server running, and it starts the instances it stopped | `bus::a_failed_reload_starts_the_instances_again` |
 | A reload of the server does not wait for an instance's drain: a `bus.stop` draining a long call ends at once; `drain_ms` over 30000 is `bad_request` | `bus::a_reload_of_the_server_does_not_wait_for_a_long_drain` |
 | The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
+| `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
+| A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |

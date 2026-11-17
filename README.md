@@ -995,6 +995,11 @@ right (`list`, `start`, `stop`, `reload`, `reload_config`, each for one instance
 
 They are serialized in one queue; the listings answer at any time.
 
+`call_timeout_ms` is the deadline of a call that names none and the most one names (0: no
+default deadline); it is applied to new calls at start and on `bus.reload_config`. The
+methods an instance provided, and those its `provide` rights name exactly (without `*`), stay
+known: a call of one while no provider is up is `unavailable`, not `not_found`.
+
 ### Rights
 
 ### Tilr Web

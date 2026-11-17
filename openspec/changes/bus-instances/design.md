@@ -82,7 +82,15 @@ What the code froze where it differs from or adds to the text above; the code is
   SIGHUP and SIGUSR1 for the reload; an instance is spawned through `spawn_unblocked`, like a
   pane, or it would inherit them blocked and only end by SIGKILL after 3 s.
 - **A caller that acts on itself** gets its reply at once, with `new_pid` 0 for itself, and the
-  stop or reload follows after 100 ms, so the reply is on the wire first.
+  stop or reload follows after 100 ms (`runner::REPLY_GRACE`), so the reply is on the wire
+  first. It stays a timer: the broker's API has no event for "this native call's reply is
+  written to its caller". The reply is queued only after the handler returns, and
+  `drain_connection` waits for the calls a connection *serves*, not the ones it made;
+  `drain` waits for every connection's calls at once; `watch_connection` says only
+  `AwaitingHello`, `Up` or `Ended`; `Out::caught_up` (the interactive lane written out)
+  is the transport's and no `BrokerHandle` method reaches it for a connection. An event
+  needs a broker method such as `caught_up(conn)` or a reply-written notice, a broker edit
+  (O4) for `bus-reload` or a fix of its own.
 - **Starting an instance that runs** answers its pid; reloading one that is stopped is
   `bad_request` (start it first); a failed start keeps its instance supervised, like a crash.
 - **A refused `Hello`** (`reserved`, a denial) ends the attempt at once and is restarted with the
@@ -98,8 +106,21 @@ What the code froze where it differs from or adds to the text above; the code is
 - **Test builds shorten the Hello limits** with `TILR_TEST_BUS_HELLO_MS` (a process, 30 s) and
   `TILR_TEST_BUS_SOCKET_HELLO_MS` (a connection on an instance socket, 10 s), read only with the
   `failpoints` feature.
-- **`call_timeout_ms`** is read and kept (`Runner::call_timeout`) and applied once the broker
-  offers the setter (`BrokerHandle::set_call_timeout`); until then a call without a deadline gets
-  the broker's own default.
+- **`call_timeout_ms`** is handed to the broker (`BrokerHandle::set_call_timeout`) when a file is
+  taken: at start and on each `bus.reload_config` that applies one. A bad file at start leaves
+  the broker's default (10 s); a bad one on reload changes nothing.
+- **Known methods.** The runner tells the broker (`BrokerHandle::know_methods`) the methods an
+  instance provides when it comes up, and those its `provide` rights name exactly (a pattern
+  names no method) when a file is taken, so a call of one while the instance is down, stopped
+  or never started is `unavailable`, not `not_found`. The broker keeps them whole: a method of
+  an instance removed from `bus.toml` stays known until the server restarts.
 - **Listings.** A participant's `address` is the transport (`unix`, `tcp`); the broker does not
   keep a peer address for it.
+
+## Open questions
+
+- **`bus.reload_config` with an empty instance table** passes on the broker's `call` right
+  alone: the method checks `reload_config` once per instance the file adds, changes or
+  removes, and there is none to check while nothing is configured (a bad file checks every
+  configured one, again none). Reconciled with `bus-rights`, which decides what a control
+  right over no instance means; not changed here.

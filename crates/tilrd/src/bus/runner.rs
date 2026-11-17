@@ -289,6 +289,7 @@ impl Runner {
 
     /// Take `config` as the first and start its `autostart` instances.
     pub fn install(&self, config: BusConfig) {
+        self.declare(&config);
         let names: Vec<String> = {
             let mut table = self.table();
             table.instances.clear();
@@ -312,6 +313,24 @@ impl Runner {
         }
     }
 
+    /// Hand the broker what `config` says of every call: `call_timeout_ms` (the
+    /// deadline of a call that names none and the most one names; 0: none), and the
+    /// methods its instances' `provide` rights name exactly, so a call of one with no
+    /// provider live is `unavailable`, not `not_found` (a pattern names no method; an
+    /// instance's own methods are known from its first `Hello` on).
+    fn declare(&self, config: &BusConfig) {
+        let broker = &self.0.broker;
+        broker.set_call_timeout(Duration::from_millis(config.call_timeout_ms));
+        broker.know_methods(
+            config
+                .instances
+                .values()
+                .flat_map(|spec| &spec.rights.provide)
+                .filter(|right| !right.ends_with('*'))
+                .cloned(),
+        );
+    }
+
     /// The instances, in name order.
     pub fn rows(&self) -> Vec<Row> {
         self.table()
@@ -332,11 +351,6 @@ impl Runner {
     /// `drain_ms` of `bus.toml`.
     pub fn drain(&self) -> Duration {
         Duration::from_millis(self.table().config.drain_ms)
-    }
-
-    /// `call_timeout_ms` of `bus.toml`: what a call without a deadline gets.
-    pub fn call_timeout(&self) -> Duration {
-        Duration::from_millis(self.table().config.call_timeout_ms)
     }
 
     /// The instances `what` names, in name order; `not_found` for one that is not in
@@ -642,6 +656,7 @@ impl Runner {
             }
             (diff, Duration::from_millis(table.config.drain_ms))
         };
+        self.declare(&new);
         let mut outcome = ConfigOutcome::default();
         // Removed instances stop first, together.
         let mut stopping = Vec::new();
@@ -1067,7 +1082,21 @@ impl Life {
             }
         };
 
-        // Up.
+        // Up. What it provides stays known to the broker once it is gone: a call of it
+        // while the instance is down or stopped is `unavailable`, not `not_found`.
+        let provides = self
+            .runner
+            .0
+            .broker
+            .connections()
+            .into_iter()
+            .find(|info| info.connection_id == conn.id)
+            .map(|info| info.provides)
+            .unwrap_or_default();
+        self.runner
+            .0
+            .broker
+            .know_methods(provides.into_iter().map(|spec| spec.method));
         self.set(|snap| {
             snap.state = State::Up;
             snap.conn = Some(conn.id);

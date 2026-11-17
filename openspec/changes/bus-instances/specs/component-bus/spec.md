@@ -95,11 +95,29 @@ An instance whose process exits on its own, whose connection ends while its proc
 ### Requirement: Reloading bus.toml applies the difference
 `bus.reload_config` SHALL read `bus.toml` again, stop removed instances, start added ones, reload instances whose module or entry changed (including `rights`), keep the others running with their pids, keep manually stopped instances stopped, and apply `call_timeout_ms` to new calls.
 
-**Verified by**: `bus::reloading_bus_toml_applies_the_difference`.
+**Verified by**: `bus::reloading_bus_toml_applies_the_difference`, `bus::call_timeout_ms_of_bus_toml_bounds_every_call`.
 
 #### Scenario: Add, change, remove
 - **WHEN** `t-2` is added, `t-1`'s `env` changes and `t-3` is removed, then `tilr bus reload-config` runs
 - **THEN** `t-2` is up, `t-1` has a new pid, `t-3` no longer runs, and an unchanged `t-4` keeps its pid
+
+### Requirement: call_timeout_ms bounds every call
+The server SHALL hand `call_timeout_ms` of `bus.toml` to the broker at start and on each `bus.reload_config` that applies the file, for the calls made from then on: a call's deadline SHALL be `min(Call.timeout_ms, call_timeout_ms)`, a call that names none SHALL get `call_timeout_ms`, and 0 SHALL mean no default deadline.
+
+**Verified by**: `bus::call_timeout_ms_of_bus_toml_bounds_every_call`.
+
+#### Scenario: Read at start, applied on reload
+- **WHEN** `bus.toml` says `call_timeout_ms = 200` and the owner calls `test.sleep 5000`, with no deadline and with 60 s; then the file says 0, `bus.reload_config` runs and the owner calls `test.sleep 400`
+- **THEN** both first calls are answered `timeout` and the last `slept`
+
+### Requirement: Methods of configured instances are known
+The methods an instance provided since the server started, and those its `rights.provide` names exactly (without `*`), SHALL be known to the broker: a call of one while no live, non-draining provider is connected SHALL be answered `unavailable`, not `not_found`, also before the instance first ran.
+
+**Verified by**: `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down`, `bus::an_instance_is_stopped_and_started`.
+
+#### Scenario: A stopped instance's method
+- **WHEN** `t-1` provided `test.echo`, it is stopped with `bus.stop`, and the owner calls `test.echo`
+- **THEN** the reply is `unavailable`; a call of `nobody.provides` is `not_found`
 
 ### Requirement: Listing participants and methods
 `bus.instances` SHALL list every configured instance with its name, module, transport, state (`down`, `starting`, `up`, `draining`, `stopped`), pid, restarts and provided methods, and the outside participants connected now with their identity and `client_name`; `bus.methods` SHALL list each method with its kind, lane and the live, non-draining providers.
