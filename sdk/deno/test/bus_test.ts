@@ -362,7 +362,9 @@ scenario("streams_are_read_and_served_with_credit", 60_000, async (scope) => {
   // waits for credit, sent no more than the window beyond what it was credited.
   const total = 64 << 20;
   const window = 64 << 10;
-  const flood = bus.stream("test.flood", String(total), { window });
+  // Bounded: a provider that stops sending (a gate that ignores credit) fails the
+  // stream `timeout` at its deadline rather than holding the test to its own.
+  const flood = bus.stream("test.flood", String(total), { window, timeoutMs: 20_000 });
   const first = await flood.next();
   assert(!first.done);
   let received = first.value.length;

@@ -110,12 +110,27 @@ def known_names(root):
 
 
 DENO_TEST = re.compile(r'\b(?:Deno\.test|scenario)\(\s*"(?P<name>[^"]+)"')
+# A TypeScript string or template (kept) or comment (dropped); a regex literal holding
+# a quote is not looked at, the SDK tests have none.
+TS_TOKEN = re.compile(
+    r'(?P<string>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\]|\\.)*`)'
+    r'|(?P<comment>//[^\n]*|/\*.*?(?:\*/|\Z))',
+    re.DOTALL,
+)
+
+
+def ts_code(source):
+    """TypeScript source without its comments, line breaks kept."""
+    return TS_TOKEN.sub(
+        lambda m: m['string'] if m['string'] is not None else '\n' * m['comment'].count('\n'),
+        source,
+    )
 
 
 def sdk_names(root):
     """The bus SDKs' tests, by their path from the repository root."""
     for path in sorted((root / 'sdk' / 'deno' / 'test').glob('*_test.ts')):
-        for match in DENO_TEST.finditer(path.read_text()):
+        for match in DENO_TEST.finditer(ts_code(path.read_text())):
             yield f'{path.relative_to(root).as_posix()}::{match["name"]}'
     for path in sorted((root / 'sdk' / 'python' / 'tests').glob('test_*.py')):
         tree = ast.parse(path.read_text(), filename=str(path))

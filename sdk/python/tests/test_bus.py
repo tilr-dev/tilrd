@@ -342,7 +342,10 @@ async def read_a_flood(bus: Bus, namespace: str, total: int, window: int) -> Non
     """Read `<namespace>.flood` of `total` bytes with `window`: one chunk, then the
     reader stops and the provider waits for credit, no more than the window beyond what
     it was credited; then the rest, in order, never more than the window ahead."""
-    async with bus.stream(f"{namespace}.flood", str(total), window=window) as chunks:
+    # Bounded: a provider that stops sending (a gate that ignores credit) fails the
+    # stream `timeout` at its deadline rather than holding the test to its own.
+    stream = bus.stream(f"{namespace}.flood", str(total), window=window, timeout=20)
+    async with stream as chunks:
         first = await chunks.__anext__()
         received = len(first)
         ordered = first.count(b"x") == len(first)
@@ -605,13 +608,16 @@ async def test_leaving_async_with_cancels_the_stream(scope: Scope) -> None:
         assert await reading == b"1"
     # `stream` is still held here: the cancel is the block's, not the collector's.
     calling = asyncio.ensure_future(bus.call("pt.after"))
-    async with asyncio.timeout(2):
-        credit = await peer.recv()
-        assert credit.WhichOneof("msg") == "credit", credit
-        cancel = await peer.recv()
-        assert cancel.WhichOneof("msg") == "cancel", cancel
-        assert cancel.cancel.id == call.id
-        after = (await peer.recv()).call
+    try:
+        async with asyncio.timeout(2):
+            credit = await peer.recv()
+            assert credit.WhichOneof("msg") == "credit", credit
+            cancel = await peer.recv()
+            assert cancel.WhichOneof("msg") == "cancel", cancel
+            assert cancel.cancel.id == call.id
+            after = (await peer.recv()).call
+    except TimeoutError:
+        raise AssertionError("leaving `async with` did not cancel the stream at once") from None
     assert after.method == "pt.after"
     await peer.send(wire.Envelope(reply=wire.Reply(id=after.id, payload=b"ok")))
     assert (await calling).payload == b"ok"

@@ -6,9 +6,10 @@ former single change `unified-bus` (shared design, O3).
 ## 1. SDKs
 
 - [x] 1.1 [10.1] `scripts/install-tools.sh`: `deno` and `uv` pinned with SHA-256 for Linux and macOS, x86_64 and aarch64; `scripts/gen-bus-sdk.sh [--check]` (K4); verify `scripts/install-tools.sh /tmp/t deno uv && /tmp/t/deno --version && /tmp/t/uv --version` and the drift scenario of `bus-sdks` once by hand
-- [x] 1.2 [10.2] `sdk/deno/` (Deno and browser; K1-K3), `deno.json`, `deno.lock`, test runtime and tests (K5); verify `deno test -A`, `deno fmt --check`, `deno lint` in `sdk/deno` with the tests named in the `bus-sdks` spec
-- [x] 1.3 [10.3] `sdk/python/` (`tilr_bus`, K1-K3), `pyproject.toml`, `uv.lock`, test runtime and tests including the cross-language ones; verify `uv run pytest` and `uv run ruff check` in `sdk/python`
+- [x] 1.2 [10.2] `sdk/deno/` (Deno and browser; K1-K3), `deno.json`, `deno.lock`, test runtime and tests (K5); verify `deno test -A`, `deno fmt --check`, `deno lint` in `sdk/deno` with the tests named in the `bus-sdks` spec, except the two of 1.5
+- [x] 1.3 [10.3] `sdk/python/` (`tilr_bus`, K1-K3), `pyproject.toml`, `uv.lock`, test runtime and tests including the cross-language ones; verify `uv run pytest` and `uv run ruff check` in `sdk/python`, except the two of 1.5
 - [x] 1.4 [10.4] CI job `sdk` (two tiers), `scripts/sdk-check.sh`, AGENTS.md prerequisites and check list; verify `scripts/sdk-check.sh` passes locally and the job is in `.github/workflows/ci.yml` with the two tiers (`actionlint` if available, else review)
+- [ ] 1.5 Un-skip the scenarios that wait for the server side of other changes, in both SDKs: `instances_and_a_token_participant_connect_over_fd_socket_and_websocket` once `bus-instances` (`bus.toml`) and `bus-rights` (`bus.token`) land, `a_script_drives_a_terminal` once `bus-core-panes` and `pane-profiles` land; verify both pass in `scripts/sdk-check.sh` and drop "skipped" from their rows of USE_CASES.md and from the spec's "Verified by" lines
 
 ## 2. Checks and archive
 

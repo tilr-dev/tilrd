@@ -40,6 +40,10 @@ mod bundled_tls_tests { #[test] fn trusts_roots() {} }
 scenario("bytes_pass_unchanged", 30_000, async () => {});
 Deno.test("plain_test", () => {});
 // a_comment("not_a_test")
+// scenario("commented_out", 30_000, async () => {});
+/* Deno.test("in_a_block_comment", () => {});
+   scenario("in_a_block_comment_too", 30_000, async () => {}); */
+const url = "http://example.test/", none = ""; scenario("after_a_url_string", 1, async () => {});
 ''')
         self.write('sdk/python/tests/test_bus.py',
                    'async def test_bytes_pass_unchanged():\n    pass\n'
@@ -65,7 +69,7 @@ Deno.test("plain_test", () => {});
 | Gated | `reconnect::nested::gated` (Linux) |
 | Unit | `title::tests::title_follows_pane`, `conn::bundled_tls_tests::trusts_roots` |
 | Python | `uc_123.py::reconnects` |
-| SDKs | `sdk/deno/test/bus_test.ts::bytes_pass_unchanged`, `sdk/deno/test/bus_test.ts::plain_test`, `sdk/python/tests/test_bus.py::test_bytes_pass_unchanged` |
+| SDKs | `sdk/deno/test/bus_test.ts::bytes_pass_unchanged`, `sdk/deno/test/bus_test.ts::plain_test`, `sdk/deno/test/bus_test.ts::after_a_url_string`, `sdk/python/tests/test_bus.py::test_bytes_pass_unchanged` |
 
 | Case | Check |
 | --- | --- |
@@ -79,7 +83,10 @@ Deno.test("plain_test", () => {});
                      'uc_123.py::missing', 'uc_999.py::reconnects',
                      'only_in_a_comment', 'only_in_a_nested_comment',
                      'only_in_a_string', 'sdk/deno/test/bus_test.ts::not_a_test',
-                     'sdk/deno/test/bus_test.ts::missing', 'bus_test.ts::bytes_pass_unchanged',
+                     'sdk/deno/test/bus_test.ts::missing',
+                     'sdk/deno/test/bus_test.ts::commented_out',
+                     'sdk/deno/test/bus_test.ts::in_a_block_comment',
+                     'sdk/deno/test/bus_test.ts::in_a_block_comment_too', 'bus_test.ts::bytes_pass_unchanged',
                      'sdk/python/tests/test_bus.py::helper',
                      'sdk/python/tests/test_bus.py::test_missing']:
             with self.subTest(name=name):
