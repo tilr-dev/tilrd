@@ -842,6 +842,7 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | An instance that never says Hello is killed and started again (the limit is 30 s, shortened by the test build) | `bus::an_instance_that_never_says_hello_is_restarted` |
 | A program that is not there is `spawn_failed`, one that exits before Hello `start_failed`; both are tried again | `bus::an_instance_that_cannot_start_is_reported` |
 | `bus.stop` drains (a call in flight is answered), stops and keeps the instance stopped until `bus.start`; stopping or starting twice is no error | `bus::an_instance_is_stopped_and_started` |
+| `bus.stop` ends an instance with SIGTERM: it starts with no signal blocked, though the supervisor's threads hold them | `bus::an_instance_is_stopped_with_sigterm` |
 | An instance that ignores SIGTERM is killed after 3 s | `bus::an_instance_that_ignores_sigterm_is_killed_after_3_s` |
 | A process an instance started ends with it, when the instance is stopped and when it exits by itself (its process group is killed before its leader is reaped) | `bus::an_instances_own_processes_end_with_it` |
 | `bus.reload` of an instance that cannot start again answers `start_failed`; the instance stays supervised and comes up once it can | `bus::a_reload_answers_a_start_error` |

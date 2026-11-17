@@ -73,6 +73,9 @@ What the code froze where it differs from or adds to the text above; the code is
 - **The log says what the listing shows.** Each change of an instance's state (`started`, `is
   up`, `is draining`, `starts again in`, `is stopped`) is logged after it is made, so a reader of
   the log finds it in `bus.instances`; the tests wait on these lines instead of polling.
+- **An instance starts with no signal blocked.** The supervisor's threads hold SIGTERM, SIGINT,
+  SIGHUP and SIGUSR1 for the reload; an instance is spawned through `spawn_unblocked`, like a
+  pane, or it would inherit them blocked and only end by SIGKILL after 3 s.
 - **A caller that acts on itself** gets its reply at once, with `new_pid` 0 for itself, and the
   stop or reload follows after 100 ms, so the reply is on the wire first.
 - **Starting an instance that runs** answers its pid; reloading one that is stopped is

@@ -1364,8 +1364,9 @@ fn launch(
             Ok(())
         });
     }
-    let mut child = command
-        .spawn()
+    // With SIGTERM and the other signals the supervisor's threads hold let in: a child
+    // inherits the mask, and one started with SIGTERM blocked is only ended by SIGKILL.
+    let mut child = crate::reload::spawn_unblocked(|| command.spawn())
         .map_err(|err| spawn_failed(name, format!("{program}: {err}")))?;
     drop(child_fd);
     let Some(pid) = child.id() else {

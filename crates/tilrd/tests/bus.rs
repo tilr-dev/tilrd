@@ -1191,6 +1191,29 @@ async fn an_instance_is_stopped_and_started() {
 }
 
 #[tokio::test]
+async fn an_instance_is_stopped_with_sigterm() {
+    // It says when SIGTERM came: an instance started with the signal blocked (as the
+    // supervisor's threads hold it) would hear nothing and be killed after 3 s.
+    let server = instances_server(
+        format!(
+            "{}{}",
+            script_module(
+                "term",
+                "trap 'echo got TERM >&2; exit 0' TERM; echo ready >&2; sleep 3600 & wait $!",
+                &[]
+            ),
+            instance_with("t-1", "term", "", &[], &[])
+        ),
+        &[],
+    );
+    let owner = server.owner().await;
+    server.wait_logged("bus t-1: ready").await;
+    stop_instance(&owner, "t-1", Some(0)).await.unwrap();
+    server.wait_logged("bus t-1: got TERM").await;
+    assert_eq!(info(&owner, "t-1").await.state, "stopped");
+}
+
+#[tokio::test]
 async fn an_instance_that_ignores_sigterm_is_killed_after_3_s() {
     let runtime = common::bus::test_runtime_path();
     let server = instances_server(
