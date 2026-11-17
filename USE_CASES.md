@@ -776,3 +776,34 @@ the client tests drive a partner in the test that plays the broker (`tests/commo
 | The test runtime connects over an instance socket with its token and provides its methods | `runtime::the_test_runtime_provides_its_methods_over_an_instance_socket` |
 | The test runtime's flood waits for credit | `runtime::the_test_runtimes_flood_waits_for_credit` |
 | The test runtime with `TEST_NO_HELLO` says nothing | `runtime::the_test_runtime_without_hello_says_nothing` |
+
+## The bus broker — `tests/bus.rs`
+
+`tilrd` serves `tilr.bus.v1` beside `tilr.v1`: a WebSocket handshake that offers the
+subprotocol on the TCP port or the Unix socket is a bus participant. The broker sets
+`from`, routes calls (round robin, last active), keeps the order between two
+participants, relays streams and events, and is itself the participant `tilrd`
+(`bus.ping`). Participants are the test runtime and `tilr_bus` clients as the owner, and
+raw clients that write envelopes by hand (`tests/common/bus.rs`).
+
+| Use case | Test |
+|---|---|
+| Hello comes first (a bad first message is `expected_hello` too) and names version 1; a wrong token or a credential is denied; tilr.v1 is served as before | `bus::hello_comes_first_and_names_a_version` |
+| The first thing a participant hears is its HelloAck, nothing from before it | `bus::the_first_thing_a_participant_hears_is_its_hello_ack` |
+| The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
+| A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
+| `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
+| Calls go round robin over the providers; no provider is `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
+| `LAST_ACTIVE` goes to the provider that activated last, then to the next | `bus::last_active_goes_to_the_provider_that_activated_last` |
+| Methods in a reserved namespace cannot be provided, nor events emitted there | `bus::reserved_namespaces_cannot_be_provided` |
+| 1000 calls between two participants arrive in the order sent | `bus::calls_between_two_participants_keep_their_order` |
+| A stream is a call answered in chunks and End; a cancel reaches the provider; a reply to a stream is `bad_reply` | `bus::a_stream_is_a_call_answered_in_chunks` |
+| Events reach the subscribers connected now, by NATS patterns, once each, without history | `bus::events_reach_the_subscribers_connected_now` |
+| A participant with the same client id supersedes the older (close 4000) | `bus::a_participant_with_the_same_client_id_supersedes_the_older` |
+| The end of a relayed bulk stream, End or an error, comes after its chunks | `bus::the_end_of_a_relayed_bulk_stream_comes_after_its_chunks` |
+| The end of a native bulk stream comes after its chunks | `supervisor::bus::broker::tests::the_end_of_a_bulk_stream_comes_after_its_chunks` |
+| A late end of a cancelled native call leaves a new call of the same id alone | `supervisor::bus::broker::tests::a_late_end_of_a_cancelled_call_leaves_a_new_call_of_its_id_alone` |
+| The stub authorizer allows the owner everything and an instance what its rights name | `supervisor::bus::authz::tests::the_stub_allows_what_the_rights_name` |
+| The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
+| Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
+| An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |

@@ -857,6 +857,44 @@ What to know:
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 
+## The bus
+
+Beside `tilr.v1`, tilrd is the broker of a component bus, `tilr.bus.v1`: participants
+(windows, plugins, runtimes, tilrd itself) call each other's methods, read streams and
+send events through it. Its envelope and payload schemas are in the crate
+[`tilr-bus`](crates/tilr-bus), which also holds the Rust client.
+
+### Transports
+
+- The TCP port and the Unix socket: a WebSocket handshake that offers the subprotocol
+  `tilr.bus.v1` (`Sec-WebSocket-Protocol`) is a bus participant; one that does not is a
+  `tilr.v1` client as before. A WebSocket message is one envelope behind a flag byte
+  (0 plain, 1 zstd), up to 16 MiB.
+
+### Hello
+
+The first envelope is `Hello` with `protocol_version` 1 and the methods the participant
+provides; anything else first, or a message that is not an envelope, is answered
+`expected_hello` and closed, another version `unsupported_version`. On the Unix socket the participant is the owner; on TCP the owner
+shows the access token. This build refuses credentials (`denied`), at Hello and in
+`CredentialUpdate`. The answer, `HelloAck`,
+is the first thing a participant hears: its identity (`owner`), the connection id, the
+server id and the frame limit. The broker sets `from` of every call and event to the
+sender's identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
+`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers `bus.ping`.
+A call goes to the provider named by `target`, else round robin over the providers, or to
+the one that activated last for a method declared `LAST_ACTIVE`; calls between two
+participants keep their order. A newer connection with the same `client_id` supersedes
+the older (close 4000).
+
+### Streams and events
+
+### Instances
+
+### Rights
+
+### Tilr Web
+
 ## Protocol
 
 Defined in [`crates/tilr-proto/proto/tilr.proto`](crates/tilr-proto/proto/tilr.proto). A
