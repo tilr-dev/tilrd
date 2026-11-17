@@ -44,6 +44,9 @@ impl Drop for Runtime {
     }
 }
 
+/// How long a started runtime has to connect.
+const START_WAIT: Duration = Duration::from_secs(60);
+
 async fn start(name: &str, extra: &[(&str, &str)]) -> (Runtime, Peer) {
     let dir = std::env::temp_dir().join(format!("tilr-bus-rt-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -64,7 +67,9 @@ async fn start(name: &str, extra: &[(&str, &str)]) -> (Runtime, Peer) {
     }
     let child = command.spawn().unwrap();
     let runtime = Runtime { child, dir };
-    let (stream, _) = tokio::time::timeout(common::WAIT, listener.accept())
+    // Longer than WAIT: on macOS the first exec of a freshly linked runtime waits for the
+    // system's code check, seconds on a busy machine.
+    let (stream, _) = tokio::time::timeout(START_WAIT, listener.accept())
         .await
         .expect("the runtime did not connect")
         .unwrap();
