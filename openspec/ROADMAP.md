@@ -153,6 +153,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
+| bus-broker-core | [PR #137](https://github.com/tilr-dev/tilrd/pull/137) |
 | bus-wire | [PR #135](https://github.com/tilr-dev/tilrd/pull/135) |
 | cargo-build-dir-layout | [PR #134](https://github.com/tilr-dev/tilrd/pull/134) |
 | linux-container-debuginfo | [PR #41](https://github.com/tilr-dev/tilrd/pull/41) |
