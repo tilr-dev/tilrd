@@ -7,8 +7,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 use bytes::Bytes;
 use common::bus::{BusOptions, BusServer, TcpAuth, text};
 use common::{Client, TIMEOUT};
@@ -712,10 +710,12 @@ async fn the_end_of_a_relayed_bulk_stream_comes_after_its_chunks() {
 // ---------------------------------------------------------------------------
 
 use common::bus_instances::{
-    alive, info, instance, instance_socket, instance_with, listing, method_list, module, reload,
-    reload_config, script_module, start as start_instance, stop as stop_instance, test_module,
-    token_module, wait_instance, wait_tokens, wait_up, write_bus_toml,
+    WRITTEN, alive, bounded, info, instance, instance_socket, instance_with, listing, method_list,
+    module, reload, reload_config, script_module, start as start_instance, stop as stop_instance,
+    test_module, token_module, wait_gone, wait_instance, wait_tokens, wait_up, write_bus_toml,
 };
+use std::time::Duration;
+
 use tilr_bus::bus::reload_request::What;
 
 /// A server with `bus.toml` and `env` more in its environment.
@@ -733,6 +733,11 @@ fn instances_server(bus_toml: String, env: &[(&str, &str)]) -> BusServer {
 /// A call to one instance by its identity.
 fn to(instance: &str) -> CallOptions {
     CallOptions::default().target(format!("instance:{instance}"))
+}
+
+/// [`owner_calls`] within [`TIMEOUT`].
+async fn calls(bus: &tilr_bus::Bus, method: &str, payload: &str) -> Result<String, BusError> {
+    bounded(method, owner_calls(bus, method, payload)).await
 }
 
 #[tokio::test]
@@ -754,14 +759,14 @@ async fn an_instance_from_bus_toml_is_started_and_answers() {
     );
     let owner = server.owner().await;
 
-    let t1 = wait_up(&owner, "t-1").await;
+    let t1 = wait_up(&server, &owner, "t-1").await;
     assert!(t1.pid > 0 && alive(t1.pid), "{t1:?}");
     assert_eq!((t1.module.as_str(), t1.transport.as_str()), ("t", "fd"));
     assert!(t1.provides.contains(&"test.echo".to_owned()), "{t1:?}");
-    assert_eq!(owner_calls(&owner, "test.echo", "hi").await.unwrap(), "hi");
+    assert_eq!(calls(&owner, "test.echo", "hi").await.unwrap(), "hi");
     // Its identity is `instance:<name>`, set by the broker.
     assert_eq!(
-        owner_calls(&owner, "test.whoami", "").await.unwrap(),
+        calls(&owner, "test.whoami", "").await.unwrap(),
         "instance:t-1"
     );
 
@@ -769,7 +774,7 @@ async fn an_instance_from_bus_toml_is_started_and_answers() {
     let t2 = info(&owner, "t-2").await;
     assert_eq!((t2.state.as_str(), t2.pid), ("stopped", 0), "{t2:?}");
     let started = start_instance(&owner, "t-2").await.unwrap();
-    let t2 = wait_up(&owner, "t-2").await;
+    let t2 = wait_up(&server, &owner, "t-2").await;
     assert_eq!(started.pid, t2.pid);
     assert!(alive(t2.pid));
 
@@ -821,7 +826,7 @@ async fn a_bad_bus_toml_leaves_panes_working() {
     );
     let done = reload_config(&owner).await.unwrap();
     assert_eq!(done.started, ["t-1"]);
-    wait_up(&owner, "t-1").await;
+    wait_up(&server, &owner, "t-1").await;
 }
 
 #[tokio::test]
@@ -829,7 +834,7 @@ async fn reloading_a_bad_bus_toml_changes_nothing() {
     let good = format!("{}{}", test_module("t", &[]), instance("t-1", "t"));
     let server = instances_server(good.clone(), &[]);
     let owner = server.owner().await;
-    let before = wait_up(&owner, "t-1").await;
+    let before = wait_up(&server, &owner, "t-1").await;
 
     // Misspelt key, wrong type, the old key, an instance without its module: every
     // one is `bad_config` and the instance runs on with the same pid.
@@ -893,7 +898,7 @@ async fn a_socket_path_that_is_too_long_is_a_config_error() {
         ),
     );
     reload_config(&owner).await.unwrap();
-    wait_up(&owner, &name).await;
+    wait_up(&server, &owner, &name).await;
 }
 
 #[tokio::test]
@@ -918,8 +923,8 @@ async fn an_instance_gets_its_connection_and_names() {
         ],
     );
     let owner = server.owner().await;
-    wait_up(&owner, "t-1").await;
-    let report = owner_calls(&owner, "test.env", "").await.unwrap();
+    wait_up(&server, &owner, "t-1").await;
+    let report = calls(&owner, "test.env", "").await.unwrap();
     let report: serde_json::Value = serde_json::from_str(&report).unwrap();
     let env = &report["env"];
     assert_eq!(env["TILR_BUS_FD"], "3");
@@ -961,11 +966,11 @@ async fn a_socket_instance_connects_once_with_its_token() {
         &[("TILR_TEST_BUS_SOCKET_HELLO_MS", "2000")],
     );
     let owner = server.owner().await;
-    let up = wait_up(&owner, "t-1").await;
+    let up = wait_up(&server, &owner, "t-1").await;
     assert_eq!(up.transport, "socket");
-    assert_eq!(owner_calls(&owner, "test.echo", "x").await.unwrap(), "x");
+    assert_eq!(calls(&owner, "test.echo", "x").await.unwrap(), "x");
 
-    let report = owner_calls(&owner, "test.env", "").await.unwrap();
+    let report = calls(&owner, "test.env", "").await.unwrap();
     let report: serde_json::Value = serde_json::from_str(&report).unwrap();
     let env = &report["env"];
     let socket = instance_socket(&server, "t-1");
@@ -1033,7 +1038,10 @@ async fn a_crashed_instance_is_restarted_with_backoff() {
         })
         .collect();
     assert_eq!(pauses[..3], [200, 400, 800], "{pauses:?}");
-    wait_instance(&owner, "c-1", "a restart", |info| info.restarts >= 3).await;
+    wait_instance(&server, &owner, "c-1", "a restart", |info| {
+        info.restarts >= 3
+    })
+    .await;
     // Between processes it is `down`, with no pid; a stop ends the loop.
     stop_instance(&owner, "c-1", None).await.unwrap();
     let after = info(&owner, "c-1").await;
@@ -1048,31 +1056,21 @@ async fn an_instance_that_loses_its_connection_is_restarted() {
         &[],
     );
     let owner = server.owner().await;
-    let before = wait_up(&owner, "t-1").await;
+    let before = wait_up(&server, &owner, "t-1").await;
     assert_eq!(before.restarts, 0);
     // It closes descriptor 3 and keeps running: its identity is the descriptor, it
     // cannot reconnect, so the process is killed and a new one says Hello.
     assert_eq!(
-        owner_calls(&owner, "test.close_bus", "").await.unwrap(),
+        calls(&owner, "test.close_bus", "").await.unwrap(),
         "closing"
     );
-    let after = wait_instance(&owner, "t-1", "a new process", |info| {
+    let after = wait_instance(&server, &owner, "t-1", "a new process", |info| {
         info.state == "up" && info.pid != before.pid
     })
     .await;
     assert_eq!(after.restarts, 1);
-    let deadline = std::time::Instant::now() + common::TIMEOUT;
-    while alive(before.pid) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the old process lives"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        owner_calls(&owner, "test.echo", "again").await.unwrap(),
-        "again"
-    );
+    wait_gone(before.pid, "the old process").await;
+    assert_eq!(calls(&owner, "test.echo", "again").await.unwrap(), "again");
 }
 
 #[cfg(feature = "failpoints")]
@@ -1088,9 +1086,9 @@ async fn an_instance_that_never_says_hello_is_restarted() {
         &[("TILR_TEST_BUS_HELLO_MS", "1000")],
     );
     let owner = server.owner().await;
-    let first = wait_instance(&owner, "t-1", "a process", |info| info.pid > 0).await;
+    let first = wait_instance(&server, &owner, "t-1", "a process", |info| info.pid > 0).await;
     assert_eq!(first.state, "starting");
-    let second = wait_instance(&owner, "t-1", "a new process", |info| {
+    let second = wait_instance(&server, &owner, "t-1", "a new process", |info| {
         info.restarts >= 1 && info.pid > 0 && info.pid != first.pid
     })
     .await;
@@ -1122,7 +1120,10 @@ async fn an_instance_that_cannot_start_is_reported() {
     assert_eq!(error.code, codes::START_FAILED, "{error}");
     assert!(error.message.contains("before it said Hello"), "{error}");
     // Both are supervised: they are tried again (restarts count).
-    wait_instance(&owner, "quits-1", "a restart", |info| info.restarts >= 1).await;
+    wait_instance(&server, &owner, "quits-1", "a restart", |info| {
+        info.restarts >= 1
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1132,16 +1133,20 @@ async fn an_instance_is_stopped_and_started() {
         &[],
     );
     let owner = server.owner().await;
-    let before = wait_up(&owner, "t-1").await;
+    let before = wait_up(&server, &owner, "t-1").await;
 
     // A call in flight is answered before the process is stopped (drained).
     let mut sleeping = Box::pin(owner.call("test.sleep", "600", to("t-1")));
-    let _ = tokio::time::timeout(Duration::ZERO, sleeping.as_mut()).await;
+    // Polled once, so the call is sent.
+    let _ = sleeping.as_mut().now_or_never();
     // Calls of one connection reach the broker in order: once this is answered, the
     // sleep has been routed.
-    owner_calls(&owner, "test.echo", "sync").await.unwrap();
+    calls(&owner, "test.echo", "sync").await.unwrap();
     let stopping = stop_instance(&owner, "t-1", None);
-    let (slept, stopped) = tokio::join!(sleeping, stopping);
+    let (slept, stopped) = bounded("the drained stop", async {
+        tokio::join!(sleeping, stopping)
+    })
+    .await;
     assert_eq!(text(&slept.unwrap().payload), "slept");
     stopped.unwrap();
     let after = info(&owner, "t-1").await;
@@ -1152,22 +1157,32 @@ async fn an_instance_is_stopped_and_started() {
     );
     assert!(!alive(before.pid));
     // No new calls: nobody provides test.echo.
-    let error = owner_calls(&owner, "test.echo", "x").await.unwrap_err();
+    let error = calls(&owner, "test.echo", "x").await.unwrap_err();
     assert_eq!(error.code, codes::UNAVAILABLE, "{error}");
-    // Stopping again is no error; it stays stopped past the restart pause.
+    // Stopping again is no error. A stop ends the instance's task (logged as `is
+    // stopped`): nothing is left that would start it again after a pause.
     stop_instance(&owner, "t-1", None).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
     let still = info(&owner, "t-1").await;
     assert_eq!((still.state.as_str(), still.restarts), ("stopped", 0));
+    let lines = server.log_lines();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("instance t-1 is stopped")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains("instance t-1 starts again")),
+        "{lines:?}"
+    );
 
     // Started, it answers once it said Hello.
     let started = start_instance(&owner, "t-1").await.unwrap();
     assert!(started.pid > 0 && started.pid != before.pid);
     assert_eq!(info(&owner, "t-1").await.state, "up");
-    assert_eq!(
-        owner_calls(&owner, "test.echo", "back").await.unwrap(),
-        "back"
-    );
+    assert_eq!(calls(&owner, "test.echo", "back").await.unwrap(), "back");
     // Started while it runs: its pid.
     assert_eq!(
         start_instance(&owner, "t-1").await.unwrap().pid,
@@ -1191,7 +1206,7 @@ async fn an_instance_that_ignores_sigterm_is_killed_after_3_s() {
         &[],
     );
     let owner = server.owner().await;
-    let before = wait_up(&owner, "s-1").await;
+    let before = wait_up(&server, &owner, "s-1").await;
     let began = std::time::Instant::now();
     stop_instance(&owner, "s-1", Some(0)).await.unwrap();
     assert!(
@@ -1201,15 +1216,6 @@ async fn an_instance_that_ignores_sigterm_is_killed_after_3_s() {
     );
     assert!(!alive(before.pid));
     assert_eq!(info(&owner, "s-1").await.state, "stopped");
-}
-
-/// Wait until the process `pid` is gone.
-async fn gone(pid: u32, what: &str) {
-    let deadline = std::time::Instant::now() + common::TIMEOUT;
-    while alive(pid) {
-        assert!(std::time::Instant::now() < deadline, "{what} ({pid}) lives");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
 }
 
 #[tokio::test]
@@ -1226,7 +1232,7 @@ async fn an_instances_own_processes_end_with_it() {
             script_module(
                 "g",
                 &format!(
-                    "sleep 3600 & echo $! >> \"$PID_FILE\"; exec {}",
+                    "sleep 3600 & echo $! >> \"$PID_FILE\"; {WRITTEN}; exec {}",
                     runtime.display()
                 ),
                 &[("PID_FILE", stopped_pids.to_str().unwrap())]
@@ -1234,7 +1240,7 @@ async fn an_instances_own_processes_end_with_it() {
             instance("g-1", "g"),
             script_module(
                 "c",
-                "sleep 3600 & echo $! >> \"$PID_FILE\"; exit 0",
+                &format!("sleep 3600 & echo $! >> \"$PID_FILE\"; {WRITTEN}; exit 0"),
                 &[("PID_FILE", crashed_pids.to_str().unwrap())]
             ),
             instance_with("c-1", "c", "", &[], &[]),
@@ -1244,17 +1250,19 @@ async fn an_instances_own_processes_end_with_it() {
     let owner = server.owner().await;
 
     // Stopped: SIGTERM and SIGKILL go to its process group, the background process too.
-    wait_up(&owner, "g-1").await;
-    let child: u32 = wait_tokens(&stopped_pids, 1).await[0].parse().unwrap();
+    wait_up(&server, &owner, "g-1").await;
+    let child: u32 = wait_tokens(&server, "g-1", &stopped_pids, 1).await[0]
+        .parse()
+        .unwrap();
     assert!(alive(child));
     stop_instance(&owner, "g-1", Some(0)).await.unwrap();
-    gone(child, "the stopped instance's own process").await;
+    wait_gone(child, "the stopped instance's own process").await;
 
     // Its leader exited by itself: what the group still holds is killed before the
     // leader is reaped, every time it is started again.
-    let pids = wait_tokens(&crashed_pids, 2).await;
+    let pids = wait_tokens(&server, "c-1", &crashed_pids, 2).await;
     for pid in &pids[..2] {
-        gone(pid.parse().unwrap(), "the crashed instance's own process").await;
+        wait_gone(pid.parse().unwrap(), "the crashed instance's own process").await;
     }
     stop_instance(&owner, "c-1", None).await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1279,7 +1287,7 @@ async fn a_reload_answers_a_start_error() {
         &[],
     );
     let owner = server.owner().await;
-    let before = wait_up(&owner, "f-1").await;
+    let before = wait_up(&server, &owner, "f-1").await;
     std::fs::write(&marker, "").unwrap();
     let error = reload(&owner, What::Instance("f-1".into()))
         .await
@@ -1289,7 +1297,7 @@ async fn a_reload_answers_a_start_error() {
     assert!(!alive(before.pid));
     // It stays supervised: once it can start again, it is up.
     let _ = std::fs::remove_file(&marker);
-    let after = wait_up(&owner, "f-1").await;
+    let after = wait_up(&server, &owner, "f-1").await;
     assert_ne!(after.pid, before.pid);
 }
 
@@ -1314,8 +1322,8 @@ async fn reloading_a_module_takes_the_right_over_every_instance() {
         &[],
     );
     let owner = server.owner().await;
-    let t1 = wait_up(&owner, "t-1").await;
-    let first = wait_tokens(&tokens, 1).await;
+    let t1 = wait_up(&server, &owner, "t-1").await;
+    let first = wait_tokens(&server, "s-1", &tokens, 1).await;
     let me = tilr_bus::Bus::connect(
         tilr_bus::Transport::Socket {
             path: instance_socket(&server, "s-1"),
@@ -1373,8 +1381,8 @@ async fn a_module_is_reloaded_one_instance_at_a_time() {
         &[],
     );
     let owner = server.owner().await;
-    let t1 = wait_up(&owner, "t-1").await;
-    let t2 = wait_up(&owner, "t-2").await;
+    let t1 = wait_up(&server, &owner, "t-1").await;
+    let t2 = wait_up(&server, &owner, "t-2").await;
 
     // The owner calls test.echo in a loop on a connection of its own.
     let caller = server.owner().await;
@@ -1384,7 +1392,7 @@ async fn a_module_is_reloaded_one_instance_at_a_time() {
         tokio::spawn(async move {
             let (mut done, mut failed) = (0u32, Vec::new());
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                match owner_calls(&caller, "test.echo", "ping").await {
+                match calls(&caller, "test.echo", "ping").await {
                     Ok(_) => done += 1,
                     Err(error) => failed.push(error),
                 }
@@ -1395,7 +1403,7 @@ async fn a_module_is_reloaded_one_instance_at_a_time() {
     };
     let reloaded = reload(&owner, What::Module("t".into())).await.unwrap();
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (done, failed) = looping.await.unwrap();
+    let (done, failed) = bounded("the loop of calls", looping).await.unwrap();
     assert!(
         failed.is_empty(),
         "calls failed during the reload: {failed:?}"
@@ -1427,7 +1435,7 @@ async fn a_module_is_reloaded_one_instance_at_a_time() {
 
     // A caller that reloads itself has its reply before its process is stopped. The
     // instance here is driven by the test: its process only hands out the token.
-    let first = wait_tokens(&tokens, 1).await;
+    let first = wait_tokens(&server, "s-1", &tokens, 1).await;
     let me = tilr_bus::Bus::connect(
         tilr_bus::Transport::Socket {
             path: instance_socket(&server, "s-1"),
@@ -1438,7 +1446,7 @@ async fn a_module_is_reloaded_one_instance_at_a_time() {
     .await
     .expect("the instance's own connection");
     assert_eq!(me.identity(), "instance:s-1");
-    let old = wait_up(&owner, "s-1").await;
+    let old = wait_up(&server, &owner, "s-1").await;
     let reply: tilr_bus::bus::ReloadReply = me
         .call_typed(
             "bus.reload",
@@ -1452,14 +1460,14 @@ async fn a_module_is_reloaded_one_instance_at_a_time() {
     assert_eq!(reply.reloaded.len(), 1);
     assert_eq!(reply.reloaded[0].old_pid, old.pid);
     // Afterwards its process is stopped and another one started (it hands out a new token).
-    let tokens_now = wait_tokens(&tokens, 2).await;
+    let tokens_now = wait_tokens(&server, "s-1", &tokens, 2).await;
     assert_ne!(tokens_now[0], tokens_now[1]);
-    wait_instance(&owner, "s-1", "a new process", |info| {
+    wait_instance(&server, &owner, "s-1", "a new process", |info| {
         info.pid > 0 && info.pid != old.pid
     })
     .await;
     assert!(!alive(old.pid));
-    me.closed().await;
+    bounded("the old connection's end", me.closed()).await;
     // It may not do to others what it has no right to.
     let denied = tilr_bus::Bus::connect(
         tilr_bus::Transport::Socket {
@@ -1504,9 +1512,9 @@ async fn reloading_bus_toml_applies_the_difference() {
     };
     let server = instances_server(before("1"), &[]);
     let owner = server.owner().await;
-    let t1 = wait_up(&owner, "t-1").await;
-    let t3 = wait_up(&owner, "t-3").await;
-    let t4 = wait_up(&owner, "t-4").await;
+    let t1 = wait_up(&server, &owner, "t-1").await;
+    let t3 = wait_up(&server, &owner, "t-3").await;
+    let t4 = wait_up(&server, &owner, "t-4").await;
 
     // t-2 added, t-1's env changed, t-3 removed; t-4 and the stopped t-5 as they were.
     write_bus_toml(
@@ -1554,8 +1562,7 @@ async fn reloading_bus_toml_applies_the_difference() {
 }
 
 async fn owner_calls_to(owner: &tilr_bus::Bus, method: &str, instance: &str) -> serde_json::Value {
-    let reply = owner
-        .call(method, "", to(instance))
+    let reply = bounded(method, owner.call(method, "", to(instance)))
         .await
         .unwrap_or_else(|error| panic!("{method} on {instance}: {error}"));
     serde_json::from_str(&text(&reply.payload)).unwrap()
@@ -1568,7 +1575,7 @@ async fn participants_and_methods_are_listed() {
         &[],
     );
     let owner = server.owner().await;
-    wait_up(&owner, "t-1").await;
+    wait_up(&server, &owner, "t-1").await;
     let _outside = server.test_runtime("ws-1", &[]).await;
 
     // Participants: the ones that are not instances, with their client names.
@@ -1623,15 +1630,19 @@ async fn participants_and_methods_are_listed() {
     assert_eq!(provider_of("bus.ping").providers, ["tilrd"]);
     assert_eq!(provider_of("bus.instances").providers, ["tilrd"]);
 
-    // Draining is not offered: while t-1 waits for a call it is not a provider.
-    let mut sleeping = Box::pin(owner.call("test.sleep", "1500", to("t-1")));
-    let _ = tokio::time::timeout(Duration::ZERO, sleeping.as_mut()).await;
-    owner_calls(&owner, "test.echo", "sync").await.unwrap();
+    // Draining is not offered: while t-1 waits for a call it is not a provider. The call
+    // takes longer than the drain, so t-1 drains until the call is dropped below.
+    let mut sleeping = Box::pin(owner.call("test.sleep", "60000", to("t-1")));
+    let _ = sleeping.as_mut().now_or_never();
+    calls(&owner, "test.echo", "sync").await.unwrap();
     let reloading = {
         let other = server.owner().await;
         tokio::spawn(async move { reload(&other, What::Instance("t-1".into())).await })
     };
-    let draining = wait_instance(&owner, "t-1", "draining", |info| info.state == "draining").await;
+    let draining = wait_instance(&server, &owner, "t-1", "draining", |info| {
+        info.state == "draining"
+    })
+    .await;
     assert!(draining.pid > 0);
     let methods = method_list(&owner).await;
     let echo = methods
@@ -1646,9 +1657,10 @@ async fn participants_and_methods_are_listed() {
             .iter()
             .all(|info| !info.providers.contains(&"instance:t-1".to_owned()))
     );
-    assert_eq!(text(&sleeping.await.unwrap().payload), "slept");
-    reloading.await.unwrap().unwrap();
-    wait_up(&owner, "t-1").await;
+    // Dropped, the call is cancelled: the drain ends and the reload goes on.
+    drop(sleeping);
+    bounded("the reload", reloading).await.unwrap().unwrap();
+    wait_up(&server, &owner, "t-1").await;
 }
 
 #[tokio::test]
@@ -1699,29 +1711,33 @@ async fn every_transport_speaks_the_same_envelopes() {
         &[],
     );
     let owner = server.owner().await;
-    wait_up(&owner, "t-1").await;
-    wait_up(&owner, "t-2").await;
+    wait_up(&server, &owner, "t-1").await;
+    wait_up(&server, &owner, "t-2").await;
     // The owner on the Unix socket, as a WebSocket participant that provides too.
     let _ws = server.test_runtime("ws-1", &[]).await;
 
     // The same call over descriptor 3, an instance socket and a WebSocket.
     for target in ["instance:t-1", "instance:t-2", "owner"] {
-        let reply = owner
-            .call("test.echo", "x", CallOptions::default().target(target))
-            .await
-            .unwrap_or_else(|error| panic!("{target}: {error}"));
+        let reply = bounded(
+            target,
+            owner.call("test.echo", "x", CallOptions::default().target(target)),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{target}: {error}"));
         assert_eq!(text(&reply.payload), "x", "{target}");
         // A JSON payload keeps its content type on each.
-        let reply = owner
-            .call(
+        let reply = bounded(
+            target,
+            owner.call(
                 "test.echo",
                 "{\"a\":1}",
                 CallOptions::default()
                     .target(target)
                     .content_type(tilr_bus::CONTENT_TYPE_JSON),
-            )
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         assert_eq!(reply.content_type, tilr_bus::CONTENT_TYPE_JSON, "{target}");
     }
     let t1 = info(&owner, "t-1").await;
@@ -1746,7 +1762,7 @@ async fn a_frame_over_the_limit_closes_the_connection() {
         &[],
     );
     let owner = server.owner().await;
-    let first = wait_tokens(&tokens, 1).await;
+    let first = wait_tokens(&server, "s-1", &tokens, 1).await;
 
     // The instance's side by hand: a length prefix, an envelope.
     let mut stream = tokio::net::UnixStream::connect(instance_socket(&server, "s-1"))
@@ -1782,7 +1798,7 @@ async fn a_frame_over_the_limit_closes_the_connection() {
     };
     assert_eq!(ack.identity, "instance:s-1");
     assert_eq!(ack.max_frame as usize, tilr_bus::codec::MAX_FRAME);
-    let up = wait_up(&owner, "s-1").await;
+    let up = wait_up(&server, &owner, "s-1").await;
 
     // One byte over the limit in the length prefix: the connection ends, the process
     // is killed and started again.
@@ -1793,9 +1809,9 @@ async fn a_frame_over_the_limit_closes_the_connection() {
         .await
         .expect("the connection is closed");
     let _ = closed;
-    let again = wait_tokens(&tokens, 2).await;
+    let again = wait_tokens(&server, "s-1", &tokens, 2).await;
     assert_ne!(again[0], again[1]);
-    let now = wait_instance(&owner, "s-1", "a new process", |info| {
+    let now = wait_instance(&server, &owner, "s-1", "a new process", |info| {
         info.pid > 0 && info.pid != up.pid && info.restarts == 1
     })
     .await;
@@ -1824,7 +1840,7 @@ async fn a_reserved_method_from_an_instance() {
         &[],
     );
     let owner = server.owner().await;
-    let first = wait_tokens(&tokens, 1).await;
+    let first = wait_tokens(&server, "s-1", &tokens, 1).await;
     let refused = tilr_bus::Bus::connect(
         tilr_bus::Transport::Socket {
             path: instance_socket(&server, "s-1"),
@@ -1839,9 +1855,12 @@ async fn a_reserved_method_from_an_instance() {
     .expect_err("a reserved method is refused");
     assert_eq!(refused.code, codes::RESERVED, "{refused}");
     // Refused at Hello: the instance did not come up, and it is started again.
-    let again = wait_tokens(&tokens, 2).await;
+    let again = wait_tokens(&server, "s-1", &tokens, 2).await;
     assert_ne!(again[0], again[1]);
-    let now = wait_instance(&owner, "s-1", "a restart", |info| info.restarts >= 1).await;
+    let now = wait_instance(&server, &owner, "s-1", "a restart", |info| {
+        info.restarts >= 1
+    })
+    .await;
     assert_ne!(now.state, "up");
     let _ = std::fs::remove_file(&tokens);
 }
@@ -1858,8 +1877,8 @@ async fn a_reload_stops_instances_and_the_successor_starts_them() {
         &[],
     );
     let owner = server.owner().await;
-    let t1 = wait_up(&owner, "t-1").await;
-    let t2 = wait_up(&owner, "t-2").await;
+    let t1 = wait_up(&server, &owner, "t-1").await;
+    let t2 = wait_up(&server, &owner, "t-2").await;
     // Stopped by hand: until the handover of `bus-reload` the successor reads `bus.toml`
     // and starts what it says.
     stop_instance(&owner, "t-2", None).await.unwrap();
@@ -1868,13 +1887,13 @@ async fn a_reload_stops_instances_and_the_successor_starts_them() {
     drop(owner);
     let owner = server.owner().await;
     for (name, before) in [("t-1", t1.pid), ("t-2", t2.pid)] {
-        let after = wait_instance(&owner, name, "a new process", |info| {
+        let after = wait_instance(&server, &owner, name, "a new process", |info| {
             info.state == "up" && info.pid != before
         })
         .await;
         assert_eq!(after.restarts, 0, "{name}");
     }
-    assert_eq!(owner_calls(&owner, "test.echo", "x").await.unwrap(), "x");
+    assert_eq!(calls(&owner, "test.echo", "x").await.unwrap(), "x");
 }
 
 #[tokio::test]
@@ -1884,7 +1903,7 @@ async fn a_reload_of_the_server_does_not_wait_for_a_long_drain() {
         &[],
     );
     let owner = server.owner().await;
-    let before = wait_up(&owner, "t-1").await;
+    let before = wait_up(&server, &owner, "t-1").await;
     // A drain is at most 30 s.
     let error = stop_instance(&owner, "t-1", Some(30_001))
         .await
@@ -1898,11 +1917,14 @@ async fn a_reload_of_the_server_does_not_wait_for_a_long_drain() {
         "60000",
         to("t-1").timeout(Duration::from_secs(60)),
     ));
-    let _ = tokio::time::timeout(Duration::ZERO, sleeping.as_mut()).await;
-    owner_calls(&owner, "test.echo", "sync").await.unwrap();
+    let _ = sleeping.as_mut().now_or_never();
+    calls(&owner, "test.echo", "sync").await.unwrap();
     let stopper = server.owner().await;
     let stopping = tokio::spawn(async move { stop_instance(&stopper, "t-1", Some(30_000)).await });
-    wait_instance(&owner, "t-1", "draining", |info| info.state == "draining").await;
+    wait_instance(&server, &owner, "t-1", "draining", |info| {
+        info.state == "draining"
+    })
+    .await;
 
     // The server reloads: the drain ends at once, the instance is stopped and the
     // successor serves (it starts the instance again from bus.toml).
@@ -1920,7 +1942,7 @@ async fn a_reload_of_the_server_does_not_wait_for_a_long_drain() {
     assert!(ended.is_err(), "{ended:?}");
     stopping.abort();
     let owner = server.owner().await;
-    let after = wait_up(&owner, "t-1").await;
+    let after = wait_up(&server, &owner, "t-1").await;
     assert_ne!(after.pid, before.pid);
 }
 
@@ -1932,16 +1954,16 @@ async fn a_failed_reload_starts_the_instances_again() {
         ..BusOptions::default()
     });
     let owner = server.owner().await;
-    let before = wait_up(&owner, "t-1").await;
+    let before = wait_up(&server, &owner, "t-1").await;
     server.signal("-USR1");
     server.wait_logged("reload failed").await;
     // Stopped before the exec, which did not happen: started again by this server.
-    let after = wait_instance(&owner, "t-1", "a new process", |info| {
+    let after = wait_instance(&server, &owner, "t-1", "a new process", |info| {
         info.state == "up" && info.pid != before.pid
     })
     .await;
     assert!(!alive(before.pid));
-    assert_eq!(owner_calls(&owner, "test.echo", "x").await.unwrap(), "x");
+    assert_eq!(calls(&owner, "test.echo", "x").await.unwrap(), "x");
     assert_eq!(after.restarts, 0);
 }
 
@@ -1952,17 +1974,19 @@ async fn the_control_methods_answer_json() {
         &[],
     );
     let owner = server.owner().await;
-    wait_up(&owner, "t-1").await;
+    wait_up(&server, &owner, "t-1").await;
     let json = |method: &'static str, body: &'static str| {
         let owner = &owner;
         async move {
-            let reply = owner
-                .call(
+            let reply = bounded(
+                method,
+                owner.call(
                     method,
                     body,
                     CallOptions::default().content_type(tilr_bus::CONTENT_TYPE_JSON),
-                )
-                .await?;
+                ),
+            )
+            .await?;
             assert_eq!(reply.content_type, tilr_bus::CONTENT_TYPE_JSON, "{method}");
             Ok::<_, BusError>(
                 serde_json::from_str::<serde_json::Value>(&text(&reply.payload)).unwrap(),

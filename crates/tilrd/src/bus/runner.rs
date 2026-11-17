@@ -891,6 +891,11 @@ impl Life {
             .with_entry(&self.name, |entry| f(&mut entry.snap));
     }
 
+    fn draining(&self) {
+        self.set(|snap| snap.state = State::Draining);
+        tracing::info!(target: "tilrd::bus", "instance {} is draining", self.name);
+    }
+
     /// Tell whoever waits how the start went.
     fn resolve(&mut self, result: StartResult) {
         for waiter in self.waiters.drain(..) {
@@ -909,6 +914,7 @@ impl Life {
             entry.snap.pid = 0;
             entry.snap.conn = None;
         });
+        tracing::info!(target: "tilrd::bus", "instance {} is stopped", self.name);
         self.resolve(Err(BusError::unavailable(format!(
             "{} was stopped",
             self.name
@@ -972,8 +978,10 @@ impl Life {
             }
         };
         let pid = running.pid;
-        tracing::info!(target: "tilrd::bus", "instance {} started (pid {pid})", self.name);
+        // Each change of the listing is logged after it is made, so a reader of the log
+        // finds it in `bus.instances` (the tests wait on these lines).
         self.set(|snap| snap.pid = pid);
+        tracing::info!(target: "tilrd::bus", "instance {} started (pid {pid})", self.name);
         let started = Instant::now();
 
         // Until its Hello.
@@ -1043,6 +1051,7 @@ impl Life {
             snap.state = State::Up;
             snap.conn = Some(conn.id);
         });
+        tracing::info!(target: "tilrd::bus", "instance {} is up (pid {pid})", self.name);
         self.resolve(Ok(pid));
         let up = Instant::now();
         let mut state = conn.state.clone();
@@ -1077,13 +1086,13 @@ impl Life {
                         let _ = tx.send(Ok(pid));
                     }
                     Some(Cmd::Stop { drain, done }) => {
-                        self.set(|snap| snap.state = State::Draining);
+                        self.draining();
                         wind_down(&self.runner, &mut running, &mut conn, drain).await;
                         self.finish(Some(done));
                         return Outcome::Stopped;
                     }
                     Some(Cmd::Reload { drain, done }) => {
-                        self.set(|snap| snap.state = State::Draining);
+                        self.draining();
                         wind_down(&self.runner, &mut running, &mut conn, drain).await;
                         self.reload = Some(ReloadWait { old_pid: pid, done });
                         return Outcome::Reload;

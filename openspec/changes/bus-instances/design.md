@@ -70,6 +70,9 @@ What the code froze where it differs from or adds to the text above; the code is
   in its `rights`. `bus.reload` of a module or `all` takes `Control{reload}` without an instance
   (the right over every instance) before the names are looked up, so a caller without it is
   `denied` alike for a module that exists and one that does not.
+- **The log says what the listing shows.** Each change of an instance's state (`started`, `is
+  up`, `is draining`, `starts again in`, `is stopped`) is logged after it is made, so a reader of
+  the log finds it in `bus.instances`; the tests wait on these lines instead of polling.
 - **A caller that acts on itself** gets its reply at once, with `new_pid` 0 for itself, and the
   stop or reload follows after 100 ms, so the reply is on the wire first.
 - **Starting an instance that runs** answers its pid; reloading one that is stopped is
