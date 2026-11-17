@@ -875,19 +875,56 @@ send events through it. Its envelope and payload schemas are in the crate
 
 The first envelope is `Hello` with `protocol_version` 1 and the methods the participant
 provides; anything else first, or a message that is not an envelope, is answered
-`expected_hello` and closed, another version `unsupported_version`. On the Unix socket the participant is the owner; on TCP the owner
-shows the access token. This build refuses credentials (`denied`), at Hello and in
-`CredentialUpdate`. The answer, `HelloAck`,
-is the first thing a participant hears: its identity (`owner`), the connection id, the
-server id and the frame limit. The broker sets `from` of every call and event to the
-sender's identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
-`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers `bus.ping`.
-A call goes to the provider named by `target`, else round robin over the providers, or to
-the one that activated last for a method declared `LAST_ACTIVE`; calls between two
-participants keep their order. A newer connection with the same `client_id` supersedes
-the older (close 4000).
+`expected_hello` and closed, another version `unsupported_version`. A `Hello` may provide
+at most 1024 methods; more is refused `bad_request`. On the Unix socket the participant
+is the owner; on TCP the owner shows the access token. This build refuses credentials
+(`denied`), at Hello and in `CredentialUpdate`. The answer, `HelloAck`, is the first
+thing a participant hears: its identity (`owner`), the connection id, the server id and
+the frame limit. The broker sets `from` of every call and event to the sender's
+identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
+`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
+`bus.ping`. A call goes to the provider named by `target`, else round robin over the
+providers, or to the one that activated last for a method declared `LAST_ACTIVE`; calls
+between two participants keep their order. A newer connection with the same `client_id`
+supersedes the older (close 4000).
 
 ### Streams and events
+
+A call fails with a reason: `not_found` (a target that does not provide the method, or
+a method that is not known: known are those a connection provides now, those
+`bus.toml` names, and those of windows and clients such as `ui.notify` or `host.open`),
+`unavailable` (a target not connected, a known method with no provider connected now
+or only draining ones, or a provider that went away before answering), `timeout`,
+`denied`, `busy`, `bad_request`, `bad_reply`, `too_large`; the message names the method
+or the participant. A participant has at most 256 calls and streams pending
+(`HelloAck.max_in_flight`); more are answered `busy` at once, and so is a call to a
+participant whose queue is full (768 of its 1024 interactive envelopes, or 24 MiB
+unwritten), which is not closed for it. A call's deadline is `min(timeout_ms, 10 s)`
+(0: 10 s); a stream has one only when it names one. The callee gets the time that is
+left in `timeout_ms`; at the deadline the caller gets `timeout` and the callee `Cancel`,
+as it does when the caller cancels or its connection ends. A late answer is dropped.
+
+A stream is a call answered by chunks and `End` (or an error). Its provider sends at
+most the credit its reader gave: the window of the call (`Call.window`, 0: 1 MiB, at
+most 16 MiB) plus what the reader returned with `Credit` as it read; one that sends more
+gets `Cancel` and its reader `bad_reply`. A reader that stops crediting stalls only that
+stream. Credit counts `Chunk.payload` bytes as carried in the envelope (a payload its
+producer compressed counts compressed). Chunks and replies of a `BULK` method go in the
+reader connection's bulk lane, written only when its interactive lane (events, replies
+of other methods, credits, cancels) is empty; across all bulk streams to one connection
+at most 1 MiB is sent and not yet credited (`HelloAck.connection_window`). The rest
+waits in the server, at most 1 MiB per stream and 16 MiB over the streams one
+connection reads: a stream that would pass it is `busy`, each chunk counts as at least
+1 KiB there (an empty one too, which is relayed like any other), and a provider whose
+tiny chunks fill it gets its stream ended `bad_reply`. A connection's interactive lane
+holds at most 1024 envelopes or 32 MiB unwritten, its bulk lane 1024 envelopes or
+4 MiB; a full interactive lane closes the connection 4001. The end of a stream comes
+after its chunks and never waits for credit.
+
+Events go to the subscribers connected now, by NATS patterns, at most once each,
+without history. A subscriber whose connection lags (a packet queued over 250 ms, or
+768 envelopes or 24 MiB queued) does not get them: they are dropped and counted in
+`tilrd_bus_events_dropped_total`, and the connection stays.
 
 ### Instances
 
@@ -1225,6 +1262,7 @@ curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 | `tilrd_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings), `no_hello` (no Hello before the handshake deadline) |
 | `tilrd_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
 | `tilrd_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilrd_bus_events_dropped_total{subject}` | counter | Bus events not delivered to a subscriber whose connection lagged, by subject (past 1000 subjects, the rest as `other`) |
 | `tilrd_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
 | `tilrd_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
 | `tilrd_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |
