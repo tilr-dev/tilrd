@@ -21,8 +21,9 @@ for the `participant greeted` line and call at once failed now and then for the 
   turns `draining`, so whoever sees it `draining` in `bus.instances` sees it offered no new
   calls by method (`bus.methods` lists it no longer), as the main spec's "Draining is not offered"
   already says; `participants_and_methods_are_listed` saw the two apart now and then.
-- A test-only failpoint `bus-greeted:<client name>` holds a connection right after its
-  greeting, so tests can look at what the broker shows of it there.
+- Test-only failpoints: `bus-registering:<client name>` holds a greeted connection just
+  before the broker enters it, `bus-draining:<instance>` holds an instance between the
+  broker's drain and its state `draining`, so tests can look at what is observable there.
 - Two bus tests that raced the test itself are fixed: `an_instance_is_stopped_and_started`
   waits for its log line instead of reading the log once, and
   `events_reach_the_subscribers_connected_now` orders an event emitted on one connection
@@ -33,7 +34,8 @@ for the `participant greeted` line and call at once failed now and then for the 
 ### Modified Capabilities
 - `component-bus`: adds the requirement "A greeted participant is callable": a greeted
   participant is callable and listed from the moment it has its `HelloAck` or anybody saw it
-  up. No existing requirement changes.
+  up; and the requirement "A draining instance is offered no calls before it is listed
+  draining". No existing requirement changes.
 
 ## Non-goals
 
