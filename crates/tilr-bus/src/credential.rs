@@ -14,7 +14,12 @@
 //! `bus.stop` or `bus.reload`, whose method then checks each instance with
 //! `control`), `method(m)`, `namespace(n)`, `target(t)`, `subject(s)`,
 //! `pattern(p)`, `action(a)`, `instance(i)`, `scope(s)`, `caller(c)`, `origin(o)`,
-//! `server(id)` and `time(t)`. A check that names a fact the request does not carry
+//! `server(id)`, `time(t)` and, for a pane check, `pane(id)`, `pane_creator(c)`,
+//! `pane_profile_requested(p)` and `pane_overrides(b)`. The control and pane checks a
+//! method makes for a call carry that call's `method`, `namespace` and `target` too,
+//! so `check if method("pane.list")` decides them as it decides the call, and
+//! `reject if instance($i), !$i.starts_with("s-");` narrows the instances a control
+//! method reads or acts on. A check that names a fact the request does not carry
 //! fails, so `check if method("test.echo")` also refuses subscriptions; write
 //! `check if method("test.echo") or kind("subscribe")` to keep them.
 

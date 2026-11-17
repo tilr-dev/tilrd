@@ -28,8 +28,9 @@ This change's part follows.
   some instances (`list:t-*`, `*:t-1`) does not reach `bus.instances`, `bus.methods` or
   `bus.reload_config` (the listings show every participant, the file can add any instance).
   `bus-instances`' methods still check each instance they read or act on, so a holder who
-  narrows its token with an appended block (`check if namespace("bus") or instance($i),
-  $i.starts_with("s-");`) lists or reconfigures `s-*` only. `bus.start`, `bus.stop` and
+  narrows its token with an appended block (`reject if instance($i),
+  !$i.starts_with("s-");`) lists or reconfigures `s-*` only (each of those checks has the
+  call's facts too, so a check satisfied by `namespace("bus")` would not narrow them). `bus.start`, `bus.stop` and
   `bus.reload` keep the gate on some instance (`control_gate`).
 - **`bus.reload_config` drops the decision cache**: `bus-instances`' method calls
   `acl::config_reloaded` once the file is applied (one line in `control.rs`).

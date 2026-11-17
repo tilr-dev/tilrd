@@ -3278,7 +3278,16 @@ mod tests {
             assert!(!action(&request), "{method:?}");
             assert_eq!(request.what, format!("call {method}"));
         }
-        for method in ["bus.token", "bus.rotate_key", "bus.stop", "server.reload"] {
+        // Every core method of `bus` and `server` but those any participant may call
+        // or no right reaches is a control method: one added to the core without
+        // its action would be a plain call that `call = ["bus.*"]` reaches.
+        for method in tilr_bus::methods::CORE.iter().map(|m| m.name) {
+            let open = ["bus.ping", "bus.renew", "server.info", "server.command"];
+            if !(method.starts_with("bus.") || method.starts_with("server."))
+                || open.contains(&method)
+            {
+                continue;
+            }
             let request = request_facts(&call(method, "")).unwrap();
             assert!(request.kind.starts_with("control"), "{method}");
             assert!(action(&request), "{method}");
