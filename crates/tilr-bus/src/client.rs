@@ -525,6 +525,7 @@ pub struct Request {
     /// For a stream: the caller's initial window.
     pub window: u32,
     bus: Bus,
+    close_after_reply: Arc<AtomicBool>,
 }
 
 impl Request {
@@ -544,6 +545,13 @@ impl Request {
     pub fn time_left(&self) -> Option<Duration> {
         self.deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    /// End the connection (as [`Bus::close`]) once this call's reply, or a stream's
+    /// `End`, is queued: it goes out before the close. A handler aborted by a `Cancel`
+    /// does not close it.
+    pub fn close_after_reply(&self) {
+        self.close_after_reply.store(true, Ordering::SeqCst);
     }
 }
 
@@ -2199,7 +2207,9 @@ fn on_call(inner: &Arc<Inner>, handle: &Weak<Handle>, call: wire::Call) {
         credential: call.credential,
         window,
         bus: bus.clone(),
+        close_after_reply: Arc::new(AtomicBool::new(false)),
     };
+    let close_after_reply = request.close_after_reply.clone();
     let gate =
         matches!(handler, Handler::Stream(_)).then(|| Arc::new(CreditGate::new(u64::from(window))));
     {
@@ -2263,6 +2273,9 @@ fn on_call(inner: &Arc<Inner>, handle: &Weak<Handle>, call: wire::Call) {
             && error.code == codes::TOO_LARGE
         {
             let _ = inner.send(error_reply(id, error)).await;
+        }
+        if close_after_reply.load(Ordering::SeqCst) {
+            task_bus.close();
         }
     });
     if let Some(served) = lock(&inner.state).served.get_mut(&id) {

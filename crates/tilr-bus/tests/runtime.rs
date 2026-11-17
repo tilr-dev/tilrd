@@ -222,6 +222,19 @@ async fn the_test_runtime_provides_its_methods_over_an_instance_socket() {
 }
 
 #[tokio::test]
+async fn the_test_runtime_answers_close_bus_before_it_closes_the_connection() {
+    let (mut runtime, mut peer) = start("t-4", &[]).await;
+    peer.greet(ack("instance:t-4")).await;
+    assert_eq!(
+        call(&mut peer, 1, "test.close_bus", "").await.unwrap(),
+        "closing"
+    );
+    assert!(peer.try_recv().await.is_none(), "the connection stays open");
+    // The process stays.
+    assert!(runtime.child.try_wait().unwrap().is_none());
+}
+
+#[tokio::test]
 async fn the_test_runtimes_flood_waits_for_credit() {
     let (_runtime, mut peer) = start("t-2", &[]).await;
     peer.greet(ack("instance:t-2")).await;

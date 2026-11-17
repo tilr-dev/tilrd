@@ -297,13 +297,8 @@ fn options(client_name: &str) -> ConnectOptions {
         .provide(
             unary("test.close_bus"),
             Handler::unary(|request: Request| async move {
-                let bus = request.bus().clone();
-                tokio::spawn(async move {
-                    // The reply goes out first.
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    CLOSING.store(true, Ordering::SeqCst);
-                    bus.close();
-                });
+                CLOSING.store(true, Ordering::SeqCst);
+                request.close_after_reply();
                 Ok("closing")
             }),
         )

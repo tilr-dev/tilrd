@@ -765,6 +765,7 @@ the client tests drive a partner in the test that plays the broker (`tests/commo
 | A handler's error keeps its code; a panic is `handler_error` | `client::a_handlers_error_keeps_its_code_and_a_panic_is_a_handler_error` |
 | A handler that panics before returning its future is `handler_error`, for a method and a stream | `client::a_handler_that_panics_before_its_future_is_a_handler_error` |
 | A cancelled handler stops without a reply | `client::a_cancelled_handler_stops_without_a_reply` |
+| A handler can close the connection after its reply, which goes out first | `client::a_handler_can_close_the_connection_after_its_reply` |
 | A provided stream is paced by the reader's credit | `client::a_provided_stream_is_paced_by_the_readers_credit` |
 | Events reach the subscriptions whose pattern matches; dropping one unsubscribes | `client::events_reach_the_subscriptions_whose_pattern_matches` |
 | A denied subscription fails with `denied`; a bad pattern is `bad_request` | `client::a_denied_subscription_fails_with_denied` |
@@ -774,5 +775,6 @@ the client tests drive a partner in the test that plays the broker (`tests/commo
 | A bad WebSocket message is skipped; a close code (4000) is reported | `client::a_bad_websocket_message_is_skipped_and_a_close_code_is_reported` |
 | Dropping the last handle closes the connection | `client::dropping_the_last_handle_closes_the_connection` |
 | The test runtime connects over an instance socket with its token and provides its methods | `runtime::the_test_runtime_provides_its_methods_over_an_instance_socket` |
+| The test runtime answers `test.close_bus`, then closes its connection and keeps running | `runtime::the_test_runtime_answers_close_bus_before_it_closes_the_connection` |
 | The test runtime's flood waits for credit | `runtime::the_test_runtimes_flood_waits_for_credit` |
 | The test runtime with `TEST_NO_HELLO` says nothing | `runtime::the_test_runtime_without_hello_says_nothing` |
