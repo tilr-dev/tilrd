@@ -1054,6 +1054,13 @@ one PR, one switch"). Each change has exactly one task and is that task's only c
 capability is added or modified by exactly one change (O3 says which). The first-round
 directories stay removed; `bus-gateway` stays deferred in `openspec/ROADMAP.md`.
 
+A change enters `main` with its own task: the first commit of the task's PR adds the change's
+directory under `openspec/changes/`, the rest is its code. The changes were written together
+(TILR-892) and are taken as written from the commit "Split the unified bus into one change
+per task" on the branch `spec/phase7-changes`; a task adjusts only its own change. So `main`
+holds this document and the roadmap first, and a change of O3 that has not started is not in
+`openspec/changes/` yet (owner, 2026-11-17: the spec gate lets a task add one change).
+
 #### O2. The bus beside `tilr.v1` until the end (owner)
 Until `remove-tilr-v1`, the server serves both on the TCP port and the Unix socket: a
 WebSocket handshake offering the subprotocol `tilr.bus.v1` speaks the bus, one without speaks
