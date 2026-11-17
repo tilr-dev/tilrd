@@ -222,6 +222,19 @@ Calls, events and streams between participants SHALL be routed while another par
 - **WHEN** `t-3` stops reading its connection and the owner calls `test.echo` on `t-1` 1000 times
 - **THEN** every call is answered within the usual time
 
+### Requirement: A drain ends at its deadline
+Draining a connection, and draining the broker, SHALL wait for the calls in flight until they are answered or the drain's timeout passes, whichever comes first, woken only when the broker's state changes (no polling, no busy loop). At the timeout, the calls still in flight SHALL be answered `unavailable` and their callees SHALL get `Cancel`.
+
+**Verified by**: unit tests `draining_a_connection_ends_at_its_deadline_without_spinning`, `the_broker_drain_ends_at_its_deadline_without_spinning` (crates/tilrd/src/bus/broker.rs).
+
+#### Scenario: A provider that never answers is drained
+- **WHEN** a call to `p-1` is in flight, `p-1` never answers it, and `p-1`'s connection is drained with a timeout of 50 ms
+- **THEN** the drain returns after 50 ms reporting the call unanswered, having looked at the state only a few times; the caller gets `unavailable` and `p-1` gets `Cancel`
+
+#### Scenario: The broker is drained with a call in flight
+- **WHEN** a call to `p-1` is in flight, `p-1` never answers it, and the broker is drained with a timeout of 50 ms
+- **THEN** the drain returns after 50 ms, having looked at the state only a few times; the caller gets `unavailable` and `p-1` gets `Cancel`
+
 ### Requirement: One protocol on every transport
 The server SHALL speak `tilr.bus.v1` (`crates/tilr-bus/proto/bus.proto`) on the TCP port and on the Unix socket over WebSocket with the subprotocol `tilr.bus.v1`, one `Envelope` per binary message after a flag byte (`0` plain, `1` zstd), and on instance transports (descriptor 3, instance sockets) as a u32 big-endian length followed by an `Envelope`.
 
