@@ -129,9 +129,9 @@ A `Call` with a non-empty `credential` SHALL be authorized by that token alone, 
 - **THEN** the call is `denied`
 
 ### Requirement: A holder can narrow a token without the server
-A token holder SHALL be able to append a block of checks (on `method`, `target`, `subject`, `origin`, `time`) without the root key, and the server SHALL enforce every block; an appended block MUST NOT add rights. More than 8 blocks or more than 16 KiB SHALL be `denied`. An appended block SHALL hold checks only: a token with an appended block that holds a fact or a rule, more than 16 checks (each `or` alternative counted), a check of more than 16 predicates, more than 64 expression operations, a predicate other than the request's facts (`kind`, `caller`, `server`, `origin`, `time`, `method`, `namespace`, `target`, `subject`, `pattern`, `action`, `instance`, `scope`, `pane_profile_requested`, `pane_overrides`, `pane`, `pane_creator`), or `.all`, `.any`, `.matches` or an extern function MUST be `denied` when it is verified, before any Datalog runs.
+A token holder SHALL be able to append a block of checks (on `method`, `target`, `subject`, `origin`, `time`) without the root key, and the server SHALL enforce every block; an appended block MUST NOT add rights. More than 8 blocks or more than 16 KiB SHALL be `denied`.
 
-**Verified by**: `bus_acl::an_attenuated_token_only_narrows`, `bus_acl::authorization_that_runs_too_long_is_denied`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`.
+**Verified by**: `bus_acl::an_attenuated_token_only_narrows`.
 
 #### Scenario: Narrowed to one target
 - **WHEN** `t-1` attenuates its token with `check if target("instance:t-2")` and presents it when calling `test.echo` on `t-2` and on `t-3`
@@ -140,6 +140,23 @@ A token holder SHALL be able to append a block of checks (on `method`, `target`,
 #### Scenario: A block that adds a right
 - **WHEN** an appended block contains the fact `call_any(true)`
 - **THEN** every call with that token is `denied`, also one inside the authority block's rights
+
+### Requirement: An appended block holds bounded checks on the request only
+A token with an appended block that holds a fact or a rule, more than 16 checks (each `or` alternative counted), a check of more than 16 predicates, more than 64 expression operations, a predicate other than the facts the server supplies for the request (`acl::REQUEST_FACTS`), or `.all`, `.any`, `.matches` or an extern function MUST be `denied` when it is verified, at `Hello` and per call, before any Datalog runs.
+
+**Verified by**: `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::an_attenuated_token_only_narrows`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`.
+
+#### Scenario: A costly block
+- **WHEN** a holder appends a block of 40 facts and a check joining five of them (`check if f($a), f($b), f($c), f($d), f($e), $a + $b + $c + $d + $e == -1`), or of a rule, and presents the token per call and in `Hello`
+- **THEN** the call and the `Hello` are `denied` at once, saying an appended block holds checks only, and the token it was attenuated from still works
+
+#### Scenario: A join over the token's rights
+- **WHEN** a token with 40 `call` rights is attenuated with `check if call($a), call($b), call($c), call($d), call($e), ...` and presented per call
+- **THEN** the call is `denied` at once: the check reads facts that are not the request's
+
+#### Scenario: Checks on the request
+- **WHEN** an appended block holds `check if namespace("bus") or instance($i), $i.starts_with("s-")`
+- **THEN** the token verifies and its calls are decided with that check
 
 ### Requirement: Tokens expire after a day and are renewed
 Every token SHALL expire at most 24 h after it was minted, and a call or subscription carrying an expired token MUST be `denied` with reason `expired`, at most 1 s after the expiry. An instance's token SHALL be renewed by the server with `CredentialUpdate` 12 h after it was minted while the instance runs. A connection whose token expires without a `CredentialUpdate` from the participant SHALL be closed with code 4003 `credential`.
@@ -151,7 +168,7 @@ Every token SHALL expire at most 24 h after it was minted, and a call or subscri
 - **THEN** `t-1` has received `CredentialUpdate` and its calls are still allowed after 25 h
 
 ### Requirement: bus.renew gives a fresh token for an unattenuated one
-`bus.renew` SHALL answer, for a valid, unrevoked token without appended blocks in the second half of its life, a new token with the same rights and a new expiry (never past the ceiling its minter set), with the `revocation_id` that `bus.token` answered for the first token of the chain, and refuse the old token from then on (that token and those attenuated from it only, not the tokens minted with it); for an attenuated token, one in the first half of its life, or one that already lives to its ceiling it SHALL answer `bad_request`.
+`bus.renew` SHALL answer, for a valid, unrevoked token without appended blocks in the second half of its life, a new token with the same rights and a new expiry (never past the ceiling its minter set), and refuse the old one; for an attenuated token, one in the first half of its life, or one that already lives to its ceiling it SHALL answer `bad_request`.
 
 **Verified by**: `bus_acl::an_outside_token_is_renewed_on_its_connection` (controlled time), `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (controlled time), `supervisor::bus::acl::tests::renewal_is_for_the_second_half_and_stops_at_the_minters_expiry`.
 
@@ -168,13 +185,9 @@ Every token SHALL expire at most 24 h after it was minted, and a call or subscri
 - **THEN** its connection is closed with code 4003
 
 ### Requirement: Revoked tokens stop working at once
-After `bus.revoke` (`tilr bus revoke TOKEN | --id REVOCATION_ID`), every call carrying that token, one attenuated from it or one minted with it MUST be `denied` with reason `revoked`, also on the next call and after a restart of the server, and a connection that said `Hello` with it SHALL be closed with code 4003; an instance's token SHALL be revoked when its process ends. A renewal belongs to the token it renews: revoking a token without appended blocks, or the revocation id `bus.token` or `bus.renew` answered for it, MUST also deny every token of its chain of renewals (one renewed from it before the revocation too), the tokens attenuated from them and the tokens minted with them; revoking an attenuated token denies it and the tokens attenuated from it.
+After `bus.revoke` (`tilr bus revoke TOKEN | --id REVOCATION_ID`), every call carrying that token, one attenuated from it or one minted with it MUST be `denied` with reason `revoked`, also on the next call and after a restart of the server, and a connection that said `Hello` with it SHALL be closed with code 4003; an instance's token SHALL be revoked when its process ends.
 
-**Verified by**: `bus_acl::a_revoked_token_stops_working_at_once`, `bus_acl::a_stopped_instances_token_is_revoked`, `supervisor::bus::acl::tests::a_renewal_dies_with_the_token_it_renewed` (controlled time).
-
-#### Scenario: Revoked after a thief renewed it
-- **WHEN** a leaked token is renewed with `bus.renew` by whoever holds it, and the owner then revokes the leaked token (or its revocation id)
-- **THEN** the renewed token is `denied` with `revoked`, also after a restart, and cannot be renewed again
+**Verified by**: `bus_acl::a_revoked_token_stops_working_at_once`, `bus_acl::a_stopped_instances_token_is_revoked`.
 
 #### Scenario: Revoke while cached
 - **WHEN** a minted token is used for 10 calls in a second, then revoked, then used again
@@ -183,6 +196,15 @@ After `bus.revoke` (`tilr bus revoke TOKEN | --id REVOCATION_ID`), every call ca
 #### Scenario: Instance stopped
 - **WHEN** `t-1` handed its token to the test as text, then `tilr bus stop t-1` runs
 - **THEN** a call carrying that token is `denied` with `revoked`
+
+### Requirement: A renewal belongs to the token it renews
+Revoking a token without appended blocks, or the revocation id `bus.token` answered for it (which `bus.renew` answers for each renewal too), MUST deny every token of its chain of renewals, one renewed before the revocation included, and the tokens attenuated from or minted with them. A renewal SHALL refuse the old token and those attenuated from it only. Revoking an attenuated token SHALL deny it and those attenuated from it.
+
+**Verified by**: `supervisor::bus::acl::tests::a_renewal_dies_with_the_token_it_renewed` (controlled time), `supervisor::bus::acl::tests::renewing_a_minter_keeps_its_children` (controlled time).
+
+#### Scenario: Revoked after a thief renewed it
+- **WHEN** a leaked token is renewed with `bus.renew` by whoever holds it, and the owner then revokes the leaked token (or its revocation id)
+- **THEN** the renewed token is `denied` with `revoked`, also after a restart, and cannot be renewed again
 
 ### Requirement: The revocation file keeps every revocation and fails closed
 Concurrent revocations SHALL all be kept in `bus-revoked`. A revocation file that does not read MUST make every token `denied` and MUST NOT be written (by a revocation or a rotation) until the operator fixes or removes it, so a restart refuses them still.
@@ -203,13 +225,22 @@ Concurrent revocations SHALL all be kept in `bus-revoked`. A revocation file tha
 - **THEN** that token is `denied`, the participant's connection is closed with 4003, and `t-1` has the same pid and its calls are allowed
 
 ### Requirement: Authorization fails closed and is bounded
-Any failure to decide (over 1000 facts or 100 iterations, over the 50 ms wall-clock backstop, a parse or signature error) MUST make the call `denied` (`authorization limit reached` or the error). No token SHALL make a decision costly: what an appended block may hold is bounded (requirement "A holder can narrow a token without the server") and checked when the token is verified, so such a token is `denied` before any Datalog runs, at Hello and per call. A call whose `target` is over 512 bytes (no participant has such a name) MUST be `denied` without being decided or cached, and an audit line MUST show at most 128 bytes of a target; the decision cache MUST be keyed by a fixed-size hash of the request, not by its text. A repeated decision SHALL be answered from a cache for at most 1 s; a denial by the wall-clock backstop MUST NOT be cached. A revocation SHALL drop the cached decisions of the tokens it ends; a key rotation and `bus.reload_config` the whole cache.
+Any failure to decide (over 1000 facts or 100 iterations, over the 50 ms wall-clock backstop, a parse or signature error) MUST make the call `denied` (`authorization limit reached` or the error). A repeated decision SHALL be answered from a cache for at most 1 s; a denial by the wall-clock backstop MUST NOT be cached. A revocation SHALL drop the cached decisions of the tokens it ends; a key rotation and `bus.reload_config` the whole cache.
 
-**Verified by**: `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::a_revocation_clears_cached_decisions`, `supervisor::bus::acl::tests::a_timeout_is_denied_and_never_cached`, `supervisor::bus::acl::tests::a_revocation_keeps_the_decisions_of_other_tokens`, `supervisor::bus::acl::tests::a_target_longer_than_a_name_is_denied_unread`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`.
+**Verified by**: `bus_acl::a_revocation_clears_cached_decisions`, `supervisor::bus::acl::tests::a_timeout_is_denied_and_never_cached`, `supervisor::bus::acl::tests::a_revocation_keeps_the_decisions_of_other_tokens`.
 
-#### Scenario: A costly block
-- **WHEN** a holder appends a block of 40 facts and a check joining five of them (`check if f($a), f($b), f($c), f($d), f($e), $a + $b + $c + $d + $e == -1`), or of a rule, and presents the token per call and in `Hello`
-- **THEN** the call and the `Hello` are `denied` at once, saying an appended block holds checks only, and the token it was attenuated from still works
+#### Scenario: The backstop ends a decision
+- **WHEN** a machine is so loaded that the wall-clock backstop ends a decision
+- **THEN** the call is `denied` with `authorization limit reached`, nothing is cached, and the same call is decided afresh next time
+
+### Requirement: A call's target is bounded before it is decided
+A call whose `target` is over 512 bytes (no participant has such a name) MUST be `denied` without being decided or cached, and an audit line SHALL show at most 128 bytes of a target. The decision cache SHALL be keyed by a fixed-size hash of the request's length-prefixed parts, never by their text.
+
+**Verified by**: `supervisor::bus::acl::tests::a_target_longer_than_a_name_is_denied_unread`.
+
+#### Scenario: A megabyte of target
+- **WHEN** a participant whose token has `call = ["*"]` calls a method with a target of 513 bytes
+- **THEN** the call is `denied` and no decision is cached for it
 
 ### Requirement: The server mints only tokens it accepts
 The server MUST NOT mint a token it would refuse: one over 16 KiB, or with more than 512 rights facts, is an error of `bus.token` (and an instance with such rights is allowed nothing).
