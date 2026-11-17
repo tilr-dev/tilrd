@@ -15,6 +15,7 @@
 //! alphabet); enums are written by name and read by name or number; `null` is the
 //! default; unknown fields are ignored (the repo's rule for protobuf, kept).
 
+use base64::Engine as _;
 use bytes::Bytes;
 use prost::Message;
 use serde_json::{Map, Value, json};
@@ -256,51 +257,27 @@ pub fn enumeration(value: i32, name: Option<&str>) -> Value {
     name.map_or_else(|| json!(value), |name| json!(name))
 }
 
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 pub fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(BASE64[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-/// Standard or URL alphabet, padded or not; `None` if it is not base64.
+/// Reads padded and unpadded text, extra trailing `=` and nonzero trailing bits.
+const BASE64_LENIENT: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    base64::engine::GeneralPurposeConfig::new()
+        .with_decode_padding_mode(base64::engine::DecodePaddingMode::RequireNone)
+        .with_decode_allow_trailing_bits(true),
+);
+
+/// Standard or URL alphabet (mixed too), padded or not; `None` if it is not base64.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let text = text.trim_end_matches('=');
-    let mut out = Vec::with_capacity(text.len() * 3 / 4);
-    let mut n = 0u32;
-    let mut bits = 0;
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return None,
-        };
-        n = n << 6 | u32::from(value);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((n >> bits) as u8);
-            n &= (1 << bits) - 1;
-        }
-    }
-    // A lone sixth of a byte left over is not base64.
-    (bits < 6).then_some(out)
+    let text: std::borrow::Cow<'_, str> = if text.contains(['-', '_']) {
+        text.replace('-', "+").replace('_', "/").into()
+    } else {
+        text.into()
+    };
+    BASE64_LENIENT.decode(text.as_bytes()).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -829,27 +806,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64_reads_back_what_it_writes() {
-        for data in [
-            &b""[..],
-            b"f",
-            b"fo",
-            b"foo",
-            b"foob",
-            b"fooba",
-            b"foobar",
-            &[0xff, 0, 0xfe],
+    fn bytes_are_written_padded_and_read_in_any_base64_form() {
+        assert_eq!(bytes(b"foobar"), json!("Zm9vYmFy"));
+        assert_eq!(bytes(b"fo"), json!("Zm8="));
+        assert_eq!(bytes(b""), json!(""));
+        // Padded or not, extra `=`, URL-safe or mixed alphabets, nonzero trailing
+        // bits: all read; a stray character or a lone sixth of a byte does not.
+        for (text, data) in [
+            ("Zm8=", &b"fo"[..]),
+            ("Zm8", b"fo"),
+            ("Zm8===", b"fo"),
+            ("", b""),
+            ("-_8", &[0xfb, 0xff]),
+            ("+_8", &[0xfb, 0xff]),
+            ("Zm9=", b"fo"),
         ] {
-            let text = base64_encode(data);
-            assert_eq!(base64_decode(&text).as_deref(), Some(data), "{text}");
+            assert_eq!(base64_decode(text).as_deref(), Some(data), "{text}");
         }
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        // Unpadded and URL-safe read too; a stray character does not.
-        assert_eq!(base64_decode("Zm8").as_deref(), Some(&b"fo"[..]));
-        assert_eq!(base64_decode("-_8").as_deref(), Some(&[0xfb, 0xff][..]));
-        assert_eq!(base64_decode("Zm9v!"), None);
-        assert_eq!(base64_decode("Z"), None);
+        for text in ["Zm9v!", "Z", "Zm=8", "Zm 8"] {
+            assert_eq!(base64_decode(text), None, "{text}");
+        }
     }
 
     #[test]
