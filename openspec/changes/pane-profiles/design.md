@@ -11,8 +11,9 @@ for only by naming a profile). This change's part follows.
   is refused with P7's text; `profiles::a_sandboxed_profile_is_refused_where_it_cannot_be_enforced`
   needs no failpoint here, and `sandbox-linux` switches it to the failpoint
   `sandbox-unavailable`.
-- **`pane.profiles` in the method list.** This change adds `pane.profiles` to
-  `bus_terminal::tilrd_provides_the_terminal_methods`.
+- **`pane.profiles` in the method list.** `bus.methods` lists `pane.profiles` with the
+  provider `tilrd` (checked in `profiles::a_pane_starts_with_the_profile_from_the_config_directory`;
+  `bus_terminal` has no test of the method list to extend).
 
 - **Where the directory comes from** *(added by the split)*. `main.rs` resolves `profiles_dir`
   once (`config::profiles_dir`) and stores it with `profile::set_dir`; `profile::dir()` reads
@@ -25,8 +26,15 @@ for only by naming a profile). This change's part follows.
 - **The seam for `pane.create`** *(added by the split)*: `bus/core/profiles.rs`
   `prepare_create(authz, ctx, &CreateRequest) -> Result<Option<Resolved>, BusError>` asks the
   authorizer for `PaneCreate`, then resolves the profile (names, file, refusal of a sandbox,
-  override rules). `bus-core-panes` calls it first thing in `pane.create` and starts the pane
-  from `Resolved { snapshot, command, cwd, env }`.
+  override rules). `panes.rs`'s `pane.create` handler calls it in the handler's synchronous
+  part, before the supervisor's part is queued (the call keeps its place in its connection's
+  order, B5), and starts the pane from `Resolved { snapshot, command, cwd, env }`; the file
+  is read there, as `start_dir` stats a directory on the supervisor's task for `tilr.v1`.
+- **The pane's snapshot** *(added by the split)*: `bus/core/profiles.rs` keeps it in a slot
+  (`ProfilesState`, by pane) from the start of the pane until it exits or fails to start;
+  `PaneInfo.profile` and `PaneInfo.sandboxed` come from it. Carrying it across a reload is
+  `bus-reload`'s: until then a pane keeps running what its profile said, and its
+  `PaneInfo.profile` is empty after a reload.
 
 ## Reload and reconnect
 

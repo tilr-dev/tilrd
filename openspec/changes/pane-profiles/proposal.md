@@ -36,7 +36,9 @@ flag.
   "tilr profiles" is `bus-tilr-client`'s.)
 
 ### Modified Capabilities
-- `panes`: "Creating a pane", "The directory a pane starts in".
+- None. `bus-terminal` already starts `pane.create` "as the `panes` and `pane-profiles`
+  specs say"; what a profile adds (the name in `PaneInfo`, the directory fallback) is in
+  `pane-profiles` as added requirements, and `panes` (`tilr.v1` `CreatePane`) is unchanged.
 
 ## Non-goals
 

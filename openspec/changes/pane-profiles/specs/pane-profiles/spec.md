@@ -61,6 +61,15 @@ A profile file SHALL be TOML with only the keys `description` (optional), `comma
 - **WHEN** a profile says `[env] TILR_PANE = "x"`
 - **THEN** the profile is invalid and the reason names `TILR_PANE`
 
+### Requirement: A pane names its profile
+`PaneInfo.profile` of a pane created with a profile SHALL be the profile's name, in the reply of `pane.create`, in `pane.list` and in the `pane.*` events, for as long as the pane runs; it SHALL be empty for a pane created without a profile and for a pane of `tilr.v1`. `PaneInfo.sandboxed` SHALL be true only for a pane created with a profile that has a `[sandbox]` table.
+
+**Verified by**: `profiles::a_pane_starts_with_the_profile_from_the_config_directory`.
+
+#### Scenario: Listed with its profile
+- **WHEN** the owner calls `pane.create {profile: "demo"}` with a valid unsandboxed `demo.toml`, then `pane.create` without a profile
+- **THEN** the first reply and `pane.list` name `demo` with `sandboxed` false, and the second reply's `profile` is empty
+
 ### Requirement: A profile is read on every create
 The server SHALL read and validate the profile file on every `pane.create` that names it and SHALL NOT cache it; a change to the file SHALL apply to the next pane created with it and SHALL NOT change a pane that already runs.
 
