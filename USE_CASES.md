@@ -822,6 +822,8 @@ two lanes, `busy` instead of growth, events dropped for a lagging subscriber
 |---|---|
 | A failed call says why: `not_found` for a method nobody provides (a name only a participant that is gone provided is forgotten), `unavailable` for a method of windows with none open, also on a fresh server, and once its providers are gone, `timeout` at the deadline (the callee gets `Cancel`), `bad_request` for a window over 16 MiB; a call that names no deadline gets 10 s | `bus::a_failed_call_says_why` |
 | A provider that is draining gets no call: `unavailable` | `supervisor::bus::broker::tests::a_draining_provider_is_unavailable` |
+| Draining a connection with a call it never answers ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::draining_a_connection_ends_at_its_deadline_without_spinning` |
+| Draining the broker with a call never answered ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::the_broker_drain_ends_at_its_deadline_without_spinning` |
 | tilrd's own call keeps the deadline it gives, over `call_timeout_ms`; without one it gets `call_timeout_ms` and the callee `Cancel` | `supervisor::bus::broker::tests::a_native_callers_own_deadline_is_kept` |
 | The broker sends a connection a `CredentialUpdate` and tells when a connection ends | `supervisor::bus::broker::tests::the_broker_sends_a_credential_update_and_tells_when_a_connection_ends` |
 | A call outside the caller's rights is `denied`, naming the method | `supervisor::bus::broker::tests::a_call_outside_its_rights_is_denied_naming_the_method` |

@@ -136,6 +136,9 @@ struct Shared {
     ready: watch::Sender<bool>,
     /// Woken each time the state's lock is let go: what a drain waits on.
     changed: Notify,
+    /// Times [`BrokerHandle::wait_state`] looked at the state.
+    #[cfg(test)]
+    wait_rounds: AtomicU64,
     /// `call_timeout_ms` (bus.toml); 0: no default deadline.
     call_timeout_ms: AtomicU32,
     timers: Arc<Timers>,
@@ -788,6 +791,8 @@ impl BrokerHandle {
             native: OnceLock::new(),
             ready: watch::channel(false).0,
             changed: Notify::new(),
+            #[cfg(test)]
+            wait_rounds: AtomicU64::new(0),
             call_timeout_ms: AtomicU32::new(limits::CALL_TIMEOUT_MS),
             timers: Arc::new(Timers::default()),
         }))
@@ -873,6 +878,15 @@ impl BrokerHandle {
         }
     }
 
+    /// The state's lock that wakes nobody when let go: for a look that changes
+    /// nothing, where [`lock`](Self::lock)'s wake would wake the looker itself.
+    fn peek(&self) -> MutexGuard<'_, State> {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Wait until `done` holds of the state, woken by each change of it (no
     /// polling), or until `deadline`; whether it holds.
     async fn wait_state(
@@ -884,11 +898,15 @@ impl BrokerHandle {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if done(&self.lock()) {
+            #[cfg(test)]
+            self.0.wait_rounds.fetch_add(1, Ordering::Relaxed);
+            // Not `lock`: its wake on letting go would end this wait at once,
+            // and the deadline would never win (a busy loop).
+            if done(&self.peek()) {
                 return true;
             }
             if tokio::time::timeout_at(deadline, changed).await.is_err() {
-                return done(&self.lock());
+                return done(&self.peek());
             }
         }
     }
@@ -3540,6 +3558,88 @@ mod tests {
             codes::TIMEOUT
         );
         assert!(matches!(provider.recv().await, Msg::Cancel(cancel) if cancel.id == forwarded.id));
+    }
+
+    /// `drain` on a thread of its own, with the time it took: a drain that spins
+    /// holds that thread, not the test's, so the test fails within [`WAIT`].
+    fn drain_on_own_thread<T: Send + 'static>(
+        drain: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> tokio::sync::oneshot::Receiver<(T, Duration)> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let started = std::time::Instant::now();
+            let done = runtime.block_on(drain);
+            let _ = tx.send((done, started.elapsed()));
+        });
+        rx
+    }
+
+    /// A provider `p-1` of `test.never` with a call from `c-1` in flight that it
+    /// never answers.
+    async fn a_call_in_flight(broker: &BrokerHandle) -> (Peer0, ConnId, Peer0) {
+        let (mut provider, provider_id) =
+            Peer0::attach_as(broker, "p-1", vec![MethodSpec::unary("test.never")]).await;
+        let mut caller = Peer0::attach_as(broker, "c-1", Vec::new()).await.0;
+        caller
+            .send(Msg::Call(Call {
+                id: 1,
+                method: "test.never".into(),
+                ..Call::default()
+            }))
+            .await;
+        assert!(matches!(provider.recv().await, Msg::Call(call) if call.method == "test.never"));
+        (provider, provider_id, caller)
+    }
+
+    /// Times a drain may look at the state while nothing changes it: once
+    /// before the wait, once at the deadline, and a few spare.
+    const QUIET_WAIT_ROUNDS: u64 = 4;
+
+    #[tokio::test]
+    async fn draining_a_connection_ends_at_its_deadline_without_spinning() {
+        let broker = broker();
+        let (mut provider, provider_id, mut caller) = a_call_in_flight(&broker).await;
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        let drained = drain_on_own_thread({
+            let broker = broker.clone();
+            async move { broker.drain_connection(provider_id, TIMEOUT).await }
+        });
+        let (answered, took) = within(drained).await.unwrap();
+        assert!(!answered, "the call was never answered");
+        assert!(took >= TIMEOUT, "returned before its deadline: {took:?}");
+        let rounds = broker.0.wait_rounds.load(Ordering::Relaxed);
+        assert!(
+            rounds <= QUIET_WAIT_ROUNDS,
+            "the drain spun: {rounds} rounds"
+        );
+        let (id, code, _) = error_code(&caller.recv().await).expect("an error");
+        assert_eq!((id, code.as_str()), (1, codes::UNAVAILABLE));
+        assert!(matches!(provider.recv().await, Msg::Cancel(_)));
+    }
+
+    #[tokio::test]
+    async fn the_broker_drain_ends_at_its_deadline_without_spinning() {
+        let broker = broker();
+        let (mut provider, _, mut caller) = a_call_in_flight(&broker).await;
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        let drained = drain_on_own_thread({
+            let broker = broker.clone();
+            async move { broker.drain(TIMEOUT).await }
+        });
+        let ((), took) = within(drained).await.unwrap();
+        assert!(took >= TIMEOUT, "returned before its deadline: {took:?}");
+        let rounds = broker.0.wait_rounds.load(Ordering::Relaxed);
+        assert!(
+            rounds <= QUIET_WAIT_ROUNDS,
+            "the drain spun: {rounds} rounds"
+        );
+        let (id, code, _) = error_code(&caller.recv().await).expect("an error");
+        assert_eq!((id, code.as_str()), (1, codes::UNAVAILABLE));
+        assert!(matches!(provider.recv().await, Msg::Cancel(_)));
     }
 
     #[tokio::test]

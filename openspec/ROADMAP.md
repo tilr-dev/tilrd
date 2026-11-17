@@ -151,6 +151,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
+| bus-drain-deadline | [PR #140](https://github.com/tilr-dev/tilrd/pull/140) |
 | bus-instances | [PR #139](https://github.com/tilr-dev/tilrd/pull/139) |
 | bus-streams-events | [PR #138](https://github.com/tilr-dev/tilrd/pull/138) |
 | bus-broker-core | [PR #137](https://github.com/tilr-dev/tilrd/pull/137) |
