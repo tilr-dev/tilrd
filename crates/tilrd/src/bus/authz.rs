@@ -29,18 +29,38 @@ pub enum AuthzRequest<'a> {
     Emit { subject: &'a str },
     /// Subscribing to a pattern.
     Subscribe { pattern: &'a str },
-    /// A `bus.*` control action, on an instance or on all (`None`).
+    /// A `bus.*` control action, on an instance or on all (`None`), checked by a
+    /// core method for `call`.
     Control {
         action: &'a str,
         instance: Option<&'a str>,
+        call: ForCall<'a>,
     },
     /// Delivering an event to this subscriber; `scope` is `pane:<id>` or empty.
     Event { subject: &'a str, scope: &'a str },
     /// `pane.create` with a profile (empty: none) and whether `command` or `cwd`
-    /// override it (T7).
-    PaneCreate { profile: &'a str, overrides: bool },
-    /// Any access to a pane made by `creator` (T7).
-    PaneAccess { pane_id: &'a str, creator: &'a str },
+    /// override it (T7), checked for `call`.
+    PaneCreate {
+        profile: &'a str,
+        overrides: bool,
+        call: ForCall<'a>,
+    },
+    /// Any access to a pane made by `creator` (T7), checked for `call`.
+    PaneAccess {
+        pane_id: &'a str,
+        creator: &'a str,
+        call: ForCall<'a>,
+    },
+}
+
+/// The call a core method makes a follow-up check for (`Control`, `PaneCreate`,
+/// `PaneAccess`): its method and target (`CallCtx`), so the check is decided with
+/// the facts of that call too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ForCall<'a> {
+    pub method: &'a str,
+    /// `Call.target` as sent; empty when routed by method.
+    pub target: &'a str,
 }
 
 /// A refusal: the `denied` message, naming the missing right.
@@ -216,7 +236,9 @@ impl Authorizer for StubAuthorizer {
                 pattern_allowed(&rights.subscribe, pattern),
                 format!("subscribe to {pattern}"),
             ),
-            AuthzRequest::Control { action, instance } => (
+            AuthzRequest::Control {
+                action, instance, ..
+            } => (
                 control_allowed(&rights.control, action, instance),
                 match instance {
                     Some(instance) => format!("control {action}:{instance}"),
@@ -362,28 +384,34 @@ mod tests {
         assert!(!ok(AuthzRequest::Subscribe { pattern: "*.>" }));
         assert!(ok(AuthzRequest::Control {
             action: "list",
-            instance: None
+            instance: None,
+            call: ForCall::default()
         }));
         assert!(ok(AuthzRequest::Control {
             action: "reload",
-            instance: Some("t-2")
+            instance: Some("t-2"),
+            call: ForCall::default()
         }));
         assert!(!ok(AuthzRequest::Control {
             action: "reload",
-            instance: Some("u-1")
+            instance: Some("u-1"),
+            call: ForCall::default()
         }));
         assert!(!ok(AuthzRequest::Control {
             action: "reload",
-            instance: None
+            instance: None,
+            call: ForCall::default()
         }));
         assert!(!ok(AuthzRequest::Control {
             action: "stop",
-            instance: Some("t-2")
+            instance: Some("t-2"),
+            call: ForCall::default()
         }));
         // Pane rights are bus-pane-rights'.
         assert!(ok(AuthzRequest::PaneCreate {
             profile: "",
-            overrides: true
+            overrides: true,
+            call: ForCall::default()
         }));
 
         let denied = authz

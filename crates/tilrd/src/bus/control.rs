@@ -26,7 +26,7 @@ use tilr_bus::bus::{
 };
 use tilr_bus::{BusError, CONTENT_TYPE_JSON, Reply, methods};
 
-use super::authz::AuthzRequest;
+use super::authz::{AuthzRequest, ForCall};
 use super::broker::BrokerHandle;
 use super::config::MAX_DRAIN_MS;
 use super::core::{Core, Registry};
@@ -116,6 +116,10 @@ fn allow(
             &AuthzRequest::Control {
                 action,
                 instance: Some(instance),
+                call: ForCall {
+                    method: &ctx.method,
+                    target: &ctx.target,
+                },
             },
         )
         .map_err(BusError::from)

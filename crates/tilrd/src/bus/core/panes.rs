@@ -61,7 +61,7 @@ use tokio::time::Instant;
 
 use super::json::{self, Json};
 use super::{BusObserver, Core, CoreCmd, PaneEvent, Registry};
-use crate::bus::authz::AuthzRequest;
+use crate::bus::authz::{AuthzRequest, ForCall};
 use crate::bus::broker::ConnState;
 use crate::bus::identity::{CallCtx, Identity, Principal, Transport};
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut, TrySendError};
@@ -247,6 +247,9 @@ struct Caller {
     principal: Arc<Principal>,
     credential: Option<Bytes>,
     from: Identity,
+    /// The call's method and target: the pane checks are made for that call.
+    method: String,
+    target: String,
 }
 
 impl Caller {
@@ -255,6 +258,16 @@ impl Caller {
             principal: Arc::clone(&ctx.principal),
             credential: ctx.call_credential.clone(),
             from: ctx.from.clone(),
+            method: ctx.method.clone(),
+            target: ctx.target.clone(),
+        }
+    }
+
+    /// The call a pane check is made for.
+    fn call(&self) -> ForCall<'_> {
+        ForCall {
+            method: &self.method,
+            target: &self.target,
         }
     }
 
@@ -326,6 +339,7 @@ fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Result<(), Bu
         &AuthzRequest::PaneAccess {
             pane_id: &id,
             creator: &creator,
+            call: caller.call(),
         },
     )
 }
@@ -828,6 +842,7 @@ fn create(
         &AuthzRequest::PaneCreate {
             profile: &request.profile,
             overrides,
+            call: caller.call(),
         },
     ) {
         return Answer::Now(Err(denied));

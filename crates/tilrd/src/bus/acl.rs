@@ -74,7 +74,7 @@ use tilr_bus::proto::tilr::bus::v1 as wire;
 use tilr_bus::{BusError, Reply, codes, names};
 use zeroize::Zeroizing;
 
-use super::authz::{Authorizer, AuthzConfig, AuthzRequest, Denied, HelloContext};
+use super::authz::{Authorizer, AuthzConfig, AuthzRequest, Denied, ForCall, HelloContext};
 use super::broker::{BrokerHandle, ConnId};
 use super::core::{Core, Registry};
 use super::identity::{CallCtx, Identity, Principal, Rights, Transport};
@@ -560,8 +560,11 @@ fn check_appended_block(
     use biscuit_prost::Message as _;
     let unreadable = || UNREADABLE.to_owned();
     let block = schema::Block::decode(data).map_err(|_| unreadable())?;
-    // Decoding drops what the schema does not know: such a block is not read whole.
-    if block.encoded_len() != data.len() {
+    // Decoding drops what the schema does not know and fills a missing required
+    // field with its default: only a block that is its own canonical encoding, byte
+    // for byte, is read whole (a length alone lets an unknown field stand in for a
+    // missing one of the same size). biscuit-auth writes its blocks so.
+    if block.encode_to_vec() != data {
         return Err(unreadable());
     }
     if !block.facts.is_empty() || !block.rules.is_empty() {
@@ -992,11 +995,34 @@ fn decision_key(token: &[u8; 32], parts: &[&str]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// The facts of the call a follow-up check is made for (`method`, `namespace`,
+/// `target`), as [`AuthzRequest::Call`] adds them: an appended check reads the same
+/// call in each check made for it.
+fn call_facts(facts: &mut Vec<Fact>, call: ForCall<'_>) {
+    facts.push(fact("method", &[s(call.method)]));
+    facts.push(fact("namespace", &[s(names::namespace(call.method))]));
+    facts.push(fact("target", &[s(call.target)]));
+}
+
 /// Map a request to its kind and facts (R6); `None`: unknown, denied.
 fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> {
-    if let AuthzRequest::Call { target, .. } = *request
-        && target.len() > MAX_TARGET_BYTES
-    {
+    let target = match *request {
+        AuthzRequest::Call { target, .. }
+        | AuthzRequest::Control {
+            call: ForCall { target, .. },
+            ..
+        }
+        | AuthzRequest::PaneCreate {
+            call: ForCall { target, .. },
+            ..
+        }
+        | AuthzRequest::PaneAccess {
+            call: ForCall { target, .. },
+            ..
+        } => target,
+        _ => "",
+    };
+    if target.len() > MAX_TARGET_BYTES {
         // Not read further, not cached, not logged.
         return Err(Denied::new(format!(
             "the target is over {MAX_TARGET_BYTES} bytes: no participant has such a name"
@@ -1025,9 +1051,10 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 "bus.rotate_key" => Some(("control", "rotate_key")),
                 "server.reload" => Some(("control", "server.reload")),
                 "server.update" => Some(("control", "server.update")),
-                _ if namespace == "bus" => {
-                    return Err(Denied::new(format!("{method} is not a control method")));
-                }
+                // Only these exact names are control methods. Any other name, in
+                // `bus` too (`bus.absent`, `bus.Token`, `bus.token `), is a plain
+                // call: a caller whose `call` rights cover it passes and the broker
+                // answers `not_found` (no participant provides in `bus`).
                 _ => None,
             };
             let kind = match (method, control) {
@@ -1094,7 +1121,12 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 key: vec![pattern],
             }
         }
-        AuthzRequest::Control { action, instance } => {
+        AuthzRequest::Control {
+            action,
+            instance,
+            call,
+        } => {
+            call_facts(&mut facts, call);
             facts.push(fact("action", &[s(action)]));
             if let Some(instance) = instance {
                 facts.push(fact("instance", &[s(instance)]));
@@ -1109,8 +1141,8 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 target: instance.unwrap_or(""),
                 facts,
                 key: match instance {
-                    Some(instance) => vec![action, "instance", instance],
-                    None => vec![action],
+                    Some(instance) => vec![call.method, call.target, action, "instance", instance],
+                    None => vec![call.method, call.target, action],
                 },
             }
         }
@@ -1126,7 +1158,12 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 key: vec![subject, scope],
             }
         }
-        AuthzRequest::PaneCreate { profile, overrides } => {
+        AuthzRequest::PaneCreate {
+            profile,
+            overrides,
+            call,
+        } => {
+            call_facts(&mut facts, call);
             facts.push(fact("pane_profile_requested", &[s(profile)]));
             facts.push(fact("pane_overrides", &[datalog::boolean(overrides)]));
             Request {
@@ -1135,10 +1172,21 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("profile={profile}"),
                 target: "",
                 facts,
-                key: vec!["create", profile, if overrides { "true" } else { "false" }],
+                key: vec![
+                    "create",
+                    call.method,
+                    call.target,
+                    profile,
+                    if overrides { "true" } else { "false" },
+                ],
             }
         }
-        AuthzRequest::PaneAccess { pane_id, creator } => {
+        AuthzRequest::PaneAccess {
+            pane_id,
+            creator,
+            call,
+        } => {
+            call_facts(&mut facts, call);
             facts.push(fact("pane", &[s(pane_id)]));
             facts.push(fact("pane_creator", &[s(creator)]));
             Request {
@@ -1147,7 +1195,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("pane={pane_id}"),
                 target: "",
                 facts,
-                key: vec!["access", pane_id, creator],
+                key: vec!["access", call.method, call.target, pane_id, creator],
             }
         }
         _ => return Err(Denied::new("a request this server does not know")),
@@ -2825,7 +2873,11 @@ mod tests {
         assert!(!ok(call("server.reload", "")));
         assert!(!ok(call("bus.nothing", "")));
         assert!(ok(call("bus.ping", "")));
-        let control = |action, instance| AuthzRequest::Control { action, instance };
+        let control = |action, instance| AuthzRequest::Control {
+            action,
+            instance,
+            call: ForCall::default(),
+        };
         assert!(ok(control("reload", Some("t-1"))));
         assert!(!ok(control("reload", Some("u-1"))));
         assert!(!ok(control("reload", None)));
@@ -2855,7 +2907,8 @@ mod tests {
             &["reload:*"],
             AuthzRequest::Control {
                 action: "reload",
-                instance: Some("any-1")
+                instance: Some("any-1"),
+                call: ForCall::default(),
             }
         ));
         // `*:*` is `*`; a prefix is still some instances only.
@@ -3188,6 +3241,216 @@ mod tests {
             )],
             kind: d::CheckKind::One,
         }
+    }
+
+    #[test]
+    fn only_exact_names_are_control_methods() {
+        let action = |request: &Request<'_>| {
+            request
+                .facts
+                .iter()
+                .any(|fact| fact.predicate.name == "action")
+        };
+        // Look-alikes of control methods, and unknown `bus.*` methods: plain calls,
+        // without an action, which no participant provides.
+        for method in [
+            "bus.absent",
+            "bus.Token",
+            "BUS.token",
+            "bus.token.",
+            "bus.token ",
+            " bus.token",
+            "bus.token\0",
+            "bus..token",
+            "bus.t\u{043e}ken",
+            "bus.rotate-key",
+            "bus.reload_config.x",
+            "server.Reload",
+        ] {
+            let request = request_facts(&call(method, "")).unwrap();
+            assert_eq!(request.kind, "call", "{method:?}");
+            assert!(!action(&request), "{method:?}");
+            assert_eq!(request.what, format!("call {method}"));
+        }
+        for method in ["bus.token", "bus.rotate_key", "bus.stop", "server.reload"] {
+            let request = request_facts(&call(method, "")).unwrap();
+            assert!(request.kind.starts_with("control"), "{method}");
+            assert!(action(&request), "{method}");
+        }
+        // Authorized as a call: by the owner and by `call` rights over it; a control
+        // method stays its action's.
+        let f = fixture("s");
+        assert!(
+            f.acl
+                .authorize(
+                    &owner_on(Transport::UnixSocket),
+                    None,
+                    &call("bus.absent", "")
+                )
+                .is_ok()
+        );
+        let ok = |call_rights: &[&str], method: &str| {
+            let p = holder(minted(&f, &rights(|r| r.call = strings(call_rights))));
+            f.acl.authorize(&p, None, &call(method, "")).is_ok()
+        };
+        assert!(ok(&["bus.*"], "bus.absent"));
+        assert!(ok(&["bus.*"], "bus.Token"));
+        assert!(ok(&["*"], "bus.absent"));
+        assert!(ok(&["bus.absent"], "bus.absent"));
+        assert!(!ok(&["test.*"], "bus.absent"));
+        assert!(!ok(&[], "bus.absent"));
+        assert!(!ok(&["bus.*"], "bus.token"));
+        assert!(!ok(&["*"], "bus.rotate_key"));
+    }
+
+    #[test]
+    fn follow_up_checks_carry_the_facts_of_their_call() {
+        use biscuit_auth::builder as d;
+        let f = fixture("s");
+        let owner = owner_on(Transport::UnixSocket);
+        let token = minted(
+            &f,
+            &rights(|r| {
+                r.call = strings(&["pane.*", "bus.*"]);
+                r.control = strings(&["*"]);
+            }),
+        );
+        let only = |method: &str| {
+            appended(
+                &token.bytes,
+                biscuit_auth::BlockBuilder::new()
+                    .check(check_of(d::pred("method", &[d::string(method)]), vec![]))
+                    .unwrap(),
+            )
+        };
+        let for_call = |method| ForCall { method, target: "" };
+        let access = |method| AuthzRequest::PaneAccess {
+            pane_id: "1",
+            creator: "owner",
+            call: for_call(method),
+        };
+        let create = |method| AuthzRequest::PaneCreate {
+            profile: "",
+            overrides: false,
+            call: for_call(method),
+        };
+        let list = |method| AuthzRequest::Control {
+            action: "list",
+            instance: Some("t-1"),
+            call: for_call(method),
+        };
+        let ok = |bearer: &[u8], request: AuthzRequest<'_>| {
+            f.acl.authorize(&owner, Some(bearer), &request).is_ok()
+        };
+        let pane_list = only("pane.list");
+        // Each twice: a cached decision for one call is never another's.
+        for _ in 0..2 {
+            assert!(ok(&pane_list, call("pane.list", "")));
+            assert!(ok(&pane_list, access("pane.list")));
+            assert!(!ok(&pane_list, access("pane.read")));
+            assert!(!ok(&pane_list, create("pane.create")));
+            assert!(!ok(&pane_list, call("pane.create", "")));
+        }
+        let pane_create = only("pane.create");
+        for _ in 0..2 {
+            assert!(ok(&pane_create, call("pane.create", "")));
+            assert!(ok(&pane_create, create("pane.create")));
+            assert!(!ok(&pane_create, access("pane.close")));
+            assert!(!ok(&pane_create, call("pane.close", "")));
+        }
+        let instances = only("bus.instances");
+        for _ in 0..2 {
+            assert!(ok(&instances, call("bus.instances", "")));
+            assert!(ok(&instances, list("bus.instances")));
+            assert!(!ok(&instances, list("bus.methods")));
+        }
+        // The call's target too.
+        let target = appended(
+            &token.bytes,
+            biscuit_auth::BlockBuilder::new()
+                .check(check_of(d::pred("target", &[d::string("x")]), vec![]))
+                .unwrap(),
+        );
+        let at = |target| AuthzRequest::PaneAccess {
+            pane_id: "1",
+            creator: "owner",
+            call: ForCall {
+                method: "pane.read",
+                target,
+            },
+        };
+        assert!(ok(&target, at("x")));
+        assert!(!ok(&target, at("y")));
+        assert!(!ok(&target, at("")));
+        // One fact of each per request: a follow-up check adds no second `method`.
+        for request in [
+            access("pane.list"),
+            create("pane.create"),
+            list("bus.instances"),
+        ] {
+            let facts = request_facts(&request).unwrap().facts;
+            for name in REQUEST_FACTS {
+                assert!(
+                    facts.iter().filter(|f| f.predicate.name == *name).count() <= 1,
+                    "{name} in {request:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_appended_block_that_is_not_its_own_encoding_is_refused() {
+        use biscuit_auth::format::schema;
+        use biscuit_prost::Message as _;
+        let symbols = biscuit_auth::datalog::SymbolTable::from(vec![
+            "method".to_owned(),
+            "pane.list".to_owned(),
+        ])
+        .unwrap();
+        // `check if method("pane.list")`, its head the default symbol 0.
+        let predicate = |name, terms| schema::Predicate { name, terms };
+        let block = schema::Block {
+            version: Some(3),
+            checks: vec![schema::Check {
+                queries: vec![schema::Rule {
+                    head: predicate(0, vec![]),
+                    body: vec![predicate(
+                        1024,
+                        vec![schema::Term {
+                            content: Some(schema::term::Content::String(1025)),
+                        }],
+                    )],
+                    expressions: vec![],
+                    scope: vec![],
+                }],
+                kind: None,
+            }],
+            ..schema::Block::default()
+        };
+        let data = block.encode_to_vec();
+        assert_eq!(check_appended_block(&data, &symbols), Ok(()));
+        // The head's required `name` (field 1, `08 00`) left out, an unknown field 15
+        // of the same size (`78 00`) in its place: it decodes to the same block, and
+        // its re-encoding has the same length but other bytes.
+        let head = [0x0a, 0x02, 0x08, 0x00];
+        let at = data
+            .windows(head.len())
+            .position(|w| w == head)
+            .expect("the head's bytes");
+        assert_eq!(
+            data.windows(head.len()).filter(|w| *w == head).count(),
+            1,
+            "one head"
+        );
+        let mut crafted = data.clone();
+        crafted[at + 2] = 0x78;
+        let decoded = schema::Block::decode(crafted.as_slice()).unwrap();
+        assert_eq!(decoded, block);
+        assert_eq!(decoded.encoded_len(), crafted.len());
+        assert_eq!(
+            check_appended_block(&crafted, &symbols),
+            Err(UNREADABLE.to_owned())
+        );
     }
 
     #[test]
@@ -3779,6 +4042,10 @@ mod tests {
         let control = |instance| AuthzRequest::Control {
             action: "reload",
             instance: Some(instance),
+            call: ForCall {
+                method: "bus.reload",
+                target: "",
+            },
         };
         assert!(
             f.acl
@@ -3814,6 +4081,10 @@ mod tests {
         let pane = AuthzRequest::PaneAccess {
             pane_id: "pane-1",
             creator: "owner",
+            call: ForCall {
+                method: "pane.read",
+                target: "",
+            },
         };
         assert!(f.acl.authorize(&wide, Some(&narrow.bytes), &pane).is_ok());
     }

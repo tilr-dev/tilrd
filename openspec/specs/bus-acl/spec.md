@@ -71,7 +71,7 @@ A `Hello` that provides a method not covered by its token's `provide` rights MUS
 ### Requirement: Control methods need control rights
 `bus.instances` and `bus.methods` SHALL need `control` `list`; `bus.start`, `bus.stop` and `bus.reload` that action on every instance they act on, checked per instance (by its bare name) with the call's per-call credential when it has one; `bus.reload_config`, `bus.token`, `bus.revoke`, `bus.rotate_key`, `server.reload` and `server.update` their own action; `call` rights (`*`, `server.*`) MUST NOT cover any of them; otherwise the call MUST be `denied` and change nothing.
 
-**Verified by**: `bus_acl::control_methods_need_control_rights`, `supervisor::bus::acl::tests::a_bearer_decides_the_control_checks_of_its_call`, `supervisor::bus::acl::tests::server_update_needs_its_control_action`.
+**Verified by**: `bus_acl::control_methods_need_control_rights`, `bus_acl::an_unknown_bus_method_is_not_found_to_whom_may_call_it`, `supervisor::bus::acl::tests::a_bearer_decides_the_control_checks_of_its_call`, `supervisor::bus::acl::tests::server_update_needs_its_control_action`, `supervisor::bus::acl::tests::only_exact_names_are_control_methods`.
 
 #### Scenario: Reload only itself
 - **WHEN** `t-1` has `control = ["reload:t-1"]` and calls `bus.reload` for `t-1`, then for `t-2`
@@ -80,6 +80,10 @@ A `Hello` that provides a method not covered by its token's `provide` rights MUS
 #### Scenario: Narrow credential on a wide connection
 - **WHEN** a participant with `control = ["*"]` calls `bus.reload` for `t-2` with a per-call credential of `control = ["reload:t-1"]`
 - **THEN** the call is `denied` and `t-2` keeps its pid
+
+#### Scenario: A `bus.*` method that is not known
+- **WHEN** the owner, and a participant with `call = ["bus.*"]`, call `bus.absent` (or `bus.Token`, a look-alike of a control method), and a participant with `call = ["test.*"]` calls `bus.absent`
+- **THEN** the first two are answered `not_found` (or `bad_request` for a name that is not a method name), never as a control method, and the third is `denied`
 
 ### Requirement: Listing and reconfiguring need the right over every instance
 `bus.instances`, `bus.methods` and `bus.reload_config` SHALL need `list` or `reload_config` over every instance (`list`, `reload_config` or `*`; an instance part of `*` is every instance, so `list:*`, `reload_config:*` and `*:*` are those rights), also while no instance is configured; a right over some instances (`list:t-*`, `*:t-1`) MUST NOT reach them. The methods SHALL still check each instance they read or act on, with the call's per-call credential when it has one.
@@ -152,10 +156,19 @@ A token holder SHALL be able to append a block of checks (on `method`, `target`,
 - **WHEN** an appended block contains the fact `call_any(true)`
 - **THEN** every call with that token is `denied`, also one inside the authority block's rights
 
+### Requirement: Appended checks see the call in every check made for it
+An appended block's checks SHALL apply to every check made for a call, the call's own and each control and pane check its method makes, and each of those checks SHALL have the facts of the call (`method`, `namespace`, `target`) besides its own, so a cached decision for one call is never reused for another.
+
+**Verified by**: `bus_acl::pane_checks_see_the_call_they_are_made_for`, `supervisor::bus::acl::tests::follow_up_checks_carry_the_facts_of_their_call`.
+
+#### Scenario: Narrowed to one method of a core service
+- **WHEN** a token with `call = ["pane.*"]` is attenuated with `check if method("pane.list")` and says `Hello` with it, and another is attenuated with `check if method("pane.create")` and sent as a per-call credential with `pane.create` and then `pane.close`
+- **THEN** the first lists the panes and its `pane.create` is `denied`; the second creates a pane and its `pane.close` is `denied`
+
 ### Requirement: An appended block holds bounded checks on the request only
 A token with an appended block that holds a fact or a rule, over 16 checks (each `or` alternative counted), a check of over 16 predicates, over 64 expression operations, a predicate other than the request's facts (`acl::REQUEST_FACTS`), `.all`, `.any`, `.matches`, an extern function or a `trusting` scope MUST be `denied` when verified, at `Hello` and per call, before any Datalog runs, read from its signed bytes, never its printed source.
 
-**Verified by**: `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::an_attenuated_token_only_narrows`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`, `supervisor::bus::acl::tests::an_appended_block_is_read_from_its_data_not_its_printed_text`.
+**Verified by**: `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::an_attenuated_token_only_narrows`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`, `supervisor::bus::acl::tests::an_appended_block_is_read_from_its_data_not_its_printed_text`, `supervisor::bus::acl::tests::an_appended_block_that_is_not_its_own_encoding_is_refused`.
 
 #### Scenario: A costly block
 - **WHEN** a holder appends a block of 40 facts and a check joining five of them (`check if f($a), f($b), f($c), f($d), f($e), $a + $b + $c + $d + $e == -1`), or of a rule, and presents the token per call and in `Hello`
@@ -170,7 +183,7 @@ A token with an appended block that holds a fact or a rule, over 16 checks (each
 - **THEN** the call and the `Hello` are `denied` at once, saying an appended block holds checks only; so is a block whose names hide a fact behind `//` or a newline, whose check trusts other blocks, or whose predicate only prints like a request's fact (`kind ` with a trailing space)
 
 #### Scenario: Checks on the request
-- **WHEN** an appended block holds `check if namespace("bus") or instance($i), $i.starts_with("s-")`
+- **WHEN** an appended block holds `reject if instance($i), !$i.starts_with("s-")`
 - **THEN** the token verifies and its calls are decided with that check
 
 ### Requirement: Tokens expire after a day and are renewed

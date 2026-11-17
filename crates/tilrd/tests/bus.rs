@@ -204,7 +204,7 @@ async fn unknown_envelopes_are_ignored_and_bad_ones_reported() {
     raw.send_raw(vec![0, 0x9a, 0x06, 0x00]).await;
     let mut known = codec_plain(Msg::Call(Call {
         id: 5,
-        method: "test.absent".into(),
+        method: "bus.absent".into(),
         ..Call::default()
     }));
     // Envelope.call is field 3, length-delimited: append field 99 to its body.
@@ -212,8 +212,7 @@ async fn unknown_envelopes_are_ignored_and_bad_ones_reported() {
     known.extend_from_slice(&[0x98, 0x06, 0x01]);
     raw.send_raw(known).await;
 
-    // The connection stays: the call is answered (nobody provides the method; an
-    // unknown `bus.*` method would be `denied` by the rights check first).
+    // The connection stays: the call is answered (tilrd has no such method).
     let reply = raw
         .wait_for(|msg| match msg {
             Msg::Reply(reply) => Some(reply.clone()),
@@ -222,7 +221,7 @@ async fn unknown_envelopes_are_ignored_and_bad_ones_reported() {
         .await;
     assert_eq!(reply.id, 5);
     let Some(reply::Result::Error(error)) = reply.result else {
-        panic!("test.absent is not provided: {reply:?}");
+        panic!("bus.absent is not provided: {reply:?}");
     };
     assert_eq!(error.code, codes::NOT_FOUND);
 }
@@ -2521,13 +2520,13 @@ async fn control_rights_are_checked_for_each_instance() {
     .await
     .expect("the instance's own connection");
     // `list` and `reload_config` are over every instance (`bus-rights`): the
-    // instance narrows its own token to the instances `s-*` (a block of checks it
-    // appends itself) and presents it with each call; each instance a method reads or
-    // acts on is checked with it.
+    // instance narrows its own token to the instances `s-*` (a block it appends
+    // itself, refusing every check of another instance) and presents it with each
+    // call; each instance a method reads or acts on is checked with it.
     let narrowed = me
         .credential()
         .expect("the instance's token")
-        .attenuate(r#"check if namespace("bus") or instance($i), $i.starts_with("s-");"#)
+        .attenuate(r#"reject if instance($i), !$i.starts_with("s-");"#)
         .unwrap();
     let narrow = || CallOptions::default().credential(narrowed.clone());
     let reload_config = || {

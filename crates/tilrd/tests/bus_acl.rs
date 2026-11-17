@@ -617,6 +617,42 @@ async fn control_methods_need_their_right_with_no_instances() {
     denied(calls(&bus, "bus.instances", "", CallOptions::default()).await);
 }
 
+/// An unknown `bus.*` method is a plain call: `not_found` to a caller whose `call`
+/// rights cover it, `denied` to one without; no other spelling of a control method
+/// reaches it.
+#[tokio::test]
+async fn an_unknown_bus_method_is_not_found_to_whom_may_call_it() {
+    let server = start();
+    let owner = server.owner().await;
+    allowed_but_absent(calls(&owner, "bus.absent", "", CallOptions::default()).await);
+
+    let (narrow, _) = mint(&owner, "narrow", Rights::default().call(&["test.*"])).await;
+    let bus = participant(&server, &narrow, "narrow").await;
+    let reason = denied(calls(&bus, "bus.absent", "", CallOptions::default()).await);
+    assert!(reason.contains("call bus.absent"), "{reason}");
+
+    let (wide, _) = mint(&owner, "wide", Rights::default().call(&["bus.*"])).await;
+    let bus = participant(&server, &wide, "wide").await;
+    allowed_but_absent(calls(&bus, "bus.absent", "", CallOptions::default()).await);
+    // Look-alikes of `bus.token` never reach it: a plain call nobody provides, or
+    // not a method name at all; the control method itself still needs its action.
+    allowed_but_absent(calls(&bus, "bus.tokens", "", CallOptions::default()).await);
+    for method in [
+        "bus.Token",
+        "bus.token.",
+        "bus.token ",
+        "bus..token",
+        "bus.t\u{043e}ken",
+    ] {
+        match calls(&bus, method, "", CallOptions::default()).await {
+            Err(error) if [codes::NOT_FOUND, codes::BAD_REQUEST].contains(&error.code.as_str()) => {
+            }
+            other => panic!("{method:?}: expected not_found or bad_request, got {other:?}"),
+        }
+    }
+    denied(calls(&bus, "bus.token", "", CallOptions::default()).await);
+}
+
 #[tokio::test]
 async fn an_instance_may_do_what_its_rights_list() {
     let (s1_file, _s1) = token_file("s-1");
@@ -960,6 +996,74 @@ async fn pane_calls_follow_call_rights_and_a_per_call_credential() {
         .await
         .unwrap_err();
     assert_eq!(error.code, codes::DENIED, "{error}");
+}
+
+/// A check appended to a token sees the facts of the call in every check made for
+/// it: the pane checks of `pane.list` and `pane.create` read `method` too.
+#[tokio::test]
+async fn pane_checks_see_the_call_they_are_made_for() {
+    use tilr_bus::pane::{
+        CloseReply, CloseRequest, CreateRequest, ListReply, ListRequest, PaneInfo,
+    };
+    let server = start();
+    let owner = server.owner().await;
+    let create = CreateRequest {
+        cols: 80,
+        rows: 24,
+        command: common::bus_panes::shell(),
+        ..Default::default()
+    };
+    let info: PaneInfo = owner
+        .call_typed("pane.create", &create, CallOptions::default())
+        .await
+        .expect("the owner's pane");
+    let (panes, _) = mint(&owner, "panes", Rights::default().call(&["pane.*"])).await;
+
+    // The connection's token narrowed to `pane.list`: it lists the pane, and
+    // creates none.
+    let lister = panes.attenuate(r#"check if method("pane.list");"#).unwrap();
+    let bus = participant(&server, &lister, "lister").await;
+    let reply: ListReply = bus
+        .call_typed("pane.list", &ListRequest {}, CallOptions::default())
+        .await
+        .expect("pane.list with the narrowed token");
+    assert!(
+        reply.panes.iter().any(|p| p.pane_id == info.pane_id),
+        "{reply:?}"
+    );
+    let error = bus
+        .call_typed::<_, PaneInfo>("pane.create", &create, CallOptions::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+
+    // A per-call credential narrowed to `pane.create`: it creates a pane, and does
+    // not close it.
+    let (bare, _) = mint(&owner, "t-1", Rights::default()).await;
+    let t1 = participant(&server, &bare, "t-1").await;
+    let creator = panes
+        .attenuate(r#"check if method("pane.create");"#)
+        .unwrap();
+    let made: PaneInfo = t1
+        .call_typed("pane.create", &create, with(&creator))
+        .await
+        .expect("pane.create with the narrowed credential");
+    let close = CloseRequest {
+        pane_id: made.pane_id.clone(),
+    };
+    let error = t1
+        .call_typed::<_, CloseReply>("pane.close", &close, with(&creator))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    let reply: ListReply = owner
+        .call_typed("pane.list", &ListRequest {}, CallOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        reply.panes.iter().any(|p| p.pane_id == made.pane_id),
+        "still open: {reply:?}"
+    );
 }
 
 #[tokio::test]
