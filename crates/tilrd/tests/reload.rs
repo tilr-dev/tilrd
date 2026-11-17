@@ -1728,10 +1728,14 @@ async fn a_reload_asked_on_the_bus_keeps_the_panes() {
     };
     assert!(!resumed(&server.log_lines()));
 
-    // Answered, then the connection ends with the exec.
-    let _: ReloadReply = common::bus_services::call(&owner, "server.reload", &ReloadRequest {})
-        .await
-        .unwrap();
+    // Answered, or the connection ends with the exec before the answer goes
+    // out (nothing flushes the bus before a reload yet: `bus-reload`); either
+    // way the connection ends and the server reloads.
+    let reply: Result<ReloadReply, _> =
+        common::bus_services::call(&owner, "server.reload", &ReloadRequest {}).await;
+    if let Err(error) = &reply {
+        assert_ne!(error.code, tilr_bus::codes::DENIED, "{error}");
+    }
     within(owner.closed()).await;
     server
         .wait_logged_event("no reload", |lines| resumed(lines))

@@ -110,6 +110,38 @@ pub fn fifo_closed(path: &Path) -> oneshot::Receiver<Vec<u8>> {
     rx
 }
 
+/// A FIFO at `path` a program is to hold open: the first receiver hears once
+/// a writer opened it (the program holds it), the second once every writer
+/// closed it (the program and whatever it left are gone).
+pub fn fifo_held(path: &Path) -> (oneshot::Receiver<()>, oneshot::Receiver<()>) {
+    let made = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success(), "mkfifo {}", path.display());
+    let (opened_tx, opened) = oneshot::channel();
+    let (closed_tx, closed) = oneshot::channel();
+    let fifo = path.to_owned();
+    std::thread::spawn(move || {
+        if let Ok(mut file) = std::fs::File::open(&fifo) {
+            let _ = opened_tx.send(());
+            let _ = file.read_to_end(&mut Vec::new());
+            let _ = closed_tx.send(());
+        }
+    });
+    (opened, closed)
+}
+
+/// `/bin/sh -c` holding the FIFO `fifo` open on descriptor 3 while `sleep`
+/// runs, as does a child of it it leaves behind: both go with the group.
+pub fn holding(fifo: &Path) -> Vec<String> {
+    vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("exec 3>'{}'; sleep 1000 & exec sleep 1000", fifo.display()),
+    ]
+}
+
 /// The chunks of `exec.run` and its end.
 pub struct Ran {
     pub exec_id: u64,

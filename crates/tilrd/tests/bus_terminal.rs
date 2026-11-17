@@ -1512,8 +1512,8 @@ mod services {
 
     use common::bus::TcpAuth;
     use common::bus_services::{
-        self, Streamed, fifo_closed, methods, ran, ran_after, read_all, real, run, started,
-        stream_all,
+        self, Streamed, fifo_closed, fifo_held, methods, ran, ran_after, read_all, real, run,
+        started, stream_all,
     };
     use tilr_bus::bus::{Kind, Lane};
     use tilr_bus::clipboard::{ClipboardData, GetRequest, PutReply, PutRequest};
@@ -2026,6 +2026,18 @@ mod services {
 
         let owner = server.owner().await;
         let version = ran(stream_all(&owner, "server.command", &command, 0).await);
+        // Nothing ran for the TCP call: once this one's start is logged, it is
+        // the only program started.
+        let starts = |lines: &[String]| {
+            lines
+                .iter()
+                .filter(|line| line.contains("exec started"))
+                .count()
+        };
+        server
+            .wait_logged_event("the start is not logged", |lines| starts(lines) > 0)
+            .await;
+        assert_eq!(starts(&server.log_lines()), 1);
         assert_eq!(version.exit.code, 0);
         assert!(
             String::from_utf8_lossy(&version.stdout).contains("tilrd"),
@@ -2136,6 +2148,689 @@ mod services {
             .await
             .unwrap_err();
             assert!(error.message.contains("too large"), "{error}");
+        }
+    }
+
+    /// The log line of `fs` when the connection `conn` ended, with what went.
+    fn fs_forgot(conn: u64, uploads: usize, watches: usize) -> impl Fn(&[String]) -> bool {
+        let fields = format!("conn={conn} uploads={uploads} watches={watches}");
+        move |lines: &[String]| {
+            lines
+                .iter()
+                .any(|line| line.contains("its uploads and watches went") && line.contains(&fields))
+        }
+    }
+
+    fn chunk(
+        transfer_id: u64,
+        file: &Path,
+        total_size: u64,
+        data: &[u8],
+        last: bool,
+    ) -> WriteRequest {
+        WriteRequest {
+            transfer_id,
+            path: path(file),
+            total_size,
+            create: true,
+            data: Bytes::copy_from_slice(data),
+            last,
+            ..Default::default()
+        }
+    }
+
+    async fn run_stream(bus: &Bus, request: RunRequest) -> tilr_bus::ChunkStream {
+        within(bus.stream(
+            "exec.run",
+            request.encode_to_vec(),
+            StreamOptions::default(),
+        ))
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn what_a_connection_made_goes_when_it_ends_or_is_superseded() {
+        let server = start();
+        let home = std::fs::canonicalize(&server.dir).unwrap();
+        for (n, superseded) in [(0, false), (1, true)] {
+            let options = || ConnectOptions::new("leaver").client_id(format!("leaver-{n}"));
+            let leaver = server.owner_with(options()).await;
+            let conn = leaver.hello_ack().connection_id;
+            let _: WatchReply = bus_services::call(
+                &leaver,
+                "fs.watch",
+                &WatchRequest {
+                    path: path(&home),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let upload = home.join(format!("upload-{n}"));
+            let _: FsAck =
+                bus_services::call(&leaver, "fs.write", &chunk(1, &upload, 10, b"hello", false))
+                    .await
+                    .unwrap();
+            let fifo = server.dir.join(format!("held-{n}"));
+            let (opened, closed) = fifo_held(&fifo);
+            let mut stream = run_stream(
+                &leaver,
+                RunRequest {
+                    argv: bus_services::holding(&fifo),
+                    ..Default::default()
+                },
+            )
+            .await;
+            started(&mut stream).await;
+            within(opened).await.expect("the program holds the FIFO");
+
+            if superseded {
+                // The same client again: the old connection is superseded.
+                let _again = server.owner_with(options()).await;
+                within(leaver.closed()).await;
+            } else {
+                leaver.close();
+            }
+            // Its program's group is killed, its watch and upload dropped.
+            within(closed).await.expect("the program's group is gone");
+            server
+                .wait_logged_event("the upload and the watch stayed", fs_forgot(conn, 1, 1))
+                .await;
+            assert!(!upload.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reader_that_credits_slowly_holds_the_program_back() {
+        const TOTAL: u64 = 16 << 20;
+        // What may be ahead of the reader: the pipe, the chunk read off it, the
+        // stream's queue and its window, with room to spare.
+        const AHEAD: u64 = 1 << 20;
+        let server = start();
+        let owner = server.owner().await;
+        let done = server.dir.join("done");
+        let script = format!("head -c {TOTAL} /dev/zero; touch '{}'", done.display());
+        let mut stream = within(
+            owner.stream(
+                "exec.run",
+                RunRequest {
+                    argv: vec!["/bin/sh".into(), "-c".into(), script],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                StreamOptions::default().window(64 << 10),
+            ),
+        )
+        .await
+        .unwrap();
+        started(&mut stream).await;
+        // Each chunk read credits the next: the program is never more than
+        // AHEAD bytes past what the reader took.
+        let mut taken = 0u64;
+        let mut seen_done = None;
+        while let Some(chunk) = within(stream.next()).await {
+            let chunk = chunk.unwrap().bytes().unwrap();
+            if let Some(tilr_bus::exec::run_chunk::Chunk::Output(output)) =
+                tilr_bus::exec::RunChunk::decode(chunk).unwrap().chunk
+            {
+                taken += output.data.len() as u64;
+            }
+            if seen_done.is_none() && done.exists() {
+                seen_done = Some(taken);
+            }
+        }
+        assert_eq!(taken, TOTAL);
+        let seen_done = seen_done.unwrap_or(TOTAL);
+        assert!(
+            seen_done + AHEAD >= TOTAL,
+            "the program was done when the reader had taken {seen_done} of {TOTAL}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_input_is_the_callers_and_overrun_kills_the_program() {
+        let server = start();
+        let owner = server.owner().await;
+        let mut stream = run_stream(
+            &owner,
+            RunRequest {
+                argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 1000".into()],
+                stdin: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let (exec_id, _) = started(&mut stream).await;
+        let input = |exec_id, data: Bytes| InputRequest {
+            exec_id,
+            data,
+            eof: false,
+        };
+
+        // Another connection's exec, or none, is not found.
+        let other = server.owner().await;
+        for (bus, id) in [(&other, exec_id), (&owner, exec_id + 1000)] {
+            let error = bus_services::call::<_, InputReply>(
+                bus,
+                "exec.input",
+                &input(id, Bytes::from_static(b"x")),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, codes::NOT_FOUND, "{error}");
+        }
+
+        // A program that reads nothing, sent more than 4 MiB: killed.
+        let error = bus_services::call::<_, InputReply>(
+            &owner,
+            "exec.input",
+            &input(exec_id, Bytes::from(vec![b'x'; (4 << 20) + 1])),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::BAD_REQUEST, "{error}");
+        assert!(error.message.contains("not taken yet"), "{error}");
+        let end = read_all(stream).await.end.unwrap();
+        let exit = tilr_bus::exec::ExecExit::decode(end).unwrap();
+        assert_eq!(exit.reason, "input overrun");
+        // Its stdin is gone with it.
+        let error = bus_services::call::<_, InputReply>(
+            &owner,
+            "exec.input",
+            &input(exec_id, Bytes::from_static(b"x")),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::NOT_FOUND, "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_runs_at_most_64_programs() {
+        let server = start();
+        let owner = server.owner().await;
+        let sleeper = || RunRequest {
+            argv: vec!["sleep".into(), "1000".into()],
+            ..Default::default()
+        };
+        let mut running = Vec::new();
+        for _ in 0..64 {
+            let mut stream = run_stream(&owner, sleeper()).await;
+            started(&mut stream).await;
+            running.push(stream);
+        }
+        let error = stream_all(&owner, "exec.run", &sleeper(), 0)
+            .await
+            .end
+            .unwrap_err();
+        assert_eq!(error.code, codes::BUSY, "{error}");
+        assert!(error.message.contains("64 execs running"), "{error}");
+        // Another connection has its own.
+        let other = server.owner().await;
+        let mut stream = run_stream(&other, sleeper()).await;
+        started(&mut stream).await;
+    }
+
+    #[tokio::test]
+    async fn a_read_only_server_refuses_changes_on_the_bus() {
+        let server = BusServer::start(BusOptions {
+            server_toml: Some("[files]\nreadonly = true\n".into()),
+            ..Default::default()
+        });
+        let owner = server.owner().await;
+        let home = std::fs::canonicalize(&server.dir).unwrap();
+        std::fs::write(home.join("kept"), "kept").unwrap();
+        let refused = |result: Result<FsAck, tilr_bus::BusError>, what: &str| {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, codes::BAD_REQUEST, "{what}: {error}");
+            assert!(error.message.contains("read-only"), "{what}: {error}");
+        };
+        refused(
+            bus_services::call(
+                &owner,
+                "fs.write",
+                &chunk(1, &home.join("new"), 1, b"x", true),
+            )
+            .await,
+            "fs.write",
+        );
+        refused(
+            bus_services::call(
+                &owner,
+                "fs.mkdir",
+                &MkdirRequest {
+                    path: path(&home.join("dir")),
+                    ..Default::default()
+                },
+            )
+            .await,
+            "fs.mkdir",
+        );
+        refused(
+            bus_services::call(
+                &owner,
+                "fs.rename",
+                &RenameRequest {
+                    from: path(&home.join("kept")),
+                    to: path(&home.join("moved")),
+                    ..Default::default()
+                },
+            )
+            .await,
+            "fs.rename",
+        );
+        refused(
+            bus_services::call(
+                &owner,
+                "fs.delete",
+                &DeleteRequest {
+                    path: path(&home.join("kept")),
+                    ..Default::default()
+                },
+            )
+            .await,
+            "fs.delete",
+        );
+        assert!(!home.join("new").exists() && !home.join("dir").exists());
+        assert_eq!(std::fs::read_to_string(home.join("kept")).unwrap(), "kept");
+        // Looking is still allowed.
+        let _: FsEntries = bus_services::call(
+            &owner,
+            "fs.list",
+            &ListRequest {
+                path: path(&home),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_path_out_of_the_roots_is_refused_on_the_bus() {
+        let server = start();
+        let owner = server.owner().await;
+        let home = std::fs::canonicalize(&server.dir).unwrap();
+        let outside = home.parent().unwrap().to_owned();
+        std::os::unix::fs::symlink(&outside, home.join("escape")).unwrap();
+        std::fs::write(home.join("kept"), "kept").unwrap();
+        let outside_the_roots = |error: tilr_bus::BusError, what: &str| {
+            assert_eq!(error.code, codes::BAD_REQUEST, "{what}: {error}");
+            assert!(
+                error.message.contains("outside the directories"),
+                "{what}: {error}"
+            );
+        };
+        for named in ["~/escape", "~/escape/", "~/..", "~/../"] {
+            let error = bus_services::call::<_, FsEntries>(
+                &owner,
+                "fs.list",
+                &ListRequest {
+                    path: named.into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            outside_the_roots(error, named);
+        }
+        let away = format!("tilr-away-{}", std::process::id());
+        let error = bus_services::call::<_, FsAck>(
+            &owner,
+            "fs.rename",
+            &RenameRequest {
+                from: path(&home.join("kept")),
+                to: path(&outside.join(&away)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        outside_the_roots(error, "rename out");
+        let error = bus_services::call::<_, FsAck>(
+            &owner,
+            "fs.rename",
+            &RenameRequest {
+                from: path(&home.join("kept")),
+                to: format!("~/escape/{away}"),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        outside_the_roots(error, "rename through the link");
+        assert!(home.join("kept").exists() && !outside.join(&away).exists());
+    }
+
+    #[tokio::test]
+    async fn an_upload_is_held_to_its_size_and_the_servers_limit() {
+        let server = start();
+        let owner = server.owner().await;
+        let home = std::fs::canonicalize(&server.dir).unwrap();
+        let info: InfoReply = bus_services::call(&owner, "server.info", &InfoRequest {})
+            .await
+            .unwrap();
+        let big = home.join("big");
+        let error = bus_services::call::<_, FsAck>(
+            &owner,
+            "fs.write",
+            &chunk(1, &big, info.fs_max_bytes + 1, b"x", false),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::BAD_REQUEST, "{error}");
+        assert!(error.message.contains("too large"), "{error}");
+
+        // More than announced, across chunks: refused, and the file not made.
+        let file = home.join("three");
+        let _: FsAck = bus_services::call(&owner, "fs.write", &chunk(2, &file, 3, b"ab", false))
+            .await
+            .unwrap();
+        let error =
+            bus_services::call::<_, FsAck>(&owner, "fs.write", &chunk(2, &file, 3, b"cd", true))
+                .await
+                .unwrap_err();
+        assert_eq!(error.code, codes::BAD_REQUEST, "{error}");
+        assert!(
+            error.message.contains("more data than it announced"),
+            "{error}"
+        );
+        assert!(!file.exists());
+        let left: Vec<_> = std::fs::read_dir(&home)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tilr-write-"))
+            .collect();
+        assert!(left.is_empty(), "temporary files left: {left:?}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_has_at_most_16_uploads_and_32_watches() {
+        let server = start();
+        let owner = server.owner().await;
+        let home = std::fs::canonicalize(&server.dir).unwrap();
+        for n in 0..16 {
+            let _: FsAck = bus_services::call(
+                &owner,
+                "fs.write",
+                &chunk(n, &home.join(format!("f{n}")), 2, b"a", false),
+            )
+            .await
+            .unwrap();
+        }
+        let error = bus_services::call::<_, FsAck>(
+            &owner,
+            "fs.write",
+            &chunk(16, &home.join("f16"), 2, b"a", false),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::BUSY, "{error}");
+        assert!(error.message.contains("16 uploads"), "{error}");
+        // One finished makes room; a chunk of one in progress is taken.
+        let _: FsAck = bus_services::call(
+            &owner,
+            "fs.write",
+            &chunk(0, &home.join("f0"), 2, b"b", true),
+        )
+        .await
+        .unwrap();
+        let _: FsAck = bus_services::call(
+            &owner,
+            "fs.write",
+            &chunk(16, &home.join("f16"), 2, b"a", false),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(home.join("f0")).unwrap(), "ab");
+
+        let watch = || WatchRequest {
+            path: path(&home),
+            ..Default::default()
+        };
+        let mut ids = Vec::new();
+        for _ in 0..32 {
+            let reply: WatchReply = bus_services::call(&owner, "fs.watch", &watch())
+                .await
+                .unwrap();
+            ids.push(reply.watch_id);
+        }
+        let error = bus_services::call::<_, WatchReply>(&owner, "fs.watch", &watch())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, codes::BUSY, "{error}");
+        assert!(error.message.contains("32 watches"), "{error}");
+        let _: FsAck =
+            bus_services::call(&owner, "fs.unwatch", &UnwatchRequest { watch_id: ids[0] })
+                .await
+                .unwrap();
+        let _: WatchReply = bus_services::call(&owner, "fs.watch", &watch())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_watch_is_unwatched_only_by_its_connection() {
+        let server = start();
+        let owner = server.owner().await;
+        let watch: WatchReply = bus_services::call(
+            &owner,
+            "fs.watch",
+            &WatchRequest {
+                path: path(&std::fs::canonicalize(&server.dir).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let unwatch = UnwatchRequest {
+            watch_id: watch.watch_id,
+        };
+        let other = server.owner().await;
+        let error = bus_services::call::<_, FsAck>(&other, "fs.unwatch", &unwatch)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, codes::NOT_FOUND, "{error}");
+        // Still there for its own.
+        let _: FsAck = bus_services::call(&owner, "fs.unwatch", &unwatch)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_instance_without_the_rights_is_denied_the_server_methods() {
+        use common::bus_instances::{instance_socket, instance_with, token_module, wait_tokens};
+
+        let tokens = std::env::temp_dir().join(format!("tilr-bus-services-{}", std::process::id()));
+        let _ = std::fs::remove_file(&tokens);
+        let server = BusServer::start(BusOptions {
+            bus_toml: Some(format!(
+                "{}{}",
+                token_module("s", &tokens),
+                instance_with(
+                    "s-1",
+                    "s",
+                    "connect = \"socket\"\n",
+                    &[("call", &["server.*", "exec.run"])],
+                    &[]
+                )
+            )),
+            ..Default::default()
+        });
+        let token = wait_tokens(&server, "s-1", &tokens, 1).await[0].clone();
+        let _ = std::fs::remove_file(&tokens);
+        let me = within(Bus::connect(
+            tilr_bus::Transport::Socket {
+                path: instance_socket(&server, "s-1"),
+                token,
+            },
+            ConnectOptions::new("s-1-driver"),
+        ))
+        .await
+        .expect("the instance's own connection");
+        // No `control` right `reload`: neither reload nor update.
+        let error = bus_services::call::<_, tilr_bus::server::ReloadReply>(
+            &me,
+            "server.reload",
+            &tilr_bus::server::ReloadRequest {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{error}");
+        let error = stream_all(&me, "server.update", &tilr_bus::server::UpdateRequest {}, 0)
+            .await
+            .end
+            .unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{error}");
+        // Not the owner: no server commands.
+        let command = CommandRequest {
+            argv: vec!["--version".into()],
+            ..Default::default()
+        };
+        let error = stream_all(&me, "server.command", &command, 0)
+            .await
+            .end
+            .unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{error}");
+        // No `call` right: refused before the method.
+        let error = bus_services::call::<_, FsEntries>(
+            &me,
+            "fs.list",
+            &ListRequest {
+                path: "~".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{error}");
+        assert!(
+            !server
+                .log_lines()
+                .iter()
+                .any(|line| line.contains("reload asked on the bus"))
+        );
+    }
+
+    #[cfg(feature = "failpoints")]
+    mod failpoints {
+        use super::*;
+        use common::PauseController;
+
+        fn arm(server: &BusServer, points: &str) {
+            std::fs::write(server.dir.join("failpoints"), points).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_first_chunk_taken_after_its_connection_ended_starts_no_upload() {
+            let server = start();
+            let pauses = PauseController::bind(&server.dir);
+            let leaver = server.owner().await;
+            let conn = leaver.hello_ack().connection_id;
+            let file = real(&server.dir, "late");
+            arm(&server, "bus-fs-write-late=pause");
+            let writing = {
+                let leaver = leaver.clone();
+                let chunk = chunk(1, &file, 10, b"hello", false);
+                tokio::spawn(async move {
+                    bus_services::call::<_, FsAck>(&leaver, "fs.write", &chunk).await
+                })
+            };
+            // The chunk is held before the supervisor takes it; the
+            // connection ends meanwhile.
+            let held = pauses.wait("bus-fs-write-late").await;
+            leaver.close();
+            let gone = format!("connection={conn} ");
+            server
+                .wait_logged_event("the connection did not end", |lines| {
+                    lines
+                        .iter()
+                        .any(|line| line.contains("bus participant gone") && line.contains(&gone))
+                })
+                .await;
+            arm(&server, "");
+            held.release().await;
+            let refused = format!("conn={conn}");
+            server
+                .wait_logged_event("the late chunk was taken", |lines| {
+                    lines.iter().any(|line| {
+                        line.contains("fs.write refused: the connection ended")
+                            && line.contains(&refused)
+                    })
+                })
+                .await;
+            assert!(writing.await.unwrap().is_err());
+            // Nothing was started: no temporary file, no note of a write.
+            let home = std::fs::canonicalize(&server.dir).unwrap();
+            let left: Vec<_> = std::fs::read_dir(&home)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains(".tilr-write-"))
+                .collect();
+            assert!(left.is_empty(), "temporary files left: {left:?}");
+            let notes = server.dir.join("runtime/writes");
+            let noted = std::fs::read_dir(&notes)
+                .map(|dir| dir.count())
+                .unwrap_or(0);
+            assert_eq!(noted, 0, "notes of writes in {}", notes.display());
+        }
+
+        #[tokio::test]
+        async fn a_program_cancelled_as_it_starts_ends_with_its_group() {
+            let server = start();
+            let pauses = PauseController::bind(&server.dir);
+            let owner = server.owner().await;
+            let fifo = server.dir.join("held");
+            let (opened, closed) = fifo_held(&fifo);
+            arm(&server, "bus-exec-started=pause");
+            let stream = run_stream(
+                &owner,
+                RunRequest {
+                    argv: bus_services::holding(&fifo),
+                    ..Default::default()
+                },
+            )
+            .await;
+            // Started, and the stream's handler not yet back with it.
+            let held = pauses.wait("bus-exec-started").await;
+            within(opened).await.expect("the program holds the FIFO");
+            stream.cancel();
+            // A call behind the cancel: the broker took the cancel first.
+            let _: InfoReply = bus_services::call(&owner, "server.info", &InfoRequest {})
+                .await
+                .unwrap();
+            arm(&server, "");
+            held.release().await;
+            within(closed).await.expect("the program's group is gone");
+        }
+
+        #[tokio::test]
+        async fn a_copy_of_a_pane_the_caller_may_not_access_is_not_found() {
+            let server = start();
+            let owner = server.owner().await;
+            let mut events = owner.subscribe("pane.copied").await.unwrap();
+            create(
+                &owner,
+                80,
+                24,
+                sh("printf '\\033]52;c;aGVsbG8=\\007'; exec sleep 1000"),
+            )
+            .await;
+            let copied: Copied = next_event(&mut events).await.decode().unwrap();
+            let get = GetRequest {
+                transfer_id: copied.transfer_id,
+            };
+            arm(&server, "bus-pane-access=error");
+            let error = stream_all(&owner, "clipboard.get", &get, 0)
+                .await
+                .end
+                .unwrap_err();
+            assert_eq!(error.code, codes::NOT_FOUND, "{error}");
+            arm(&server, "");
+            stream_all(&owner, "clipboard.get", &get, 0)
+                .await
+                .end
+                .unwrap();
         }
     }
 }
