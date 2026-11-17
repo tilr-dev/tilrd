@@ -129,7 +129,7 @@ Input with `input_seq` > 0 SHALL need a `client_id` in `Hello` (else `bad_reques
 ### Requirement: Reading a pane's text
 `pane.read {pane_id, since_seq?, wait_ms?, history_lines?}` SHALL answer the screen as text: rows, `seq`, size, cursor (`x` a cell column), title, cwd, `alive`, `exit_code` and `history_lines` (≤ 10000) of scrollback, fewer past 4 MiB (`too_large`: the screen alone); with `since_seq` it SHALL wait for a change or the exit, ≤ `min(wait_ms, 25 s)` and before the deadline. A pane process silent until the deadline (or 5 s) SHALL give `unavailable`; one ending first, `alive` false and its exit code.
 
-**Verified by**: `bus_terminal::reading_a_pane_and_waiting_for_a_change`, `bus_terminal::a_read_the_pane_process_does_not_answer_ends`.
+**Verified by**: `bus_terminal::reading_a_pane_and_waiting_for_a_change`, `bus_terminal::a_read_the_pane_process_does_not_answer_ends`, `supervisor::bus::core::panes::tests::the_text_after_a_change_is_waited_for_within_the_reads_wait`.
 
 #### Scenario: Wait for a change
 - **WHEN** an instance calls `pane.read {since_seq: S, wait_ms: 5000}` with the current `seq` S and 1 s later a client types into the pane

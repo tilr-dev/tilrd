@@ -1984,7 +1984,7 @@ fn read(
         let (pane_id, (id, text), change) = asked
             .await
             .map_err(|_| BusError::unavailable("tilrd is shutting down"))??;
-        let first = text_of(&core, &ctx, id, text).await?;
+        let first = text_of(&core, &ctx, id, text, None).await?;
         let answer = match change {
             None => first,
             Some(change) => {
@@ -2019,20 +2019,29 @@ fn fits(reply: Reply) -> Result<Reply, BusError> {
     Ok(reply)
 }
 
-/// The answer to text request `id`: within what the call has left (before its
-/// deadline), or [`TEXT_WAIT`] without a deadline; `unavailable` when the pane
-/// process does not answer in time, its request dropped.
+/// How long a text request may wait for the pane process: what the call has
+/// left before its deadline, less [`DEADLINE_MARGIN`], or [`TEXT_WAIT`] without
+/// a deadline; never past the end of a `since_seq` wait (`wait_left`).
+fn text_wait(deadline_left: Option<Duration>, wait_left: Option<Duration>) -> Duration {
+    let wait = deadline_left.map_or(TEXT_WAIT, |left| left.saturating_sub(DEADLINE_MARGIN));
+    wait_left.map_or(wait, |left| wait.min(left))
+}
+
+/// The answer to text request `id`, within [`text_wait`] (`until`: the end of a
+/// `since_seq` wait); `unavailable` when the pane process does not answer in
+/// time, its request dropped.
 async fn text_of(
     core: &Core,
     ctx: &CallCtx,
     id: u64,
     text: oneshot::Receiver<Result<pane::ReadReply, BusError>>,
+    until: Option<Instant>,
 ) -> Result<pane::ReadReply, BusError> {
-    let wait = ctx.deadline.map_or(TEXT_WAIT, |deadline| {
-        deadline
-            .saturating_duration_since(std::time::Instant::now())
-            .saturating_sub(DEADLINE_MARGIN)
-    });
+    let wait = text_wait(
+        ctx.deadline
+            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now())),
+        until.map(|until| until.saturating_duration_since(Instant::now())),
+    );
     match tokio::time::timeout(wait, text).await {
         Ok(Ok(reply)) => {
             let reply = reply?;
@@ -2066,7 +2075,8 @@ struct Wait<'a> {
 impl Wait<'_> {
     /// T9: the first text after `since_seq`, or the last one when the program
     /// ended or the wait is over: at most `min(wait_ms, 25 s, the time the call
-    /// has left - 100 ms)`.
+    /// has left - 100 ms)`. The text after a change is waited for no longer:
+    /// at the limit the last text stands.
     async fn for_change(
         &self,
         request: &pane::ReadRequest,
@@ -2091,6 +2101,9 @@ impl Wait<'_> {
                 latest.exit_code = Some(exit_code);
                 return latest;
             }
+            if Instant::now() >= until {
+                return latest;
+            }
             tokio::select! {
                 changed = change.changed() => {
                     if changed.is_err() {
@@ -2112,7 +2125,7 @@ impl Wait<'_> {
             // Not asked: the pane is gone, its exit is in `change` or comes.
             // Not answered in time: the last text stands.
             if let Ok(Ok((id, text))) = asked
-                && let Ok(text) = text_of(self.core, self.ctx, id, text).await
+                && let Ok(text) = text_of(self.core, self.ctx, id, text, Some(until)).await
             {
                 if text.alive {
                     latest = text;
@@ -2129,6 +2142,21 @@ impl Wait<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_after_a_change_is_waited_for_within_the_reads_wait() {
+        let s = Duration::from_secs;
+        // No deadline: TEXT_WAIT, but not past the end of a `since_seq` wait.
+        assert_eq!(text_wait(None, None), TEXT_WAIT);
+        assert_eq!(text_wait(None, Some(s(1))), s(1));
+        assert_eq!(text_wait(None, Some(Duration::ZERO)), Duration::ZERO);
+        assert_eq!(text_wait(None, Some(s(30))), TEXT_WAIT);
+        // A deadline: what is left of it less the margin, the wait's end still a cap.
+        assert_eq!(text_wait(Some(s(10)), None), s(10) - DEADLINE_MARGIN);
+        assert_eq!(text_wait(Some(s(10)), Some(s(2))), s(2));
+        assert_eq!(text_wait(Some(s(2)), Some(s(10))), s(2) - DEADLINE_MARGIN);
+        assert_eq!(text_wait(Some(DEADLINE_MARGIN), None), Duration::ZERO);
+    }
 
     fn frame_packet(frame: tilr_proto::Frame) -> Bytes {
         tilr_proto::encode(&ServerMessage::from(server_message::Msg::Frame(frame)))
