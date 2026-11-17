@@ -10,13 +10,18 @@ use std::os::unix::fs::PermissionsExt;
 use bytes::Bytes;
 use common::TIMEOUT;
 use common::bus::{BusOptions, BusServer, text};
+use common::bus_instances::{
+    bounded, info, instance, instance_socket, instance_with, listing, method_list, reload,
+    reload_config, stop, test_module, token_module, wait_tokens, wait_up,
+};
 #[cfg(feature = "failpoints")]
 use common::bus_rights::{HOUR_US, TestClock};
 use common::bus_rights::{
-    Rights, audit_lines, calls, connect, mint, participant, restart, runtime, state_dir, try_mint,
-    wait_logged,
+    Rights, Scratch, audit_lines, calls, connect, mint, participant, restart, runtime, state_dir,
+    try_mint, wait_logged,
 };
 use tilr_bus::bus::MethodSpec;
+use tilr_bus::bus::reload_request::What;
 use tilr_bus::proto::tilr::bus::v1 as wire;
 use tilr_bus::{
     Bus, BusError, CallOptions, ConnectOptions, Credential, Handler, Request, Transport, codes,
@@ -68,6 +73,85 @@ async fn close_code(bus: &Bus) -> Option<u16> {
         .await
         .expect("the connection was not closed")
         .code
+}
+
+/// The error code of a control call that must fail.
+fn code<T: std::fmt::Debug>(result: Result<T, BusError>) -> String {
+    result.expect_err("expected an error").code
+}
+
+/// The names `bus.instances` lists to `bus`.
+async fn names(bus: &Bus) -> Vec<String> {
+    listing(bus)
+        .await
+        .instances
+        .into_iter()
+        .map(|info| info.name)
+        .collect()
+}
+
+/// `bus.toml` with the instances `t-1` and `t-2` of the test runtime (each may
+/// provide `test.*`), and `more`.
+fn instances_toml(more: &str) -> String {
+    format!(
+        "{}{}{}{more}",
+        test_module("t", &[]),
+        instance("t-1", "t"),
+        instance("t-2", "t")
+    )
+}
+
+/// A server running [`instances_toml`] with `env`; the test runtime is built
+/// before any connection opens (see [`start_for_runtime`]).
+fn start_instances(more: &str, env: Vec<(String, String)>) -> BusServer {
+    common::bus::test_runtime_path();
+    BusServer::start(BusOptions {
+        bus_toml: Some(instances_toml(more)),
+        env,
+        ..BusOptions::default()
+    })
+}
+
+fn start_with_instances(more: &str) -> BusServer {
+    start_instances(more, Vec::new())
+}
+
+/// A scratch file for what a socket instance hands out, removed when dropped.
+fn token_file(name: &str) -> (std::path::PathBuf, Scratch) {
+    let dir = Scratch(common::Server::scratch_dir());
+    std::fs::create_dir_all(&dir.0).unwrap();
+    (dir.0.join(name), dir)
+}
+
+/// A socket instance `name` of its own module (which writes its socket token to
+/// `file`) with `rights`.
+fn socket_instance(name: &str, file: &std::path::Path, rights: &[(&str, &[&str])]) -> String {
+    let module = format!("m-{name}");
+    format!(
+        "{}{}",
+        token_module(&module, file),
+        instance_with(name, &module, "connect = \"socket\"\n", rights, &[])
+    )
+}
+
+/// The test's connection as the socket instance `name` (once its process wrote its
+/// socket token to `file`); it holds the token the server minted for it.
+async fn as_instance(server: &BusServer, name: &str, file: &std::path::Path) -> Bus {
+    let token = wait_tokens(server, name, file, 1).await.remove(0);
+    let bus = bounded(
+        name,
+        Bus::connect(
+            Transport::Socket {
+                path: instance_socket(server, name),
+                token,
+            },
+            ConnectOptions::new(format!("{name}-driver")),
+        ),
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{name}'s own connection: {err}"));
+    assert_eq!(bus.identity(), format!("instance:{name}"));
+    bus
 }
 
 #[tokio::test]
@@ -298,7 +382,7 @@ async fn providing_emitting_and_subscribing_need_rights() {
 }
 
 /// A call that passed authorization and found no method: in this build the
-/// methods of `bus-instances` and `bus-core-services` are not there yet (the broker
+/// methods of `bus-core-services` (`server.*`) are not there yet (the broker
 /// authorizes before it routes).
 fn allowed_but_absent(result: Result<String, BusError>) {
     match result {
@@ -323,21 +407,16 @@ async fn revoke_id(bus: &Bus, revocation_id: &str) -> Result<wire::RevokeReply, 
 
 #[tokio::test]
 async fn control_methods_need_control_rights() {
-    let server = start();
+    let server = start_with_instances("");
     let owner = server.owner().await;
     let _provider = echo_provider(&server, "echo").await;
-    // The owner's answer for each control method of a later change: passes
-    // authorization, no provider yet.
-    for method in [
-        "bus.instances",
-        "bus.methods",
-        "bus.start",
-        "bus.stop",
-        "bus.reload",
-        "bus.reload_config",
-        "server.reload",
-        "server.update",
-    ] {
+    let t1 = wait_up(&server, &owner, "t-1").await;
+    let t2 = wait_up(&server, &owner, "t-2").await;
+    // The owner: every control method; server.reload and server.update pass
+    // authorization and have no provider in this build.
+    assert_eq!(names(&owner).await, ["t-1", "t-2"]);
+    method_list(&owner).await;
+    for method in ["server.reload", "server.update"] {
         allowed_but_absent(calls(&owner, method, "", CallOptions::default()).await);
     }
 
@@ -360,19 +439,48 @@ async fn control_methods_need_control_rights() {
         denied(calls(&bus, method, "", CallOptions::default()).await);
     }
 
-    // list: bus.instances and bus.methods pass, the rest not.
+    // list: bus.instances and bus.methods answer, the rest not.
     let (list, _) = mint(&owner, "list", Rights::default().control(&["list"])).await;
     let bus = participant(&server, &list, "list").await;
-    allowed_but_absent(calls(&bus, "bus.instances", "", CallOptions::default()).await);
-    allowed_but_absent(calls(&bus, "bus.methods", "", CallOptions::default()).await);
+    assert_eq!(names(&bus).await, ["t-1", "t-2"]);
+    method_list(&bus).await;
     denied(calls(&bus, "bus.rotate_key", "", CallOptions::default()).await);
+    assert_eq!(code(stop(&bus, "t-1", None).await), codes::DENIED);
 
-    // reload of one instance: bus.reload passes to the method (which checks the
-    // instance it acts on), bus.stop not.
-    let (reload, _) = mint(&owner, "r", Rights::default().control(&["reload:t-1"])).await;
-    let bus = participant(&server, &reload, "r").await;
-    allowed_but_absent(calls(&bus, "bus.reload", "", CallOptions::default()).await);
-    denied(calls(&bus, "bus.stop", "", CallOptions::default()).await);
+    // reload of one instance: that one is reloaded; t-2, all of them and bus.stop
+    // are denied, and t-2 keeps its pid.
+    let (reload_t1, _) = mint(&owner, "r", Rights::default().control(&["reload:t-1"])).await;
+    let bus = participant(&server, &reload_t1, "r").await;
+    let done = reload(&bus, What::Instance("t-1".into())).await.unwrap();
+    assert_eq!(done.reloaded[0].old_pid, t1.pid);
+    assert_ne!(done.reloaded[0].new_pid, t1.pid);
+    assert_eq!(
+        code(reload(&bus, What::Instance("t-2".into())).await),
+        codes::DENIED
+    );
+    assert_eq!(code(reload(&bus, What::All(true)).await), codes::DENIED);
+    assert_eq!(code(stop(&bus, "t-1", None).await), codes::DENIED);
+    assert_eq!(info(&owner, "t-2").await.pid, t2.pid);
+
+    // A narrow per-call credential on a wide connection: the credential decides
+    // the call and each instance's check.
+    let (wide, _) = mint(&owner, "wide", Rights::default().control(&["*"])).await;
+    let bus = participant(&server, &wide, "wide").await;
+    let error = bounded(
+        "bus.reload",
+        bus.call_typed::<_, wire::ReloadReply>(
+            "bus.reload",
+            &wire::ReloadRequest {
+                what: Some(What::Instance("t-2".into())),
+            },
+            with(&reload_t1),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert_eq!(info(&owner, "t-2").await.pid, t2.pid);
+
     // server.reload and server.update are actions of their own.
     let (server_rights, _) = mint(
         &owner,
@@ -448,6 +556,140 @@ async fn control_methods_need_control_rights() {
         key
     );
     denied(calls(&owner, "test.echo", "c", with(&child)).await);
+}
+
+#[tokio::test]
+async fn control_methods_need_their_right_with_no_instances() {
+    // No bus.toml: nothing is configured, so no instance is checked in the methods;
+    // the call needs the action over every instance itself.
+    let server = start();
+    let owner = server.owner().await;
+    assert!(names(&owner).await.is_empty());
+    reload_config(&owner).await.unwrap();
+
+    // `call` names them: not a control right.
+    let (calls_only, _) = mint(
+        &owner,
+        "c",
+        Rights::default().call(&["bus.instances", "bus.methods", "bus.reload_config"]),
+    )
+    .await;
+    let bus = participant(&server, &calls_only, "c").await;
+    for method in ["bus.instances", "bus.methods", "bus.reload_config"] {
+        denied(calls(&bus, method, "", CallOptions::default()).await);
+    }
+    // Rights over some instances do not reach these.
+    let (scoped, _) = mint(
+        &owner,
+        "scoped",
+        Rights::default().control(&["list:t-*", "reload_config:t-*", "*:t-1"]),
+    )
+    .await;
+    let bus = participant(&server, &scoped, "scoped").await;
+    for method in ["bus.instances", "bus.methods", "bus.reload_config"] {
+        denied(calls(&bus, method, "", CallOptions::default()).await);
+    }
+    // list: the listings, not bus.reload_config.
+    let (list, _) = mint(&owner, "list", Rights::default().control(&["list"])).await;
+    let bus = participant(&server, &list, "list").await;
+    assert!(names(&bus).await.is_empty());
+    method_list(&bus).await;
+    assert_eq!(code(reload_config(&bus).await), codes::DENIED);
+    // reload_config: bus.reload_config, not the listings.
+    let (rc, _) = mint(&owner, "rc", Rights::default().control(&["reload_config"])).await;
+    let bus = participant(&server, &rc, "rc").await;
+    reload_config(&bus).await.unwrap();
+    denied(calls(&bus, "bus.instances", "", CallOptions::default()).await);
+}
+
+#[tokio::test]
+async fn an_instance_may_do_what_its_rights_list() {
+    let (s1_file, _s1) = token_file("s-1");
+    let (s0_file, _s0) = token_file("s-0");
+    let server = start_with_instances(&format!(
+        "{}{}",
+        socket_instance(
+            "s-1",
+            &s1_file,
+            &[("call", &["test.*"]), ("control", &["reload:t-1"])]
+        ),
+        socket_instance("s-0", &s0_file, &[]),
+    ));
+    let owner = server.owner().await;
+    let _provider = echo_provider(&server, "echo").await;
+    let t1 = wait_up(&server, &owner, "t-1").await;
+    let t2 = wait_up(&server, &owner, "t-2").await;
+
+    // s-1 holds the token minted for it at its start (HelloAck.credential).
+    let s1 = as_instance(&server, "s-1", &s1_file).await;
+    assert!(!s1.hello_ack().credential.is_empty());
+    assert_eq!(
+        calls(&s1, "test.from", "", to("instance:t-1"))
+            .await
+            .unwrap(),
+        "instance:s-1"
+    );
+    calls(&s1, "test.echo", "e", CallOptions::default())
+        .await
+        .unwrap();
+    // other.echo is outside `test.*`; the listings outside its control rights.
+    denied(calls(&s1, "other.echo", "", CallOptions::default()).await);
+    denied(calls(&s1, "bus.instances", "", CallOptions::default()).await);
+
+    // `reload:t-1`: t-1 is reloaded, t-2 is denied and keeps its pid.
+    let done = reload(&s1, What::Instance("t-1".into())).await.unwrap();
+    assert_eq!(done.reloaded[0].old_pid, t1.pid);
+    assert_eq!(
+        code(reload(&s1, What::Instance("t-2".into())).await),
+        codes::DENIED
+    );
+    assert_eq!(info(&owner, "t-2").await.pid, t2.pid);
+
+    // An instance without rights may do nothing (bus.ping needs a valid token only).
+    let s0 = as_instance(&server, "s-0", &s0_file).await;
+    assert!(!s0.hello_ack().credential.is_empty());
+    denied(calls(&s0, "test.echo", "", CallOptions::default()).await);
+    calls(&s0, "bus.ping", "", CallOptions::default())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stopped_instances_token_is_revoked() {
+    let (file, _scratch) = token_file("s-1");
+    let server = start_with_instances(&socket_instance("s-1", &file, &[("call", &["test.*"])]));
+    let owner = server.owner().await;
+    let _provider = echo_provider(&server, "echo").await;
+    let s1 = as_instance(&server, "s-1", &file).await;
+    // The instance hands its token out as text; it works while the instance runs.
+    let token = Credential::from_base64url(&s1.credential().unwrap().to_base64url()).unwrap();
+    calls(&s1, "test.echo", "", CallOptions::default())
+        .await
+        .unwrap();
+    calls(&owner, "test.echo", "", with(&token)).await.unwrap();
+
+    stop(&owner, "s-1", None).await.unwrap();
+    // Its connection is closed (an instance socket has no close codes) and gone from
+    // the broker, which logs it after taking it out.
+    bounded("the instance's connection", s1.closed()).await;
+    wait_logged(
+        &server,
+        &[
+            "instance stream ended",
+            &format!("connection={} ", s1.connection_id()),
+        ],
+    )
+    .await;
+    let reason = denied(calls(&owner, "test.echo", "", with(&token)).await);
+    assert!(reason.starts_with("revoked"), "{reason}");
+    wait_logged(
+        &server,
+        &[
+            "bus audit: revoke",
+            "reason=its instance's connection ended",
+        ],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -811,9 +1053,13 @@ async fn a_revoked_token_stops_working_at_once() {
 
 #[tokio::test]
 async fn rotating_the_root_key_ends_every_token() {
-    let server = start();
+    let (file, _scratch) = token_file("s-1");
+    let server = start_with_instances(&socket_instance("s-1", &file, &[("call", &["test.*"])]));
     let owner = server.owner().await;
     let _provider = echo_provider(&server, "echo").await;
+    let s1 = as_instance(&server, "s-1", &file).await;
+    let s1_pid = info(&owner, "s-1").await.pid;
+    let s1_first = s1.credential().unwrap();
     let key = std::fs::read(state_dir(&server).join("bus-root.key")).unwrap();
     let (token, _) = mint(&owner, "web", Rights::default().call(&["test.*"])).await;
     let holder = participant(&server, &token, "web").await;
@@ -841,6 +1087,22 @@ async fn rotating_the_root_key_ends_every_token() {
     calls(&holder, "test.echo", "", CallOptions::default())
         .await
         .unwrap();
+    // The instance got a token of the new key by CredentialUpdate, sent before the
+    // rotation's reply; its connection and its pid stay, and its calls pass. (The
+    // reply to its bus.ping comes after the update on the same connection.)
+    calls(&s1, "bus.ping", "", CallOptions::default())
+        .await
+        .unwrap();
+    let s1_new = s1.credential().unwrap();
+    assert_ne!(s1_new.as_bytes(), s1_first.as_bytes());
+    calls(&s1, "test.echo", "", CallOptions::default())
+        .await
+        .unwrap();
+    calls(&owner, "test.echo", "", with(&s1_new)).await.unwrap();
+    let reason = denied(calls(&owner, "test.echo", "", with(&s1_first)).await);
+    assert!(reason.contains("not a token of this server"), "{reason}");
+    assert!(!s1.is_closed());
+    assert_eq!(info(&owner, "s-1").await.pid, s1_pid);
 }
 
 #[tokio::test]
@@ -965,6 +1227,46 @@ async fn an_expired_token_is_refused() {
         .await
         .unwrap_err();
     assert_eq!(error.code, codes::BAD_REQUEST);
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn an_instance_token_is_renewed() {
+    let clock = TestClock::new(START_US);
+    let (file, _scratch) = token_file("s-1");
+    let server = start_instances(
+        &socket_instance("s-1", &file, &[("call", &["test.*"])]),
+        vec![clock.env()],
+    );
+    let owner = server.owner().await;
+    let _provider = echo_provider(&server, "echo").await;
+    let s1 = as_instance(&server, "s-1", &file).await;
+    let first = s1.credential().unwrap();
+    calls(&s1, "test.echo", "", CallOptions::default())
+        .await
+        .unwrap();
+
+    // 13 h in: the server renewed it and sent the new token (CredentialUpdate).
+    clock.set(START_US + 13 * HOUR_US);
+    wait_logged(&server, &["bus audit: renew", "from=instance:s-1"]).await;
+    // The reply to bus.ping comes after the update on the same connection.
+    calls(&s1, "bus.ping", "", CallOptions::default())
+        .await
+        .unwrap();
+    let renewed = s1.credential().unwrap();
+    assert_ne!(renewed.as_bytes(), first.as_bytes());
+    calls(&owner, "test.echo", "", with(&renewed))
+        .await
+        .unwrap();
+    let reason = denied(calls(&owner, "test.echo", "", with(&first)).await);
+    assert!(reason.starts_with("revoked"), "{reason}");
+
+    // 25 h in, past the first token's expiry: still allowed, still connected.
+    clock.set(START_US + 25 * HOUR_US);
+    calls(&s1, "test.echo", "", CallOptions::default())
+        .await
+        .unwrap();
+    assert!(!s1.is_closed());
 }
 
 #[cfg(feature = "failpoints")]

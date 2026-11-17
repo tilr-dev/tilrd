@@ -1026,6 +1026,11 @@ and may do only what its token lists (least privilege; design R1-R9 in
   | `control` | `bus.instances`/`bus.methods` (`list`), `bus.start`, `bus.stop`, `bus.reload` (per instance), `bus.reload_config`, `bus.token`, `bus.revoke`, `bus.rotate_key`, `server.reload`, `server.update` | `list`, `reload:t-1`, `reload:t-*`, `*:t-1`, `server.reload`, `server.update`, `*` |
   | `pane` | pane creation and access (`bus-pane-rights`) | `profile:agent`, `profile:*`, `unrestricted`, `override`, `access:own`, `access:any` |
 
+  `bus.start`, `bus.stop` and `bus.reload` pass with the action on some instance and are
+  checked for each instance they act on; `list` (`bus.instances`, `bus.methods`) and
+  `reload_config` are over every instance: `list:t-*` or `*:t-1` does not reach them, also
+  while no instance is configured.
+
   `server.command` is no right: only the owner on the Unix socket may call it (not on TCP, not
   with any token). A participant other than the owner with `control = ["token"]` mints only
   rights it holds itself, with a token without appended blocks, named `<its name>.<name>`,
@@ -1043,7 +1048,8 @@ and may do only what its token lists (least privilege; design R1-R9 in
   `subject`, `pattern`, `action`, `instance`, `scope`, `caller`, `origin`, `server` and
   `time`; every block is enforced, and a fact in an appended block grants nothing.
 - **Expiry and renewal.** A token lives at most 24 h (`bus.token` `ttl_ms`, 0 = 24 h). The
-  server renews an instance's token 12 h after minting it. An outside participant calls
+  server renews an instance's token 12 h after minting it and sends the new one to the
+  instance in a `CredentialUpdate` (as after a rotation). An outside participant calls
   `bus.renew` in the second half of its token's life (an unattenuated token; an attenuated
   one, or one called earlier, is `bad_request`) and presents the new one with
   `CredentialUpdate`; the old one is revoked. A

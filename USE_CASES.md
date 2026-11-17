@@ -885,7 +885,7 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | A process an instance started ends with it, when the instance is stopped and when it exits by itself (its process group is killed before its leader is reaped) | `bus::an_instances_own_processes_end_with_it` |
 | `bus.reload` of an instance that cannot start again answers `start_failed`; the instance stays supervised and comes up once it can | `bus::a_reload_answers_a_start_error` |
 | `bus.reload` of a module or all takes the right over each instance it restarts (over every configured one for a module that does not exist): a caller without it is `denied` for a module that exists, one that does not and all alike, and nothing is restarted | `bus::reloading_a_module_takes_the_right_over_every_instance` |
-| Every control check names one instance, with the call's credential: `bus.instances` and `bus.methods` check `list` on each configured instance, `bus.reload_config` each instance the file adds, changes or removes (every configured one for a bad file); one denial is `denied` and nothing is done | `bus::control_rights_are_checked_for_each_instance` |
+| Every control check names one instance, with the call's credential: `bus.instances` and `bus.methods` check `list` on each configured instance, `bus.reload_config` each instance the file adds, changes or removes (every configured one for a bad file); one denial is `denied` and nothing is done (with Biscuit rights: an instance's own token narrowed to `s-*` by an appended block) | `bus::control_rights_are_checked_for_each_instance` |
 | `bus.reload` of a module restarts its instances one at a time without a failed call; a caller that reloads itself has its reply first; the control right is checked | `bus::a_module_is_reloaded_one_instance_at_a_time` |
 | `bus.reload_config` starts the added, stops the removed, reloads the changed and leaves the others and the manually stopped alone | `bus::reloading_bus_toml_applies_the_difference` |
 | `bus.instances` lists instances and the outside participants, `bus.methods` the methods with their live providers; a draining instance is not offered | `bus::participants_and_methods_are_listed` |
@@ -906,10 +906,10 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 
 Biscuit tokens of the server (change `bus-rights`, design R1-R8): the owner mints them with
 `bus.token` during each test, outside participants (`tilr_bus` clients and the test runtime,
-`token:<name>`) use them; every key and token is made by the server under test. The
-scenarios of instances (`instance:<name>`: rights from `bus.toml`, the 12 h renewal, the
-token revoked when the instance stops, a rotation keeping its pid) run once `bus-instances`
-starts them; the authorizer's side of them is in the unit tests below.
+`token:<name>`) use them; every key and token is made by the server under test. Instances
+(`instance:<name>`, rights from `bus.toml`) are socket instances whose process hands its
+socket token to the test, which then connects as the instance and holds the token the
+server minted for it.
 
 | Use case | Test |
 |---|---|
@@ -919,7 +919,10 @@ starts them; the authorizer's side of them is in the unit tests below.
 | A participant may call what its token lists and nothing else; `from` is its token's participant | `bus_acl::a_participant_may_do_what_its_token_lists` |
 | A token without rights is allowed nothing but `bus.ping` | `bus_acl::a_token_without_rights_is_allowed_nothing` |
 | Providing, emitting and subscribing need rights; a forged core event reaches nobody | `bus_acl::providing_emitting_and_subscribing_need_rights` |
-| Control methods (`list`, per-instance actions, `token`, `revoke`, `rotate_key`, `server.reload`, `server.update`) need control rights; `call = ["*"]` is not `bus.*`; a refused control call changes nothing; a minter other than the owner mints only rights it holds | `bus_acl::control_methods_need_control_rights` |
+| Control methods (`list`, per-instance actions, `token`, `revoke`, `rotate_key`, `server.reload`, `server.update`) need control rights; `call = ["*"]` is not `bus.*`; `reload:t-1` reloads t-1 and not t-2 or all, which keeps its pid; a narrow per-call credential on a wide connection is denied; a minter other than the owner mints only rights it holds | `bus_acl::control_methods_need_control_rights` |
+| With no instance configured, `bus.instances`, `bus.methods` and `bus.reload_config` need `list` or `reload_config` over every instance: a `call` right or rights over some instances are denied | `bus_acl::control_methods_need_their_right_with_no_instances` |
+| An instance gets a token of its `bus.toml` rights in `HelloAck.credential` and may do what they list (calls, `reload` of one instance) and nothing else; one without rights may do nothing; callees see `from=instance:<name>` | `bus_acl::an_instance_may_do_what_its_rights_list` |
+| An instance's token, handed out as text, is denied with `revoked` once the instance is stopped | `bus_acl::a_stopped_instances_token_is_revoked` |
 | `server.command` is the owner's on the Unix socket only (not on TCP, not for any token); `server.update` needs its control action, not `call` | `bus_acl::server_command_is_the_owners_on_the_unix_socket_only` |
 | A token minted by a participant is named under it, lives no longer than its token, is bound to its origin; revoked alone it leaves the minter working, the minter revoked ends it; an attenuated minter mints nothing | `bus_acl::a_minted_token_lives_within_its_minter` |
 | A token of another server, or a malformed one, is denied at Hello and per call | `bus_acl::a_token_of_another_server_is_refused` |
@@ -928,8 +931,9 @@ starts them; the authorizer's side of them is in the unit tests below.
 | A block whose rules make over 1000 facts is `authorization limit reached` | `bus_acl::authorization_that_runs_too_long_is_denied` |
 | A revocation and a key rotation take effect inside the decision cache's second | `bus_acl::a_revocation_clears_cached_decisions` |
 | A revoked token, and one attenuated from it, is denied at once and after a restart; its connection is closed with 4003 | `bus_acl::a_revoked_token_stops_working_at_once` |
-| A key rotation ends every token at once and closes their connections with 4003; tokens of the new key work | `bus_acl::rotating_the_root_key_ends_every_token` |
+| A key rotation ends every token at once and closes their connections with 4003; tokens of the new key work; a running instance gets a token of the new key by `CredentialUpdate` and keeps its connection and pid | `bus_acl::rotating_the_root_key_ends_every_token` |
 | Denials, control calls, mints and revocations are audited without the token's bytes | `bus_acl::denied_and_control_calls_are_audited` |
+| An instance's token is renewed 12 h after its start and sent to it by `CredentialUpdate`; the old one is revoked; its calls pass past the first token's expiry (test clock) | `bus_acl::an_instance_token_is_renewed` (failpoints) |
 | An expired token is denied within a second of its expiry and its connection closed with 4003 (test clock) | `bus_acl::an_expired_token_is_refused` (failpoints) |
 | An outside participant renews its token with `bus.renew` and `CredentialUpdate` and stays connected past the first expiry; one that does not is closed with 4003; an attenuated token is not renewed; another participant's token is not an update (test clock) | `bus_acl::an_outside_token_is_renewed_on_its_connection` (failpoints) |
 | `bus.renew` is refused in the first half of a token's life, and for a token that already lives as long as its minter's (test clock) | `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (failpoints) |

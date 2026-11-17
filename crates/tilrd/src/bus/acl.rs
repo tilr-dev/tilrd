@@ -28,7 +28,8 @@
 //!   read the authority block only: an appended block adds checks, never rights. Any
 //!   error is a denial.
 //! - **Expiry and renewal**: tokens live at most 24 h. A sweeper renews an instance's
-//!   token 12 h after it was minted (the connection's principal is replaced) and
+//!   token 12 h after it was minted (the connection's principal is replaced and the
+//!   instance gets the new token in a `CredentialUpdate`) and
 //!   closes a connection whose token expired with 4003; `bus.renew` gives an outside
 //!   participant a fresh token for an unattenuated one, which it presents with
 //!   `CredentialUpdate` ([`Acl::credential_update`]), in the second half of its life
@@ -102,6 +103,11 @@ const DECISION_CACHE: usize = 8192;
 const SWEEP: Duration = Duration::from_millis(200);
 /// An instance token whose connection was never seen open is revoked after this.
 const UNSEEN_INSTANCE: Duration = Duration::from_secs(30);
+/// How long an instance's token presented on another connection is taken while its
+/// own connection is not registered yet: the broker registers it right after it
+/// queued `HelloAck` (which carries the token), so only a connection that ended
+/// before the sweeper saw it open is older than this and not open.
+const UNREGISTERED_GRACE: Duration = Duration::from_secs(1);
 /// The most rights facts a token's authority block may hold: with the request's
 /// facts it stays under the run limit of 1000 facts.
 const MAX_RIGHTS_FACTS: usize = 512;
@@ -1185,13 +1191,23 @@ impl Acl {
                 Ok(())
             }
             Some(false) => {
-                let seen = lock(&self.instances).get(rid).is_some_and(|seat| seat.seen);
+                let (seen, young) = lock(&self.instances)
+                    .get(rid)
+                    .map_or((true, false), |seat| {
+                        (seat.seen, seat.made.elapsed() < UNREGISTERED_GRACE)
+                    });
                 if seen {
                     self.end_instance_token(rid);
                     Err(Denied::new("revoked: the instance's process ended"))
-                } else {
-                    // Greeted but not registered yet.
+                } else if young {
+                    // Greeted, and the broker registers it right after `HelloAck`.
                     Ok(())
+                } else {
+                    // Never seen open and not open now: it ended before the sweeper
+                    // saw it (the sweeper revokes it). Fail closed meanwhile.
+                    Err(Denied::new(
+                        "revoked: the instance's connection is not open",
+                    ))
                 }
             }
             None => Ok(()),
@@ -1441,7 +1457,9 @@ impl Acl {
         Ok(())
     }
 
-    /// After a rotation or for a renewal: a new token for the instance on `conn`.
+    /// After a rotation or for a renewal: a new token for the instance on `conn`,
+    /// which becomes the connection's principal and is sent to the instance in a
+    /// `CredentialUpdate`.
     fn renew_instance(&self, broker: &BrokerHandle, conn: ConnId, principal: &Principal) {
         let rights = token_of(principal).map(|token| token.parsed.meta.rights.clone());
         let rights = rights.unwrap_or_else(|| {
@@ -1455,6 +1473,7 @@ impl Acl {
         match self.mint_instance(&principal.identity, &rights, conn, true) {
             Ok(token) => {
                 tracing::info!(target: AUDIT, "bus audit: renew from={} rid={} reason=instance token", principal.identity, token.parsed.rid16());
+                let bytes = token.bytes.clone();
                 broker.update_principal(
                     conn,
                     Principal {
@@ -1462,6 +1481,11 @@ impl Acl {
                         ..principal.clone()
                     },
                 );
+                // After the principal: a call the instance makes with the new token
+                // once it has it is decided by the new token.
+                if !broker.send_credential_update(conn, bytes) {
+                    tracing::info!(target: "tilrd::bus", identity = %principal.identity, "the instance's connection ended before its new token was sent");
+                }
                 if let Some(old) = old {
                     self.end_instance_token(&old);
                 }
@@ -2134,6 +2158,14 @@ fn acl_of(broker: &BrokerHandle) -> Option<Arc<Acl>> {
         .iter()
         .filter_map(Weak::upgrade)
         .find(|acl| Arc::as_ptr(acl).cast::<()>() == wanted)
+}
+
+/// `bus.reload_config` applied `bus.toml`: every cached decision is dropped (R7).
+/// Nothing with another authorizer.
+pub fn config_reloaded(broker: &BrokerHandle) {
+    if let Some(acl) = acl_of(broker) {
+        lock(&acl.decisions).clear();
+    }
 }
 
 /// Add `bus.token`, `bus.renew`, `bus.revoke`, `bus.rotate_key` and start the

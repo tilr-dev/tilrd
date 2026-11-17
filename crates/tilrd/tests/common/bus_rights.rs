@@ -4,13 +4,12 @@
 //! the test (`bus.token`); none is written down.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use tilr_bus::proto::tilr::bus::v1 as wire;
 use tilr_bus::{Bus, BusError, CallOptions, ConnectOptions, Credential, Transport};
 
+use super::Server;
 use super::bus::{BusOptions, BusServer, TestRuntime};
-use super::{Server, TIMEOUT};
 
 /// The rights of a token, as `bus.token` takes them.
 #[derive(Clone, Debug, Default)]
@@ -154,24 +153,20 @@ pub fn audit_lines(server: &BusServer) -> Vec<String> {
         .collect()
 }
 
-/// Wait until the server logged a line containing every one of `parts`.
+/// Wait until the server logged a line containing every one of `parts`, woken by
+/// each line it logs and bounded by [`TIMEOUT`](super::TIMEOUT); that line.
 pub async fn wait_logged(server: &BusServer, parts: &[&str]) -> String {
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    loop {
-        if let Some(line) = server
-            .log_lines()
-            .into_iter()
-            .find(|line| parts.iter().all(|part| line.contains(part)))
-        {
-            return line;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "not logged: {parts:?}\n{}",
-            server.log_lines().join("\n")
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let has = |line: &String| parts.iter().all(|part| line.contains(part));
+    server
+        .wait_logged_event(&format!("not logged: {parts:?}"), |lines| {
+            lines.iter().any(has)
+        })
+        .await;
+    server
+        .log_lines()
+        .into_iter()
+        .find(has)
+        .expect("the line just seen")
 }
 
 /// The server's state directory (after [`restart`]: the [`Scratch`]'s `state`).

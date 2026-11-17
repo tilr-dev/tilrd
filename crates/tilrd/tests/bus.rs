@@ -2502,13 +2502,7 @@ async fn control_rights_are_checked_for_each_instance() {
             "s-1",
             "s",
             "connect = \"socket\"\n",
-            &[
-                (
-                    "call",
-                    &["bus.instances", "bus.methods", "bus.reload_config"]
-                ),
-                ("control", &["list:s-*", "reload_config:s-*"])
-            ],
+            &[("control", &["list", "reload_config"])],
             &[]
         ),
     );
@@ -2525,6 +2519,26 @@ async fn control_rights_are_checked_for_each_instance() {
     )
     .await
     .expect("the instance's own connection");
+    // `list` and `reload_config` are over every instance (`bus-rights`): the
+    // instance narrows its own token to the instances `s-*` (a block of checks it
+    // appends itself) and presents it with each call; each instance a method reads or
+    // acts on is checked with it.
+    let narrowed = me
+        .credential()
+        .expect("the instance's token")
+        .attenuate(r#"check if namespace("bus") or instance($i), $i.starts_with("s-");"#)
+        .unwrap();
+    let narrow = || CallOptions::default().credential(narrowed.clone());
+    let reload_config = || {
+        bounded(
+            "bus.reload_config",
+            me.call_typed::<_, tilr_bus::bus::ReloadConfigReply>(
+                "bus.reload_config",
+                &tilr_bus::bus::ReloadConfigRequest {},
+                narrow(),
+            ),
+        )
+    };
 
     // The listings name t-1, which it may not list.
     let error = bounded(
@@ -2532,7 +2546,7 @@ async fn control_rights_are_checked_for_each_instance() {
         me.call_typed::<_, tilr_bus::bus::InstancesReply>(
             "bus.instances",
             &tilr_bus::bus::InstancesRequest {},
-            CallOptions::default(),
+            narrow(),
         ),
     )
     .await
@@ -2543,7 +2557,7 @@ async fn control_rights_are_checked_for_each_instance() {
         me.call_typed::<_, tilr_bus::bus::MethodsReply>(
             "bus.methods",
             &tilr_bus::bus::MethodsRequest {},
-            CallOptions::default(),
+            narrow(),
         ),
     )
     .await
@@ -2552,17 +2566,19 @@ async fn control_rights_are_checked_for_each_instance() {
 
     // bus.reload_config checks each instance the file adds, changes or removes.
     write_bus_toml(&server, &format!("{base}{}", instance("s-2", "t")));
-    let done = reload_config(&me).await.unwrap();
+    let done = reload_config().await.unwrap();
+    // Its own token, not narrowed, may list them all.
+    assert_eq!(listing(&me).await.instances.len(), 3);
     assert_eq!(done.started, ["s-2"]);
     write_bus_toml(
         &server,
         &format!("{base}{}{}", instance("s-2", "t"), instance("t-9", "t")),
     );
-    let error = reload_config(&me).await.unwrap_err();
+    let error = reload_config().await.unwrap_err();
     assert_eq!(error.code, codes::DENIED, "{error}");
     // A bad file: every configured instance is checked before the file is judged.
     write_bus_toml(&server, &format!("{base}[instances.s-3]\nmodul = \"t\"\n"));
-    let error = reload_config(&me).await.unwrap_err();
+    let error = reload_config().await.unwrap_err();
     assert_eq!(error.code, codes::DENIED, "{error}");
     // Denied, nothing was done.
     let names: Vec<_> = listing(&owner)

@@ -70,6 +70,15 @@ A `Hello` that provides a method not covered by its token's `provide` rights MUS
 - **WHEN** a participant with `control = ["*"]` calls `bus.reload` for `t-2` with a per-call credential of `control = ["reload:t-1"]`
 - **THEN** the call is `denied` and `t-2` keeps its pid
 
+### Requirement: Listing and reconfiguring need the right over every instance
+`bus.instances`, `bus.methods` and `bus.reload_config` SHALL need `list` or `reload_config` over every instance (`list`, `reload_config` or `*`), also while no instance is configured; a right over some instances (`list:t-*`, `*:t-1`) MUST NOT reach them. The methods SHALL still check each instance they read or act on, with the call's per-call credential when it has one.
+
+**Verified by**: `bus_acl::control_methods_need_their_right_with_no_instances`, `bus::control_rights_are_checked_for_each_instance`.
+
+#### Scenario: No instance configured
+- **WHEN** no instance is configured and a participant whose token has `call = ["bus.instances", "bus.reload_config"]`, or one whose token has `control = ["list:t-*", "reload_config:t-*"]`, calls `bus.instances` and `bus.reload_config`
+- **THEN** both are `denied`; with `control = ["list"]` `bus.instances` is answered and `bus.reload_config` is still `denied`
+
 ### Requirement: server.command is the owner's on the Unix socket only
 `server.command` SHALL be allowed to the owner on the Unix socket (and to tilrd) only; on TCP (with the access token or `--no-auth`), for a token on any transport and with any per-call credential it MUST be `denied`, whatever `call` or `control` rights the token lists.
 

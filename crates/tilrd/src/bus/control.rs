@@ -461,6 +461,8 @@ async fn reload_config(
         move |name: &str| allow(&broker, &ctx, "reload_config", name)
     };
     let done = runner.reload_config(check).await?;
+    // The file was applied: no decision of before it is reused (`bus-rights`, R7).
+    super::acl::config_reloaded(broker);
     let message = ReloadConfigReply {
         started: done.started,
         stopped: done.stopped,

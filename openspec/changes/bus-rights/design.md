@@ -20,9 +20,19 @@ This change's part follows.
 - **Broker files untouched** *(coordinator's decision after the review of the broker)*: this
   change does not edit `bus/broker.rs` or `bus/transport.rs` (after `bus-broker-core` only
   `bus-streams-events`, then `bus-reload`, do); it uses the broker's API: `Authorizer::credential_update`
-  for `CredentialUpdate` on an open connection, `BrokerHandle::update_principal` for a renewed
-  token, `drain_connection` and `ConnState::Ended{code, message}` to end a connection with
-  close code 4003 on revocation or rotation.
+  for `CredentialUpdate` from a participant, `BrokerHandle::update_principal` for a renewed
+  token, `BrokerHandle::send_credential_update` to send an instance its renewed or rotated
+  token, `close_connection` to end a connection with close code 4003 on revocation or rotation.
+- **`list` and `reload_config` over every instance.** The call needs the action over every
+  instance (`list`, `reload_config`, `*`), also while no instance is configured: a right over
+  some instances (`list:t-*`, `*:t-1`) does not reach `bus.instances`, `bus.methods` or
+  `bus.reload_config` (the listings show every participant, the file can add any instance).
+  `bus-instances`' methods still check each instance they read or act on, so a holder who
+  narrows its token with an appended block (`check if namespace("bus") or instance($i),
+  $i.starts_with("s-");`) lists or reconfigures `s-*` only. `bus.start`, `bus.stop` and
+  `bus.reload` keep the gate on some instance (`control_gate`).
+- **`bus.reload_config` drops the decision cache**: `bus-instances`' method calls
+  `acl::config_reloaded` once the file is applied (one line in `control.rs`).
 
 ## Reload and reconnect
 
@@ -108,10 +118,12 @@ is the contract.
   connection presents it (`BrokerHandle::principal_of`; the authorizer is never called under
   the broker's lock), otherwise by the sweeper (every 200 ms). Renewal after 12 h and the new
   tokens after a rotation replace the connection's principal (`update_principal`): the
-  instance's own requests go on being allowed, but no `CredentialUpdate` reaches the instance
-  (the broker has no way to send an envelope to a connection; see "Open"). A request from the
-  instance's own connection marks it open at once (a seat not yet seen by the sweeper is not
-  taken as ended). The sweeper also renews an instance, or closes an outside participant with
+  instance's own requests go on being allowed, and the instance gets the new token in a
+  `CredentialUpdate` (`BrokerHandle::send_credential_update`, after the principal is
+  replaced). A request from the instance's own connection marks it open at once. A seat not
+  yet seen open is taken as not registered yet for 1 s after its `Hello` (the broker
+  registers the connection right after it queued `HelloAck`); after that, its token presented
+  on another connection while its own is not open is denied (the sweeper revokes it). The sweeper also renews an instance, or closes an outside participant with
   4003, whose token is of an earlier key: a connection that said `Hello` while a rotation ran.
 - **Forged core events** are dropped by the broker before the authorizer; their audit line is
   the broker's (`dropped an event in a namespace of tilrd`) on the audit target, not
@@ -145,16 +157,6 @@ What `bus-instances`' `control.rs` (and any later control method) implements:
 
 ## Open
 
-- `CredentialUpdate` from the broker to an instance (renewal, rotation) needs a broker API to
-  send an envelope on a connection (`BrokerHandle::send_credential_update(conn, bytes)` or a
-  general send), owned by `bus-broker-core`'s successors.
-- `bus.reload_config` should clear the decision cache: `bus-instances` owns it and has no
-  call into the authorizer (an instance restarted by it gets a new token, so its cached
-  decisions are not reused).
-- The instance scenarios (`bus_acl::an_instance_may_do_what_its_rights_list`,
-  `an_instance_token_is_renewed`, `a_stopped_instances_token_is_revoked`, the instance part of
-  `rotating_the_root_key_ends_every_token` and of `control_methods_need_control_rights`) need
-  `bus-instances` to start instances; the outside-participant variants are in `bus_acl`.
 - `server.proto`'s header (schemas are frozen in this change) is stale: it says `server.reload`
   and `server.update` need control "reload"; they need `server.reload` and `server.update`
   (`server.command`: "owner on the Unix socket only" is right). The change that next edits
