@@ -689,6 +689,18 @@ impl ConnState {
             true
         });
     }
+
+    /// Set `Up` if it still awaits `Hello`: a connection that ended before it was
+    /// announced (superseded) stays ended. Returns whether it is up.
+    pub(super) fn up(state: &watch::Sender<ConnState>) -> bool {
+        state.send_if_modified(|current| {
+            if *current != ConnState::AwaitingHello {
+                return false;
+            }
+            *current = ConnState::Up;
+            true
+        })
+    }
 }
 
 /// What [`BrokerHandle::attach_stream`] gives the runner of an instance.
@@ -981,10 +993,25 @@ impl BrokerHandle {
     /// Take a greeted connection in: it is entered as a connection and as the
     /// provider of its methods, and `ack` (its `HelloAck`) is queued under the same
     /// lock, so nothing the broker routes to it comes before and its methods are
-    /// there once it has it. Only then is it announced [`ConnState::Up`]. A
+    /// there once it has it. Only then is it announced [`ConnState::Up`], unless a
+    /// newer connection superseded it in between: returns whether it is up. A
     /// connection of the same principal and `client_id` still open is closed 4000
     /// (B12).
     pub(super) fn register(
+        &self,
+        principal: Principal,
+        provides: Vec<MethodSpec>,
+        ack: Msg,
+        out: Out,
+        state: watch::Sender<ConnState>,
+    ) -> bool {
+        let announce = state.clone();
+        self.enter(principal, provides, ack, out, state);
+        ConnState::up(&announce)
+    }
+
+    /// [`register`](Self::register) up to the announcement.
+    fn enter(
         &self,
         principal: Principal,
         provides: Vec<MethodSpec>,
@@ -1019,7 +1046,6 @@ impl BrokerHandle {
             .into_iter()
             .map(|spec| (spec.method.clone(), spec))
             .collect();
-        let announce = state.clone();
         let mut st = self.lock();
         for method in provides.keys() {
             st.providers.entry(method.clone()).or_default().push(id);
@@ -1047,8 +1073,6 @@ impl BrokerHandle {
                 state,
             },
         );
-        drop(st);
-        announce.send_replace(ConnState::Up);
     }
 
     /// Forget a connection: the calls sent to it are answered `unavailable` (a
@@ -3486,6 +3510,40 @@ mod tests {
             within(returned_rx).await.unwrap(),
             "the stream is not closed once caught_up returned"
         );
+    }
+
+    #[tokio::test]
+    async fn a_connection_superseded_before_it_is_announced_is_never_up() {
+        use super::super::transport::{Framing, out};
+        let broker = broker();
+        let principal = |connection_id| Principal {
+            identity: Identity::Instance("t-1".into()),
+            rights: None,
+            credential: None,
+            origin: String::new(),
+            transport: Transport::InstanceFd,
+            client_id: "c-1".into(),
+            client_name: "t-1".into(),
+            connection_id,
+        };
+        let ack = || Msg::HelloAck(tilr_bus::bus::HelloAck::default());
+        let (out_a, _outbox_a, _closing_a) = out(1, Framing::Stream);
+        let (out_b, _outbox_b, _closing_b) = out(2, Framing::Stream);
+        let (state_a, mut watched_a) = watch::channel(ConnState::AwaitingHello);
+        let (state_b, watched_b) = watch::channel(ConnState::AwaitingHello);
+        // A is in the table and not yet announced when B, the same client, comes.
+        broker.enter(principal(1), Vec::new(), ack(), out_a, state_a.clone());
+        assert!(broker.register(principal(2), Vec::new(), ack(), out_b, state_b));
+        assert!(matches!(
+            *watched_a.borrow_and_update(),
+            ConnState::Ended(_)
+        ));
+        assert_eq!(*watched_b.borrow(), ConnState::Up);
+        // A's announcement comes after its end: it stays ended, nobody is woken.
+        let up = ConnState::up(&state_a);
+        assert!(!watched_a.has_changed().unwrap(), "A was announced again");
+        assert!(matches!(*watched_a.borrow(), ConnState::Ended(_)));
+        assert!(!up);
     }
 
     #[tokio::test]

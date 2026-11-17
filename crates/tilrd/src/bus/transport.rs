@@ -400,7 +400,10 @@ impl Written {
 }
 
 /// A connection's writer end and the queue it takes from.
-fn out(id: ConnId, framing: Framing) -> (Out, outbox::Outbox, mpsc::UnboundedReceiver<Closing>) {
+pub(super) fn out(
+    id: ConnId,
+    framing: Framing,
+) -> (Out, outbox::Outbox, mpsc::UnboundedReceiver<Closing>) {
     let (tx, outbox) = outbox::channel();
     let (close, closing) = mpsc::unbounded_channel();
     (
@@ -553,23 +556,38 @@ async fn greet(
     let count = provides.len();
     // Registered before it is announced: once a participant has its HelloAck, or
     // anybody saw the connection up, its methods are routed and listed.
-    broker.register(
+    let up = broker.register(
         principal,
         provides,
         Msg::HelloAck(ack),
         out.clone(),
         state.clone(),
     );
-    tracing::info!(
-        target: "tilrd::bus",
-        connection = id,
-        %peer,
-        identity,
-        client_id,
-        name,
-        provides = count,
-        "participant greeted"
-    );
+    if up {
+        tracing::info!(
+            target: "tilrd::bus",
+            connection = id,
+            %peer,
+            identity,
+            client_id,
+            name,
+            provides = count,
+            "participant greeted"
+        );
+    } else {
+        // A newer connection of the same client superseded it between its
+        // registration and its announcement: it was never up, so it is not
+        // logged greeted (the tests wait on that line to use a participant).
+        tracing::info!(
+            target: "tilrd::bus",
+            connection = id,
+            %peer,
+            identity,
+            client_id,
+            name,
+            "participant superseded before it was up"
+        );
+    }
     // Held here by a test: what the broker shows of a connection just greeted.
     #[cfg(feature = "failpoints")]
     crate::fail::point_async(format!("bus-greeted:{name}")).await;
