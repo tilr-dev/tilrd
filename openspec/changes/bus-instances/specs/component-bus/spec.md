@@ -82,7 +82,7 @@ An instance whose process exits on its own, whose connection ends while its proc
 ### Requirement: Stopping, starting and reloading instances
 `bus.stop {instance, drain_ms?}` SHALL drain the instance up to `drain_ms`, send SIGTERM to its group and SIGKILL after 3 s, and keep it `stopped` until `bus.start {instance}`, which SHALL answer once it said `Hello`. `bus.reload {instance | module | all}` SHALL restart them one at a time, each drained and waited for until `Hello`, answering old and new pids or `spawn_failed`, `start_failed`, `start_timeout`. A caller acting on itself SHALL get its reply first.
 
-**Verified by**: `bus::an_instance_is_stopped_and_started`, `bus::an_instance_is_stopped_with_sigterm`, `bus::a_module_is_reloaded_one_instance_at_a_time`, `bus::a_reload_answers_a_start_error`, `bus::reloading_a_module_takes_the_right_over_every_instance`, `bus::a_reload_of_the_server_does_not_wait_for_a_long_drain`.
+**Verified by**: `bus::an_instance_is_stopped_and_started`, `bus::an_instance_is_stopped_with_sigterm`, `bus::a_module_is_reloaded_one_instance_at_a_time`, `bus::a_reload_answers_a_start_error`, `bus::reloading_a_module_takes_the_right_over_every_instance`, `bus::control_rights_are_checked_for_each_instance`, `bus::a_reload_of_the_server_does_not_wait_for_a_long_drain`.
 
 #### Scenario: No gap for a method
 - **WHEN** `t-1` and `t-2` provide `test.echo`, the owner calls it in a loop and `tilr bus reload --module t` runs

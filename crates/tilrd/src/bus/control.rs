@@ -4,7 +4,9 @@
 //! Owner: `bus-instances`. The listings read the runner's table at any time; what changes
 //! something goes through the runner's one queue ([`Runner`]). Each method checks the
 //! caller's `control` right itself (`AuthzRequest::Control`, action `list`, `start`,
-//! `stop`, `reload` or `reload_config`, with the instance): the owner holds every right.
+//! `stop`, `reload` or `reload_config`) with the call's credential, once for every
+//! instance it reads or acts on, never for "all" without one: a single denial answers
+//! `denied` and nothing is done. The owner holds every right.
 //! A caller that stops or reloads itself gets its reply first; the action follows after
 //! [`REPLY_GRACE`].
 //!
@@ -98,21 +100,37 @@ fn reply<M: Message>(ctx: &CallCtx, message: &M, json: impl FnOnce() -> Value) -
     }
 }
 
+/// `action` on the instance `instance` (its bare name), with the call's credential.
 fn allow(
     broker: &BrokerHandle,
     ctx: &CallCtx,
     action: &str,
-    instance: Option<&str>,
+    instance: &str,
 ) -> Result<(), BusError> {
-    tracing::info!(target: "tilrd::bus::audit", identity = %ctx.from, action, instance = instance.unwrap_or(""), "control");
+    tracing::info!(target: "tilrd::bus::audit", identity = %ctx.from, action, instance, "control");
     broker
         .authorizer()
         .authorize(
             &ctx.principal,
             ctx.call_credential.as_deref(),
-            &AuthzRequest::Control { action, instance },
+            &AuthzRequest::Control {
+                action,
+                instance: Some(instance),
+            },
         )
         .map_err(BusError::from)
+}
+
+/// `action` on each of `names`: denied as a whole when one is.
+fn allow_each<'a>(
+    broker: &BrokerHandle,
+    ctx: &CallCtx,
+    action: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), BusError> {
+    names
+        .into_iter()
+        .try_for_each(|name| allow(broker, ctx, action, name))
 }
 
 /// Whether `ctx` is the instance `name` itself.
@@ -145,7 +163,14 @@ async fn instances(
     ctx: CallCtx,
     _payload: Bytes,
 ) -> Result<Reply, BusError> {
-    allow(broker, &ctx, "list", None)?;
+    // What is checked is what is listed.
+    let rows = runner.rows();
+    allow_each(
+        broker,
+        &ctx,
+        "list",
+        rows.iter().map(|row| row.name.as_str()),
+    )?;
     let connections = broker.connections();
     let provides = |id: u64| -> Vec<String> {
         connections
@@ -160,8 +185,7 @@ async fn instances(
             .unwrap_or_default()
     };
     let message = InstancesReply {
-        instances: runner
-            .rows()
+        instances: rows
             .into_iter()
             .map(|row| InstanceInfo {
                 provides: row.connection.map(provides).unwrap_or_default(),
@@ -215,12 +239,14 @@ async fn instances(
 }
 
 async fn method_list(
-    _runner: &Runner,
+    runner: &Runner,
     broker: &BrokerHandle,
     ctx: CallCtx,
     _payload: Bytes,
 ) -> Result<Reply, BusError> {
-    allow(broker, &ctx, "list", None)?;
+    // It names the instances that provide: the right to list each of them.
+    let names = runner.names();
+    allow_each(broker, &ctx, "list", names.iter().map(String::as_str))?;
     let mut by_name: BTreeMap<String, MethodInfo> = BTreeMap::new();
     let mut add = |spec: &tilr_bus::bus::MethodSpec, provider: &str| {
         by_name
@@ -277,7 +303,7 @@ async fn start(
     } else {
         request_proto::<StartRequest>(method, payload)?.instance
     };
-    allow(broker, &ctx, "start", Some(&instance))?;
+    allow(broker, &ctx, "start", &instance)?;
     let pid = runner.start(instance).await?;
     let message = StartReply { pid };
     Ok(reply(&ctx, &message, || json!({ "pid": pid })))
@@ -301,7 +327,7 @@ async fn stop(
         let request = request_proto::<StopRequest>(method, payload)?;
         (request.instance, request.drain_ms.map(u64::from))
     };
-    allow(broker, &ctx, "stop", Some(&instance))?;
+    allow(broker, &ctx, "stop", &instance)?;
     if let Some(drain_ms) = drain_ms.filter(|ms| *ms > MAX_DRAIN_MS) {
         return Err(BusError::bad_request(format!(
             "{method}: drain_ms = {drain_ms} is over the limit of {MAX_DRAIN_MS}"
@@ -358,19 +384,24 @@ async fn reload(
     let names = match &what {
         // Named: authorized before it is looked up.
         Target::Instance(name) => {
-            allow(broker, &ctx, "reload", Some(name))?;
+            allow(broker, &ctx, "reload", name)?;
             runner.resolve(&what)?
         }
-        // A module or all: the right over every instance first, so a caller without it
-        // learns nothing of which modules there are or what runs.
-        _ => {
-            allow(broker, &ctx, "reload", None)?;
-            let names = runner.resolve(&what)?;
-            for name in &names {
-                allow(broker, &ctx, "reload", Some(name))?;
+        // A module or all: the right over each instance it restarts. A module that does
+        // not exist takes the right over every configured instance before it is
+        // `not_found`, so a caller without it is `denied` alike for a module that exists
+        // and one that does not.
+        _ => match runner.resolve(&what) {
+            Ok(names) => {
+                allow_each(broker, &ctx, "reload", names.iter().map(String::as_str))?;
+                names
             }
-            names
-        }
+            Err(err) => {
+                let names = runner.names();
+                allow_each(broker, &ctx, "reload", names.iter().map(String::as_str))?;
+                return Err(err);
+            }
+        },
     };
     let reloaded = if names.iter().any(|name| is_caller(&ctx, name)) {
         // The caller is among them: it has its reply first, with the pids not yet known.
@@ -423,8 +454,13 @@ async fn reload_config(
     ctx: CallCtx,
     _payload: Bytes,
 ) -> Result<Reply, BusError> {
-    allow(broker, &ctx, "reload_config", None)?;
-    let done = runner.reload_config().await?;
+    // The runner asks for each instance the file adds, changes or removes (every
+    // configured one when the file is bad) before it changes anything.
+    let check = {
+        let (broker, ctx) = (broker.clone(), ctx.clone());
+        move |name: &str| allow(&broker, &ctx, "reload_config", name)
+    };
+    let done = runner.reload_config(check).await?;
     let message = ReloadConfigReply {
         started: done.started,
         stopped: done.stopped,

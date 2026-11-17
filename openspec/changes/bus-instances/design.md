@@ -65,11 +65,16 @@ What the code froze where it differs from or adds to the text above; the code is
   listed before the fork only if they lack `FD_CLOEXEC` (the others go at the exec): a listed
   number may be another descriptor by then.
 - **Control rights are checked in the methods.** The broker checks `Call{bus.reload}` against the
-  caller's `call` right; the method then checks `Control{action, instance}` itself (actions
-  `list`, `start`, `stop`, `reload`, `reload_config`). Until `bus-rights` an instance needs both
-  in its `rights`. `bus.reload` of a module or `all` takes `Control{reload}` without an instance
-  (the right over every instance) before the names are looked up, so a caller without it is
-  `denied` alike for a module that exists and one that does not.
+  caller's `call` right; the method then checks `Control{action, instance}` itself, with the
+  call's credential (actions `list`, `start`, `stop`, `reload`, `reload_config`). Until
+  `bus-rights` an instance needs both in its `rights`. Every check names one instance by its bare
+  name, never "all" without one: a call over several instances checks each it reads or acts on,
+  and one denial answers `denied` with nothing done. `bus.instances` and `bus.methods` check
+  `list` on every configured instance; `bus.reload` of a module or `all` checks `reload` on each
+  instance it restarts, and for a module that does not exist on every configured instance before
+  it answers `not_found`, so a caller without the right is `denied` alike for a module that
+  exists and one that does not; `bus.reload_config` checks each instance the file adds, changes
+  or removes (every configured one when the file is bad) before it applies anything.
 - **The log says what the listing shows.** Each change of an instance's state (`started`, `is
   up`, `is draining`, `starts again in`, `is stopped`) is logged after it is made, so a reader of
   the log finds it in `bus.instances`; the tests wait on these lines instead of polling.

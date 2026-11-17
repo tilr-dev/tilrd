@@ -374,6 +374,11 @@ impl Runner {
         }
     }
 
+    /// The names of every configured instance.
+    pub fn names(&self) -> Vec<String> {
+        self.table().instances.keys().cloned().collect()
+    }
+
     /// The instance `name` as listed, if it is in `bus.toml`.
     pub fn row(&self, name: &str) -> Option<Row> {
         self.rows().into_iter().find(|row| row.name == name)
@@ -451,12 +456,15 @@ impl Runner {
         })
     }
 
-    /// `bus.reload_config`: read `bus.toml` again and apply the difference.
+    /// `bus.reload_config`: read `bus.toml` again and apply the difference. `check` is
+    /// asked for each instance the file adds, changes or removes (for every configured
+    /// one when the file is bad) before anything changes; its first error answers.
     pub fn reload_config(
         &self,
+        check: impl Fn(&str) -> Result<(), BusError> + Send + Sync + 'static,
     ) -> impl Future<Output = Result<ConfigOutcome, BusError>> + Send + 'static {
-        self.queued(Duration::ZERO, |runner| async move {
-            runner.reload_config_now().await
+        self.queued(Duration::ZERO, move |runner| async move {
+            runner.reload_config_now(&check).await
         })
     }
 
@@ -592,17 +600,30 @@ impl Runner {
         })
     }
 
-    async fn reload_config_now(&self) -> Result<ConfigOutcome, BusError> {
-        let new = self.load().map_err(|err| {
-            tracing::error!(target: "tilrd::bus", "bus.toml not applied: {err}");
-            BusError::new(codes::BAD_CONFIG, err.0)
-        })?;
+    async fn reload_config_now(
+        &self,
+        check: &(dyn Fn(&str) -> Result<(), BusError> + Send + Sync),
+    ) -> Result<ConfigOutcome, BusError> {
+        let new = match self.load() {
+            Ok(new) => new,
+            Err(err) => {
+                // A caller without the right learns nothing of the file.
+                self.names().iter().try_for_each(|name| check(name))?;
+                tracing::error!(target: "tilrd::bus", "bus.toml not applied: {err}");
+                return Err(BusError::new(codes::BAD_CONFIG, err.0));
+            }
+        };
         let (diff, drain) = {
             let mut table = self.table();
             if table.exiting {
                 return Err(shutting_down());
             }
             let diff = config::diff(&table.config, &new);
+            diff.removed
+                .iter()
+                .chain(&diff.changed)
+                .chain(&diff.added)
+                .try_for_each(|name| check(name))?;
             table.config = new.clone();
             for name in diff.added.iter().chain(&diff.changed).chain(&diff.kept) {
                 let spec = new.instances[name].clone();
