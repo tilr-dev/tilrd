@@ -31,8 +31,9 @@ for the `participant greeted` line and call at once failed now and then for the 
 ## Capabilities
 
 ### Modified Capabilities
-- `component-bus`: a greeted participant is callable and listed from the moment it has its
-  `HelloAck` or anybody saw it up.
+- `component-bus`: adds the requirement "A greeted participant is callable": a greeted
+  participant is callable and listed from the moment it has its `HelloAck` or anybody saw it
+  up. No existing requirement changes.
 
 ## Non-goals
 

@@ -9,4 +9,4 @@
 ## 2. Checks and archive
 
 - [x] 2.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, the bus tests with `--features tilrd/failpoints`, `cargo deny check`, `openspec validate --all --strict`; the Linux stress run of the bus tests that raced the greeting; verify all green
-- [ ] 2.2 Archive the change; verify `openspec validate --all --strict`
+- [x] 2.2 Archive the change; verify `openspec validate --all --strict`
