@@ -19,7 +19,7 @@ for the `participant greeted` line and call at once failed now and then for the 
   first envelope it gets. Only then is it announced up and `participant greeted` logged.
 - An instance being stopped or reloaded is marked draining in the broker before its state
   turns `draining`, so whoever sees it `draining` in `bus.instances` sees it offered no new
-  calls (`bus.methods` lists it no longer), as the main spec's "Draining is not offered"
+  calls by method (`bus.methods` lists it no longer), as the main spec's "Draining is not offered"
   already says; `participants_and_methods_are_listed` saw the two apart now and then.
 - A test-only failpoint `bus-greeted:<client name>` holds a connection right after its
   greeting, so tests can look at what the broker shows of it there.

@@ -980,8 +980,8 @@ the ones in flight answered), sends SIGTERM to its group, SIGKILL after 3 s, and
 stopped until `bus.start`. `bus.reload` restarts an instance, a module or all that run, one
 at a time, each drained and waited for until its `Hello`, so a method with two providers has
 no gap. When `bus.start` or `bus.reload` answers, the instance's methods are callable and
-listed by `bus.methods`; a draining instance is offered no new calls from the moment
-`bus.instances` shows it `draining`. A caller that stops or reloads itself has its reply first. Until the server hands its
+listed by `bus.methods`; a draining instance is offered no new calls by method from the
+moment `bus.instances` shows it `draining`. A caller that stops or reloads itself has its reply first. Until the server hands its
 instances over a reload, a reload stops every instance and the successor starts them again.
 
 The control methods, called by the owner or by an instance with the matching `control`
