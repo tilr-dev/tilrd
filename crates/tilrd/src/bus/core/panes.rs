@@ -311,9 +311,9 @@ fn authorize(s: &Supervisor, caller: &Caller, request: &AuthzRequest<'_>) -> Res
 /// Whether the caller may access the pane (T7: `AuthzRequest::PaneAccess` with
 /// its creator; the policy is the authorizer's).
 fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Result<(), BusError> {
-    // The authorizer of this build refuses no `PaneAccess` a call can reach (a
-    // call with a credential is refused before its method runs): a test stands
-    // in for one that does.
+    // The authorizer of this build refuses no `PaneAccess` a call can reach (its
+    // policy allows every pane check until `bus-pane-rights`): a test stands in for
+    // one that does.
     #[cfg(feature = "failpoints")]
     if crate::fail::point("bus-pane-access").is_err() {
         return Err(crate::bus::authz::Denied::new("failpoint bus-pane-access").into());

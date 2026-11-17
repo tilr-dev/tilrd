@@ -974,6 +974,7 @@ server minted for it.
 | A token minted by a participant is named under it, lives no longer than its token, is bound to its origin; revoked alone it leaves the minter working, the minter revoked ends it; an attenuated minter mints nothing | `bus_acl::a_minted_token_lives_within_its_minter` |
 | A token of another server, or a malformed one, is denied at Hello and per call | `bus_acl::a_token_of_another_server_is_refused` |
 | A per-call credential authorizes its call alone, for a narrow caller and against a wide one; `from` stays the caller; the audit names both | `bus_acl::a_per_call_credential_is_a_bearer` |
+| `pane.*` is decided by `call` rights like every core method; a per-call credential decides it alone, the pane checks of `pane.create` and of a pane included | `bus_acl::pane_calls_follow_call_rights_and_a_per_call_credential` |
 | An appended block narrows (one target); one that adds a fact is denied; over 8 blocks or 16 KiB is denied | `bus_acl::an_attenuated_token_only_narrows` |
 | A block of facts and a 5-way join, or of a rule, is denied at once, per call and at Hello, also when its symbol names make it print as checks on `kind`; the token it came from still works | `bus_acl::authorization_that_runs_too_long_is_denied` |
 | A revocation and a key rotation take effect inside the decision cache's second | `bus_acl::a_revocation_clears_cached_decisions` |

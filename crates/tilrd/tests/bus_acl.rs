@@ -909,6 +909,59 @@ async fn a_per_call_credential_is_a_bearer() {
     .await;
 }
 
+/// `pane.*` is a core method like the others: a token's `call` rights decide it, and a
+/// per-call credential decides it alone, the pane's own checks (`PaneCreate`,
+/// `PaneAccess`) included. Which panes a right reaches is `bus-pane-rights`'.
+#[tokio::test]
+async fn pane_calls_follow_call_rights_and_a_per_call_credential() {
+    use tilr_bus::pane::{CreateRequest, ListReply, ListRequest, PaneInfo};
+    let server = start();
+    let owner = server.owner().await;
+    let create = CreateRequest {
+        cols: 80,
+        rows: 24,
+        command: common::bus_panes::shell(),
+        ..Default::default()
+    };
+    let listed =
+        |reply: &ListReply, pane_id: &str| reply.panes.iter().any(|p| p.pane_id == pane_id);
+
+    // No rights: denied before the method runs.
+    let (bare, _) = mint(&owner, "t-1", Rights::default()).await;
+    let t1 = participant(&server, &bare, "t-1").await;
+    let error = t1
+        .call_typed::<_, PaneInfo>("pane.create", &create, CallOptions::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+
+    // A per-call credential of `pane.*`: created and listed.
+    let (bearer, _) = mint(&owner, "bearer", Rights::default().call(&["pane.*"])).await;
+    let info: PaneInfo = t1
+        .call_typed("pane.create", &create, with(&bearer))
+        .await
+        .expect("pane.create with the credential");
+    let reply: ListReply = t1
+        .call_typed("pane.list", &ListRequest {}, with(&bearer))
+        .await
+        .expect("pane.list with the credential");
+    assert!(listed(&reply, &info.pane_id), "{reply:?}");
+
+    // A token of `pane.list` alone: lists, does not create.
+    let (lister, _) = mint(&owner, "lister", Rights::default().call(&["pane.list"])).await;
+    let t2 = participant(&server, &lister, "lister").await;
+    let reply: ListReply = t2
+        .call_typed("pane.list", &ListRequest {}, CallOptions::default())
+        .await
+        .expect("pane.list with the token");
+    assert!(listed(&reply, &info.pane_id), "{reply:?}");
+    let error = t2
+        .call_typed::<_, PaneInfo>("pane.create", &create, CallOptions::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+}
+
 #[tokio::test]
 async fn an_attenuated_token_only_narrows() {
     let server = start_for_runtime();

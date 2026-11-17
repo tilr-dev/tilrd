@@ -2286,14 +2286,17 @@ impl Authorizer for Acl {
                 };
             }
             if let Some(bytes) = bearer {
-                // A call, or a control check a control method makes for that call
-                // (`CallCtx::call_credential`): the bearer decides alone.
+                // A call, or a control or pane check a core method makes for that
+                // call (`CallCtx::call_credential`): the bearer decides alone (R4).
                 if !matches!(
                     request,
-                    AuthzRequest::Call { .. } | AuthzRequest::Control { .. }
+                    AuthzRequest::Call { .. }
+                        | AuthzRequest::Control { .. }
+                        | AuthzRequest::PaneCreate { .. }
+                        | AuthzRequest::PaneAccess { .. }
                 ) {
                     return Err(Denied::new(
-                        "a per-call credential authorizes a call and its control checks only",
+                        "a per-call credential authorizes a call and its control and pane checks only",
                     ));
                 }
                 let parsed = self.verify(bytes)?;
@@ -3798,7 +3801,7 @@ mod tests {
         );
         // Without it the connection's own token decides.
         assert!(f.acl.authorize(&wide, None, &control("t-2")).is_ok());
-        // Not for anything but a call and its control checks.
+        // Not for anything but a call and its control and pane checks.
         assert!(
             f.acl
                 .authorize(
@@ -3808,6 +3811,11 @@ mod tests {
                 )
                 .is_err()
         );
+        let pane = AuthzRequest::PaneAccess {
+            pane_id: "pane-1",
+            creator: "owner",
+        };
+        assert!(f.acl.authorize(&wide, Some(&narrow.bytes), &pane).is_ok());
     }
 
     #[test]

@@ -129,7 +129,7 @@ A token minted by another server, one whose signature does not verify against th
 ### Requirement: A per-call credential is a bearer
 A `Call` with a non-empty `credential` SHALL be authorized by that token alone, whatever the caller's own token allows or forbids; `from` SHALL still be the caller's identity.
 
-**Verified by**: `bus_acl::a_per_call_credential_is_a_bearer`.
+**Verified by**: `bus_acl::a_per_call_credential_is_a_bearer`, `bus_acl::pane_calls_follow_call_rights_and_a_per_call_credential` (core `pane.*`).
 
 #### Scenario: Narrow caller, wide credential
 - **WHEN** `t-1` has no rights and calls `test.echo` with a credential the owner minted for `call = ["test.echo"]`
