@@ -4,13 +4,14 @@
 mod common;
 
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use bytes::Bytes;
 use common::{Peer, ack};
 use tilr_bus::bus::{Call, Cancel, Credit, Kind, Lane, envelope::Msg, reply};
 use tilr_bus::codes;
+use tokio::process::{Child, Command};
 
 /// `target/<profile>/examples/test_runtime`: the nearest `examples/test_runtime` above this
 /// test's executable, which is `target/<profile>/deps/` before Cargo 1.100 and
@@ -38,20 +39,21 @@ struct Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.child.start_kill();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
-/// How long a started runtime has to connect.
-const START_WAIT: Duration = Duration::from_secs(60);
-
+/// Start the runtime and take its connection. The connection is awaited as an event,
+/// with no deadline: how long a freshly built binary takes to start is not part of a
+/// check's time window (decision 2026-10-21, as in the tilrd tests); a runtime that
+/// exits first fails the test with its stderr. `WAIT` bounds everything after it.
 async fn start(name: &str, extra: &[(&str, &str)]) -> (Runtime, Peer) {
     let dir = std::env::temp_dir().join(format!("tilr-bus-rt-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bus.sock");
+    let stderr_path = dir.join("stderr");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
     let mut command = Command::new(runtime_path());
     command
@@ -61,18 +63,20 @@ async fn start(name: &str, extra: &[(&str, &str)]) -> (Runtime, Peer) {
         .env("TILR_INSTANCE", name)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(std::fs::File::create(&stderr_path).unwrap())
+        .kill_on_drop(true);
     for (key, value) in extra {
         command.env(key, value);
     }
     let child = command.spawn().unwrap();
-    let runtime = Runtime { child, dir };
-    // Longer than WAIT: on macOS the first exec of a freshly linked runtime waits for the
-    // system's code check, seconds on a busy machine.
-    let (stream, _) = tokio::time::timeout(START_WAIT, listener.accept())
-        .await
-        .expect("the runtime did not connect")
-        .unwrap();
+    let mut runtime = Runtime { child, dir };
+    let stream = tokio::select! {
+        accepted = listener.accept() => accepted.unwrap().0,
+        status = runtime.child.wait() => panic!(
+            "the runtime exited before it connected ({status:?}); its stderr:\n{}",
+            std::fs::read_to_string(&stderr_path).unwrap_or_default()
+        ),
+    };
     (runtime, Peer::from_unix(stream))
 }
 
