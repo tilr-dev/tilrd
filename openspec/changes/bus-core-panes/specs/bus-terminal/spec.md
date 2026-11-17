@@ -3,7 +3,7 @@
 ### Requirement: A pane is created, listed and closed by calls
 `pane.create {cols, rows, command, cwd, profile}` SHALL start a pane as the `panes` and `pane-profiles` specs say and answer its `PaneInfo` once the program runs (cancelled before then, it is closed once it runs); `pane.list {}` SHALL answer the `PaneInfo` of every pane the caller may access; `pane.close {pane_id}` SHALL answer `{exit_code}` once the program ended. An id naming no pane, or one the caller may not access, SHALL get `not_found` `no such pane: <name as sent>`, the connection kept.
 
-**Verified by**: `panes::a_pane_runs_commands_and_reports_how_its_shell_exited`, `panes::asking_for_a_pane_that_does_not_exist_gets_an_error`, `bus_terminal::a_pane_is_created_listed_and_closed_by_calls`.
+**Verified by**: `panes::a_pane_runs_commands_and_reports_how_its_shell_exited`, `panes::asking_for_a_pane_that_does_not_exist_gets_an_error`, `bus_terminal::a_pane_is_created_listed_and_closed_by_calls`, `bus_terminal::failpoints::a_pane_the_caller_may_not_access_is_answered_as_a_missing_one`.
 
 #### Scenario: Create and list
 - **WHEN** the owner calls `pane.create {cols: 100, rows: 30}`
@@ -13,19 +13,27 @@
 - **WHEN** the owner calls `pane.close {pane_id: "1"}`
 - **THEN** the reply is `not_found` with `no such pane: 1`
 
-### Requirement: Pane changes are events
-The server SHALL emit `pane.created` (`PaneInfo`) when a pane appears, `pane.changed` (`PaneInfo`) when its size, title, directory or viewers change, `pane.title` (`PaneInfo`, which holds `pane_id` and `title`; the frozen schema has no message of its own for it) when its title changes, `pane.bell` and `pane.command_finished {pane_id, at_ms}` for its activity, `pane.copied` for a copy, and `pane.exited {pane_id, exit_code}` when its program ends, each with scope `pane:<id>`.
+#### Scenario: A pane the caller may not access
+- **WHEN** the authorizer refuses the caller a running pane and the caller closes, inputs into, resizes, reads or watches it
+- **THEN** each reply is `not_found` with `no such pane: <id>`, as for a pane that does not exist, and `pane.list` does not list it
 
-**Verified by**: `bus_terminal::pane_changes_are_events`, `panes::a_bell_in_an_unwatched_pane_is_reported`, `panes::a_finished_foreground_command_is_reported`.
+### Requirement: Pane changes are events
+The server SHALL emit `pane.created` (`PaneInfo`) when a pane appears, `pane.changed` (`PaneInfo`) when its size, title, directory or viewers change, `pane.title` (`PaneInfo`, which holds `pane_id` and `title`; the frozen schema has no message of its own for it) when its title changes, `pane.bell` and `pane.command_finished {pane_id, at_ms}` for its activity, and `pane.exited {pane_id, exit_code}` when its program ends, each with scope `pane:<id>`.
+
+**Verified by**: `bus_terminal::pane_changes_are_events`, `bus_terminal::a_finished_command_is_a_pane_event`, `panes::a_bell_in_an_unwatched_pane_is_reported`, `panes::a_finished_foreground_command_is_reported`.
 
 #### Scenario: A pane's life
 - **WHEN** a subscriber of `pane.*` watches while the owner creates a pane, its shell sets the title to `t`, rings the bell and exits with 3
 - **THEN** it receives `pane.created`, `pane.title` with `t`, `pane.bell` and `pane.exited` with `exit_code` 3, in that order
 
+#### Scenario: A finished command
+- **WHEN** a subscriber of `pane.command_finished` watches while a command the pane's shell runs in the foreground ends
+- **THEN** it receives `pane.command_finished` with the pane's id, an `at_ms` and scope `pane:<id>`
+
 ### Requirement: Watching a pane is a stream of frames
 `pane.output {pane_id}` SHALL be an interactive stream: a full frame of the pane's screen, then the frames the pane process builds (a `Frame` as `screen-frames` says), and `End{exit_code}` when the program exits, after a full frame of the last screen if the consumer was behind. No chunk SHALL pass the stream's window or `max_frame`: a frame over it goes as its images first; over it without them, the stream ends `too_large`. The caller SHALL be a viewer while the stream is open.
 
-**Verified by**: `reconnect::subscribing_again_sends_the_whole_screen_again`, `panes::two_clients_watch_and_type_into_the_same_pane`, `panes::a_client_that_stops_watching_gets_no_more_frames`, `bus_terminal::watching_a_pane_is_a_stream_of_frames`, `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen`, `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled`, `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window`, `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first`.
+**Verified by**: `reconnect::subscribing_again_sends_the_whole_screen_again`, `panes::two_clients_watch_and_type_into_the_same_pane`, `panes::a_client_that_stops_watching_gets_no_more_frames`, `bus_terminal::watching_a_pane_is_a_stream_of_frames`, `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen`, `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled`, `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window`, `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first`, `bus_terminal::a_frame_over_the_window_goes_whole_to_a_reader_short_of_credit`.
 
 #### Scenario: Typed command shows
 - **WHEN** a client opens `pane.output` on a new pane and inputs `echo "sum is $((6 * 7))"` and Enter
@@ -39,6 +47,10 @@ The server SHALL emit `pane.created` (`PaneInfo`) when a pane appears, `pane.cha
 - **WHEN** a consumer opens `pane.output` with a 64 KiB window and a frame carries three images of 40 KiB
 - **THEN** the images come in chunks of at most 64 KiB, then the frame
 
+#### Scenario: A frame goes whole
+- **WHEN** a consumer with a 64 KiB window, crediting each chunk once it read it, watches a pane showing three images of over 32 KiB each
+- **THEN** it receives each image once, in a run of image chunks followed by the frame that places them, never images without their frame
+
 #### Scenario: A stream with a deadline
 - **WHEN** a consumer opens `pane.output` with `timeout_ms` 300
 - **THEN** at the deadline it gets `timeout` and is no viewer any more
@@ -46,7 +58,7 @@ The server SHALL emit `pane.created` (`PaneInfo`) when a pane appears, `pane.cha
 ### Requirement: A lagging watcher skips to the latest screen
 A `pane.output` consumer whose connection's interactive lane has held a packet over 250 ms, or whose stream credit is spent, SHALL have its frames of that pane skipped until it caught up (credit for the frame that did not fit) and SHALL then receive a full frame whose `last_input_seq` is its latest seq a skipped frame echoed; it MUST NOT be dropped for lagging nor hold up other consumers or panes.
 
-**Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo`, `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`, itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`), `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen`, `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader`.
+**Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo`, `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`, itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`), `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen`, `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader`, `supervisor::bus::core::panes::tests::a_full_frame_queued_before_a_missed_frame_does_not_end_the_lag`.
 
 #### Scenario: No credit
 - **WHEN** a consumer opens `pane.output` with an 8 KiB window, credits nothing while the pane prints 7 MB, then credits again
@@ -55,6 +67,10 @@ A `pane.output` consumer whose connection's interactive lane has held a packet o
 #### Scenario: A reader that stops reading
 - **WHEN** a consumer stops reading its connection while its pane prints 7 MB
 - **THEN** the other consumers of that pane and of another pane see their output to the end, and the stopped one, reading again, gets the pane's screen as it is then
+
+#### Scenario: A frame lost after a full one
+- **WHEN** a stream's queue holds a full frame and the deltas after it and the next delta does not fit
+- **THEN** the full frame goes, the deltas after it do not, and only a newer full frame ends the lag: every delta a consumer gets follows the frame before it
 
 ### Requirement: Input is acknowledged after it is applied
 `pane.input {pane_id, seq, input_seq, key | mouse | paste | raw | scroll | clear}` and `pane.resize {pane_id, cols, rows, cell_*_px, seq, input_seq}` SHALL be applied in the order a connection sent them and answered once applied (the pty took the last byte, or the scroll, clear or resize took effect), `timeout` past the call's deadline; `seq` SHALL be echoed in `Frame.last_input_seq` (`screen-frames`), with `seq_base` = `HelloAck.connection_id << 32`.

@@ -58,14 +58,23 @@ Where the implementation differs from or adds to the decisions above:
   pane's `PaneInfo`, which holds `pane_id` and `title`.
 - **Existence.** A pane the caller may not access is answered `not_found` (`no such pane`)
   like a pane that does not exist, so a refusal does not tell that it exists; without a
-  broker the core refuses every call `unavailable`.
+  broker the core refuses every call `unavailable`. This build's authorizer refuses no
+  `PaneAccess` a call can reach (a call with a credential is refused `denied` by the broker
+  before its method runs), so the test stands in for one that does with the failpoint
+  `bus-pane-access` (`failpoints` builds only).
 - **The last screen.** A pane process's last frame, sent when its program ended, is full,
   for `tilr.v1` too: a `pane.output` consumer behind then (lagging, waiting for its full
   frame) gets the last screen whole before `End{PaneExited}`; a full frame that did not fit
-  the stream's queue is kept for that.
+  the stream's queue is kept for that. A reader that never credits holds that last frame
+  until its stream is cancelled, its deadline passes or its connection ends: one frame per
+  such stream.
 - **A lost full frame.** A frame that did not fit a stream's queue makes it skip and ask for
   a full frame again once the consumer caught up, also when the frame lost was the full one
-  it waited for.
+  it waited for. The stream keeps the number of the latest frame that did not fit: a full
+  frame queued before it is sent but does not end the lag (the deltas after the lost frame
+  assume a newer screen), so a newer full frame is asked for.
+- **`pane.copied`** is emitted by `bus-core-services`, which owns the clipboard; this change
+  emits the other pane events.
 - **`pane.read` and the pane process.** The text is awaited for what the call has left, or
   5 s without a deadline; a pane process that does not answer (stuck, an old binary after a
   failed self-reload, a request lost in its exec) gets `unavailable`. A pane that ends

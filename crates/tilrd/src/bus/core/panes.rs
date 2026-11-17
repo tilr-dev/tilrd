@@ -167,6 +167,10 @@ struct WatchShared {
     offered: AtomicU64,
     /// A frame did not fit the queue: the screen is behind, a full frame is due.
     missed: AtomicBool,
+    /// The number of the latest frame that did not fit the queue: a full frame
+    /// queued before it is older than what the consumer missed, so it does not
+    /// end the lag.
+    missed_upto: AtomicU64,
     /// The latest of the consumer's own seqs a missed frame echoed.
     missed_seq: AtomicU64,
     /// The latest full frame that did not fit the queue: the pane's last frame
@@ -194,6 +198,7 @@ impl Watcher {
                 {
                     *kept = Some((n, head, packet.clone()));
                 }
+                self.shared.missed_upto.fetch_max(n, Ordering::AcqRel);
                 self.shared.missed.store(true, Ordering::Release);
                 self.shared.wake.notify_one();
             }
@@ -306,6 +311,13 @@ fn authorize(s: &Supervisor, caller: &Caller, request: &AuthzRequest<'_>) -> Res
 /// Whether the caller may access the pane (T7: `AuthzRequest::PaneAccess` with
 /// its creator; the policy is the authorizer's).
 fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Result<(), BusError> {
+    // The authorizer of this build refuses no `PaneAccess` a call can reach (a
+    // call with a credential is refused before its method runs): a test stands
+    // in for one that does.
+    #[cfg(feature = "failpoints")]
+    if crate::fail::point("bus-pane-access").is_err() {
+        return Err(crate::bus::authz::Denied::new("failpoint bus-pane-access").into());
+    }
     let id = pane_id.to_string();
     let creator = creator(s, pane_id);
     authorize(
@@ -1432,13 +1444,8 @@ async fn output(core: Core, ctx: CallCtx, payload: Bytes, out: StreamOut) {
         core: &core,
         out: &out,
         shared: &shared,
-        pane_id,
-        conn,
-        waiting_full: true,
-        lagging: false,
-        asked: false,
+        pacing: Pacing::new(pane_id, conn),
         need: 1,
-        own_seq: 0,
         sent: 0,
         unsent: None,
     }
@@ -1477,11 +1484,10 @@ enum Step {
     Failed(BusError),
 }
 
-/// One stream's state of T4.
-struct Watch<'a> {
-    core: &'a Core,
-    out: &'a StreamOut,
-    shared: &'a WatchShared,
+/// Which frames of a pane a stream passes on (T4), apart from sending them:
+/// what the frames, the queue and the consumer's lag decide, so a test drives it
+/// with a queue filled as the observer fills it.
+struct Pacing {
     pane_id: PaneId,
     conn: u64,
     /// No full frame sent yet: frames before it are skipped.
@@ -1490,12 +1496,115 @@ struct Watch<'a> {
     lagging: bool,
     /// A full frame was asked for since it caught up.
     asked: bool,
+    /// The latest of its own seqs among the frames skipped.
+    own_seq: u64,
+}
+
+/// What [`Pacing::admit`] makes of a frame.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    /// Skipped (latest-wins).
+    Skip,
+    /// To be sent, with `Frame.last_input_seq` set to `patch` if given;
+    /// `carried` is the consumer's latest echoed seq, should it not get out.
+    Send { patch: Option<u64>, carried: u64 },
+}
+
+impl Pacing {
+    fn new(pane_id: PaneId, conn: u64) -> Self {
+        Self {
+            pane_id,
+            conn,
+            waiting_full: true,
+            lagging: false,
+            asked: false,
+            own_seq: 0,
+        }
+    }
+
+    /// A frame did not fit the queue: skipping, and a full frame is asked for
+    /// again once the consumer caught up, also if the frame missed was the full
+    /// one it waited for.
+    fn take_missed(&mut self, shared: &WatchShared) {
+        if shared.missed.swap(false, Ordering::Acquire) {
+            let seq = shared.missed_seq.swap(0, Ordering::Relaxed);
+            if !self.lagging {
+                tracing::debug!(pane = %self.pane_id, connection = self.conn, "pane.output consumer lags, skipping frames");
+            }
+            self.lagging = true;
+            self.asked = false;
+            self.own_seq = self.own_seq.max(own_seq(seq, self.conn));
+        }
+    }
+
+    /// Start or go on skipping frames; `seq` is the skipped frame's echo.
+    fn skip(&mut self, seq: u64) {
+        if !self.lagging && !self.waiting_full {
+            tracing::debug!(pane = %self.pane_id, connection = self.conn, "pane.output consumer lags, skipping frames");
+            self.asked = false;
+        }
+        if !self.waiting_full {
+            self.lagging = true;
+        }
+        self.own_seq = self.own_seq.max(own_seq(seq, self.conn));
+    }
+
+    /// Frame `n` of the queue: send it or skip it. A delta goes while the
+    /// consumer keeps up (`consumer_lags` false); a full frame always goes, and
+    /// ends the lag only if it is newer than every frame the queue missed: one
+    /// queued before a missed frame shows an older screen than the deltas
+    /// after the missed one assume, so a newer full frame is still due.
+    fn admit(
+        &mut self,
+        shared: &WatchShared,
+        n: u64,
+        head: FrameHead,
+        consumer_lags: impl FnOnce() -> bool,
+    ) -> Admit {
+        self.take_missed(shared);
+        let own = own_seq(head.last_input_seq, self.conn);
+        // What the consumer echoed last, should this frame not get out either.
+        let carried = self.own_seq.max(own);
+        if head.full {
+            let patch = (self.own_seq != 0 && carried != head.last_input_seq).then_some(carried);
+            self.waiting_full = false;
+            if n > shared.missed_upto.load(Ordering::Acquire) {
+                self.lagging = false;
+                self.own_seq = 0;
+            } else {
+                if !self.lagging {
+                    self.asked = false;
+                }
+                self.lagging = true;
+                self.own_seq = carried;
+            }
+            return Admit::Send { patch, carried };
+        }
+        if self.waiting_full || self.lagging {
+            self.own_seq = self.own_seq.max(own);
+            return Admit::Skip;
+        }
+        if consumer_lags() {
+            self.skip(head.last_input_seq);
+            return Admit::Skip;
+        }
+        Admit::Send {
+            patch: None,
+            carried,
+        }
+    }
+}
+
+/// One stream's state of T4.
+struct Watch<'a> {
+    core: &'a Core,
+    out: &'a StreamOut,
+    shared: &'a WatchShared,
+    pacing: Pacing,
     /// The bytes of the chunk that did not get out: the credit to wait for
     /// before a full frame is asked for, so a frame over the credit left is not
     /// asked for again and again.
     need: u64,
-    /// The latest of its own seqs among the frames skipped.
-    own_seq: u64,
     /// The number of the last frame sent.
     sent: u64,
     /// The latest full frame that did not get out (no room, no credit).
@@ -1506,10 +1615,11 @@ impl Watch<'_> {
     /// Until the program exits or the stream is over.
     async fn run(mut self, mut frames: mpsc::Receiver<FrameHeadPacket>) -> Ended {
         loop {
-            self.take_missed();
+            self.pacing.take_missed(self.shared);
             if self.shared.exit.get().is_some() {
                 return self.finish(&mut frames).await;
             }
+            let ask = self.pacing.lagging && !self.pacing.asked;
             tokio::select! {
                 biased;
                 () = self.out.cancelled().cancelled() => return Ended::Gone,
@@ -1524,9 +1634,9 @@ impl Watch<'_> {
                 },
                 () = self.shared.wake.notified() => {}
                 // Credit for the chunk that did not fit, not a byte (T4).
-                () = self.out.caught_up_for(self.need), if self.lagging && !self.asked => {
-                    self.asked = true;
-                    let pane_id = self.pane_id;
+                () = self.out.caught_up_for(self.need), if ask => {
+                    self.pacing.asked = true;
+                    let pane_id = self.pacing.pane_id;
                     let _ = self.core.supervisor.with(move |s| {
                         if let Some(p) = s.panes.get_mut(&pane_id) {
                             ask_full_frame(pane_id, p);
@@ -1551,8 +1661,8 @@ impl Watch<'_> {
                 Step::Failed(err) => return Ended::Failed(err),
             }
         }
-        self.take_missed();
-        if !(self.waiting_full || self.lagging) {
+        self.pacing.take_missed(self.shared);
+        if !(self.pacing.waiting_full || self.pacing.lagging) {
             return Ended::Exit(exit_code);
         }
         let missed = self
@@ -1567,7 +1677,10 @@ impl Watch<'_> {
             .max_by_key(|(n, _, _)| *n)
             .filter(|(n, _, _)| *n > self.sent);
         if let Some((_, head, packet)) = last {
-            let carried = self.own_seq.max(own_seq(head.last_input_seq, self.conn));
+            let carried = self
+                .pacing
+                .own_seq
+                .max(own_seq(head.last_input_seq, self.pacing.conn));
             let patch = (carried != 0 && carried != head.last_input_seq).then_some(carried);
             match output_chunks(&packet, patch, self.limit()) {
                 Ok(chunks) => {
@@ -1579,7 +1692,7 @@ impl Watch<'_> {
                 }
                 Err(FrameError::TooLarge(err)) => return Ended::Failed(too_large(&err)),
                 Err(FrameError::Bad(err)) => {
-                    tracing::warn!(pane = %self.pane_id, "last frame not sent on the bus: {err}");
+                    tracing::warn!(pane = %self.pacing.pane_id, "last frame not sent on the bus: {err}");
                 }
             }
         }
@@ -1601,62 +1714,21 @@ impl Watch<'_> {
         }
     }
 
-    /// A frame did not fit the queue: skipping, and a full frame is asked for
-    /// again once the consumer caught up, also if the frame missed was the full
-    /// one it waited for.
-    fn take_missed(&mut self) {
-        if self.shared.missed.swap(false, Ordering::Acquire) {
-            let seq = self.shared.missed_seq.swap(0, Ordering::Relaxed);
-            if !self.lagging {
-                tracing::debug!(pane = %self.pane_id, connection = self.conn, "pane.output consumer lags, skipping frames");
-            }
-            self.lagging = true;
-            self.asked = false;
-            self.own_seq = self.own_seq.max(own_seq(seq, self.conn));
-        }
-    }
-
-    /// Start or go on skipping frames; `seq` is the skipped frame's echo.
-    fn skip(&mut self, seq: u64) {
-        if !self.lagging && !self.waiting_full {
-            tracing::debug!(pane = %self.pane_id, connection = self.conn, "pane.output consumer lags, skipping frames");
-            self.asked = false;
-        }
-        if !self.waiting_full {
-            self.lagging = true;
-        }
-        self.own_seq = self.own_seq.max(own_seq(seq, self.conn));
-    }
-
     /// Pass frame `n` on or skip it. A frame goes whole or not at all: when its
     /// first chunk finds no credit it is skipped, the rest of a frame whose
     /// first chunk went waits for credit (a frame is at most a few windows,
     /// its images first).
     async fn frame(&mut self, n: u64, head: FrameHead, packet: &Bytes) -> Step {
-        self.take_missed();
-        let own = own_seq(head.last_input_seq, self.conn);
-        let mut patch = None;
-        // What the consumer echoed last, should this frame not get out either.
-        let carried = self.own_seq.max(own);
-        if head.full {
-            if self.own_seq != 0 && carried != head.last_input_seq {
-                patch = Some(carried);
-            }
-            self.waiting_full = false;
-            self.lagging = false;
-            self.own_seq = 0;
-        } else if self.waiting_full || self.lagging {
-            self.own_seq = self.own_seq.max(own);
-            return Step::Go;
-        } else if self.out.is_lagging() {
-            self.skip(head.last_input_seq);
-            return Step::Go;
-        }
+        let out = self.out;
+        let (patch, carried) = match self.pacing.admit(self.shared, n, head, || out.is_lagging()) {
+            Admit::Skip => return Step::Go,
+            Admit::Send { patch, carried } => (patch, carried),
+        };
         let chunks = match output_chunks(packet, patch, self.limit()) {
             Ok(chunks) => chunks,
             Err(FrameError::TooLarge(err)) => return Step::Failed(too_large(&err)),
             Err(FrameError::Bad(err)) => {
-                tracing::warn!(pane = %self.pane_id, "frame not sent on the bus: {err}");
+                tracing::warn!(pane = %self.pacing.pane_id, "frame not sent on the bus: {err}");
                 return Step::Go;
             }
         };
@@ -1667,8 +1739,8 @@ impl Watch<'_> {
                 // No credit: lagging, this frame skipped; a full frame is asked
                 // for once there is credit for this chunk.
                 Err(TrySendError::Full(chunk)) => {
-                    self.skip(0);
-                    self.own_seq = carried;
+                    self.pacing.skip(0);
+                    self.pacing.own_seq = carried;
                     self.need = (chunk.payload.len() as u64).max(1);
                     if head.full {
                         self.unsent = Some((n, head, packet.clone()));
@@ -1926,8 +1998,25 @@ fn read(
                 wait.for_change(&request, first, change).await
             }
         };
-        Ok(json::reply(&ctx, &answer))
+        fits(json::reply(&ctx, &answer))
     }
+}
+
+fn text_too_large() -> BusError {
+    BusError::new(
+        codes::TOO_LARGE,
+        "pane.read: the screen as text is over max_frame",
+    )
+}
+
+/// The reply of `pane.read`, `too_large` past what the envelope takes: JSON
+/// escapes a control character in six bytes, so a reply within it as protobuf
+/// may not be as JSON.
+fn fits(reply: Reply) -> Result<Reply, BusError> {
+    if reply.payload.len() > MAX_CHUNK {
+        return Err(text_too_large());
+    }
+    Ok(reply)
 }
 
 /// The answer to text request `id`: within what the call has left (before its
@@ -1949,10 +2038,7 @@ async fn text_of(
             let reply = reply?;
             // The envelope must fit `max_frame`, JSON or not.
             if reply.encoded_len() > MAX_CHUNK {
-                return Err(BusError::new(
-                    codes::TOO_LARGE,
-                    "pane.read: the screen as text is over max_frame",
-                ));
+                return Err(text_too_large());
             }
             Ok(reply)
         }
@@ -2164,6 +2250,92 @@ mod tests {
         // A frame of text over the window cannot go: too_large, not skipped.
         let err = output_chunks(&frame_packet(frame(50, 0)), None, 1 << 10).unwrap_err();
         assert!(matches!(err, FrameError::TooLarge(_)), "{err:?}");
+    }
+
+    /// What a stream's task passes on of the frames in its queue, the queue
+    /// filled by [`Watcher::offer`] as the observer does: frame numbers sent.
+    fn drain(
+        pacing: &mut Pacing,
+        shared: &WatchShared,
+        frames: &mut mpsc::Receiver<FrameHeadPacket>,
+        sent: &mut Vec<(u64, bool)>,
+    ) {
+        pacing.take_missed(shared);
+        while let Ok((n, head, _)) = frames.try_recv() {
+            if let Admit::Send { .. } = pacing.admit(shared, n, head, || false) {
+                sent.push((n, head.full));
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_frame_queued_before_a_missed_frame_does_not_end_the_lag() {
+        let conn = 1;
+        let shared = Arc::new(WatchShared::default());
+        let (feed, mut frames) = mpsc::channel(FEED);
+        let watcher = Watcher {
+            token: 0,
+            viewer: pane::Viewer::default(),
+            feed,
+            shared: Arc::clone(&shared),
+            conn,
+        };
+        let full = FrameHead {
+            full: true,
+            last_input_seq: 0,
+        };
+        let delta = FrameHead::default();
+        let packet = Bytes::new();
+        let mut pacing = Pacing::new(uuid::Uuid::nil(), conn);
+        let mut sent = Vec::new();
+        // The stream starts: its full frame 1, then a delta.
+        watcher.offer(full, &packet);
+        watcher.offer(delta, &packet);
+        drain(&mut pacing, &shared, &mut frames, &mut sent);
+        // The task waits for credit: its queue fills with full frame 3 and
+        // deltas 4..=18, delta 19 does not fit.
+        watcher.offer(full, &packet);
+        for _ in 4..=19 {
+            watcher.offer(delta, &packet);
+        }
+        drain(&mut pacing, &shared, &mut frames, &mut sent);
+        // Frame 3 went, yet it is older than the missed 19: still lagging, and
+        // a full frame is to be asked for.
+        assert!(pacing.lagging && !pacing.asked);
+        // Delta 20 does not go on the screen of 3; the full frame 21 asked for
+        // ends the lag.
+        watcher.offer(delta, &packet);
+        watcher.offer(full, &packet);
+        watcher.offer(delta, &packet);
+        drain(&mut pacing, &shared, &mut frames, &mut sent);
+        assert!(!pacing.lagging);
+        assert_eq!(
+            sent,
+            [(1, true), (2, false), (3, true), (21, true), (22, false)]
+        );
+        // Each delta sent follows the frame sent before it.
+        for pair in sent.windows(2) {
+            assert!(pair[1].1 || pair[1].0 == pair[0].0 + 1, "{sent:?}");
+        }
+    }
+
+    #[test]
+    fn a_text_reply_over_max_frame_as_json_is_too_large() {
+        // Control characters: a byte each in protobuf, six in JSON.
+        let text = pane::ReadReply {
+            lines: vec!["\u{1}".repeat(4 << 20)],
+            ..Default::default()
+        };
+        assert!(text.encoded_len() <= MAX_CHUNK);
+        assert!(fits(Reply::encode(&text)).is_ok());
+        let err = fits(Reply::new(text.to_json().to_string())).unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.message.as_str()),
+            (
+                codes::TOO_LARGE,
+                "pane.read: the screen as text is over max_frame"
+            )
+        );
     }
 
     #[test]

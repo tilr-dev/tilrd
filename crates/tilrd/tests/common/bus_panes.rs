@@ -133,7 +133,18 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// Apply a frame. A delta changes the screen of the frame before it, so it
+    /// must follow that one's seq; a full frame starts anew.
     pub fn apply(&mut self, frame: &Frame) {
+        if !frame.full {
+            let last = self.frame.as_ref().map(|last| last.seq);
+            assert_eq!(
+                last,
+                Some(frame.seq - 1),
+                "pane.output: delta {} does not follow the last frame ({last:?}); a frame was lost",
+                frame.seq
+            );
+        }
         if frame.full {
             self.rows = vec![String::new(); frame.rows as usize];
             self.full_frames += 1;

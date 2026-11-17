@@ -560,21 +560,24 @@ async fn reading_a_pane_and_waiting_for_a_change() {
 
     // Waiting for a change: answered when a client types, about 1 s later. The
     // shell may still draw after its prompt; wait until its screen holds still.
-    let mut first = first;
-    loop {
-        let next = read_now(ReadRequest {
-            pane_id: info.pane_id.clone(),
-            since_seq: Some(first.seq),
-            wait_ms: Some(300),
-            ..Default::default()
-        })
-        .await;
-        let still = next.seq == first.seq;
-        first = next;
-        if still {
-            break;
+    let first = within(async {
+        let mut first = first;
+        loop {
+            let next = read_now(ReadRequest {
+                pane_id: info.pane_id.clone(),
+                since_seq: Some(first.seq),
+                wait_ms: Some(300),
+                ..Default::default()
+            })
+            .await;
+            let still = next.seq == first.seq;
+            first = next;
+            if still {
+                break first;
+            }
         }
-    }
+    })
+    .await;
     // The read waits once its call is in: a call sent after it on the same
     // connection is answered first (calls of a connection run in order).
     let mut waiting = server.raw_greeted("waiting-reader", Vec::new()).await;
@@ -1179,10 +1182,234 @@ async fn a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled() {
     assert!(list(&owner).await.iter().any(|p| p.pane_id == deaf.pane_id));
 }
 
+#[tokio::test]
+async fn a_finished_command_is_a_pane_event() {
+    let server = start();
+    let owner = server.owner().await;
+    let info = create_shell(&owner).await;
+    let (fifo, mut release) = common::activity_fifo(&server, "finish-release");
+    let command = common::script(
+        &server,
+        "foreground.sh",
+        &format!(
+            "printf 'foreground-ready\\n'\nread -r _ < '{}'\n",
+            fifo.display()
+        ),
+    );
+    raw(&owner, &info.pane_id, &format!("{command}\n"))
+        .await
+        .unwrap();
+    wait_text(&owner, &info.pane_id, |lines| {
+        lines.iter().any(|line| line == "foreground-ready")
+    })
+    .await;
+    // Subscribed once the command runs in the foreground: what comes is its end.
+    let mut events = owner.subscribe("pane.command_finished").await.unwrap();
+    common::release_activity_fifo(&mut release);
+    let event = within(events.next()).await.expect("the subscription ended");
+    assert_eq!(event.subject, "pane.command_finished");
+    assert_eq!(event.scope, format!("pane:{}", info.pane_id));
+    assert_eq!(event.from, "tilrd");
+    let finished = PaneActivity::decode(event.payload).unwrap();
+    assert_eq!(finished.pane_id, info.pane_id);
+    assert_eq!(finished.kind, PaneActivityKind::CommandFinished as i32);
+    assert!(finished.at_ms > 0);
+}
+
+/// Kitty graphics: transmit image `id`, `side` x `side` pixels of noise (its
+/// PNG about as large as its pixels), and place it at the cursor.
+fn kitty_noise(id: u32, side: usize) -> Vec<u8> {
+    use base64::Engine;
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ u64::from(id);
+    let pixels: Vec<u8> = (0..side * side * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 32) as u8
+        })
+        .collect();
+    let data = base64::engine::general_purpose::STANDARD.encode(&pixels);
+    let parts: Vec<&[u8]> = data.as_bytes().chunks(4096).collect();
+    let mut out = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        let more = u8::from(i + 1 < parts.len());
+        let head = if i == 0 {
+            format!("\x1b_Ga=T,f=24,s={side},v={side},c=12,r=6,i={id},q=2,m={more};")
+        } else {
+            format!("\x1b_Gm={more};")
+        };
+        out.extend_from_slice(head.as_bytes());
+        out.extend_from_slice(part);
+        out.extend_from_slice(b"\x1b\\");
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_frame_over_the_window_goes_whole_to_a_reader_short_of_credit() {
+    use tilr_bus::pane::{PaneOutput, pane_output::Output};
+    const WINDOW: u32 = 64 << 10;
+    let server = start();
+    let owner = server.owner().await;
+    // Three images of some 43 KiB each: two do not fit the window together.
+    let images = server.dir.join("images");
+    let shown: Vec<u8> = (1..=3).flat_map(|id| kitty_noise(id, 120)).collect();
+    std::fs::write(&images, shown).unwrap();
+    let info = create(
+        &owner,
+        100,
+        30,
+        sh(&format!(
+            "stty -echo; cat '{}'; echo; echo sh''own; read x",
+            images.display()
+        )),
+    )
+    .await;
+    wait_text(&owner, &info.pane_id, |lines| {
+        lines.iter().any(|line| line == "shown")
+    })
+    .await;
+
+    // Its first frame is full, with every image in view: more than the window.
+    // The reader credits each chunk once it read it, so the second chunk waits.
+    let mut reader = server.raw_greeted("short-of-credit", Vec::new()).await;
+    open_output(&mut reader, 1, &info.pane_id, WINDOW).await;
+    let mut screen = Screen::default();
+    let mut run: Vec<(u32, u64)> = Vec::new();
+    let frame = within(async {
+        loop {
+            let chunk = match reader.recv().await {
+                Some(Msg::Chunk(chunk)) => chunk,
+                other => panic!("images without their frame, then {other:?}; images {run:?}"),
+            };
+            assert_eq!(chunk.id, 1);
+            let bytes = chunk.payload.len() as u32;
+            assert!(bytes <= WINDOW, "a chunk of {bytes} bytes");
+            let payload = tilr_bus::Chunk {
+                payload: chunk.payload,
+                content_encoding: chunk.content_encoding,
+            }
+            .bytes()
+            .unwrap();
+            let output = PaneOutput::decode(payload.as_ref()).unwrap();
+            reader.send(Msg::Credit(Credit { id: 1, bytes })).await;
+            match output.output {
+                Some(Output::Images(images)) => {
+                    for image in images.images {
+                        let key = (image.id, image.generation);
+                        assert!(!run.contains(&key), "image {key:?} twice: {run:?}");
+                        run.push(key);
+                    }
+                }
+                Some(Output::Frame(frame)) => {
+                    screen.apply(&frame);
+                    break frame;
+                }
+                None => panic!("an empty chunk"),
+            }
+        }
+    })
+    .await;
+    assert!(frame.full);
+    let mut placed: Vec<(u32, u64)> = frame
+        .placements
+        .iter()
+        .map(|p| (p.image_id, p.image_generation))
+        .collect();
+    placed.sort_unstable();
+    run.sort_unstable();
+    assert_eq!(placed.iter().map(|p| p.0).collect::<Vec<_>>(), [1, 2, 3]);
+    assert_eq!(run, placed, "the images the frame places, each once");
+    assert!(screen.text().contains("shown"));
+}
+
 #[cfg(feature = "failpoints")]
 mod failpoints {
     use super::*;
     use common::PauseController;
+
+    /// What each pane call naming `pane_id` is answered: its error's code and
+    /// message.
+    async fn pane_errors(bus: &Bus, pane_id: &str) -> Vec<(&'static str, (String, String))> {
+        let error = |method: &'static str, result: Result<(), BusError>| {
+            let err = result.expect_err(method);
+            (method, (err.code, err.message))
+        };
+        let closed = call::<_, CloseReply>(
+            bus,
+            "pane.close",
+            &CloseRequest {
+                pane_id: pane_id.into(),
+            },
+        )
+        .await
+        .map(drop);
+        let typed = raw(bus, pane_id, "x").await.map(drop);
+        let resized = call::<_, InputAck>(
+            bus,
+            "pane.resize",
+            &ResizeRequest {
+                pane_id: pane_id.into(),
+                cols: 60,
+                rows: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .map(drop);
+        let text = read(
+            bus,
+            &ReadRequest {
+                pane_id: pane_id.into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .map(drop);
+        let watched = match Watching::open(bus, pane_id).await {
+            Err(err) => Err(err),
+            Ok(mut watching) => match watching.next_frame().await {
+                Some(Err(err)) => Err(err),
+                other => panic!("pane.output of {pane_id}: {other:?}"),
+            },
+        };
+        vec![
+            error("pane.close", closed),
+            error("pane.input", typed),
+            error("pane.resize", resized),
+            error("pane.read", text),
+            error("pane.output", watched),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_pane_the_caller_may_not_access_is_answered_as_a_missing_one() {
+        let server = start();
+        let owner = server.owner().await;
+        let info = create_shell(&owner).await;
+        let missing = uuid::Uuid::new_v4().to_string();
+        // The authorizer refuses every pane from here on.
+        std::fs::write(server.dir.join("failpoints"), "bus-pane-access=error").unwrap();
+        let refused = pane_errors(&owner, &info.pane_id).await;
+        let absent = pane_errors(&owner, &missing).await;
+        let answer = |pane_id: &str| {
+            (
+                codes::NOT_FOUND.to_owned(),
+                format!("no such pane: {pane_id}"),
+            )
+        };
+        for ((method, refused), (_, absent)) in refused.iter().zip(&absent) {
+            assert_eq!(refused, &answer(&info.pane_id), "{method}");
+            assert_eq!(absent, &answer(&missing), "{method}");
+        }
+        assert_eq!(refused.len(), 5);
+        assert!(list(&owner).await.is_empty());
+        // The pane ran all along.
+        clear(&server);
+        let listed: Vec<String> = list(&owner).await.into_iter().map(|p| p.pane_id).collect();
+        assert_eq!(listed, [info.pane_id]);
+    }
 
     fn pause(server: &BusServer, point: &str) {
         std::fs::write(server.dir.join("failpoints"), format!("{point}=pause")).unwrap();

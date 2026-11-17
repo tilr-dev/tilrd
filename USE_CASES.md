@@ -839,12 +839,17 @@ Helpers: `tests/common/bus_panes.rs`.
 | `pane.applied` closes a pane it sent numbered input to that does not answer within 5 s and leaves panes it did not alone | `bus_terminal::failpoints::a_stuck_pane_is_closed_by_pane_applied` |
 | A reader of `pane.output` that stops reading holds up no other reader of its pane, no other pane and no input; reading again, it gets the screen as it is then | `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader` |
 | A pane call past its deadline is answered `timeout` and its handler stopped: an input that is never applied, a `pane.output` whose caller is then no viewer | `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled` |
+| A finished foreground command is the event `pane.command_finished`, scoped to the pane, from `tilrd` | `bus_terminal::a_finished_command_is_a_pane_event` |
+| A frame over a reader's window goes whole while it is short of credit: each image once, in image chunks no larger than the window, then the frame that places them | `bus_terminal::a_frame_over_the_window_goes_whole_to_a_reader_short_of_credit` |
+| A pane the caller may not access is answered `not_found` `no such pane: <id>` by every pane call, as a missing pane is, and is not listed | `bus_terminal::failpoints::a_pane_the_caller_may_not_access_is_answered_as_a_missing_one` |
 | Payloads pass byte for byte, whatever their content type | `bus::payloads_pass_byte_for_byte` |
 | The core's methods answer JSON to JSON (proto3 JSON: lowerCamel names, 64-bit integers as strings) and protobuf to protobuf | `bus::core_methods_answer_json_to_json` |
 | Unit: a frame goes on the bus as the pane encoded it, only its wrapping tag changed | `supervisor::bus::core::panes::tests::a_frame_goes_on_the_bus_as_the_pane_encoded_it` |
 | Unit: the full frame after a lag carries the consumer's latest skipped seq | `supervisor::bus::core::panes::tests::a_frame_after_lag_carries_the_consumers_seq` |
 | Unit: a frame over the largest chunk sends its images first | `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first` |
 | Unit: a frame is split to the stream's window, images first; a frame of text over it is `too_large` | `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window` |
+| Unit: a full frame queued before a frame that did not fit the stream's queue is sent but does not end the lag; every delta sent follows the frame before it | `supervisor::bus::core::panes::tests::a_full_frame_queued_before_a_missed_frame_does_not_end_the_lag` |
+| Unit: a `pane.read` reply over `max_frame` as JSON (control characters escaped) is `too_large`, though it fits as protobuf | `supervisor::bus::core::panes::tests::a_text_reply_over_max_frame_as_json_is_too_large` |
 | Unit: a consumer's own seqs are told apart by connection | `supervisor::bus::core::panes::tests::own_seqs_are_told_apart_by_connection` |
 | Unit: numbered input identities differ by identity and client id | `supervisor::bus::core::panes::tests::numbered_identities_differ_by_identity_and_client_id` |
 | Unit: base64 of proto3 JSON reads back what it writes | `supervisor::bus::core::json::tests::base64_reads_back_what_it_writes` |
