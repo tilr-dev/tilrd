@@ -64,47 +64,22 @@ pub enum TcpAuth {
     Credential(Credential),
 }
 
-/// The test runtime, `<target>/<profile>/examples/test_runtime` beside this test's
-/// executable (`<target>/<profile>/deps/`). Built here once per test process with
-/// `cargo build -p tilr-bus --example test_runtime --locked` for the same target
-/// directory and profile, so a test never runs a missing or stale one; cargo's
-/// lock serializes the processes that build it at once, and a fresh one is a no-op.
+/// The test runtime, `<target>/<profile>/examples/test_runtime` beside `tilrd`
+/// (`<target>/<profile>/tilrd`, wherever Cargo keeps this test's executable: in
+/// `<profile>/deps/` before Cargo 1.100, under its build directory from 1.100 on).
+/// A workspace test run builds it with tilr-bus's tests (`cargo nextest run
+/// --workspace`); the test does not run cargo itself, whose builds from inside a
+/// test see the test's environment and rebuild what the outer build made.
 pub fn test_runtime_path() -> PathBuf {
-    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let exe = std::env::current_exe().unwrap();
-            let profile_dir = exe.parent().unwrap().parent().unwrap();
-            let target_dir = profile_dir.parent().unwrap();
-            // `debug` is the directory of the profile `dev`.
-            let profile = match profile_dir.file_name().unwrap().to_str().unwrap() {
-                "debug" => "dev",
-                other => other,
-            };
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let status = Command::new(cargo)
-                .args([
-                    "build",
-                    "-p",
-                    "tilr-bus",
-                    "--example",
-                    "test_runtime",
-                    "--locked",
-                ])
-                .arg("--profile")
-                .arg(profile)
-                .arg("--target-dir")
-                .arg(target_dir)
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .stdin(Stdio::null())
-                .status()
-                .expect("run cargo to build the test runtime");
-            assert!(status.success(), "building the test runtime failed");
-            let path = profile_dir.join("examples").join("test_runtime");
-            assert!(path.exists(), "{} was not built", path.display());
-            path
-        })
-        .clone()
+    let profile_dir = Path::new(env!("CARGO_BIN_EXE_tilrd")).parent().unwrap();
+    let name = format!("test_runtime{}", std::env::consts::EXE_SUFFIX);
+    let path = profile_dir.join("examples").join(&name);
+    assert!(
+        path.is_file(),
+        "no {}: cargo build -p tilr-bus --example test_runtime (a workspace test run builds it)",
+        path.display()
+    );
+    path
 }
 
 impl BusServer {

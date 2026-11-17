@@ -194,8 +194,9 @@ What the code froze where it differs from the contract above; the code is the co
 - **Test harness.** `BusServer::start` runs `--listen 127.0.0.1:0` (the `tilr.v1` harness's
   `Server::start_full`), not `--no-listen`, and derefs to `Server`. It adds `raw()` /
   `raw_greeted()` (envelopes by hand) and `greeted(name)` / `wait_greeted` (by the log line
-  `participant greeted`). It builds the test runtime itself, once per test process (`cargo build
-  -p tilr-bus --example test_runtime --locked`, same profile and target directory), so a test
-  does not depend on a prebuilt example.
+  `participant greeted`). It runs the test runtime from `examples/` beside the `tilrd` it tests
+  (`CARGO_BIN_EXE_tilrd`, the same on every Cargo layout), built by the workspace test run with
+  tilr-bus's tests. It does not run cargo itself: a build from inside a test sees the test's
+  environment and rebuilds what the outer build made, every run.
 - **Emits from participants** to a reserved or invalid subject are dropped (no reply exists for
   an `Event`), with an audit line.

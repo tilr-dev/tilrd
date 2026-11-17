@@ -7,11 +7,10 @@
 
 mod common;
 
-use std::time::Duration;
-
 use bytes::Bytes;
 use common::bus::{BusOptions, BusServer, TcpAuth, text};
 use common::{Client, TIMEOUT};
+use futures_util::FutureExt;
 use tilr_bus::bus::{
     Call, Cancel, Chunk, End, Envelope, Hello, Lane, MethodSpec, PingReply, PingRequest,
     Reply as WireReply, Select, envelope::Msg, reply,
@@ -41,6 +40,27 @@ fn call(id: u64, method: &str, payload: &str) -> Msg {
         payload: Bytes::copy_from_slice(payload.as_bytes()),
         ..Call::default()
     })
+}
+
+/// Ping the broker from `raw` and return what came before the answer: the broker
+/// handles what one connection sends in order and queues what it sends to one in
+/// order, so everything for `raw` from before the ping is in this list.
+async fn before_a_ping(raw: &mut common::bus::Raw, id: u64) -> Vec<Msg> {
+    raw.send(Msg::Call(Call {
+        id,
+        method: "bus.ping".into(),
+        target: "tilrd".into(),
+        ..Call::default()
+    }))
+    .await;
+    let mut before = Vec::new();
+    loop {
+        match raw.recv().await {
+            Some(Msg::Reply(reply)) if reply.id == id => return before,
+            Some(msg) => before.push(msg),
+            None => panic!("closed while pinging; before it: {before:?}"),
+        }
+    }
 }
 
 fn connection_error(msg: Option<Msg>) -> (String, String) {
@@ -136,7 +156,8 @@ async fn the_first_thing_a_participant_hears_is_its_hello_ack() {
     };
     assert_eq!(ack.identity, "owner");
     // Nothing of what happened before Hello follows it.
-    assert!(raw.recv_within(Duration::from_millis(300)).await.is_none());
+    let before = before_a_ping(&mut raw, 1).await;
+    assert!(before.is_empty(), "after HelloAck: {before:?}");
 }
 
 #[tokio::test]
@@ -238,17 +259,31 @@ async fn from_is_always_the_callers_identity() {
     assert_eq!(text(&payload), "owner");
 
     // A reply is taken only from the connection the call went to: a forged one
-    // from another connection is dropped.
+    // from another connection is dropped. The provider answers once the broker
+    // has taken every forged reply.
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (started_tx, started) = tokio::sync::oneshot::channel::<()>();
+    let started_tx = std::sync::Mutex::new(Some(started_tx));
     let slow = server
         .owner_with(ConnectOptions::new("slow").provide(
             MethodSpec::unary("test.slow"),
-            Handler::unary(|_: Request| async {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                Ok("real")
+            Handler::unary({
+                let release = release.clone();
+                move |_: Request| {
+                    if let Some(tx) = started_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    let release = release.clone();
+                    async move {
+                        release.notified().await;
+                        Ok("real")
+                    }
+                }
             }),
         ))
         .await;
     t1.send(call(2, "test.slow", "")).await;
+    started.await.expect("test.slow was called");
     let mut forger = server.raw_greeted("forger", Vec::new()).await;
     for id in 0..64 {
         forger
@@ -259,6 +294,8 @@ async fn from_is_always_the_callers_identity() {
             }))
             .await;
     }
+    before_a_ping(&mut forger, 1000).await;
+    release.notify_one();
     let reply = t1
         .wait_for(|msg| match msg {
             Msg::Reply(reply) if reply.id == 2 => Some(reply.clone()),
@@ -336,9 +373,16 @@ async fn last_active_goes_to_the_provider_that_activated_last() {
     for _ in 0..3 {
         assert_eq!(owner_calls(&owner, "ui.notify", "").await.unwrap(), "w-1");
     }
-    // The active one gone: the other.
+    // The active one gone (the broker logs it once it has let go): the other.
+    let gone = format!("connection={} ", w1.connection_id());
     drop(w1);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    server
+        .wait_log("w-1 is not gone", |lines| {
+            lines
+                .iter()
+                .any(|line| line.contains("bus participant gone") && line.contains(&gone))
+        })
+        .await;
     assert_eq!(owner_calls(&owner, "ui.notify", "").await.unwrap(), "w-2");
     drop(w2);
 }
@@ -369,12 +413,10 @@ async fn reserved_namespaces_cannot_be_provided() {
     owner.emit("pane.created", "forged").await.unwrap();
     let mut probe = owner.subscribe("probe.*").await.unwrap();
     owner.emit("probe.x", "").await.unwrap();
+    // The client hands events to its subscriptions in the order they came, so a
+    // forged pane.created would be waiting by the time probe.x is.
     assert_eq!(probe.next().await.unwrap().subject, "probe.x");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), events.next())
-            .await
-            .is_err()
-    );
+    assert!(events.next().now_or_never().is_none());
 }
 
 #[tokio::test]
@@ -457,23 +499,18 @@ async fn a_stream_is_a_call_answered_in_chunks() {
         reason: "enough".into(),
     }))
     .await;
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    loop {
-        let records = owner_calls(&owner, "test.records", "").await.unwrap();
-        if records
+    // `test.records 1` answers once the provider recorded something: only a
+    // cancelled handler records here. Its reply comes after the chunks the
+    // provider sent, so those are queued for `raw` before the ping's answer.
+    let records = owner_calls(&owner, "test.records", "1").await.unwrap();
+    assert!(
+        records
             .lines()
-            .any(|line| line.starts_with("cancelled test.count"))
-        {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no cancel recorded: {records}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+            .any(|line| line.starts_with("cancelled test.count")),
+        "no cancel recorded: {records}"
+    );
     // Chunks already on their way may still come; no End, no reply.
-    while let Some(msg) = raw.recv_within(Duration::from_millis(300)).await {
+    for msg in before_a_ping(&mut raw, 8).await {
         match msg {
             Msg::Chunk(chunk) => assert_eq!(chunk.id, 7),
             other => panic!("after Cancel: {other:?}"),
@@ -530,12 +567,9 @@ async fn a_stream_is_a_call_answered_in_chunks() {
             payload: Bytes::new(),
         }))
         .await;
-    assert!(
-        caller
-            .recv_within(Duration::from_millis(200))
-            .await
-            .is_none()
-    );
+    before_a_ping(&mut provider, 100).await;
+    let before = before_a_ping(&mut caller, 101).await;
+    assert!(before.is_empty(), "after bad_reply: {before:?}");
 }
 
 #[tokio::test]
