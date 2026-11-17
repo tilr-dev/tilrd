@@ -4,8 +4,9 @@
 //! root key, holds the participant, its rights and the checks that bind it to the
 //! server and its expiry. A holder may append a block of checks with no key of the
 //! server; the server then enforces every block on every request. An appended block
-//! cannot add a right: the server's policies read the authority block only, so a
-//! fact such as `call_any()` written in an appended block grants nothing.
+//! cannot add a right: the server refuses a token whose appended block holds facts
+//! or rules (such as `call_any()`), so an appended block holds checks only, and
+//! those checks test the facts of the request.
 //!
 //! What a check of an appended block can test, per request (the server supplies
 //! these facts): `kind(k)` (`call`, `control`, `control_gate`, `provide`, `emit`,
@@ -21,8 +22,9 @@ use crate::{BusError, Credential};
 
 impl Credential {
     /// This token with one more block appended: `block` is Biscuit Datalog,
-    /// normally `check if ...;` lines (`check if target("instance:t-2");`). Needs no
-    /// key of the server; the server enforces the new block with the earlier ones.
+    /// `check if ...;` lines (`check if target("instance:t-2");`); the server refuses
+    /// a token whose appended block holds facts or rules. Needs no key of the server;
+    /// the server enforces the new block with the earlier ones.
     /// At most 8 blocks and 16 KiB are accepted by the server.
     pub fn attenuate(&self, block: &str) -> Result<Credential, BusError> {
         let token = biscuit_auth::UnverifiedBiscuit::from(self.as_bytes().as_ref())
