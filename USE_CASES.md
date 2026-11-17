@@ -948,3 +948,21 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
 | `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
 | A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
+
+## The core's services on the bus — `tests/bus_terminal.rs`, `tests/reload.rs`, `tests/update.rs`
+
+Change `bus-core-services`: `server.*`, `fs.*`, `exec.*`, `clipboard.*` and `pane.copied`.
+
+| Use case | Test |
+|---|---|
+| `tilrd` is the provider of the pane and service methods; the streams among them are on the bulk lane | `bus_terminal::services::tilrd_provides_the_terminal_methods` |
+| `server.info` says what `tilr.v1`'s HelloAck says, in protobuf and JSON; a feature turned off is not listed and its methods are `not_found`, server commands still run | `bus_terminal::services::server_info_describes_the_server` |
+| Files are made, written in chunks (there only after the last), listed, looked at, renamed and deleted by calls; a watch emits `fs.changed.<id>` until `fs.unwatch`; a path outside the roots is refused with a message for the user; JSON for scripts | `bus_terminal::services::files_are_listed_changed_and_watched_on_the_bus` |
+| `fs.read` streams a 4 MiB file whole, each chunk within a 256 KiB window, or a part of it; a failed read ends the stream with the error; a refused upload gets the error for that chunk and each later one, the file stays | `bus_terminal::services::file_content_moves_in_chunks` |
+| `exec.run` streams `started`, stdout and stderr apart and the exit; `exec.input` answers what the program took; `exec.signal` signals it; another connection's program is `not_found`, a program that is not there `spawn_failed` | `bus_terminal::services::a_program_runs_on_the_bus_and_its_outputs_come_apart` |
+| Cancelling an `exec.run` stream kills the program's whole group (a child holding a FIFO open goes too) | `bus_terminal::services::a_cancelled_program_ends_with_its_group` |
+| `server.command` runs the server's own executable for the owner on the Unix socket; on TCP, even with the access token, it is `denied` | `bus_terminal::services::server_commands_are_taken_on_the_unix_socket_only` |
+| A copy made in a pane (OSC 52) is the event `pane.copied` with scope `pane:<id>`; `clipboard.get` streams it until a newer copy replaces it, then `not_found` | `bus_terminal::services::a_copy_in_a_pane_is_an_event_and_its_content_a_stream` |
+| `clipboard.put` takes content in chunks that a pane's `xclip` reads once the last is answered; over `clipboard_max_bytes` the transfer is refused, every chunk of it | `bus_terminal::services::the_shared_clipboard_takes_an_upload_in_chunks` |
+| `server.reload` is answered, the connection ends with the exec, and the pane keeps running with the same pid | `reload::a_reload_asked_on_the_bus_keeps_the_panes` |
+| `server.update` streams the output of `tilrd update` and ends with its exit | `update::an_update_asked_on_the_bus_streams_its_progress` |
