@@ -428,7 +428,7 @@ command = ["/bin/sh"]                    # absent or empty: your login shell
 cwd = "~/work"                           # absolute or ~; never relative
 [env]                                    # set over the server's environment
 GREETING = "hi"                          # not TILR_*; TERM, COLORTERM, SHELL stay the server's
-[sandbox]                                # optional; read, never enforced before the sandbox changes
+[sandbox]                                # optional; the profile is refused until this server can enforce it
 read_only = ["~/docs"]
 read_write = ["~/work"]
 executables = ["/usr/bin/git"]
@@ -438,11 +438,16 @@ network = "none"                         # "none" (default), "client" or "server
 
 - **Names, never paths.** A profile name matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`;
   anything else is refused before the server looks at a file.
-- **The files are yours alone**, as ssh checks `authorized_keys`: a profile (a symlink
-  to a regular file is fine) and the directory must be owned by the server's user and
-  not writable by group or others, else the profile does not load
-  (`... is writable by others`, `... is owned by uid N`). A sandbox profile anyone can
-  edit would turn the sandbox off.
+- **The files are yours alone**, checked as sshd checks `authorized_keys` (StrictModes):
+  the server opens the profile once without blocking and judges the opened file: a
+  regular file (a symlink to one is fine), owned by the server's user or root, not
+  writable by group or others, at most 64 KiB. Every directory of its real path (after
+  symlinks) and of the profiles directory, up to `/` or up to and including your home
+  directory, must be owned by you or root and not writable by group or others; `/tmp`
+  and other world-writable directories are refused, sticky or not. Else the profile does
+  not load (`... is writable by others`, `... is owned by uid N`, `... is not a regular
+  file`, `... is larger than 65536 bytes`). A sandbox profile anyone can edit would turn
+  the sandbox off.
 - **Strict.** An unknown key or a value of the wrong type makes the profile invalid;
   `pane.create` with it says which file and why. Paths are absolute or start with `~`
   (the home directory); `.` and `..` are folded. `[env]` names are not empty, have no
@@ -455,8 +460,8 @@ network = "none"                         # "none" (default), "client" or "server
   (else the profile's, else the home directory). Nothing in a request changes `[env]`
   or `[sandbox]`.
 - **`pane.profiles`** lists the profiles, sorted by name, with their `description`,
-  whether they have a `[sandbox]` and, for one that does not load, the `error`
-  `pane.create` would give.
+  whether they have a `[sandbox]` (said of an invalid one too, when its file was read
+  and is TOML) and, for one that does not load, the `error` `pane.create` would give.
 - A profile with a `[sandbox]` table is refused (`profile <name> asks for a sandbox,
   which this server cannot enforce`) on a server that cannot enforce it, and nothing
   starts.

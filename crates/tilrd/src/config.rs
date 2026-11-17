@@ -167,25 +167,23 @@ pub fn allow_origins(cli: Vec<String>, config: &Config) -> Vec<String> {
     }
 }
 
-/// The directory launch profiles are read from: the file's `profiles_dir` (absolute
-/// or `~`), else `profiles/` in the directory of the configuration file in use (`path`
-/// is `--config`; without it the default one).
-pub fn profiles_dir(path: Option<&Path>, config: &Config) -> Result<PathBuf> {
+/// The directory launch profiles are read from, absolute: the file's `profiles_dir`
+/// (absolute or `~`; anything else is an error), else `profiles/` in the directory of
+/// the configuration file in use (`path` is `--config`; without it the default one),
+/// made absolute against the directory the server starts in. `None`: no configuration
+/// file to be next to, so no profiles.
+pub fn profiles_dir(path: Option<&Path>, config: &Config) -> Result<Option<PathBuf>> {
     if let Some(dir) = &config.profiles_dir {
         let home = crate::profile::home();
-        return crate::profile::resolve_dir(dir, home.as_deref())
+        return crate::profile::resolve_path(dir, home.as_deref())
+            .map(Some)
             .map_err(|err| anyhow::anyhow!("profiles_dir {dir:?}: {err}"));
     }
-    let file = match path {
-        Some(path) => Some(path.to_path_buf()),
-        None => default_path(),
+    let Some(file) = path.map(Path::to_path_buf).or_else(default_path) else {
+        return Ok(None);
     };
-    let dir = file
-        .as_deref()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    Ok(dir.join("profiles"))
+    let dir = file.parent().unwrap_or(Path::new("")).join("profiles");
+    Ok(Some(std::path::absolute(&dir)?))
 }
 
 /// Whether to serve the SOCKS proxy: `--socks` turns it on, else the file
@@ -226,16 +224,28 @@ mod tests {
         let config = Config::default();
         assert_eq!(
             profiles_dir(Some(Path::new("/etc/tilr/my.toml")), &config).unwrap(),
-            Path::new("/etc/tilr/profiles")
+            Some(PathBuf::from("/etc/tilr/profiles"))
         );
         let config: Config = toml::from_str("profiles_dir = \"/srv/profiles\"").unwrap();
         assert_eq!(
             profiles_dir(Some(Path::new("/etc/tilr/my.toml")), &config).unwrap(),
-            Path::new("/srv/profiles")
+            Some(PathBuf::from("/srv/profiles"))
         );
         let config: Config = toml::from_str("profiles_dir = \"relative\"").unwrap();
         let err = profiles_dir(None, &config).unwrap_err().to_string();
         assert!(err.contains("profiles_dir"), "{err}");
+    }
+
+    #[test]
+    fn a_relative_configuration_file_gives_an_absolute_profiles_dir() {
+        let cwd = std::env::current_dir().unwrap();
+        for (file, dir) in [("conf/my.toml", "conf/profiles"), ("my.toml", "profiles")] {
+            let got = profiles_dir(Some(Path::new(file)), &Config::default())
+                .unwrap()
+                .unwrap();
+            assert!(got.is_absolute(), "{}", got.display());
+            assert_eq!(got, cwd.join(dir));
+        }
     }
 
     #[test]

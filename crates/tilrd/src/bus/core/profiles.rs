@@ -161,12 +161,14 @@ pub fn prepare_create(
             overrides,
         },
     )?;
-    resolve_in(profile::dir(), request)
+    resolve_in(profile::dir(), profile::home().as_deref(), request)
 }
 
-/// [`prepare_create`] without the authorizer, over the directory `dir`.
+/// [`prepare_create`] without the authorizer, over the directory `dir`, for the user
+/// whose home directory is `home`.
 fn resolve_in(
     dir: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
     request: &CreateRequest,
 ) -> Result<Option<Resolved>, BusError> {
     if request.profile.is_empty() {
@@ -176,9 +178,8 @@ fn resolve_in(
     if !profile::valid_name(name) {
         return Err(refused(name, &Error::BadName(name.clone())));
     }
-    let home = profile::home();
     let snapshot = match dir {
-        Some(dir) => profile::load(dir, name, home.as_deref()),
+        Some(dir) => profile::load(dir, name, home),
         None => Err(Error::NoSuch(name.clone())),
     }
     .map_err(|err| refused(name, &err))?;
@@ -224,21 +225,14 @@ fn refused(name: &str, err: &Error) -> BusError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::profile::tests::{Scratch, write};
+    use std::path::Path;
 
-    fn dir_with(files: &[(&str, &str)]) -> PathBuf {
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "tilrd-profiles-test-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    /// A profiles directory in `tree` holding `files` (mode 0600).
+    fn dir_with(tree: &Scratch, files: &[(&str, &str)]) -> PathBuf {
+        let dir = tree.dir("profiles");
         for (name, text) in files {
-            let file = dir.join(name);
-            std::fs::write(&file, text).unwrap();
-            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            write(&dir, name, text, 0o600);
         }
         dir
     }
@@ -252,68 +246,77 @@ mod tests {
         }
     }
 
-    fn err(dir: &std::path::Path, request: &CreateRequest) -> String {
-        resolve_in(Some(dir), request).unwrap_err().message
+    fn resolve(
+        tree: &Scratch,
+        dir: &Path,
+        request: &CreateRequest,
+    ) -> Result<Option<Resolved>, BusError> {
+        resolve_in(Some(dir), tree.home(), request)
+    }
+
+    fn err(tree: &Scratch, dir: &Path, request: &CreateRequest) -> String {
+        resolve(tree, dir, request).unwrap_err().message
     }
 
     #[test]
     fn no_profile_is_left_to_pane_create() {
-        let dir = dir_with(&[]);
-        assert_eq!(resolve_in(Some(&dir), &request("", &["x"], "")), Ok(None));
-        std::fs::remove_dir_all(&dir).ok();
+        let tree = Scratch::new();
+        let dir = dir_with(&tree, &[]);
+        assert_eq!(resolve(&tree, &dir, &request("", &["x"], "")), Ok(None));
     }
 
     #[test]
     fn a_bad_name_is_refused_before_any_file_is_touched() {
-        let dir = dir_with(&[]);
+        let tree = Scratch::new();
+        let dir = dir_with(&tree, &[]);
         for name in ["../server", "/etc/passwd", ".hidden", "a/b"] {
             assert_eq!(
-                err(&dir, &request(name, &[], "")),
+                err(&tree, &dir, &request(name, &[], "")),
                 format!("create pane: bad profile name: {name}")
             );
         }
         // Even where there is no directory at all.
         let gone = dir.join("absent");
         assert_eq!(
-            err(&gone, &request("a/b", &[], "")),
+            err(&tree, &gone, &request("a/b", &[], "")),
             "create pane: bad profile name: a/b"
         );
         assert_eq!(
-            err(&gone, &request("nope", &[], "")),
+            err(&tree, &gone, &request("nope", &[], "")),
             "create pane: no such profile: nope"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn an_unknown_or_invalid_profile_is_bad_request_with_its_file() {
-        let dir = dir_with(&[("bad.toml", "comand = []")]);
+        let tree = Scratch::new();
+        let dir = dir_with(&tree, &[("bad.toml", "comand = []")]);
         assert_eq!(
-            err(&dir, &request("nope", &[], "")),
+            err(&tree, &dir, &request("nope", &[], "")),
             "create pane: no such profile: nope"
         );
-        let text = err(&dir, &request("bad", &[], ""));
+        let text = err(&tree, &dir, &request("bad", &[], ""));
         assert!(text.starts_with("create pane: profile bad: "), "{text}");
         assert!(
             text.contains("bad.toml") && text.contains("comand"),
             "{text}"
         );
-        let error = resolve_in(Some(&dir), &request("bad", &[], "")).unwrap_err();
+        let error = resolve(&tree, &dir, &request("bad", &[], "")).unwrap_err();
         assert_eq!(error.code, tilr_bus::codes::BAD_REQUEST);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn the_request_wins_and_the_profiles_environment_stays() {
-        let other = dir_with(&[]);
-        let work = dir_with(&[]);
+        let tree = Scratch::new();
+        let other = tree.dir("other");
+        let work = tree.dir("work");
         let text = format!(
             "command = [\"/bin/sh\"]\ncwd = \"{}\"\n[env]\nGREETING = \"hi\"",
             work.display()
         );
-        let dir = dir_with(&[("demo.toml", &text)]);
+        let dir = dir_with(&tree, &[("demo.toml", &text)]);
         // Nothing in the request: the profile's.
-        let plain = resolve_in(Some(&dir), &request("demo", &[], ""))
+        let plain = resolve(&tree, &dir, &request("demo", &[], ""))
             .unwrap()
             .unwrap();
         assert_eq!(plain.command, ["/bin/sh"]);
@@ -321,8 +324,9 @@ mod tests {
         assert_eq!(plain.env, [("GREETING".to_owned(), "hi".to_owned())]);
         assert_eq!(plain.snapshot.name, "demo");
         // The request's command and an existing directory win.
-        let given = resolve_in(
-            Some(&dir),
+        let given = resolve(
+            &tree,
+            &dir,
             &request("demo", &["/bin/bash", "--norc"], other.to_str().unwrap()),
         )
         .unwrap()
@@ -332,36 +336,36 @@ mod tests {
         assert_eq!(given.env, plain.env);
         assert_eq!(given.snapshot, plain.snapshot);
         // A directory that does not exist falls back to the profile's.
-        let missing = resolve_in(Some(&dir), &request("demo", &[], "/no/such/directory"))
+        let missing = resolve(&tree, &dir, &request("demo", &[], "/no/such/directory"))
             .unwrap()
             .unwrap();
         assert_eq!(missing.cwd.as_deref(), Some(work.as_path()));
-        for d in [&dir, &other, &work] {
-            std::fs::remove_dir_all(d).ok();
-        }
     }
 
     #[test]
     fn a_profile_without_a_directory_falls_back_to_home() {
-        let dir = dir_with(&[("demo.toml", "cwd = \"/no/such/directory\"")]);
-        let resolved = resolve_in(Some(&dir), &request("demo", &[], ""))
+        let tree = Scratch::new();
+        let dir = dir_with(&tree, &[("demo.toml", "cwd = \"/no/such/directory\"")]);
+        let resolved = resolve(&tree, &dir, &request("demo", &[], ""))
             .unwrap()
             .unwrap();
         assert!(resolved.command.is_empty());
         assert_eq!(resolved.cwd, None);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn prepare_create_refuses_a_sandbox_it_cannot_enforce() {
-        let dir = dir_with(&[(
-            "box.toml",
-            "command = [\"/bin/sh\"]\n[sandbox]\nread_write = [\"~/w\"]",
-        )]);
+        let tree = Scratch::new();
+        let dir = dir_with(
+            &tree,
+            &[(
+                "box.toml",
+                "command = [\"/bin/sh\"]\n[sandbox]\nread_write = [\"~/w\"]",
+            )],
+        );
         assert_eq!(
-            err(&dir, &request("box", &["/bin/sh", "-c", "true"], "")),
+            err(&tree, &dir, &request("box", &["/bin/sh", "-c", "true"], "")),
             "create pane: profile box asks for a sandbox, which this server cannot enforce"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -382,7 +382,9 @@ fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
     });
     let config = config::load(cli.config.as_deref())?;
     let allow_origins = config::allow_origins(cli.allow_origins, &config);
-    profile::set_dir(config::profiles_dir(cli.config.as_deref(), &config)?);
+    if let Some(dir) = config::profiles_dir(cli.config.as_deref(), &config)? {
+        profile::set_dir(dir);
+    }
     Ok(supervisor::Options {
         listen,
         local,

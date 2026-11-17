@@ -6,18 +6,65 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tilr_bus::pane::{
     CreateRequest, ListReply, PaneInfo, ProfileInfo, ProfilesReply, ProfilesRequest,
 };
 use tilr_bus::{Bus, BusError, CallOptions};
 
-use super::bus::BusServer;
+use super::bus::{BusOptions, BusServer};
 pub use super::bus_panes::Sink;
 
+/// A new directory for profile files, in a tree that passes the server's check of the
+/// directories above a profile (owned by the user or root, not writable by group or
+/// others, up to `/` or the home directory): under Cargo's temporary directory of the
+/// target, not the system's (`/tmp`, writable by all, is refused as sshd refuses it).
+pub fn secure_dir() -> PathBuf {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "profiles-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    make_dir(&dir);
+    dir
+}
+
+/// A server whose configuration directory (`TILR_CONFIG_DIR`, with `server.toml` and
+/// the default `profiles/`) is a [`secure_dir`].
+pub struct ProfileServer {
+    pub server: BusServer,
+    /// The configuration directory.
+    pub config: PathBuf,
+}
+
+impl std::ops::Deref for ProfileServer {
+    type Target = BusServer;
+
+    fn deref(&self) -> &BusServer {
+        &self.server
+    }
+}
+
+/// Start a [`ProfileServer`] with `server_toml` as its configuration file.
+pub fn start_with(server_toml: &str) -> ProfileServer {
+    let config = secure_dir();
+    std::fs::write(config.join("server.toml"), server_toml).unwrap();
+    let server = BusServer::start(BusOptions {
+        env: vec![(
+            "TILR_CONFIG_DIR".to_owned(),
+            config.to_str().unwrap().to_owned(),
+        )],
+        ..BusOptions::default()
+    });
+    ProfileServer { server, config }
+}
+
 /// `profiles/` in the configuration directory of the server, where it looks by default.
-pub fn default_profiles_dir(server: &BusServer) -> PathBuf {
-    server.dir.join("config/profiles")
+pub fn default_profiles_dir(server: &ProfileServer) -> PathBuf {
+    server.config.join("profiles")
 }
 
 /// Make `dir` as a profiles directory is expected to be (owned, mode 0700).
@@ -37,7 +84,7 @@ pub fn write_in(dir: &Path, name: &str, text: &str, mode: u32) -> PathBuf {
 
 /// Write a valid-mode profile in the default directory of `server`; it is read on the
 /// next `pane.create`, the server needs no restart.
-pub fn write_profile(server: &BusServer, name: &str, text: &str) -> PathBuf {
+pub fn write_profile(server: &ProfileServer, name: &str, text: &str) -> PathBuf {
     write_in(&default_profiles_dir(server), name, text, 0o600)
 }
 

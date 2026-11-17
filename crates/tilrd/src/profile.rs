@@ -13,7 +13,7 @@
 //! cwd = "~/work"                                  # absolute or `~`
 //! [env]
 //! GREETING = "hi"                                 # not TILR_*
-//! [sandbox]                                       # optional; enforced by sandbox-linux/-macos
+//! [sandbox]                                       # optional; refused until enforced (sandbox-linux/-macos)
 //! read_only = ["~/docs"]
 //! read_write = ["~/work"]
 //! executables = ["/usr/bin/git"]
@@ -23,7 +23,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::os::unix::fs::MetadataExt;
+use std::io::Read as _;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -33,6 +34,8 @@ use serde::{Deserialize, Serialize};
 pub const MAX_LISTED: usize = 1000;
 /// Longest `description` or `error` text in a listing, in bytes.
 pub const MAX_TEXT: usize = 1024;
+/// Largest profile file, in bytes; a larger one does not load.
+pub const MAX_FILE: u64 = 64 * 1024;
 
 /// What a profile's `[sandbox]` table allows the network (S5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,8 +211,9 @@ pub fn home() -> Option<PathBuf> {
 }
 
 /// An absolute path from `text`: absolute, or `~` / `~/…` (the home directory); `.`
-/// and `..` folded lexically (`..` at the root stays at the root).
-fn resolve_path(text: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+/// and `..` folded lexically (`..` at the root stays at the root). `profiles_dir` is
+/// resolved with it too.
+pub fn resolve_path(text: &str, home: Option<&Path>) -> Result<PathBuf, String> {
     if text.contains('\0') || text.contains('\n') {
         return Err("the path has a NUL or a newline".into());
     }
@@ -232,11 +236,6 @@ fn resolve_path(text: &str, home: Option<&Path>) -> Result<PathBuf, String> {
         }
     }
     Ok(folded)
-}
-
-/// The directory `profiles_dir` names: absolute or `~`, folded.
-pub fn resolve_dir(text: &str, home: Option<&Path>) -> Result<PathBuf, String> {
-    resolve_path(text, home)
 }
 
 fn paths(key: &str, values: &[String], home: Option<&Path>) -> Result<Vec<PathBuf>, String> {
@@ -313,61 +312,116 @@ fn parse(name: &str, text: &str, home: Option<&Path>) -> Result<Parsed, String> 
     })
 }
 
-/// StrictModes (P2): `path` (after symlinks) is owned by this user and not writable
-/// by group or others.
-fn strict(path: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
-    // SAFETY: geteuid has no preconditions.
-    let uid = unsafe { libc::geteuid() };
-    if meta.uid() != uid {
-        return Err(format!("{} is owned by uid {}", path.display(), meta.uid()));
+/// StrictModes for one inode (P2), as sshd's `auth_secure_path` judges a file and each
+/// directory above it: owned by the server's user (`euid`) or root, and not writable by
+/// group or others. Pure, so a test can give it an owner it cannot make.
+fn secure(path: &Path, owner: u32, mode: u32, euid: u32) -> Result<(), String> {
+    if owner != euid && owner != 0 {
+        return Err(format!("{} is owned by uid {owner}", path.display()));
     }
-    if meta.mode() & 0o022 != 0 {
+    if mode & 0o022 != 0 {
         return Err(format!("{} is writable by others", path.display()));
     }
     Ok(())
 }
 
-/// Read, check and parse the file of profile `name` in `dir`: the first half of what
-/// both `pane.create` and `pane.profiles` do (P2-P4). A missing directory is no
-/// profiles. Returns the description with the snapshot.
-fn read(dir: &Path, name: &str, home: Option<&Path>) -> Result<Parsed, Error> {
+/// [`secure`] for `dir` and every directory above it up to `/`, stopping after the home
+/// directory `home` (canonical) as sshd does. `dir` is canonical: no symlink in it.
+/// A sticky world-writable directory such as `/tmp` is refused, as in sshd.
+fn secure_dirs(dir: &Path, home: Option<&Path>, euid: u32) -> Result<(), String> {
+    let mut next = Some(dir);
+    while let Some(dir) = next {
+        let meta = std::fs::metadata(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+        secure(dir, meta.uid(), meta.mode(), euid)?;
+        if home == Some(dir) {
+            break;
+        }
+        next = dir.parent();
+    }
+    Ok(())
+}
+
+/// Open, check and read the file of profile `name` in `dir`, as sshd reads
+/// `authorized_keys` (`auth_openfile`, `auth_secure_path`): the file is opened once
+/// without blocking (a FIFO cannot hold the server) and judged by `fstat` of that
+/// descriptor: a regular file, [`secure`]; then every directory of its real path and
+/// of the real profiles directory up to `/` or the home directory; then at most
+/// [`MAX_FILE`] bytes are read from the same descriptor. Returns the file's path in
+/// `dir` with its text. A missing directory or file is no such profile.
+fn read_text(dir: &Path, name: &str, home: Option<&Path>) -> Result<(PathBuf, String), Error> {
     if !valid_name(name) {
         return Err(Error::BadName(name.to_owned()));
     }
-    let dir_meta = match std::fs::metadata(dir) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::NoSuch(name.to_owned()));
-        }
-        Err(err) => return Err(Error::Invalid(format!("{}: {err}", dir.display()))),
-    };
     let file = dir.join(format!("{name}.toml"));
-    // `metadata` follows a symlink: the file is judged where it really is.
-    let meta = match std::fs::metadata(&file) {
-        Ok(meta) => meta,
+    let at = |err: std::io::Error| Error::Invalid(format!("{}: {err}", file.display()));
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOCTTY | libc::O_NONBLOCK)
+        .open(&file);
+    let opened = match opened {
+        Ok(opened) => opened,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::NoSuch(name.to_owned()));
         }
-        Err(err) => return Err(Error::Invalid(format!("{}: {err}", file.display()))),
+        Err(err) => return Err(at(err)),
     };
-    if !dir_meta.is_dir() {
-        return Err(Error::Invalid(format!(
-            "{} is not a directory",
-            dir.display()
-        )));
-    }
+    let meta = opened.metadata().map_err(at)?;
     if !meta.is_file() {
         return Err(Error::Invalid(format!(
             "{} is not a regular file",
             file.display()
         )));
     }
-    strict(dir, &dir_meta).map_err(Error::Invalid)?;
-    strict(&file, &meta).map_err(Error::Invalid)?;
-    let text = std::fs::read_to_string(&file)
-        .map_err(|err| Error::Invalid(format!("{}: {err}", file.display())))?;
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    secure(&file, meta.uid(), meta.mode(), euid).map_err(Error::Invalid)?;
+    let real = std::fs::canonicalize(&file).map_err(at)?;
+    // The path names the inode that was opened (else it changed in between).
+    let named = std::fs::metadata(&real).map_err(at)?;
+    if (named.dev(), named.ino()) != (meta.dev(), meta.ino()) {
+        return Err(Error::Invalid(format!(
+            "{} changed while it was read",
+            file.display()
+        )));
+    }
+    let home = home.and_then(|home| std::fs::canonicalize(home).ok());
+    let real_dir = std::fs::canonicalize(dir)
+        .map_err(|err| Error::Invalid(format!("{}: {err}", dir.display())))?;
+    let file_dir = real.parent().unwrap_or(Path::new("/"));
+    secure_dirs(file_dir, home.as_deref(), euid).map_err(Error::Invalid)?;
+    if real_dir != file_dir {
+        secure_dirs(&real_dir, home.as_deref(), euid).map_err(Error::Invalid)?;
+    }
+    let mut bytes = Vec::new();
+    (&opened)
+        .take(MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(at)?;
+    if bytes.len() as u64 > MAX_FILE {
+        return Err(Error::Invalid(format!(
+            "{} is larger than {MAX_FILE} bytes",
+            file.display()
+        )));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| Error::Invalid(format!("{} is not UTF-8", file.display())))?;
+    Ok((file, text))
+}
+
+/// Read, check and parse the file of profile `name` in `dir`: the first half of what
+/// both `pane.create` and `pane.profiles` do (P2-P4). Returns the description with the
+/// snapshot.
+fn read(dir: &Path, name: &str, home: Option<&Path>) -> Result<Parsed, Error> {
+    let (file, text) = read_text(dir, name, home)?;
     parse(name, &text, home)
         .map_err(|reason| Error::Invalid(format!("{}: {reason}", file.display())))
+}
+
+/// Whether `text` has a `[sandbox]` table, read leniently: for the listing of a
+/// profile that is not valid. Text that is not TOML has none.
+fn has_sandbox_table(text: &str) -> bool {
+    text.parse::<toml::Table>()
+        .is_ok_and(|table| table.get("sandbox").is_some_and(toml::Value::is_table))
 }
 
 /// Load profile `name` from `dir` as a [`Snapshot`], reading the file now (P4).
@@ -406,27 +460,37 @@ pub fn list(dir: &Path, home: Option<&Path>) -> Vec<Listed> {
     names.truncate(MAX_LISTED);
     names
         .into_iter()
-        .map(|name| match read(dir, &name, home) {
-            Ok(parsed) => Listed {
-                sandboxed: parsed.snapshot.sandbox.is_some(),
-                description: cut(parsed.description),
-                error: String::new(),
-                name,
-            },
-            Err(err) => Listed {
+        .map(|name| {
+            let failed = |sandboxed: bool, err: Error, name: String| Listed {
                 description: String::new(),
-                // Whether it has a [sandbox] table is not known of a file that does
-                // not parse.
-                sandboxed: false,
+                sandboxed,
                 error: cut(err.to_string()),
                 name,
-            },
+            };
+            let (file, text) = match read_text(dir, &name, home) {
+                Ok(read) => read,
+                // Not read: whether it has a [sandbox] table is not known.
+                Err(err) => return failed(false, err, name),
+            };
+            match parse(&name, &text, home) {
+                Ok(parsed) => Listed {
+                    sandboxed: parsed.snapshot.sandbox.is_some(),
+                    description: cut(parsed.description),
+                    error: String::new(),
+                    name,
+                },
+                Err(reason) => failed(
+                    has_sandbox_table(&text),
+                    Error::Invalid(format!("{}: {reason}", file.display())),
+                    name,
+                ),
+            }
         })
         .collect()
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -564,19 +628,50 @@ mod tests {
         }
     }
 
-    fn scratch() -> PathBuf {
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "tilrd-profile-test-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        dir
+    /// A directory tree for one test, standing in for the home directory: the check
+    /// of the directories above a profile stops there, as at a real home, so the tree
+    /// may live in the system's temporary directory (`/tmp` itself would be refused).
+    /// Removed when dropped.
+    pub(crate) struct Scratch {
+        root: PathBuf,
     }
 
-    fn write(dir: &Path, name: &str, text: &str, mode: u32) -> PathBuf {
+    impl Scratch {
+        pub(crate) fn new() -> Self {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "tilrd-profile-test-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Self { root }
+        }
+
+        /// The home directory of the tree.
+        pub(crate) fn home(&self) -> Option<&Path> {
+            Some(&self.root)
+        }
+
+        /// A new directory `name` in the tree, mode 0700.
+        pub(crate) fn dir(&self, name: &str) -> PathBuf {
+            let dir = self.root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            dir
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// Write `text` into `dir/name` with mode `mode`.
+    pub(crate) fn write(dir: &Path, name: &str, text: &str, mode: u32) -> PathBuf {
         let file = dir.join(name);
         std::fs::write(&file, text).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -584,96 +679,179 @@ mod tests {
     }
 
     #[test]
+    fn only_the_user_or_root_may_own_a_profile_or_a_directory_above_it() {
+        let path = Path::new("/p/demo.toml");
+        let me = 501;
+        assert_eq!(secure(path, me, 0o100600, me), Ok(()));
+        assert_eq!(secure(path, me, 0o100644, me), Ok(()));
+        assert_eq!(secure(path, 0, 0o040755, me), Ok(()));
+        // As root, root's own files.
+        assert_eq!(secure(path, 0, 0o100600, 0), Ok(()));
+        assert_eq!(
+            secure(path, 1000, 0o100600, me),
+            Err("/p/demo.toml is owned by uid 1000".to_owned())
+        );
+        // Root running the server does not accept another user's file either.
+        assert!(secure(path, me, 0o100600, 0).is_err());
+        for mode in [0o100620, 0o100602, 0o100666, 0o040775, 0o041777] {
+            assert_eq!(
+                secure(path, me, mode, me),
+                Err("/p/demo.toml is writable by others".to_owned()),
+                "{mode:o}"
+            );
+        }
+    }
+
+    #[test]
     fn a_profile_others_can_write_does_not_load() {
-        let dir = scratch();
+        let tree = Scratch::new();
+        let dir = tree.dir("profiles");
         let file = write(&dir, "demo.toml", "command = [\"/bin/sh\"]", 0o666);
-        let err = load(&dir, "demo", home()).unwrap_err().to_string();
+        let err = load(&dir, "demo", tree.home()).unwrap_err().to_string();
         assert!(err.contains(&file.display().to_string()), "{err}");
         assert!(err.contains("is writable by others"), "{err}");
         // Group write counts too; read for others does not.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o620)).unwrap();
-        assert!(load(&dir, "demo", home()).is_err());
+        assert!(load(&dir, "demo", tree.home()).is_err());
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(load(&dir, "demo", home()).is_ok());
+        assert!(load(&dir, "demo", tree.home()).is_ok());
         // The directory too.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let err = load(&dir, "demo", home()).unwrap_err().to_string();
+        let err = load(&dir, "demo", tree.home()).unwrap_err().to_string();
         assert!(err.contains("is writable by others"), "{err}");
-        assert!(err.contains(&dir.display().to_string()), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
+        let real = std::fs::canonicalize(&dir).unwrap();
+        assert!(err.contains(&real.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn the_directories_above_are_checked_up_to_the_home_directory() {
+        let tree = Scratch::new();
+        // root/open (group-writable)/home/profiles/demo.toml
+        let open = tree.dir("open");
+        let home = tree.dir("open/home");
+        let dir = tree.dir("open/home/profiles");
+        write(&dir, "demo.toml", "", 0o600);
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o770)).unwrap();
+        let err = load(&dir, "demo", tree.home()).unwrap_err().to_string();
+        let real = std::fs::canonicalize(&open).unwrap();
+        assert_eq!(err, format!("{} is writable by others", real.display()));
+        // Above the home directory nothing is checked, as in sshd.
+        assert!(load(&dir, "demo", Some(&home)).is_ok());
+        // The home directory itself is.
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o720)).unwrap();
+        let err = load(&dir, "demo", Some(&home)).unwrap_err().to_string();
+        let real = std::fs::canonicalize(&home).unwrap();
+        assert_eq!(err, format!("{} is writable by others", real.display()));
     }
 
     #[test]
     fn a_symlinked_profile_is_judged_where_it_lives() {
-        let dir = scratch();
-        let other = scratch();
+        let tree = Scratch::new();
+        let dir = tree.dir("profiles");
+        let other = tree.dir("elsewhere");
         let target = write(&other, "real.toml", "command = [\"/bin/sh\"]", 0o600);
         std::os::unix::fs::symlink(&target, dir.join("demo.toml")).unwrap();
         assert_eq!(
-            load(&dir, "demo", home()).unwrap().argv,
+            load(&dir, "demo", tree.home()).unwrap().argv,
             vec!["/bin/sh".to_owned()]
         );
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o666)).unwrap();
         assert!(
-            load(&dir, "demo", home())
+            load(&dir, "demo", tree.home())
                 .unwrap_err()
                 .to_string()
                 .contains("is writable by others")
         );
+        // The directory the link points into counts, not the one the link is in.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o730)).unwrap();
+        let err = load(&dir, "demo", tree.home()).unwrap_err().to_string();
+        let real = std::fs::canonicalize(&other).unwrap();
+        assert_eq!(err, format!("{} is writable by others", real.display()));
         // A link to a directory is not a regular file.
         std::os::unix::fs::symlink(&other, dir.join("dir.toml")).unwrap();
         assert!(
-            load(&dir, "dir", home())
+            load(&dir, "dir", tree.home())
                 .unwrap_err()
                 .to_string()
                 .contains("not a regular file")
         );
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
+    fn a_profile_is_read_up_to_its_bound() {
+        let tree = Scratch::new();
+        let dir = tree.dir("profiles");
+        let bound = usize::try_from(MAX_FILE).unwrap();
+        // Exactly the bound: a comment line of that length loads.
+        let mut text = "#".repeat(bound - 1);
+        text.push('\n');
+        write(&dir, "big.toml", &text, 0o600);
+        assert!(load(&dir, "big", tree.home()).is_ok());
+        text.push('\n');
+        let file = write(&dir, "big.toml", &text, 0o600);
+        assert_eq!(
+            load(&dir, "big", tree.home()).unwrap_err().to_string(),
+            format!("{} is larger than 65536 bytes", file.display())
+        );
     }
 
     #[test]
     fn a_missing_profile_or_directory_is_no_such_profile() {
-        let dir = scratch();
+        let tree = Scratch::new();
+        let dir = tree.dir("profiles");
         assert_eq!(
-            load(&dir, "nope", home()),
+            load(&dir, "nope", tree.home()),
             Err(Error::NoSuch("nope".to_owned()))
         );
         assert_eq!(
-            load(&dir.join("absent"), "nope", home()),
+            load(&dir.join("absent"), "nope", tree.home()),
             Err(Error::NoSuch("nope".to_owned()))
         );
         assert_eq!(
-            load(&dir, "../x", home()),
+            load(&dir, "../x", tree.home()),
             Err(Error::BadName("../x".to_owned()))
         );
-        assert!(list(&dir.join("absent"), home()).is_empty());
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(list(&dir.join("absent"), tree.home()).is_empty());
     }
 
     #[test]
     fn the_listing_is_sorted_with_errors_and_skips_other_files() {
-        let dir = scratch();
+        let tree = Scratch::new();
+        let dir = tree.dir("profiles");
         write(&dir, "b.toml", "[sandbox]\nread_write = [\"/w\"]", 0o600);
         write(&dir, "a.toml", "description = \"first\"", 0o600);
         write(&dir, "c.toml", "this is not toml", 0o600);
         write(&dir, ".x.toml", "", 0o600);
         write(&dir, "notes.txt", "", 0o600);
-        let listed = list(&dir, home());
+        // Invalid for another reason, with a [sandbox] table; and one never read.
+        write(&dir, "d.toml", "comand = []\n[sandbox]\n", 0o600);
+        write(&dir, "e.toml", "[sandbox]\n", 0o666);
+        let listed = list(&dir, tree.home());
         let names: Vec<&str> = listed.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names, ["a", "b", "c"]);
+        assert_eq!(names, ["a", "b", "c", "d", "e"]);
         assert_eq!(listed[0].description, "first");
         assert!(listed[0].error.is_empty() && !listed[0].sandboxed);
         assert!(listed[1].sandboxed && listed[1].error.is_empty());
-        assert!(!listed[2].error.is_empty());
+        assert!(!listed[2].error.is_empty() && !listed[2].sandboxed);
+        assert!(listed[3].error.contains("comand") && listed[3].sandboxed);
+        assert!(listed[4].error.contains("is writable by others") && !listed[4].sandboxed);
         write(
             &dir,
-            "d.toml",
+            "f.toml",
             &format!("description = \"{}\"", "é".repeat(2000)),
             0o600,
         );
-        let listed = list(&dir, home());
-        assert!(listed[3].description.len() <= MAX_TEXT);
-        std::fs::remove_dir_all(&dir).ok();
+        let listed = list(&dir, tree.home());
+        assert!(listed[5].description.len() <= MAX_TEXT);
+    }
+
+    #[test]
+    fn only_a_sandbox_table_counts_as_a_sandbox() {
+        assert!(has_sandbox_table("[sandbox]\nbad = 1"));
+        assert!(has_sandbox_table("x = 1\n[sandbox.inner]"));
+        assert!(!has_sandbox_table("sandbox = true"));
+        assert!(!has_sandbox_table("[sandbox"));
+        assert!(!has_sandbox_table(""));
     }
 }

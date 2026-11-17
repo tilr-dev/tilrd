@@ -5,19 +5,21 @@
 
 mod common;
 
+use std::os::unix::fs::PermissionsExt;
+
 use common::Server;
-use common::bus::{BusOptions, BusServer};
 use common::bus_panes::{raw, shell};
 use common::bus_profiles::{
-    Sink, create, default_profiles_dir, list_panes, profiles, write_in, write_profile, write_to,
+    ProfileServer, Sink, create, default_profiles_dir, list_panes, profiles, secure_dir,
+    start_with, write_in, write_profile, write_to,
 };
 use common::bus_streams::within;
 use prost::Message;
 use tilr_bus::CallOptions;
 use tilr_bus::pane::PaneInfo;
 
-fn start() -> BusServer {
-    BusServer::start(BusOptions::default())
+fn start() -> ProfileServer {
+    start_with("")
 }
 
 fn as_strs(args: &[String]) -> Vec<&str> {
@@ -29,10 +31,19 @@ async fn a_pane_starts_with_the_profile_from_the_config_directory() {
     let server = start();
     write_profile(&server, "demo", "command = [\"/bin/sh\"]");
     let bus = server.owner().await;
+    let mut created = bus.subscribe("pane.created").await.unwrap();
     let pane = create(&bus, "demo", &[], "").await.unwrap();
     assert_eq!(pane.profile, "demo");
     assert_eq!(pane.command, ["/bin/sh"]);
     assert!(!pane.sandboxed);
+    // The event names the profile too.
+    let event = within(created.next())
+        .await
+        .expect("the subscription ended");
+    let info = PaneInfo::decode(event.payload).unwrap();
+    assert_eq!(info.pane_id, pane.pane_id);
+    assert_eq!(info.profile, "demo");
+    assert!(!info.sandboxed);
     let listed = list_panes(&bus).await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].profile, "demo");
@@ -58,12 +69,9 @@ async fn a_pane_starts_with_the_profile_from_the_config_directory() {
 
 #[tokio::test]
 async fn profiles_dir_names_another_directory() {
-    let other = Server::scratch_dir();
+    let other = secure_dir();
     write_in(&other, "demo", "command = [\"/bin/sh\"]", 0o600);
-    let server = BusServer::start(BusOptions {
-        server_toml: Some(format!("profiles_dir = \"{}\"\n", other.display())),
-        ..BusOptions::default()
-    });
+    let server = start_with(&format!("profiles_dir = \"{}\"\n", other.display()));
     assert!(!default_profiles_dir(&server).exists());
     let bus = server.owner().await;
     let pane = create(&bus, "demo", &[], "").await.unwrap();
@@ -106,7 +114,7 @@ async fn a_profile_name_is_never_a_path() {
     let server = start();
     // A file the names would reach if they were paths.
     write_profile(&server, "demo", "command = [\"/bin/sh\"]");
-    std::fs::write(server.dir.join("config/server.toml"), "").unwrap();
+    std::fs::write(server.config.join("server.toml"), "").unwrap();
     let bus = server.owner().await;
     for name in ["../server", "/etc/passwd", ".hidden", "a/b"] {
         let err = create(&bus, name, &[], "").await.unwrap_err();
@@ -259,15 +267,26 @@ async fn profiles_are_listed_with_their_errors() {
     );
     write_in(&dir, "b", "[sandbox]\nread_write = [\"/tmp\"]", 0o600);
     write_in(&dir, "c", "this is not toml", 0o600);
+    // Invalid for another reason, and with a [sandbox] table.
+    write_in(
+        &dir,
+        "d",
+        "comand = []\n[sandbox]\nread_write = [\"/tmp\"]",
+        0o600,
+    );
     write_in(&dir, ".x", "command = [\"/bin/sh\"]", 0o600);
     std::fs::write(dir.join("notes.txt"), "").unwrap();
     let listed = profiles(&bus).await;
     let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["a", "b", "c"]);
+    assert_eq!(names, ["a", "b", "c", "d"]);
     assert_eq!(listed[0].description, "the first");
     assert!(!listed[0].sandboxed && listed[0].error.is_empty());
     assert!(listed[1].sandboxed && listed[1].error.is_empty());
-    assert!(!listed[2].error.is_empty());
+    assert!(!listed[2].error.is_empty() && !listed[2].sandboxed);
+    assert!(
+        listed[3].error.contains("comand") && listed[3].sandboxed,
+        "{listed:?}"
+    );
     // Valid and invalid alike, in JSON too.
     let json = bus
         .call(
@@ -279,6 +298,95 @@ async fn profiles_are_listed_with_their_errors() {
         .unwrap();
     assert_eq!(json.content_type, tilr_bus::CONTENT_TYPE_JSON);
     let value: serde_json::Value = serde_json::from_slice(&json.payload).unwrap();
-    assert_eq!(value["profiles"].as_array().unwrap().len(), 3);
+    assert_eq!(value["profiles"].as_array().unwrap().len(), 4);
     assert_eq!(value["profiles"][1]["sandboxed"], true);
+}
+
+/// `pane.create {profile: name}` on `server` is refused with a reason that is `reason`,
+/// and `pane.profiles` gives the same; no pane starts.
+async fn refused(server: &ProfileServer, name: &str, reason: &str) {
+    let bus = server.owner().await;
+    let err = within(create(&bus, name, &[], "")).await.unwrap_err();
+    assert_eq!(err.code, "bad_request");
+    assert_eq!(
+        err.message,
+        format!("create pane: profile {name}: {reason}")
+    );
+    assert!(list_panes(&bus).await.is_empty());
+    let listed = within(profiles(&bus)).await;
+    let row = listed.iter().find(|p| p.name == name).expect("listed");
+    assert_eq!(row.error, reason);
+}
+
+#[tokio::test]
+async fn a_symlinked_profile_in_a_group_writable_directory_is_refused() {
+    let server = start();
+    let elsewhere = secure_dir();
+    let target = write_in(&elsewhere, "real", "command = [\"/bin/sh\"]", 0o600);
+    let dir = default_profiles_dir(&server);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("demo.toml")).unwrap();
+    // The directory of the link's target counts, not the one the link is in.
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let real = std::fs::canonicalize(&elsewhere).unwrap();
+    refused(
+        &server,
+        "demo",
+        &format!("{} is writable by others", real.display()),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_group_writable_directory_above_the_profiles_is_refused() {
+    let parent = secure_dir();
+    let dir = parent.join("profiles");
+    write_in(&dir, "demo", "command = [\"/bin/sh\"]", 0o600);
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let server = start_with(&format!("profiles_dir = \"{}\"\n", dir.display()));
+    let real = std::fs::canonicalize(&parent).unwrap();
+    refused(
+        &server,
+        "demo",
+        &format!("{} is writable by others", real.display()),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_profile_larger_than_the_bound_is_refused() {
+    let server = start();
+    // A comment line of 64 KiB and one byte more.
+    let text = format!("{}\n", "#".repeat(64 * 1024));
+    let file = write_profile(&server, "big", &text);
+    refused(
+        &server,
+        "big",
+        &format!("{} is larger than 65536 bytes", file.display()),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_fifo_in_place_of_a_profile_is_refused_without_hanging() {
+    let server = start();
+    let dir = default_profiles_dir(&server);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let fifo = dir.join("pipe.toml");
+    let made = std::process::Command::new("mkfifo")
+        .arg("-m")
+        .arg("600")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success());
+    // Nobody writes into it: a blocking open would wait for a writer forever.
+    refused(
+        &server,
+        "pipe",
+        &format!("{} is not a regular file", fifo.display()),
+    )
+    .await;
 }
