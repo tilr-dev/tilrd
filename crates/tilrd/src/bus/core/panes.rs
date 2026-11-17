@@ -857,7 +857,10 @@ fn create(
         cwd,
         request_id: 0,
     };
-    match start_pane(s, &create, caller.from.to_string(), &env) {
+    let sandbox = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.sandbox.as_ref());
+    match start_pane(s, &create, caller.from.to_string(), &env, sandbox) {
         Ok((pane_id, rx)) => {
             if let Some(snapshot) = snapshot {
                 super::profiles::remember(s, pane_id, snapshot);
@@ -870,14 +873,17 @@ fn create(
 
 /// Start a pane on the supervisor's path for `create` (its `request_id` is the
 /// core's), created by `creator`, with `env` added to the environment every
-/// pane gets; answered with its `PaneInfo` once its program runs, or with
-/// `handler_error` `create pane: <reason>`.
+/// pane gets, inside `sandbox` when its profile has one; answered with its
+/// `PaneInfo` once its program runs, or with `handler_error` `create pane:
+/// <reason>`.
 pub(crate) fn start_pane(
     s: &mut Supervisor,
     create: &tilr_proto::CreatePane,
     creator: String,
     env: &[(OsString, OsString)],
+    sandbox: Option<&crate::profile::SandboxSpec>,
 ) -> Result<(PaneId, oneshot::Receiver<Result<pane::PaneInfo, BusError>>), BusError> {
+    applies(sandbox)?;
     let st = state(s);
     st.next_create += 1;
     let token = st.next_create;
@@ -898,6 +904,19 @@ pub(crate) fn start_pane(
     st.creating.insert(pane_id, tx);
     st.creators.insert(pane_id, creator);
     Ok((pane_id, rx))
+}
+
+/// Fail closed: nothing on the start path applies a sandbox yet (`sandbox-linux`,
+/// `sandbox-macos` do), so a pane asked to run in one does not start, whatever
+/// `profiles::sandbox_enforceable` says; it never runs unconfined while its
+/// `PaneInfo.sandboxed` says otherwise.
+fn applies(sandbox: Option<&crate::profile::SandboxSpec>) -> Result<(), BusError> {
+    match sandbox {
+        None => Ok(()),
+        Some(_) => Err(BusError::handler_error(
+            "create pane: this server cannot apply a sandbox",
+        )),
+    }
 }
 
 fn list(s: &mut Supervisor, caller: &Caller, _: pane::ListRequest) -> Answer<pane::ListReply> {
@@ -2398,5 +2417,16 @@ mod tests {
         );
         assert_ne!(owner, numbered_identity(&Identity::Owner, "d"));
         assert_eq!(numbered_identity(&Identity::Owner, ""), "");
+    }
+
+    #[test]
+    fn the_start_path_refuses_a_sandbox_it_does_not_apply() {
+        assert_eq!(applies(None), Ok(()));
+        let refused = applies(Some(&crate::profile::SandboxSpec::default())).unwrap_err();
+        assert_eq!(refused.code, tilr_bus::codes::HANDLER_ERROR);
+        assert_eq!(
+            refused.message,
+            "create pane: this server cannot apply a sandbox"
+        );
     }
 }
