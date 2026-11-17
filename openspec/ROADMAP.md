@@ -6,7 +6,7 @@ there. `openspec apply` and `openspec archive` keep this file current (rule in
 `config.yaml`): a change that is archived is removed from its phase and listed under "Done"
 with its commit; a change whose status, dependencies or blocker changes is updated here.
 
-Columns: **size** S (a day or less), M (a few days), L (a week or more); **depends on** the
+Columns: **size** S (a day or less), M (a few days), L (a week or more), XL (several weeks); **depends on** the
 change's `Зависит от:` line; **blocker** whether its proposal starts with a `Блокер:` line
 (a question only the owner can answer); **status** `ready` (can be applied now, once its
 dependencies are archived), `needs owner` (answer the Блокер first), `deferred`, `design
@@ -78,7 +78,6 @@ All of phase 2 is done (see "Done").
 | pane-process-title | `ps` shows each pane's shell, cwd and command, kept across a reload | M | - (shares the `tcgetpgrp` check with pane-activity-notifications) | no | ready |
 | osc8-hyperlinks | OSC 8 links in frames (`Frame.links`, `Run.link`); `tilr attach` draws them | S/M | - | no | ready |
 | reverse-clipboard | a copy in a pane (OSC 52, xclip, wl-copy) reaches the watching clients | M | - | no | ready |
-| files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once | M | - | no | ready |
 | tilr-deploy | `tilr deploy user@host` installs and starts tilrd over the user's ssh | M | installer-atomic-install | no | ready (its `--cloud` part is not designed; after Cloud is in production) |
 | reload-exec-checked-file | the executable a reload checks is the one it execs (Linux `/proc/self/fd`, macOS a private copy) | M | - | no | ready |
 | metrics-no-hello-and-prefix | no-Hello closes counted in the drops metric (`no_hello`); one metric prefix `tilrd_` (the twelve `tilr_*` families renamed), **BREAKING** for dashboards | S | - | yes (prefix) | ready |
@@ -98,21 +97,65 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | the phase 3 changes | - | design first |
 | multi-user-sessions | `tilrd --system` as root runs each session as its user (per-user tokens, per-user sockets); options for the owner in design.md (TILR-138) | L | - | yes | needs owner |
 
+## Phase 7: one bus for everything
+
+Added 2026-11-17 (owner's decisions); first one change `unified-bus`, split
+the same day by the owner into one change per task, each one PR into `main`, so that several
+agents work at once (shared design `openspec/design/unified-bus.md`, O1-O6). The bus
+`tilr.bus.v1` is built in `main` beside `tilr.v1` (served both until `remove-tilr-v1`, O2) and
+becomes the only protocol: Deno, Python, Tilr Web, the terminal and tilrd's core are its
+participants, with Biscuit rights, launch profiles, sandboxed panes and the SDKs. Who may edit
+which shared file: design O4. Does not gate the first release; `make_rc` is not run while the
+phase is merged and the old line is not fixed until the new minor (O5); nothing of it is
+released until Tilr.app speaks the bus and the owner cuts the new minor line (M2).
+
+Two orders: **starts after** is when an agent can begin (most changes right after
+`bus-broker-core`, against its frozen contract and stubs, without waiting for neighbours);
+**merges after** is the `Зависит от:` line (what must be in `main` before the PR merges).
+Merge waves: Wave 0: `bus-wire` → `bus-broker-core` (the frozen contract). Wave 1:
+`bus-streams-events`, `bus-instances`, then `bus-core-panes` and `bus-rights`. Wave 2, as
+dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus-web`,
+`bus-sdk`, `sandbox-linux`, `sandbox-macos`, `bus-test-clients`, `bus-tilr-client`. Wave 3:
+`bus-reload` → `remove-tilr-v1`.
+
+| change | goal | size | starts after | merges after (depends on) | blocker | status |
+|---|---|---|---|---|---|---|
+| bus-wire | crate `tilr-bus`: envelope, codec, every payload schema (frozen), Rust client, test runtime | L | now | - | no | ready |
+| bus-broker-core | broker skeleton beside `tilr.v1`: routing, plain streams and events, WebSocket transport, frozen extension points, test harness | L | bus-wire | bus-wire | no | ready |
+| bus-streams-events | credits, lanes, bounded queues, `busy`, deadlines, lossy events for laggards, metric | L | bus-broker-core | bus-broker-core | no | ready |
+| bus-instances | `bus.toml`, runner, supervision, `bus.*` control, instance transports | L | bus-broker-core | bus-broker-core | no | ready |
+| bus-core-panes | `pane.*` methods, `pane.output`, pane events, `pane.read`, JSON for core methods | L | bus-broker-core (contract: `StreamOut`, `BusObserver`, handle) | bus-streams-events | no | ready |
+| bus-rights | Biscuit: root key, tokens, bearer credentials, expiry and renewal, revocation, rotation, limits, audit, close code 4003 | L | bus-broker-core (contract: `Authorizer`, `Rights`) | bus-instances | no | ready |
+| bus-core-services | `server.*`, `fs.*`, `exec.*`, `clipboard.*`, `host.open`, `ssh_agent.*` | L | bus-broker-core (contract) | bus-core-panes | no | ready |
+| pane-profiles | launch profiles: `profiles_dir`, StrictModes, `pane.create {profile}`, `pane.profiles` | M | now (task 1.1); task 1.2 after bus-broker-core | bus-core-panes | no | ready |
+| bus-pane-rights | pane rights (T7): profile and override rights, `own`/`any` access, scoped events | M | bus-broker-core (contract: `AuthzRequest::PaneCreate`/`PaneAccess`) | bus-core-panes, bus-rights | no | ready |
+| bus-sdk | Deno/browser and Python SDKs, generated schema, CI job `sdk` | L | bus-wire (schemas, test runtime); its server tests need the later changes | bus-streams-events, bus-rights, pane-profiles | no | ready |
+| sandbox-linux | sandboxed panes on Linux (Landlock + seccomp), the common sandbox module | L | bus-broker-core (the snapshot type of `pane-profiles` task 1.1 as designed) | pane-profiles, bus-core-services | no | ready |
+| sandbox-macos | sandboxed panes on macOS (Seatbelt), CI job `sandbox-macos` | L | bus-broker-core (tasks 1.1, 1.2 need nothing of the server) | sandbox-linux | no | ready |
+| bus-test-clients | `tilr-driver`, the test harness, every test and itests on the bus | XL | bus-core-panes (the contract alone runs no test) | bus-core-panes, bus-core-services | no | ready |
+| bus-tilr-client | `tilr` and `tilrd ps` on the bus; `tilr bus …`, `tilr new --profile`, `tilr profiles` | L | bus-core-panes (attach needs `pane.*`) | bus-core-services, bus-rights, pane-profiles | no | ready |
+| bus-reload | instances, tokens, profile snapshot, creator and sandbox across a reload; `internal.proto`; `supervisor-state 3`, `bus-state 1` (from a pre-bus build: a restart, M3) | L | bus-instances (handover of the runner's instances) and `pane-profiles` task 1.1 | bus-rights, bus-core-panes, bus-pane-rights, pane-profiles, sandbox-linux | no | ready |
+| bus-web | Tilr Web pages as participants: Origin, origin-bound tokens, `LAST_ACTIVE` providers | M | bus-broker-core (contract) | bus-streams-events, bus-pane-rights | no | ready |
+| remove-tilr-v1 | `tilr.v1` and `crates/tilr-proto` removed, refusal packet, README "Protocol", main specs in bus terms, release-notes text | L | bus-test-clients and bus-tilr-client (task 1.4, the spec text, may start after bus-broker-core) | every other Phase 7 change | no | ready |
+
+
 ## Deferred
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
 | end-to-end-encryption | security design for E2E between client and server | L | - | - | deferred |
-| sandboxed-pane | panes in a sandbox for agents (App Sandbox, Landlock) | L | - | - | deferred |
 | public-repo-readiness | checklist for making the repository public | S | readme-code-reconciliation | - | deferred |
 | release-platforms | musl, macOS on the CDN, x86_64 builds | M | public-repo-readiness | - | deferred |
 | read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | - | no | deferred |
+| files-and-edit-followups | `tilr edit --wait` (usable as GIT_EDITOR); `tilr edit` outside the shared directories refused at once; deferred 2026-11-17 (owner): redone on top of the bus (host events and files are bus methods there, design O6); its directory is not rewritten yet | M | bus-core-services | no | deferred |
 | libghostty-upstream-fixes | report and carry fixes for libghostty-vt (also: OSC 8 in the reload snapshot) | S | - | - | deferred |
+| bus-gateway | `tilrd gateway`: HTTP `POST /call/...` on loopback, a Biscuit per request; deferred 2026-11-17 (owner): Tilr Web reaches the bus over WebSocket, scripts through `tilr bus call`. No change directory; to be proposed again on top of the bus | M | remove-tilr-v1 | - | deferred |
 
 ## Done
 
 | change | commit |
 |---|---|
+| cargo-build-dir-layout | [PR #134](https://github.com/tilr-dev/tilrd/pull/134) |
 | linux-container-debuginfo | [PR #41](https://github.com/tilr-dev/tilrd/pull/41) |
 | build-script-git-dir | - |
 | test-server-cleanup-stand | [PR #13](https://github.com/tilr-dev/tilrd/pull/13) |
