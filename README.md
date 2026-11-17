@@ -938,7 +938,7 @@ call_timeout_ms = 10000      # default 10000
 drain_ms = 3000              # default 3000, at most 30000: how long a stop or reload waits for calls in flight
 [modules.deno]
 command = ["deno", "run", "-A", "main.ts"]   # required, not empty
-cwd = "~/tilr/components"    # absolute, or ~; default the configuration directory
+cwd = "~/tilr/components"    # absolute; ~ or ~/… (the home directory); relative: under the configuration directory, also the default
 [modules.deno.env]
 LOG = "info"
 [instances.deno-1]

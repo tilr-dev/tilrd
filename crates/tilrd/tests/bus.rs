@@ -2198,25 +2198,66 @@ async fn an_instance_that_cannot_start_is_reported() {
 #[tokio::test]
 async fn an_instance_is_stopped_and_started() {
     let server = instances_server(
-        format!("{}{}", test_module("t", &[]), instance("t-1", "t")),
+        format!(
+            "{}{}",
+            test_module("t", &[]),
+            instance_with(
+                "t-1",
+                "t",
+                "",
+                &[("provide", &["test.*"]), ("call", &["test.gate"])],
+                &[]
+            )
+        ),
         &[],
     );
     let owner = server.owner().await;
     let before = wait_up(&server, &owner, "t-1").await;
 
-    // A call in flight is answered before the process is stopped (drained).
-    let mut sleeping = Box::pin(owner.call("test.sleep", "600", to("t-1")));
+    // A call in flight is answered before the process is stopped (drained). t-1 holds
+    // it on a call of its own to `test.gate`, which the test answers once it is let go.
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (gated_tx, gated) = tokio::sync::oneshot::channel::<()>();
+    let gated_tx = std::sync::Mutex::new(Some(gated_tx));
+    let _gate = server
+        .owner_with(ConnectOptions::new("gate").provide(
+            MethodSpec::unary("test.gate"),
+            Handler::unary({
+                let release = release.clone();
+                move |_: Request| {
+                    if let Some(tx) = gated_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    let release = release.clone();
+                    async move {
+                        release.notified().await;
+                        Ok("let go")
+                    }
+                }
+            }),
+        ))
+        .await;
+    let mut held = Box::pin(owner.call("test.nested", "0 test.gate", to("t-1")));
     // Polled once, so the call is sent.
-    let _ = sleeping.as_mut().now_or_never();
-    // Calls of one connection reach the broker in order: once this is answered, the
-    // sleep has been routed.
-    calls(&owner, "test.echo", "sync").await.unwrap();
-    let stopping = stop_instance(&owner, "t-1", None);
-    let (slept, stopped) = bounded("the drained stop", async {
-        tokio::join!(sleeping, stopping)
+    let _ = held.as_mut().now_or_never();
+    bounded("t-1 calls test.gate", gated).await.unwrap();
+    // The drain outlasts the test's wait: only the release ends the held call.
+    let mut stopping = Box::pin(stop_instance(&owner, "t-1", Some(20_000)));
+    let _ = stopping.as_mut().now_or_never();
+    let draining = wait_instance(&server, &owner, "t-1", "draining", |info| {
+        info.state == "draining"
     })
     .await;
-    assert_eq!(text(&slept.unwrap().payload), "slept");
+    assert_eq!(draining.pid, before.pid);
+    assert!(alive(before.pid), "a draining instance runs");
+    assert!(
+        stopping.as_mut().now_or_never().is_none(),
+        "the stop waits for the held call"
+    );
+    release.notify_one();
+    let (answered, stopped) =
+        bounded("the drained stop", async { tokio::join!(held, stopping) }).await;
+    assert_eq!(text(&answered.unwrap().payload), "let go");
     stopped.unwrap();
     let after = info(&owner, "t-1").await;
     assert_eq!(

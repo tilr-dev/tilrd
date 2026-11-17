@@ -8,7 +8,7 @@
 //! drain_ms = 3000              # default 3000, at most 30000
 //! [modules.deno]
 //! command = ["deno", "run", "-A", "main.ts"]   # required, non-empty
-//! cwd = "~/tilr/components"    # absolute or ~; default the configuration directory
+//! cwd = "~/tilr/components"    # absolute; ~ or ~/… (home); relative: under the configuration directory, also the default
 //! [modules.deno.env]
 //! LOG = "info"
 //! [instances.deno-1]
@@ -77,7 +77,9 @@ impl Default for BusConfig {
 #[serde(deny_unknown_fields)]
 pub struct Module {
     pub command: Vec<String>,
-    /// Absolute or `~`; unset: the configuration directory.
+    /// `~` and `~/…` are under the home directory; any other path is joined to the
+    /// configuration directory (an absolute one stays as it is); unset or empty: the
+    /// configuration directory.
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
