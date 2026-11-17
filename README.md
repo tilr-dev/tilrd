@@ -889,6 +889,42 @@ the older (close 4000).
 
 ### Streams and events
 
+A call fails with a reason: `not_found` (a method no participant provides now and no
+instance of `bus.toml` will, nor one of windows and clients such as `ui.notify` or
+`host.open`; a target that does not provide it), `unavailable` (such a method with no
+provider connected now, a provider draining, or one that went away before answering),
+`timeout`, `denied`, `busy`, `bad_request`, `bad_reply`, `too_large`; the message names
+the method or the participant. A participant has at most 256 calls and
+streams pending (`HelloAck.max_in_flight`); more are answered `busy` at once, and so is a
+call to a participant whose queue is full (768 of its 1024 interactive envelopes), which
+is not closed for it. A call's deadline is `min(timeout_ms, 10 s)` (0: 10 s); a stream
+has one only when it names one. The callee gets the time that is left in `timeout_ms`;
+at the deadline the caller gets `timeout` and the callee `Cancel`, as it does when the
+caller cancels or its connection ends. A late answer is dropped.
+
+A stream is a call answered by chunks and `End` (or an error). Its provider sends at
+most the credit its reader gave: the window of the call (`Call.window`, 0: 1 MiB, at most
+16 MiB) plus what the reader returned with `Credit` as it read; one that sends more gets
+`Cancel` and its reader `bad_reply`. A reader that stops crediting stalls only that
+stream. Chunks and replies of a `BULK` method go in the reader connection's bulk lane,
+written only when its interactive lane (events, replies of other methods, credits,
+cancels) is empty; across all bulk streams to one connection at most 1 MiB is sent and
+not yet credited (`HelloAck.connection_window`), the rest waits in the server, at most
+1 MiB per stream and 16 MiB over the streams one connection reads (a stream that would
+pass it is `busy`; each chunk counts as at least 1 KiB there, and a provider whose tiny
+chunks fill it gets its stream ended `bad_reply`). Credit counts `Chunk.payload` bytes
+as carried in the envelope (a payload its producer compressed counts compressed). An
+empty chunk is relayed like any other and counts 1 KiB held. A connection's interactive lane holds at most 1024 envelopes or
+32 MiB unwritten, its bulk lane 1024 envelopes or 4 MiB; a full interactive lane closes
+the connection 4001. The end of a stream comes after its chunks and never waits for
+credit.
+
+
+Events go to the subscribers connected now, by NATS patterns, once each, without
+history. A subscriber whose connection lags (a packet queued over 250 ms, or 768 queued)
+does not get them: they are dropped and counted in `tilrd_bus_events_dropped_total`, and
+the connection stays.
+
 ### Instances
 
 ### Rights
@@ -1158,6 +1194,7 @@ curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 | `tilrd_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings), `no_hello` (no Hello before the handshake deadline) |
 | `tilrd_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
 | `tilrd_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilrd_bus_events_dropped_total{subject}` | counter | Bus events not delivered to a subscriber whose connection lagged, by subject (past 1000 subjects, the rest as `other`) |
 | `tilrd_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
 | `tilrd_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
 | `tilrd_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |

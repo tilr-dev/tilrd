@@ -1,5 +1,9 @@
-//! The bus's transports and `Hello` (design B3, B4, B12). Owner: `bus-broker-core`;
-//! `bus-web` adds the Origin rules.
+//! The bus's transports and `Hello` (design B3, B4, B12). Owner: `bus-broker-core`,
+//! then `bus-streams-events` (a call or an event refused instead of queued past
+//! [`OPTIONAL_ROOM`], the interactive lane bounded in bytes too
+//! ([`INTERACTIVE_BYTES`]), bulk envelopes counted ([`BULK_ENVELOPES`]), packets
+//! encoded outside the broker's lock); `bus-web` keeps
+//! its Origin rules in the authorizer.
 //!
 //! - WebSocket, on the TCP port and the Unix socket, for a handshake that offers the
 //!   subprotocol `tilr.bus.v1` (`supervisor.rs` picks the route; a handshake without
@@ -18,7 +22,7 @@
 
 use std::os::fd::{OwnedFd, RawFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -47,6 +51,49 @@ pub enum Framing {
     Stream,
 }
 
+/// The most methods one `Hello` may provide: more is refused `bad_request`, so
+/// that one participant cannot grow the routing table without bound.
+pub const MAX_PROVIDES: usize = 1024;
+
+/// Interactive envelopes queued for a connection past which a call is answered
+/// `busy` and an event dropped instead of queued (design B5, B6): the rest of the
+/// lane's 1024 is kept for what must be queued (replies, cancels, credits), so a
+/// participant that is only slow is not closed 4001 for traffic it may refuse.
+pub const OPTIONAL_ROOM: usize = 768;
+
+/// Bytes of interactive envelopes queued for a connection and not yet written
+/// past which it is too slow (closed 4001, as at 1024 envelopes): the lane is
+/// bounded in bytes too, so a reader that stops reading interactive streams of
+/// large chunks does not pin up to 1024 envelopes of 16 MiB. An envelope that
+/// comes into an empty lane is always queued.
+pub const INTERACTIVE_BYTES: usize = 2 * codec::MAX_FRAME;
+
+/// [`OPTIONAL_ROOM`] in bytes: past it a call is `busy` and an event dropped.
+pub const OPTIONAL_BYTES: usize = INTERACTIVE_BYTES / 4 * 3;
+
+/// Bulk envelopes queued for a connection and not yet written past which the
+/// broker queues no more bulk chunks (the connection window counts payload
+/// bytes, this counts envelopes: small chunks do not fill the lane by the
+/// million).
+pub const BULK_ENVELOPES: usize = 1024;
+
+/// Bulk bytes queued for a connection and not yet written past which the
+/// broker queues no more bulk chunks (B7's 4 MiB bulk lane; a chunk that comes
+/// into an empty lane always goes). The connection window alone does not bound
+/// it: the window of a stream that ended goes back before its chunks are
+/// written.
+pub const BULK_BYTES: usize = crate::outbox::BULK_BYTES;
+
+/// How [`Out::offer`] went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    Queued,
+    /// The lane is behind: not queued.
+    Full,
+    /// The connection is gone.
+    Gone,
+}
+
 /// The way to one connection: its two lanes (`outbox.rs`) and how to close it.
 #[derive(Clone)]
 pub struct Out {
@@ -59,6 +106,14 @@ pub struct Out {
     drained: Arc<Notify>,
     /// Told to close already.
     closing: Arc<AtomicBool>,
+    /// Interactive envelopes queued and not yet written (the writer counts down).
+    queued: Arc<AtomicUsize>,
+    /// Their bytes.
+    queued_bytes: Arc<AtomicUsize>,
+    /// Bulk envelopes queued and not yet written.
+    bulk_queued: Arc<AtomicUsize>,
+    /// Their bytes.
+    bulk_bytes: Arc<AtomicUsize>,
 }
 
 impl Out {
@@ -66,7 +121,20 @@ impl Out {
         self.id
     }
 
-    fn encode(&self, msg: Msg) -> Option<Bytes> {
+    /// The envelope framed for this connection, or why it cannot be (over the
+    /// frame limit), with no stand-in: a chunk that cannot be relayed ends its
+    /// stream instead.
+    pub fn try_encode(&self, msg: Msg) -> Result<Bytes, codec::CodecError> {
+        let envelope = Envelope { msg: Some(msg) };
+        match self.framing {
+            Framing::WebSocket => codec::encode_ws(&envelope),
+            Framing::Stream => codec::encode_stream(&envelope),
+        }
+    }
+
+    /// The envelope framed for this connection; an answer over the limit becomes
+    /// a `too_large` error reply of its id.
+    pub fn encode(&self, msg: Msg) -> Option<Bytes> {
         let envelope = Envelope { msg: Some(msg) };
         let encoded = match self.framing {
             Framing::WebSocket => codec::encode_ws(&envelope),
@@ -108,12 +176,38 @@ impl Out {
         let Some(packet) = self.encode(msg) else {
             return false;
         };
+        self.send_packet(packet, lane)
+    }
+
+    /// [`send`](Self::send) of an envelope [`encode`](Self::encode)d already. In
+    /// the bulk lane it is queued without waiting for room: the broker bounds what
+    /// it queues there by the connection window.
+    pub fn send_packet(&self, packet: Bytes, lane: Lane) -> bool {
         match lane {
-            Lane::Bulk => self.tx.queue_bulk_now(packet).is_ok(),
-            Lane::Interactive => {
-                if self.tx.try_send(Outgoing::from(packet)).is_ok() {
+            Lane::Bulk => {
+                let len = packet.len();
+                self.bulk_queued.fetch_add(1, Ordering::Relaxed);
+                self.bulk_bytes.fetch_add(len, Ordering::Relaxed);
+                if self.tx.queue_bulk_now(packet).is_ok() {
                     return true;
                 }
+                self.bulk_queued.fetch_sub(1, Ordering::Relaxed);
+                self.bulk_bytes.fetch_sub(len, Ordering::Relaxed);
+                false
+            }
+            Lane::Interactive => {
+                let len = packet.len();
+                // Counted before it is queued, so that the writer never counts
+                // down below zero; given back if it is not.
+                let bytes = self.queued_bytes.fetch_add(len, Ordering::Relaxed);
+                self.queued.fetch_add(1, Ordering::Relaxed);
+                if (bytes == 0 || bytes + len <= INTERACTIVE_BYTES)
+                    && self.tx.try_send(Outgoing::from(packet)).is_ok()
+                {
+                    return true;
+                }
+                self.queued_bytes.fetch_sub(len, Ordering::Relaxed);
+                self.queued.fetch_sub(1, Ordering::Relaxed);
                 if !self.tx.closed() && !self.closing.swap(true, Ordering::Relaxed) {
                     tracing::warn!(target: "tilrd::bus", connection = self.id, "participant too slow, closing");
                     let _ = self.close.send(Closing::Now(
@@ -126,12 +220,70 @@ impl Out {
         }
     }
 
+    /// Queue an encoded call or event in the interactive lane unless the lane is
+    /// behind: it holds [`OPTIONAL_ROOM`] envelopes or [`OPTIONAL_BYTES`], or
+    /// (`lag`) has held one for over 250 ms. Never closes the connection.
+    pub fn offer(&self, packet: Bytes, lag: bool) -> Offer {
+        if self.tx.closed() {
+            return Offer::Gone;
+        }
+        let len = packet.len();
+        let bytes = self.queued_bytes.load(Ordering::Relaxed);
+        if self.queued.load(Ordering::Relaxed) >= OPTIONAL_ROOM
+            || (bytes > 0 && bytes + len > OPTIONAL_BYTES)
+            || (lag && self.tx.lagging())
+        {
+            return Offer::Full;
+        }
+        // Counted before it is queued (the writer counts down once written).
+        self.queued_bytes.fetch_add(len, Ordering::Relaxed);
+        self.queued.fetch_add(1, Ordering::Relaxed);
+        match self.tx.try_send(Outgoing::from(packet)) {
+            Ok(()) => Offer::Queued,
+            Err(_) => {
+                self.queued_bytes.fetch_sub(len, Ordering::Relaxed);
+                self.queued.fetch_sub(1, Ordering::Relaxed);
+                if self.tx.closed() {
+                    Offer::Gone
+                } else {
+                    Offer::Full
+                }
+            }
+        }
+    }
+
+    /// Bulk envelopes queued and not yet written.
+    pub fn bulk_queued(&self) -> usize {
+        self.bulk_queued.load(Ordering::Relaxed)
+    }
+
+    /// Whether the bulk lane takes a packet of about `len` bytes now: fewer
+    /// than [`BULK_ENVELOPES`] queued, and [`BULK_BYTES`] not passed (an empty
+    /// lane takes any).
+    pub fn bulk_room(&self, len: usize) -> bool {
+        let bytes = self.bulk_bytes.load(Ordering::Relaxed);
+        self.bulk_queued() < BULK_ENVELOPES && (bytes == 0 || bytes + len <= BULK_BYTES)
+    }
+
+    /// Interactive envelopes queued and not yet written.
+    pub fn queued(&self) -> usize {
+        self.queued.load(Ordering::Relaxed)
+    }
+
     /// Queue an envelope in the bulk lane, waiting for room (4 MiB queued).
     pub async fn send_bulk(&self, msg: Msg) -> bool {
         let Some(packet) = self.encode(msg) else {
             return false;
         };
-        self.tx.send_bulk(packet).await.is_ok()
+        let len = packet.len();
+        self.bulk_queued.fetch_add(1, Ordering::Relaxed);
+        self.bulk_bytes.fetch_add(len, Ordering::Relaxed);
+        if self.tx.send_bulk(packet).await.is_ok() {
+            return true;
+        }
+        self.bulk_queued.fetch_sub(1, Ordering::Relaxed);
+        self.bulk_bytes.fetch_sub(len, Ordering::Relaxed);
+        false
     }
 
     /// Close at once with a WebSocket close code.
@@ -169,6 +321,46 @@ impl Out {
     }
 }
 
+/// What a connection's writer counts down once it wrote a packet of `len` bytes;
+/// a bulk lane that comes down to half of [`BULK_ENVELOPES`] or of
+/// [`BULK_BYTES`], or empties, has the broker queue what waited for room in it.
+struct Written {
+    id: ConnId,
+    broker: BrokerHandle,
+    queued: Arc<AtomicUsize>,
+    queued_bytes: Arc<AtomicUsize>,
+    bulk_queued: Arc<AtomicUsize>,
+    bulk_bytes: Arc<AtomicUsize>,
+}
+
+impl Written {
+    fn new(out: &Out, broker: &BrokerHandle) -> Self {
+        Self {
+            id: out.id,
+            broker: broker.clone(),
+            queued: Arc::clone(&out.queued),
+            queued_bytes: Arc::clone(&out.queued_bytes),
+            bulk_queued: Arc::clone(&out.bulk_queued),
+            bulk_bytes: Arc::clone(&out.bulk_bytes),
+        }
+    }
+
+    fn wrote(&self, bulk: bool, len: usize) {
+        if !bulk {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+            self.queued_bytes.fetch_sub(len, Ordering::Relaxed);
+        } else {
+            let count = self.bulk_queued.fetch_sub(1, Ordering::Relaxed);
+            let bytes = self.bulk_bytes.fetch_sub(len, Ordering::Relaxed);
+            let half = BULK_BYTES / 2;
+            // Half way down, or empty (a large chunk waits for an empty lane).
+            if count == 1 || count == BULK_ENVELOPES / 2 || (bytes > half && bytes - len <= half) {
+                self.broker.bulk_room(self.id);
+            }
+        }
+    }
+}
+
 /// A connection's writer end and the queue it takes from.
 fn out(id: ConnId, framing: Framing) -> (Out, outbox::Outbox, mpsc::UnboundedReceiver<Closing>) {
     let (tx, outbox) = outbox::channel();
@@ -181,6 +373,10 @@ fn out(id: ConnId, framing: Framing) -> (Out, outbox::Outbox, mpsc::UnboundedRec
             framing,
             drained: Arc::new(Notify::new()),
             closing: Arc::new(AtomicBool::new(false)),
+            queued: Arc::new(AtomicUsize::new(0)),
+            queued_bytes: Arc::new(AtomicUsize::new(0)),
+            bulk_queued: Arc::new(AtomicUsize::new(0)),
+            bulk_bytes: Arc::new(AtomicUsize::new(0)),
         },
         outbox,
         closing,
@@ -201,6 +397,15 @@ fn accept_hello(
     conn: &HelloContext<'_>,
 ) -> Result<(Principal, Vec<MethodSpec>), ConnectionError> {
     let principal = broker.authorizer().hello(hello, conn)?;
+    if hello.provides.len() > MAX_PROVIDES {
+        return Err(connection_error(
+            codes::BAD_REQUEST,
+            format!(
+                "a Hello provides {} methods, at most {MAX_PROVIDES}",
+                hello.provides.len()
+            ),
+        ));
+    }
     for spec in &hello.provides {
         if !names::valid_method(&spec.method) {
             return Err(connection_error(
@@ -367,6 +572,7 @@ where
     let (mut sink, mut source) = ws.split();
     let (out, mut outbox, mut closing) = out(id, Framing::WebSocket);
     let drained = Arc::clone(&out.drained);
+    let written = Written::new(&out, &broker);
     let client_timeout = broker.client_timeout();
     let mut ping = client_timeout.map(|timeout| {
         let mut ping = tokio::time::interval(timeout / PINGS_PER_TIMEOUT);
@@ -382,7 +588,8 @@ where
                 packet = outbox.recv(true) => match packet {
                     Some(mut outgoing) => {
                         let packet = std::mem::take(&mut outgoing.packet);
-                        (Message::Binary(packet), Some(outgoing))
+                        let len = packet.len();
+                        (Message::Binary(packet), Some((outgoing, len)))
                     }
                     None => break closing.try_recv().ok(),
                 },
@@ -401,10 +608,11 @@ where
                     break how;
                 }
             }
-            if let Some(outgoing) = outgoing
-                && outbox.written(outgoing)
-            {
-                drained.notify_waiters();
+            if let Some((outgoing, len)) = outgoing {
+                written.wrote(outgoing.bulk(), len);
+                if outbox.written(outgoing) {
+                    drained.notify_waiters();
+                }
             }
         };
         let close = async {
@@ -550,6 +758,7 @@ pub(super) fn spawn_stream(
         let (mut reader, mut writer) = stream.into_split();
         let (out, mut outbox, mut closing) = out(id, Framing::Stream);
         let drained = Arc::clone(&out.drained);
+        let written = Written::new(&out, &broker);
         let mut write = tokio::spawn(async move {
             loop {
                 let outgoing = tokio::select! {
@@ -572,6 +781,7 @@ pub(super) fn spawn_stream(
                 if writer.write_all(&outgoing.packet).await.is_err() {
                     break;
                 }
+                written.wrote(outgoing.bulk(), outgoing.packet.len());
                 if outbox.written(outgoing) {
                     drained.notify_waiters();
                 }
