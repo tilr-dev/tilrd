@@ -172,7 +172,10 @@ What `bus-instances`' `control.rs` (and any later control method) implements:
   `rotate_key`, `server.reload`, `server.update` (`acl::CONTROL_ACTIONS`).
 - **Rights:** `control = ["reload:t-1"]` (that action on that instance), `"reload:t-*"`
   (instances whose name starts with `t-`), `"*:t-1"` (every action on `t-1`), `"reload"`
-  (that action on every instance), `"*"` (everything).
+  (that action on every instance), `"*"` (everything). An instance part of `*` is every
+  instance, so `"reload:*"` is `"reload"` and `"list:*"` is `"list"` (it reaches
+  `bus.instances`), and `"*:*"` is `"*"`: the one reading `bus.token` and `bus.toml` give
+  alike (`bus.toml` rights are not checked by `bus.token`'s rule).
 - **The call** passes the broker when the token holds the action on some instance
   (`control_gate`); that does not allow acting on any instance.
 - **Each instance** the method acts on is checked before it acts, one by one, with

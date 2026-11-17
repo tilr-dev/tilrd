@@ -1029,7 +1029,8 @@ and may do only what its token lists (least privilege; design R1-R9 in
   `bus.start`, `bus.stop` and `bus.reload` pass with the action on some instance and are
   checked for each instance they act on; `list` (`bus.instances`, `bus.methods`) and
   `reload_config` are over every instance: `list:t-*` or `*:t-1` does not reach them, also
-  while no instance is configured.
+  while no instance is configured. An instance part of `*` is every instance: `reload:*` is
+  `reload`, `list:*` is `list`, `*:*` is `*`.
 
   `server.command` is no right: only the owner on the Unix socket may call it (not on TCP, not
   with any token). A participant other than the owner with `control = ["token"]` mints only

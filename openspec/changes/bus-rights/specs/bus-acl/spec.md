@@ -71,9 +71,9 @@ A `Hello` that provides a method not covered by its token's `provide` rights MUS
 - **THEN** the call is `denied` and `t-2` keeps its pid
 
 ### Requirement: Listing and reconfiguring need the right over every instance
-`bus.instances`, `bus.methods` and `bus.reload_config` SHALL need `list` or `reload_config` over every instance (`list`, `reload_config` or `*`), also while no instance is configured; a right over some instances (`list:t-*`, `*:t-1`) MUST NOT reach them. The methods SHALL still check each instance they read or act on, with the call's per-call credential when it has one.
+`bus.instances`, `bus.methods` and `bus.reload_config` SHALL need `list` or `reload_config` over every instance (`list`, `reload_config` or `*`; an instance part of `*` is every instance, so `list:*`, `reload_config:*` and `*:*` are those rights), also while no instance is configured; a right over some instances (`list:t-*`, `*:t-1`) MUST NOT reach them. The methods SHALL still check each instance they read or act on, with the call's per-call credential when it has one.
 
-**Verified by**: `bus_acl::control_methods_need_their_right_with_no_instances`, `bus::control_rights_are_checked_for_each_instance`.
+**Verified by**: `bus_acl::control_methods_need_their_right_with_no_instances`, `bus::control_rights_are_checked_for_each_instance`, `supervisor::bus::acl::tests::an_action_over_every_instance_is_the_unscoped_right`.
 
 #### Scenario: No instance configured
 - **WHEN** no instance is configured and a participant whose token has `call = ["bus.instances", "bus.reload_config"]`, or one whose token has `control = ["list:t-*", "reload_config:t-*"]`, calls `bus.instances` and `bus.reload_config`

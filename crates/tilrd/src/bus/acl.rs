@@ -464,9 +464,12 @@ fn rights_facts(rights: &RightsText) -> Vec<Fact> {
         "subscribe_any",
     );
     for right in &rights.control {
+        // `<action>:*` is over every instance: the unscoped `<action>` (`*:*` is `*`).
         match right.split_once(':') {
             None if right == "*" => facts.push(fact("control_all", &[datalog::boolean(true)])),
+            Some(("*", "*")) => facts.push(fact("control_all", &[datalog::boolean(true)])),
             None => facts.push(fact("control_any", &[s(right)])),
+            Some((action, "*")) => facts.push(fact("control_any", &[s(action)])),
             Some((action, instance)) => match instance.strip_suffix('*') {
                 Some(p) => facts.push(fact("control_prefix", &[s(action), s(p)])),
                 None => facts.push(fact("control", &[s(action), s(instance)])),
@@ -2737,6 +2740,31 @@ mod tests {
             .authorize(&p, None, &call("other.echo", ""))
             .unwrap_err();
         assert_eq!(denied.reason, "token:t-1 has no right to call other.echo");
+    }
+
+    #[test]
+    fn an_action_over_every_instance_is_the_unscoped_right() {
+        let f = fixture("s");
+        let ok = |control: &[&str], request: AuthzRequest<'_>| {
+            let p = holder(minted(&f, &rights(|r| r.control = strings(control))));
+            f.acl.authorize(&p, None, &request).is_ok()
+        };
+        // As `list` and `reload_config`: over every instance, also with none.
+        assert!(ok(&["list:*"], call("bus.instances", "")));
+        assert!(ok(&["list:*"], call("bus.methods", "")));
+        assert!(ok(&["reload_config:*"], call("bus.reload_config", "")));
+        assert!(!ok(&["list:*"], call("bus.reload_config", "")));
+        assert!(ok(
+            &["reload:*"],
+            AuthzRequest::Control {
+                action: "reload",
+                instance: Some("any-1")
+            }
+        ));
+        // `*:*` is `*`; a prefix is still some instances only.
+        assert!(ok(&["*:*"], call("bus.rotate_key", "")));
+        assert!(!ok(&["list:t-*"], call("bus.instances", "")));
+        assert!(check_rights(&rights(|r| r.control = strings(&["list:*", "*:*"]))).is_ok());
     }
 
     #[test]
