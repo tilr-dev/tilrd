@@ -1,7 +1,7 @@
 # Tasks
 
 Shared design: `openspec/design/unified-bus.md`. Numbers in brackets are the tasks of the
-former `unified-bus` (its `tasks.md` at 75fc8ce0).
+former single change `unified-bus` (shared design, O3).
 
 ## 1. Crate tilr-bus
 
@@ -13,4 +13,4 @@ former `unified-bus` (its `tasks.md` at 75fc8ce0).
 ## 2. Checks and archive
 
 - [ ] 2.1 [12.1] Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green and every existing test passes under its name
-- [ ] 2.2 [12.2] Update this change's row in `openspec/ROADMAP.md`, record the commit in proposal.md and archive; verify `openspec validate --all --strict`
+- [ ] 2.2 [12.2] Archive the change and list it under Done in `openspec/ROADMAP.md`; verify `openspec validate --all --strict`

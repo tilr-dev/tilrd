@@ -9,7 +9,7 @@ workspace member line for it in `Cargo.toml`, the dependencies of `tilr-bus`.
 
 ## Why
 
-Owner's decisions of 2026-11-17 (session TILR-892): one bus `tilr.bus.v1` for everything,
+Owner's decisions of 2026-11-17 (shared design `openspec/design/unified-bus.md`): one bus `tilr.bus.v1` for everything,
 built in `main` beside `tilr.v1` as several changes, one PR each
 (`openspec/design/unified-bus.md`, Owner's decisions, O1-O3). Every other change of the phase
 codes against this crate, so it comes first, with every schema at once: parallel changes must
