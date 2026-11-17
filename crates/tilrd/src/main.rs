@@ -27,6 +27,9 @@ mod time;
 mod title;
 mod update;
 
+/// The bus broker, declared in `supervisor` (see `bus/mod.rs`).
+use supervisor::bus;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

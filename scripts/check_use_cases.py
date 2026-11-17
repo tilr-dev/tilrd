@@ -52,6 +52,30 @@ def rust_functions(path, prefix):
             yield '::'.join(parts)
 
 
+PATH_MODULE = re.compile(
+    r'#\[path\s*=\s*"(?P<path>[^"]+)"\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?P<name>\w+)\s*;'
+)
+
+
+def module_parts(path, src):
+    parts = list(path.relative_to(src).with_suffix('').parts)
+    if parts and parts[-1] in {'lib', 'main', 'mod'}:
+        parts.pop()
+    return parts
+
+
+def path_modules(src):
+    """Directories of modules declared with `#[path]` (`#[path = "bus/mod.rs"] mod
+    bus;` in supervisor.rs), and the module path the runner names them by."""
+    found = {}
+    for path in sorted(src.rglob('*.rs')):
+        for match in PATH_MODULE.finditer(path.read_text()):
+            target = (path.parent / match['path']).resolve()
+            declaring = module_parts(path, src)
+            found[target.parent] = declaring + [match['name']]
+    return found
+
+
 def known_names(root):
     names = set()
     crates = {path.name for path in (root / 'crates').iterdir() if path.is_dir()}
@@ -61,10 +85,15 @@ def known_names(root):
             for name in rust_functions(path, [path.stem]):
                 names.add(name)
                 names.add(name.split('::')[-1])
+        moved = path_modules(base / 'src') if (base / 'src').is_dir() else {}
         for path in sorted((base / 'src').rglob('*.rs')):
-            parts = list(path.relative_to(base / 'src').with_suffix('').parts)
-            if parts[-1] in {'lib', 'main', 'mod'}:
-                parts.pop()
+            parts = module_parts(path, base / 'src')
+            # Under a `#[path]` module: also by the path the test runner shows.
+            for directory, prefix in moved.items():
+                if directory in path.resolve().parents:
+                    inner = module_parts(path.resolve(), directory)
+                    for name in rust_functions(path, prefix + inner):
+                        names.add(name)
             for name in rust_functions(path, parts):
                 names.add(name)
                 # Some existing tables introduce the source file in prose and

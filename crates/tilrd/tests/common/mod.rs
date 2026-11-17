@@ -19,6 +19,17 @@ pub use server_owner::Owner;
 
 mod scratch;
 
+pub mod bus;
+pub mod bus_instances;
+pub mod bus_panes;
+pub mod bus_profiles;
+pub mod bus_reload;
+pub mod bus_rights;
+pub mod bus_sandbox;
+pub mod bus_services;
+pub mod bus_streams;
+pub mod bus_web;
+
 pub mod scrape;
 pub use scrape::{http_get, http_request, sample, wait_sample_above};
 

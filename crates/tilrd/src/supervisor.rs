@@ -52,6 +52,12 @@ use crate::{
     socks,
 };
 
+/// The bus broker (`tilr.bus.v1`), beside `tilr.v1` until `remove-tilr-v1`. A
+/// child of this module so the core's methods (`bus/core/*.rs`) reach the
+/// supervisor's state and paths without changes here; `crate::bus` names it.
+#[path = "bus/mod.rs"]
+pub(crate) mod bus;
+
 const INPUT_RETENTION: Duration = Duration::from_secs(60 * 60);
 
 /// Disconnect deadlines are deliberately local to this supervisor incarnation.
@@ -241,6 +247,8 @@ enum Event {
     /// disk.
     Reload,
     Shutdown,
+    /// A request of the bus core, run on this task (see [`bus::core`]).
+    Core(bus::CoreCmd),
 }
 
 /// Where a connection comes from.
@@ -437,6 +445,8 @@ struct Door {
     token: Option<String>,
     /// Whether the SOCKS proxy is served.
     socks: bool,
+    /// Where a handshake offering `tilr.bus.v1` goes.
+    bus: bus::BrokerHandle,
 }
 
 pub fn run(options: Options) -> Result<()> {
@@ -530,6 +540,18 @@ pub fn run(options: Options) -> Result<()> {
                     .map_or(0, |state| state.next_client_id)
                     .max(1),
             ));
+            let server_id = identity::server_id();
+            // Bus connections take their ids from the same counter.
+            let broker = bus::BrokerHandle::new(bus::broker::BrokerOptions {
+                authz: bus::default_authorizer(&bus::AuthzConfig {
+                    access_token: token.clone(),
+                    server_id: server_id.to_string(),
+                    state_dir: identity::state_dir(),
+                }),
+                server_id: server_id.to_string(),
+                next_connection_id: Arc::clone(&next_client_id),
+                client_timeout: options.client_timeout,
+            });
             let door = Arc::new(Door {
                 allow_origins: options.allow_origins,
                 // 0.0.0.0 or :: is not a host a request names.
@@ -541,6 +563,7 @@ pub fn run(options: Options) -> Result<()> {
                     .unwrap_or_default(),
                 token: token.clone(),
                 socks: options.socks,
+                bus: broker.clone(),
             });
             if let Some(listener) = &listener {
                 tokio::spawn(accept_loop(
@@ -601,7 +624,6 @@ pub fn run(options: Options) -> Result<()> {
                 let _ = events_tx.send(Event::Shutdown);
             }
 
-            let server_id = identity::server_id();
             let host_socket = set_up_host_socket(&server_id, events_tx.clone());
             let (clipboard, mut pane_env) = set_up_shims(options.clipboard, host_socket.is_some());
             // `tilr` in a pane talks to this server.
@@ -654,6 +676,19 @@ pub fn run(options: Options) -> Result<()> {
             if !options.exec {
                 tracing::info!(target: "tilrd::exec", "exec off");
             }
+            let core = bus::Core {
+                supervisor: bus::SupervisorHandle::new(events_tx.clone()),
+                broker: broker.clone(),
+                features: bus::core::Features {
+                    clipboard: clipboard.is_some(),
+                    files: files.is_some(),
+                    host_events: host_socket.is_some(),
+                    agent: agent.is_some(),
+                    exec: options.exec,
+                },
+            };
+            let (methods, observers) = bus::core::registry(&core).into_parts();
+            broker.install(methods);
 
             let mut supervisor = Supervisor {
                 events: events_tx,
@@ -678,6 +713,7 @@ pub fn run(options: Options) -> Result<()> {
                 next_client_id,
                 copies: HashMap::new(),
                 last_copy: state.as_ref().map_or(0, |state| state.last_copy_id),
+                bus: bus::core::CoreState::new(broker, observers),
             };
             if let Some(state) = state {
                 supervisor.resume(state);
@@ -1161,6 +1197,18 @@ async fn serve_websocket<S>(
                 return Err(refused);
             }
             route = Route::Socks;
+            return Ok(response);
+        }
+        if offers_bus(request) {
+            route = Route::Bus(header_text(request, "origin"));
+            let mut response = response;
+            response.headers_mut().insert(
+                "sec-websocket-protocol",
+                tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                    tilr_bus::SUBPROTOCOL,
+                ),
+            );
+            return Ok(response);
         }
         Ok(response)
     };
@@ -1185,6 +1233,24 @@ async fn serve_websocket<S>(
         let Peer::Tcp(addr) = addr else { return };
         tracing::debug!(%addr, "SOCKS WebSocket connected");
         socks::serve_websocket(ws, client_timeout, addr).await;
+        return;
+    }
+    if let Route::Bus(origin) = route {
+        let conn = bus::transport::WsConn {
+            id,
+            peer: match addr {
+                Peer::Tcp(addr) => bus::Peer::Tcp(addr),
+                Peer::Unix(pid) => bus::Peer::Unix { pid },
+            },
+            transport: if local {
+                bus::Transport::UnixSocket
+            } else {
+                bus::Transport::Tcp
+            },
+            socket,
+            origin,
+        };
+        bus::transport::serve_websocket(ws, conn, door.bus.clone()).await;
         return;
     }
     // reconnect-client-accepted: WebSocket established, before registration.
@@ -1463,6 +1529,31 @@ enum Route {
     Main,
     /// The SOCKS proxy, at [`socks::PATH`].
     Socks,
+    /// The bus: the handshake offered `tilr.bus.v1`; the request's `Origin`
+    /// (empty without).
+    Bus(String),
+}
+
+/// Whether a handshake offers the subprotocol `tilr.bus.v1`
+/// (`Sec-WebSocket-Protocol`, a comma-separated list, maybe in several headers).
+fn offers_bus(request: &Request) -> bool {
+    request
+        .headers()
+        .get_all("sec-websocket-protocol")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|protocol| protocol.trim() == tilr_bus::SUBPROTOCOL)
+}
+
+/// A request header as text; empty without (or when it is not text).
+fn header_text(request: &Request, name: &str) -> String {
+    request
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned()
 }
 
 impl Door {
@@ -1624,7 +1715,7 @@ async fn tick(interval: &mut Option<Interval>) {
     }
 }
 
-struct Supervisor {
+pub(crate) struct Supervisor {
     events: mpsc::UnboundedSender<Event>,
     /// `None`: no TCP port, the Unix socket only.
     listener: Option<Arc<TcpListener>>,
@@ -1666,6 +1757,8 @@ struct Supervisor {
     /// `ClipboardWrite.transfer_id` of the last copy sent; handed on in a
     /// reload, so that transfer ids only grow.
     last_copy: u64,
+    /// The bus core's observers and state (see [`bus::core::CoreState`]).
+    bus: bus::core::CoreState,
 }
 
 impl Supervisor {
@@ -1808,6 +1901,9 @@ impl Supervisor {
                         pane.cwd = status.cwd;
                     }
                     self.broadcast_pane_list();
+                    if self.bus.observing() {
+                        bus::core::pane_event(self, &bus::PaneEvent::Changed { pane: pane_id });
+                    }
                 }
             }
             Event::PaneInputAck { pane_id, ack } => self.on_input_ack(pane_id, ack),
@@ -1817,6 +1913,15 @@ impl Supervisor {
             } => {
                 if self.panes.contains_key(&pane_id) {
                     activity.pane_id = pane_id.to_string();
+                    if self.bus.observing() {
+                        bus::core::pane_event(
+                            self,
+                            &bus::PaneEvent::Activity {
+                                pane: pane_id,
+                                activity: activity.clone(),
+                            },
+                        );
+                    }
                     self.broadcast_activity(activity);
                 }
             }
@@ -1854,6 +1959,7 @@ impl Supervisor {
             }
             // Handled by the event loop.
             Event::Reload | Event::Shutdown => {}
+            Event::Core(cmd) => self.on_core(cmd),
         }
     }
 
@@ -2952,6 +3058,9 @@ impl Supervisor {
             }),
         );
         self.broadcast_pane_list();
+        if self.bus.observing() {
+            bus::core::pane_event(self, &bus::PaneEvent::Created { pane: pane_id });
+        }
     }
 
     /// Pass a pane's packet on to its subscribers. A frame (`head`) is
@@ -2966,6 +3075,9 @@ impl Supervisor {
         read_at: Instant,
         head: Option<FrameHead>,
     ) {
+        if self.bus.observing() && self.panes.contains_key(&pane_id) {
+            bus::core::pane_output(self, &pane_id, head, &packet);
+        }
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
@@ -3180,6 +3292,15 @@ impl Supervisor {
             let _ = client.tx.try_send(packet.clone().into());
         }
         self.broadcast_pane_list();
+        if self.bus.observing() {
+            bus::core::pane_event(
+                self,
+                &bus::PaneEvent::Exited {
+                    pane: pane_id,
+                    exit_code,
+                },
+            );
+        }
     }
 
     fn forget_input(&self, identity: &str) {
@@ -3804,6 +3925,7 @@ mod tests {
             next_client_id: Arc::new(AtomicU64::new(3)),
             copies: HashMap::new(),
             last_copy: 0,
+            bus: bus::core::CoreState::default(),
         };
         let pane_id = PaneId::new_v4();
         let (to_pane, mut commands) = mpsc::unbounded_channel();

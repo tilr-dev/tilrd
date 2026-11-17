@@ -1598,6 +1598,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tar",
+ "tilr-bus",
  "tilr-proto",
  "tilr-screen",
  "tilr-websocket",
