@@ -19,7 +19,7 @@ use tilr_proto::{
     MouseInput, NamedKey, PaneStatus, Placement, Row, Run, Style, Underline, attrs, color, mods,
 };
 
-use crate::{ClipboardCopy, Screen};
+use crate::{ClipboardCopy, MAX_TEXT_BYTES, Screen, ScreenText, TextTooLarge};
 
 const MAX_SCROLLBACK: usize = 10_000;
 /// The cell in pixels until a client says what its own is: image placements
@@ -150,6 +150,103 @@ impl GhosttyScreen {
         screen.take_replies();
         screen.take_bells();
         Ok(screen)
+    }
+
+    /// A row as text, `at` giving the point of its column `x`: one character
+    /// per cell, a wide one once, a grapheme whole, image placeholders blank,
+    /// trailing blanks trimmed.
+    fn row_text(&self, at: impl Fn(u16) -> Point, cols: u16) -> Result<String> {
+        let mut text = String::with_capacity(usize::from(cols));
+        let mut buf = ['\0'; 16];
+        for x in 0..cols {
+            let grid = self.term.grid_ref(at(x))?;
+            match grid.cell()?.wide()? {
+                CellWide::SpacerTail | CellWide::SpacerHead => continue,
+                _ => {}
+            }
+            let mut long = Vec::new();
+            let cps = match grid.graphemes(&mut buf) {
+                Ok(len) => &buf[..len],
+                // A cluster longer than the buffer.
+                Err(_) => {
+                    long.resize(256, '\0');
+                    let len = grid.graphemes(&mut long).unwrap_or(0);
+                    &long[..len]
+                }
+            };
+            match cps {
+                [] | [PLACEHOLDER, ..] => text.push(' '),
+                cps => text.extend(cps.iter()),
+            }
+        }
+        text.truncate(text.trim_end_matches(' ').len());
+        Ok(text)
+    }
+
+    /// [`Screen::text`] within `budget` bytes.
+    fn text_within(&self, history_lines: u32, budget: usize) -> Result<ScreenText> {
+        let (cols, rows) = self.size;
+        // Where the viewport is in the screen (history, then the active area).
+        // Without it, the viewport alone: its rows are not taken for history.
+        let bar = self
+            .term
+            .scrollbar()
+            .ok()
+            .map(|bar| (bar.total.max(u64::from(rows)), bar.offset));
+        let screen_row = |y: u64| {
+            let y = u32::try_from(y).unwrap_or(u32::MAX);
+            self.row_text(|x| Point::Screen(PointCoordinate { x, y }), cols)
+        };
+        let lines = match bar {
+            Some((_, top)) => (top..top + u64::from(rows))
+                .map(screen_row)
+                .collect::<Result<Vec<_>>>()?,
+            None => (0..u32::from(rows))
+                .map(|y| self.row_text(|x| Point::Viewport(PointCoordinate { x, y }), cols))
+                .collect::<Result<Vec<_>>>()?,
+        };
+        // Each row costs its bytes and a few of encoding.
+        let cost = |line: &String| line.len() + 4;
+        let mut bytes: usize = lines.iter().map(cost).sum();
+        if bytes > budget {
+            return Err(TextTooLarge.into());
+        }
+        let mut history = Vec::new();
+        if let Some((_, top)) = bar {
+            // The nearest rows first, as many as fit.
+            for y in (top.saturating_sub(u64::from(history_lines))..top).rev() {
+                let line = screen_row(y)?;
+                bytes += cost(&line);
+                if bytes > budget {
+                    break;
+                }
+                history.push(line);
+            }
+            history.reverse();
+        }
+        // The cursor is in the active area, the last `rows` rows of the screen;
+        // without a scrollbar the viewport is taken to be the active area.
+        let (total, top) = bar.unwrap_or((u64::from(rows), 0));
+        let active_top = total - u64::from(rows);
+        let y = (active_top + u64::from(self.term.cursor_y()?))
+            .checked_sub(top)
+            .filter(|y| *y < u64::from(rows));
+        let shape = self
+            .last_cursor
+            .map_or(CursorShape::Block as i32, |c| c.shape);
+        let cursor = Cursor {
+            visible: self.term.is_cursor_visible()? && y.is_some(),
+            x: u32::from(self.term.cursor_x()?),
+            y: y.map_or(0, |y| y as u32),
+            shape,
+            blinking: self.last_cursor.is_some_and(|c| c.blinking),
+        };
+        Ok(ScreenText {
+            lines,
+            history,
+            cursor,
+            title: self.term.title().unwrap_or_default().to_owned(),
+        })
     }
 
     /// The Kitty graphics placements in the viewport, and the images among
@@ -508,6 +605,10 @@ impl Screen for GhosttyScreen {
             title: self.term.title().unwrap_or_default().to_owned(),
             cwd: path_from_pwd(self.term.pwd().unwrap_or_default()),
         })
+    }
+
+    fn text(&self, history_lines: u32) -> Result<ScreenText> {
+        self.text_within(history_lines, MAX_TEXT_BYTES)
     }
 
     fn take_copies(&mut self) -> Vec<ClipboardCopy> {
@@ -2322,6 +2423,56 @@ mod tests {
         // Scrolling stops at the first line of history.
         screen.scroll(-1000);
         assert_eq!(screen.scrolled_back(), 7);
+    }
+
+    #[test]
+    fn the_screen_reads_as_text_with_its_history() {
+        let mut screen = screen();
+        for i in 0..6 {
+            screen.feed(format!("line{i}   \r\n").as_bytes());
+        }
+        // A wide character once, a cluster whole, trailing blanks trimmed.
+        screen.feed("宽x \u{1F44D}\u{1F3FD}".as_bytes());
+        let text = screen.text(2).unwrap();
+        assert_eq!(
+            text.lines,
+            ["line3", "line4", "line5", "宽x \u{1F44D}\u{1F3FD}"]
+        );
+        assert_eq!(text.history, ["line1", "line2"]);
+        assert!(text.cursor.visible);
+        assert_eq!(text.cursor.y, 3);
+        // All of history when more is asked for than there is.
+        assert_eq!(screen.text(100).unwrap().history.len(), 3);
+        // Reading leaves the next frame alone: it still has every row changed.
+        let frame = screen.frame(false).unwrap().unwrap();
+        assert_eq!(row_text(&frame, 0), "line3");
+        // Scrolled back: the viewport shows history, the cursor is out of view.
+        screen.scroll(-2);
+        let text = screen.text(1).unwrap();
+        assert_eq!(text.lines[0], "line1");
+        assert_eq!(text.history, ["line0"]);
+        assert!(!text.cursor.visible);
+        screen.feed(b"\x1b]0;my title\x07");
+        assert_eq!(screen.text(0).unwrap().title, "my title");
+    }
+
+    #[test]
+    fn the_text_of_a_screen_is_bounded() {
+        let mut screen = screen();
+        for i in 0..6 {
+            screen.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let all = screen.text(100).unwrap();
+        assert_eq!(all.history.len(), 3);
+        // Each row costs its bytes and 4: the viewport and the nearest two
+        // rows of history (9 each) fit, the third does not.
+        let viewport: usize = all.lines.iter().map(|line| line.len() + 4).sum();
+        let text = screen.text_within(100, viewport + 18).unwrap();
+        assert_eq!(text.lines, all.lines);
+        assert_eq!(text.history, ["line1", "line2"]);
+        // A viewport over the bound is an error, not a part of it.
+        let err = screen.text_within(0, viewport - 1).unwrap_err();
+        assert!(err.is::<TextTooLarge>(), "{err:#}");
     }
 
     #[test]
