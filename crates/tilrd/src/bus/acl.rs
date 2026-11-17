@@ -2323,9 +2323,25 @@ fn read_key(path: &Path) -> anyhow::Result<KeyPair> {
     let key = text
         .trim()
         .strip_prefix("ed25519/")
-        .and_then(|hex| PrivateKey::from_bytes_hex(hex, Algorithm::Ed25519).ok())
+        .and_then(unhex)
+        .and_then(|bytes| PrivateKey::from_bytes(&bytes, Algorithm::Ed25519).ok())
         .with_context(|| format!("{} does not hold an Ed25519 key", path.display()))?;
     Ok(KeyPair::from(&key))
+}
+
+/// The bytes of lowercase or uppercase hex, wiped from memory when dropped (the
+/// root key passes through it).
+fn unhex(text: &str) -> Option<Zeroizing<Vec<u8>>> {
+    let digit = |b: u8| (b as char).to_digit(16);
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(text.len() / 2));
+    for [high, low] in text.as_bytes().as_chunks::<2>().0 {
+        let byte = digit(*high)? * 16 + digit(*low)?;
+        bytes.push(u8::try_from(byte).ok()?);
+    }
+    Some(bytes)
 }
 
 /// Replace the key file whole (rotation).
@@ -2636,6 +2652,20 @@ mod tests {
             .verify(&minted(&f, &RightsText::default()).bytes)
             .unwrap_err();
         assert!(error.reason.contains("cannot verify tokens"), "{error}");
+    }
+
+    #[test]
+    fn the_root_key_reads_from_its_hex() {
+        assert_eq!(
+            unhex("00ff7A").as_deref().map(Vec::as_slice),
+            Some(&[0, 255, 122][..])
+        );
+        assert!(unhex("abc").is_none());
+        assert!(unhex("zz").is_none());
+        let f = fixture("s");
+        let read = read_key(&f.dir.join(ROOT_KEY_FILE)).unwrap();
+        let pair = f.acl.keys().pair.as_ref().unwrap().public();
+        assert_eq!(read.public(), pair);
     }
 
     #[test]

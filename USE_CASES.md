@@ -943,6 +943,7 @@ server minted for it.
 | Attenuating refuses what is not a token or a block of Datalog | `credential::tests::attenuating_refuses_what_is_not_a_token_or_a_block` |
 | The root key file is 0600 and reused; one open to others is refused, not replaced | `supervisor::bus::acl::tests::the_root_key_file_is_private_and_kept` |
 | Each right allows its requests only; the reason names the missing right | `supervisor::bus::acl::tests::each_right_allows_its_requests_only` |
+| The root key's hex reads into wiped memory and gives the key the server holds | `supervisor::bus::acl::tests::the_root_key_reads_from_its_hex` |
 | `*` rights, reserved namespaces, a principal without a token and the owner | `supervisor::bus::acl::tests::stars_and_the_owner` |
 | A per-call credential decides alone and only for calls | `supervisor::bus::acl::tests::a_per_call_credential_decides_alone` |
 | Appended blocks narrow and never widen; block, size and run limits; another key | `supervisor::bus::acl::tests::appended_blocks_narrow_and_never_widen` |
