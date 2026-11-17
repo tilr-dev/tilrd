@@ -58,6 +58,9 @@ pub struct Args {
     /// Working directory of the shell. Empty = this process's own.
     #[arg(long, default_value = "")]
     pub cwd: String,
+    /// The sandbox of a pane of a sandboxed profile: a `sandbox::Request` as JSON.
+    #[arg(long, hide = true)]
+    pub sandbox: Option<String>,
     /// Command to run instead of the shell.
     #[arg(last = true)]
     pub command: Vec<String>,
@@ -174,7 +177,12 @@ pub fn run(args: Args) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let sandboxed = args.sandbox.is_some().then(|| args.id.to_string());
     let result = runtime.block_on(serve(args, start_args, title));
+    // The pane has ended (a reload does not get here): its sandbox's leftovers go.
+    if let Some(id) = sandboxed {
+        crate::sandbox::remove_pane_dir(&crate::clipboard::runtime_dir(), &id);
+    }
     // The stdin reader may sit in a blocking read that only ends when the
     // supervisor closes the pipe; exit without waiting for it.
     runtime.shutdown_background();
@@ -332,18 +340,34 @@ async fn serve(
             handover.seq,
         )
     } else {
-        let pty::Spawned { master, child } =
-            match pty::spawn_shell(&id, &args.command, &args.cwd, args.cols, args.rows) {
-                Ok(spawned) => spawned,
-                Err(err) => {
-                    let packet = tilr_proto::encode(&tilr_proto::Error {
-                        message: format!("{err:#}"),
-                    });
-                    return link::write_tagged(&mut to_supervisor, link::kind::FAILED, &packet)
-                        .await
-                        .context("report failure to supervisor");
-                }
-            };
+        let sandbox = args
+            .sandbox
+            .as_deref()
+            .map(crate::sandbox::Request::from_arg)
+            .transpose();
+        let pty::Spawned { master, child } = match sandbox
+            .as_ref()
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .and_then(|sandbox| {
+                pty::spawn_shell(
+                    &id,
+                    &args.command,
+                    &args.cwd,
+                    args.cols,
+                    args.rows,
+                    sandbox.as_ref(),
+                )
+            }) {
+            Ok(spawned) => spawned,
+            Err(err) => {
+                let packet = tilr_proto::encode(&tilr_proto::Error {
+                    message: format!("{err:#}"),
+                });
+                return link::write_tagged(&mut to_supervisor, link::kind::FAILED, &packet)
+                    .await
+                    .context("report failure to supervisor");
+            }
+        };
         pty::set_nonblocking(master.as_raw_fd())?;
         link::write_tagged(&mut to_supervisor, link::kind::STARTED, &[])
             .await

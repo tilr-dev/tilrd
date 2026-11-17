@@ -857,6 +857,75 @@ What to know:
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
 
+## Sandboxed panes
+
+A launch profile with a `[sandbox]` table starts a sandboxed pane: its program and every
+process it starts can touch only what the table grants. It is still a normal terminal: raw
+mode, `stty`, full-screen programs (vim, less, Claude Code), job control, Ctrl+C and window
+size changes work as in any pane, and scripts and binaries made in a `read_write`
+directory run there. A caller asks for a sandbox only by naming such a profile.
+
+```toml
+[sandbox]
+read_only = ["~/docs"]            # read and execute
+read_write = ["~/work"]           # read, write and execute
+executables = ["git", "/opt/x/y"] # also these programs: a name is looked up in PATH
+env = ["LANG"]                    # the server's values of these variables
+network = "none"                  # none (default) | client | server
+```
+
+The server offers it where it can enforce it: on Linux with Landlock ABI 4 (kernel 6.7) or
+later and seccomp, as the feature `sandbox` (`server.info.features`); at start it logs
+`sandbox: offered` or `sandbox: not offered: <reason>`. Elsewhere a sandboxed profile is
+refused and nothing starts.
+
+What every sandboxed pane gets:
+
+- read and execute on `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`; read on `/etc`,
+  `/proc` and `/sys` (and, with `client` or `server`, on the file `/etc/resolv.conf` links to);
+  read and write on `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`,
+  `/dev/tty`, `/dev/ptmx` and the pane's own terminal (`/dev/pts/N`), but no other terminal
+  of the user: another pane's typing cannot be read or written to;
+- the program it runs (the command, or the login shell) and the `executables`, to read and
+  run; `PATH`, unless the profile's `[env]` sets it, is their directories followed by
+  `/usr/bin:/bin:/usr/sbin:/sbin`;
+- a private `TMPDIR`, `<runtime dir>/sandbox/<pane id>/` (0700), removed when the pane ends
+  (and at the next start of a server killed while the pane ran);
+- an environment made from scratch: `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`,
+  `TILR_PANE`, `TMPDIR`, `PATH`, the `env` names with the server's values, then the
+  profile's `[env]`. No `TILR_*` of the server, no `SSH_AUTH_SOCK`, no shims and no login
+  wrappers (the login shell starts as `-<shell>`).
+
+What it never gets:
+
+- a Unix-domain socket: `socket(AF_UNIX, ...)` fails with `EACCES` whatever the network
+  setting, so neither the server's socket, its host-events and agent sockets nor any other
+  Unix socket of the user can be reached (`socketpair` works);
+- a grant over the state directory (token, root key), the runtime directory (sockets) or the
+  configuration directory (profiles, `bus.toml`), read-only included: such a profile is
+  refused with `create pane: sandbox: <path> would expose <what> <dir>`, and so is a grant
+  inside one of them. `read_only = ["~"]` is refused when the state directory is under the
+  home directory, its default;
+- io_uring (its socket operations would bypass the socket rules);
+- with `none`: any socket but netlink; with `client`: listening (`listen`, also on a socket
+  never bound) and any IPv4 or IPv6 socket but TCP streams and datagrams.
+
+If the restriction cannot be installed the program does not run and the pane is refused
+with `create pane: sandbox: <reason>`; a grant path that does not exist is skipped with a
+log line. The server never falls back to an unrestricted pane.
+
+Limits:
+
+- `client` does not restrict UDP on Linux (Landlock has no UDP rules): a `client` pane can
+  send and receive datagrams, DNS included.
+- On Landlock ABI 4 and 5 (before Linux 6.12) a sandboxed pane can signal the user's other
+  processes; the server starts it all the same and logs `sandbox: kernel lacks signal scoping
+  (Landlock ABI N < 6); pane <id> can signal the user's other processes`.
+- A terminal made inside a sandboxed pane cannot be opened (its slave is another
+  `/dev/pts/M`): `script`, tmux, screen, `vim`'s `:terminal` and Python's `pty` fail there.
+- Metadata is not hidden: a sandboxed pane can `stat` any path and read `/proc` (other
+  processes' command lines included), but not list or read files outside its grants.
+
 ## The bus
 
 Beside `tilr.v1`, tilrd is the broker of a component bus, `tilr.bus.v1`: participants

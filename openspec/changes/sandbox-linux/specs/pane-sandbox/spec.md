@@ -23,9 +23,9 @@ On a server that lists `sandbox` in `server.info.features`, `pane.create` with a
 - **THEN** the pane starts and the log has a line `sandbox: kernel lacks signal scoping (Landlock ABI 4 < 6)` naming the pane
 
 ### Requirement: Files outside the grants cannot be read or written
-In a sandboxed pane, a path under `read_write` SHALL be readable, writable and executable; a path under `read_only` SHALL be readable and executable and MUST NOT be writable; any other path MUST be neither readable nor writable, except the system program and library directories, `/etc` and the terminal devices, which SHALL be readable. This SHALL hold for the shell and every process it starts.
+In a sandboxed pane and every process it starts, a path under `read_write` SHALL be readable, writable and executable; under `read_only` readable and executable, not writable; any other file's contents MUST be neither readable nor writable and any other directory MUST NOT be listable, except the system directories, `/etc`, `/proc`, `/sys` and the pane's terminal devices. Metadata (`stat`) is not hidden.
 
-**Verified by**: `sandbox::a_sandboxed_pane_writes_only_where_it_may`, `sandbox::a_child_of_the_shell_is_restricted_too`.
+**Verified by**: `sandbox::a_sandboxed_pane_writes_only_where_it_may`, `sandbox::a_child_of_the_shell_is_restricted_too`, unit tests `sandbox::tests::linux::a_sandboxed_program_writes_only_where_it_may`, `sandbox::tests::linux::a_child_of_the_sandboxed_program_is_restricted_too` (crates/tilrd/src/sandbox/tests.rs).
 
 #### Scenario: Write outside
 - **WHEN** a profile grants `read_write = ["<w>"]`, `read_only = ["<r>"]`, and the pane runs `touch <w>/a <r>/b <o>/c` (another directory `<o>` of the user)
@@ -34,6 +34,19 @@ In a sandboxed pane, a path under `read_write` SHALL be readable, writable and e
 #### Scenario: A grandchild
 - **WHEN** the pane runs `sh -c 'sh -c "touch <o>/d"'`
 - **THEN** `<o>/d` does not exist
+
+### Requirement: A sandboxed pane reaches only its own terminal
+A sandboxed pane SHALL be able to read, write and use its own terminal, as `/dev/pts/N` and as `/dev/tty`, and to open `/dev/ptmx`; it MUST NOT be able to open another terminal device of the user, so it can neither read what is typed there nor write to it. The slave of a terminal made inside the pane cannot be opened either, so `script` and tmux fail there (a documented limit).
+
+**Verified by**: unit tests `sandbox::tests::linux::a_sandboxed_pane_cannot_open_another_terminal`, `sandbox::tests::linux::a_terminal_made_inside_a_sandbox_cannot_be_opened` (crates/tilrd/src/sandbox/tests.rs).
+
+#### Scenario: Another terminal of the user
+- **WHEN** the user has another terminal `/dev/pts/M` open and the pane runs `: < /dev/pts/M` and `: > /dev/pts/M`
+- **THEN** both fail with a permission error, and `echo x > $(tty)` and `echo x > /dev/tty` succeed
+
+#### Scenario: A terminal made inside
+- **WHEN** a program in the pane opens `/dev/ptmx` and then the slave of that terminal
+- **THEN** `/dev/ptmx` opens and the slave fails with a permission error
 
 ### Requirement: Only granted programs run
 A sandboxed pane SHALL be able to run the programs under its grants, the `executables` (names looked up in the pane's `PATH` when it is created) and the program the pane was started with, and MUST NOT be able to run another program of the user outside those grants and the system directories.
@@ -45,12 +58,12 @@ A sandboxed pane SHALL be able to run the programs under its grants, the `execut
 - **THEN** it fails with a permission error
 
 ### Requirement: Programs made inside run inside
-A script or binary created in a `read_write` directory of a sandboxed pane SHALL be executable inside that pane without any step outside it.
+A script or binary created in a `read_write` directory of a sandboxed pane SHALL be executable inside that pane without any step outside it. The binary of a test may be a copy of a system program where the platform lets a copy run (Linux) or one the test builds inside the pane.
 
 **Verified by**: `sandbox::a_script_and_a_binary_made_inside_run_inside`.
 
 #### Scenario: Script and compiled binary
-- **WHEN** the pane writes `#!/bin/sh` + `echo ok` to `<w>/t.sh`, runs `chmod +x <w>/t.sh && <w>/t.sh`, and copies `/bin/echo` to `<w>/e` and runs `<w>/e hi`
+- **WHEN** the pane writes `#!/bin/sh` + `echo ok` to `<w>/t.sh`, runs `chmod +x <w>/t.sh && <w>/t.sh`, and puts a binary printing its arguments at `<w>/e` (on Linux a copy of `/bin/echo`) and runs `<w>/e hi`
 - **THEN** it prints `ok` and `hi`
 
 ### Requirement: Network follows the profile

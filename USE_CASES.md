@@ -810,3 +810,35 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
 | Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
 | An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |
+
+## Sandboxed panes on Linux (`sandbox-linux`) - `src/sandbox/`
+
+The sandbox below the bus: `src/sandbox/tests.rs` makes the restriction of a pane and,
+on Linux, starts real programs under it on a pty (`pty::spawn_with`, as the pane process
+does) and checks what they can and cannot do. Landlock ABI 4 or later is required. The
+tests of sandboxed panes started from profiles over the bus (`tests/sandbox.rs`) and the
+black-box scenario UC-0S1 come with `pane.create` for profiles.
+
+| Use case | Test |
+|---|---|
+| A grant over the state, runtime or configuration directory, inside one, or through `..` or a link to one, is refused naming it | `sandbox::tests::a_grant_covering_a_server_directory_is_refused` |
+| A sandboxed pane's environment is made from scratch: the base variables, `TMPDIR`, `PATH`, the passed names, then `[env]`; never `TILR_*` or `SSH_AUTH_SOCK` | `sandbox::tests::a_sandboxed_pane_gets_only_its_variables` |
+| A pane's private directory is 0700; it is removed when the pane ends, and those of panes that no longer run at start | `sandbox::tests::a_sandboxed_panes_directory_is_private_and_removed` |
+| The request reaches the pane process whole on its command line | `sandbox::tests::a_request_crosses_the_command_line_whole` |
+| A kernel without signal scoping is named in a warning with the pane | `sandbox::tests::a_kernel_without_signal_scoping_is_named_in_a_warning` |
+| Each network mode has a seccomp filter that assembles | `sandbox::linux::tests::every_network_mode_has_a_filter_that_assembles` |
+| A sandboxed program writes only under `read_write`, reads `read_only`, neither reads nor lists elsewhere | `sandbox::tests::linux::a_sandboxed_program_writes_only_where_it_may` |
+| A grandchild of the sandboxed program is restricted too | `sandbox::tests::linux::a_child_of_the_sandboxed_program_is_restricted_too` |
+| Only granted programs run: a program of the user's elsewhere is refused, an `executables` path or name (looked up in `PATH`) runs | `sandbox::tests::linux::only_granted_programs_run_in_a_sandbox` |
+| A script and a binary made in a `read_write` directory run there | `sandbox::tests::linux::a_script_and_a_binary_made_inside_run_inside` |
+| `none` opens no socket, `client` connects out and cannot listen (UDP free, SCTP refused), `server` accepts | `sandbox::tests::linux::network_follows_the_request` |
+| No Unix-domain socket (`socketpair` works), no state file, and a grant over the server's directories starts nothing | `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server` |
+| A sandboxed program sees only its variables | `sandbox::tests::linux::a_sandboxed_program_has_only_its_variables` |
+| A sandboxed pane opens its own terminal and `/dev/tty`, not another terminal of the user | `sandbox::tests::linux::a_sandboxed_pane_cannot_open_another_terminal` |
+| A terminal made inside a sandbox opens its master, not its slave (a limit) | `sandbox::tests::linux::a_terminal_made_inside_a_sandbox_cannot_be_opened` |
+| The private `TMPDIR` is writable | `sandbox::tests::linux::the_private_tmpdir_is_writable` |
+| A restriction that cannot be installed runs nothing and leaves no directory | `sandbox::tests::linux::a_sandbox_that_cannot_be_applied_starts_nothing` |
+| Signals to the user's other processes are refused where the kernel scopes them; on ABI 4 the pane starts without | `sandbox::tests::linux::signals_follow_the_kernels_scoping` |
+| Raw mode and window size changes work in a sandbox | `sandbox::tests::linux::raw_mode_and_window_size_work_in_a_sandbox` |
+| Job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) works in a sandbox | `sandbox::tests::linux::job_control_works_in_a_sandbox` |
+| A full-screen editor (`vi`) edits a file in a sandbox | `sandbox::tests::linux::a_full_screen_editor_works_in_a_sandbox` |

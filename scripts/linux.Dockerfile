@@ -4,8 +4,9 @@
 # 2.36 or newer); Dependabot bumps it (docker ecosystem, /scripts).
 FROM rust:1.99-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
 
+# vim-tiny (vi) and less: full-screen programs the sandbox tests run, as on the GitHub runner.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends protobuf-compiler git xz-utils unzip ca-certificates curl procps \
+    && apt-get install -y --no-install-recommends protobuf-compiler git xz-utils unzip ca-certificates curl procps vim-tiny less \
     && rm -rf /var/lib/apt/lists/*
 
 # clippy, so the lint CI runs on Linux can run here too.

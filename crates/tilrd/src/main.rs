@@ -19,6 +19,7 @@ mod ps;
 mod pty;
 mod reload;
 mod reload_request;
+mod sandbox;
 mod shell;
 mod socks;
 mod supervisor;

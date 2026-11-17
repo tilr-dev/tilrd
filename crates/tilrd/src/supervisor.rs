@@ -718,6 +718,11 @@ pub fn run(options: Options) -> Result<()> {
             if let Some(state) = state {
                 supervisor.resume(state);
             }
+            // What sandboxed panes of a server killed with them left (S8).
+            crate::sandbox::at_server_start(&clipboard::runtime_dir(), |id| {
+                id.parse::<PaneId>()
+                    .is_ok_and(|id| supervisor.panes.contains_key(&id))
+            });
             crate::notify::ready();
             let local = supervisor.run(events_rx).await;
             // A reload does not get here: the successor binds the socket anew.
