@@ -1707,3 +1707,40 @@ async fn stale_state_files_are_swept_at_start() {
         assert!(runtime.join(name).exists(), "removed after reload: {name}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// bus-core-services
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_reload_asked_on_the_bus_keeps_the_panes() {
+    use common::bus::{BusOptions, BusServer};
+    use common::bus_streams::within;
+    use tilr_bus::server::{ReloadReply, ReloadRequest};
+
+    let server = BusServer::start(BusOptions::default());
+    let owner = server.owner().await;
+    let pane = common::bus_panes::create(&owner, 80, 24, vec!["sleep".into(), "1000".into()]).await;
+    let resumed = |lines: &[String]| {
+        lines
+            .iter()
+            .any(|line| line.contains("resumed after reload"))
+    };
+    assert!(!resumed(&server.log_lines()));
+
+    // Answered, then the connection ends with the exec.
+    let _: ReloadReply = common::bus_services::call(&owner, "server.reload", &ReloadRequest {})
+        .await
+        .unwrap();
+    within(owner.closed()).await;
+    server
+        .wait_logged_event("no reload", |lines| resumed(lines))
+        .await;
+    let owner = server.owner().await;
+    let panes = common::bus_panes::list(&owner).await;
+    assert_eq!(panes.len(), 1);
+    assert_eq!(
+        (panes[0].pane_id.as_str(), panes[0].pid),
+        (pane.pane_id.as_str(), pane.pid)
+    );
+}
