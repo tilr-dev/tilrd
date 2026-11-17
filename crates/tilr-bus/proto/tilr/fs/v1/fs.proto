@@ -1,0 +1,212 @@
+syntax = "proto3";
+
+// The server machine's file system, for a file browser and an editor (feature
+// "files"), provided by tilrd:
+//
+//   fs.list     ListRequest     -> FsEntries
+//   fs.stat     StatRequest     -> FsInfo
+//   fs.read     ReadRequest     => FsData chunks (at most 256 KiB each), End
+//                                  stream, bulk lane; a failed read ends with an error Reply
+//   fs.write    WriteRequest    -> FsAck   one call per chunk
+//   fs.mkdir    MkdirRequest    -> FsAck
+//   fs.rename   RenameRequest   -> FsAck
+//   fs.delete   DeleteRequest   -> FsAck
+//   fs.watch    WatchRequest    -> WatchReply
+//   fs.unwatch  UnwatchRequest  -> FsAck
+//
+// Events: fs.changed.<watch_id>  FsChanged, until fs.unwatch or the end of the
+// connection that called fs.watch.
+//
+// A failure is an error Reply whose message is meant to be shown to the user.
+//
+// Paths are absolute on the server's machine; "~" and "~/..." are the home
+// directory of the user the server runs as. The server only goes inside its
+// configured roots (`[files] roots`, the home directory by default); a read-only
+// server (`[files] readonly`) refuses writes, mkdir, rename and delete.
+//
+// Names that are not UTF-8: every path in a request has a `bytes` twin
+// (`path_bytes`, `from_bytes`, `to_bytes`), the path as the raw bytes of the
+// server's file system; when it is not empty the server goes by it and ignores
+// the string. In answers, a name or path that is not UTF-8 comes with its raw
+// bytes the same way, its string then being for showing only.
+//
+// Requests keep the field numbers of the tilr.v1 message they replace (their
+// `request_id`, field 1, is reserved: the call id does its job); data types
+// copied from tilr.v1 keep theirs.
+
+package tilr.fs.v1;
+
+message ListRequest {
+  reserved 1;
+  string path = 2;
+  bytes path_bytes = 3;
+}
+
+// One entry, not followed if it is a symbolic link.
+message StatRequest {
+  reserved 1;
+  string path = 2;
+  bytes path_bytes = 3;
+}
+
+message ReadRequest {
+  reserved 1;
+  string path = 2;
+  // Where to start, in bytes.
+  uint64 offset = 3;
+  // How much to read; 0 = to the end. A read of more than
+  // server.info.fs_max_bytes is refused: a larger file is read in parts.
+  uint64 length = 4;
+  bytes path_bytes = 5;
+}
+
+// Replaces the content of a file. Content goes up in calls of one chunk each,
+// sharing one `transfer_id`; the file changes only once the call with `last`
+// arrived and everything announced was received (a temporary file renamed over
+// it). A symbolic link is written through. Each call is answered FsAck; a refused
+// transfer is answered with an error, and later chunks of it too.
+message WriteRequest {
+  reserved 1;
+  // Chosen by the client, distinct from its other transfers in progress.
+  uint64 transfer_id = 2;
+  // First chunk only, as are `total_size`, `create`, `truncate` and `path_bytes`.
+  string path = 3;
+  // Size of the whole content in bytes; at most server.info.fs_max_bytes.
+  uint64 total_size = 4;
+  // The file may be missing and is created (mode 0666 less the umask).
+  bool create = 5;
+  // The file may exist and its content is replaced. Neither create nor truncate:
+  // refused.
+  bool truncate = 6;
+  bytes data = 7;
+  bool last = 8;
+  bytes path_bytes = 9;
+}
+
+// Make a directory; its parent must exist.
+message MkdirRequest {
+  reserved 1;
+  string path = 2;
+  bytes path_bytes = 3;
+}
+
+// Move or rename an entry; `to` must not exist.
+message RenameRequest {
+  reserved 1;
+  string from = 2;
+  string to = 3;
+  bytes from_bytes = 4;
+  bytes to_bytes = 5;
+}
+
+// Remove a file, a symbolic link (not what it points to) or a directory.
+message DeleteRequest {
+  reserved 1;
+  string path = 2;
+  // A directory goes with everything in it. Without: only an empty one.
+  bool recursive = 3;
+  bytes path_bytes = 4;
+}
+
+// Hear about changes to the entries of a directory (not of its subdirectories):
+// events fs.changed.<watch_id>. Answered once the server is watching.
+message WatchRequest {
+  reserved 1;
+  string path = 2;
+  bytes path_bytes = 3;
+}
+
+message WatchReply {
+  // Names the watch in its subject and in fs.unwatch.
+  uint64 watch_id = 1;
+}
+
+// Stop a watch of the caller's.
+message UnwatchRequest {
+  // tilr.v1 FsUnwatch named the watch by its request_id and path.
+  reserved 1, 2, 3;
+  uint64 watch_id = 4;
+}
+
+// Outcome of fs.write, fs.mkdir, fs.rename, fs.delete and fs.unwatch: done.
+message FsAck {
+  // tilr.v1 request_id and error (now an error Reply).
+  reserved 1, 2;
+}
+
+enum FileKind {
+  FILE_KIND_FILE = 0;
+  FILE_KIND_DIR = 1;
+  FILE_KIND_LINK = 2;
+  // A socket, a pipe, a device; or, as a link's `target`, nothing: the link is
+  // broken.
+  FILE_KIND_OTHER = 3;
+}
+
+message FsEntry {
+  // The last component of the path.
+  string name = 1;
+  FileKind kind = 2;
+  // In bytes; a link's own.
+  uint64 size = 3;
+  // Last modification, Unix time in milliseconds.
+  uint64 mtime_ms = 4;
+  // Permission bits, e.g. 0o644.
+  uint32 mode = 5;
+  // What the entry is, links followed: for anything but a link, its own kind
+  // again; for a link, what it points to (FILE_KIND_OTHER: broken).
+  FileKind target = 6;
+  // The name's raw bytes when it is not UTF-8. Empty otherwise.
+  bytes name_bytes = 7;
+}
+
+message FsEntries {
+  reserved 1, 4;
+  // The directory, as an absolute path without links ("~" becomes the home
+  // directory): what to show as its location.
+  string path = 2;
+  // Sorted by name.
+  repeated FsEntry entries = 3;
+  // `path` as raw bytes when it is not UTF-8.
+  bytes path_bytes = 5;
+}
+
+message FsInfo {
+  reserved 1, 4;
+  // As in FsEntries: absolute, the directories on the way without links.
+  string path = 2;
+  FsEntry entry = 3;
+  bytes path_bytes = 5;
+}
+
+// Part of a file, in order; the stream's End follows the last.
+message FsData {
+  // tilr.v1 request_id, last (now End) and error (now an error Reply).
+  reserved 1, 4, 5;
+  // Bytes the whole answer carries.
+  uint64 total_size = 2;
+  bytes data = 3;
+  // Size of the file.
+  uint64 file_size = 6;
+}
+
+enum FsChange {
+  FS_CHANGE_CREATE = 0;
+  FS_CHANGE_MODIFY = 1;
+  FS_CHANGE_REMOVE = 2;
+}
+
+// The event fs.changed.<watch_id>, a short while after the change (a burst of
+// changes to one entry comes as one).
+message FsChanged {
+  // tilr.v1 request_id (always 0).
+  reserved 1;
+  // The directory, as named in fs.watch.
+  string watch = 2;
+  // What changed: an entry of the directory, absolute and without links, or the
+  // directory itself (removed, say).
+  string path = 3;
+  FsChange kind = 4;
+  bytes path_bytes = 5;
+  uint64 watch_id = 6;
+}

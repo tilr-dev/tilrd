@@ -1,0 +1,208 @@
+syntax = "proto3";
+
+// Panes, provided by tilrd:
+//
+//   pane.create    CreateRequest    -> PaneInfo
+//   pane.list      ListRequest      -> ListReply
+//   pane.close     CloseRequest     -> CloseReply
+//   pane.output    OutputRequest    => PaneOutput chunks (frame.proto), End PaneExited
+//                  stream, interactive lane, latest-wins
+//   pane.read      ReadRequest      -> ReadReply
+//   pane.profiles  ProfilesRequest  -> ProfilesReply
+//   (input.proto: pane.input, pane.resize, pane.applied, pane.input_finalize)
+//
+// Events, each with scope "pane:<id>":
+//
+//   pane.created           PaneInfo
+//   pane.changed           PaneInfo (size, title, directory or viewers changed)
+//   pane.bell              PaneActivity (kind BELL)
+//   pane.command_finished  PaneActivity (kind COMMAND_FINISHED)
+//   pane.copied            Copied (content: clipboard.get)
+//   pane.exited            PaneExited
+//
+// Panes are named by `pane_id`: a UUID in its usual text form that the server
+// makes up when the pane is created. A pane id that names no pane: `not_found`
+// with `no such pane: <name as sent>`.
+//
+// Requests keep the field numbers of the tilr.v1 message they replace; data types
+// copied from tilr.v1 keep theirs.
+
+package tilr.pane.v1;
+
+import "tilr/pane/v1/frame.proto";
+
+message PaneInfo {
+  string pane_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  repeated string command = 4;
+  // Window title set by the application in the pane, if any.
+  string title = 5;
+  // Working directory: the one the pane was started in, replaced by what the
+  // shell reports (OSC 7) once it does.
+  string cwd = 6;
+  // Number of open pane.output streams of the pane.
+  uint32 viewers = 7;
+  // Unix time in milliseconds.
+  uint64 created_at_ms = 8;
+  // Process id of the pane process on the server machine. The shell is its child.
+  uint32 pid = 9;
+  // The consumers of pane.output, one per stream (`viewers` of them), in no
+  // particular order.
+  repeated Viewer viewed_by = 10;
+  // Unix time in milliseconds when a participant last opened pane.output on the
+  // pane or sent it input; `created_at_ms` until then. pane.changed is not
+  // emitted when only this changes.
+  uint64 used_at_ms = 11;
+  // The identity of the participant that created the pane: "owner",
+  // "instance:<name>" or "token:<name>". Pane access "own" goes by it.
+  string created_by = 12;
+  // The pane runs in the sandbox of its profile.
+  bool sandboxed = 13;
+  // The profile the pane was started with; empty = none.
+  string profile = 14;
+}
+
+// A participant watching a pane (a pane.output stream).
+message Viewer {
+  // Hello.client_id of the connection; empty if it named none.
+  string client_id = 1;
+  // Hello.client_name.
+  string client_name = 2;
+  // Where the connection comes from, as the server sees it: "203.0.113.5:51234".
+  string address = 3;
+  // The participant's identity: "owner", "instance:<name>", "token:<name>".
+  string identity = 4;
+}
+
+// Answered with the pane's PaneInfo once its program runs.
+message CreateRequest {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  // Empty = the profile's command, else the user's login shell. Non-empty needs
+  // the pane right `override` for a restricted caller.
+  repeated string command = 3;
+  // Directory to start in. Empty, or not a directory on the server's machine = the
+  // profile's, else the home directory. Non-empty needs `override`.
+  string cwd = 4;
+  // tilr.v1 CreatePane.request_id: the call id does its job.
+  reserved 5;
+  // A launch profile by name (`profiles_dir/<name>.toml`), never a path;
+  // empty = none.
+  string profile = 6;
+}
+
+// The panes the caller may access.
+message ListRequest {
+  // tilr.v1 ListPanes.request_id.
+  reserved 1;
+}
+
+message ListReply {
+  repeated PaneInfo panes = 1;
+  // tilr.v1 PaneList.request_id.
+  reserved 2;
+}
+
+// Answered once the program ended.
+message CloseRequest {
+  string pane_id = 1;
+}
+
+message CloseReply {
+  int32 exit_code = 1;
+}
+
+// The stream of a pane's screen: the first chunk is a full frame; it ends with
+// End{PaneExited} when the program exits. The caller counts as a viewer while
+// the stream is open. Clients open it with a 4 MiB window and return credit per
+// chunk decoded.
+message OutputRequest {
+  string pane_id = 1;
+  // The caller's cell in pixels, as in ResizeRequest; 0 = keep the pane's.
+  uint32 cell_width_px = 2;
+  uint32 cell_height_px = 3;
+}
+
+// The event pane.exited, and the End payload of pane.output.
+message PaneExited {
+  string pane_id = 1;
+  int32 exit_code = 2;
+}
+
+enum PaneActivityKind {
+  PANE_ACTIVITY_KIND_UNSPECIFIED = 0;
+  PANE_ACTIVITY_KIND_BELL = 1;
+  PANE_ACTIVITY_KIND_COMMAND_FINISHED = 2;
+}
+
+// The events pane.bell and pane.command_finished.
+message PaneActivity {
+  string pane_id = 1;
+  PaneActivityKind kind = 2;
+  // Unix time in milliseconds.
+  uint64 at_ms = 3;
+}
+
+// The event pane.copied: a program in the pane copied to the clipboard (OSC 52,
+// OSC 1337 Copy, the server's xclip / wl-copy). The content is streamed by
+// clipboard.get with `transfer_id` until a newer copy replaces it.
+message Copied {
+  string pane_id = 1;
+  // Chosen by the server, larger than those of its previous copies.
+  uint64 transfer_id = 2;
+  // MIME type of the content: "text/plain;charset=utf-8" for OSC 52.
+  string mime = 3;
+  // Size of the whole content in bytes.
+  uint64 total_size = 4;
+}
+
+// The pane's screen as text, as tmux capture-pane; with `since_seq` it waits for
+// a change after it or the program's exit, at most min(wait_ms, 25 s, the time
+// the call has left - 100 ms).
+message ReadRequest {
+  string pane_id = 1;
+  optional uint64 since_seq = 2;
+  // With since_seq: how long to wait for a change, capped at 25000; the wait
+  // is min(wait_ms, 25 s, the time the call has left - 100 ms) (design T9).
+  // Absent: no bound of its own, min(25 s, the time the call has left -
+  // 100 ms). 0: answer at once. Without since_seq it is ignored.
+  optional uint32 wait_ms = 3;
+  // Scrollback lines to include, at most 10000.
+  uint32 history_lines = 4;
+}
+
+message ReadReply {
+  // The screen's seq: a later ReadRequest.since_seq.
+  uint64 seq = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  // The viewport's rows, trailing blanks trimmed, wide characters once.
+  repeated string lines = 4;
+  Cursor cursor = 5;
+  string title = 6;
+  string cwd = 7;
+  // The program still runs.
+  bool alive = 8;
+  // Set once the program exited.
+  optional int32 exit_code = 9;
+  // Scrollback above the viewport, oldest first, up to history_lines.
+  repeated string history = 10;
+}
+
+message ProfilesRequest {}
+
+// Sorted by name, at most 1000.
+message ProfilesReply {
+  repeated ProfileInfo profiles = 1;
+}
+
+message ProfileInfo {
+  string name = 1;
+  // At most 1 KiB.
+  string description = 2;
+  // The profile has a [sandbox] table.
+  bool sandboxed = 3;
+  // Why the profile does not load; empty = it does. At most 1 KiB.
+  string error = 4;
+}

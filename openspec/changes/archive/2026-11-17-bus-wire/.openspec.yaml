@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-11-17
+# Split from unified-bus (owner, 2026-11-17); shared design openspec/design/unified-bus.md.
+# No observable server behavior of its own: a crate, its schemas and its client; the requirements
+# that its codec tests verify belong to the changes that serve them (design O3).
+skip_specs: true

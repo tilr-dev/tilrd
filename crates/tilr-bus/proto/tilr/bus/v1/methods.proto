@@ -1,0 +1,180 @@
+syntax = "proto3";
+
+// Payloads of the broker's own methods, `bus.*`, answered by tilrd. Failures are
+// error Replies with the codes of `tilr_bus::codes`.
+//
+//   bus.ping           PingRequest          -> PingReply
+//   bus.instances      InstancesRequest     -> InstancesReply      control "list"
+//   bus.methods        MethodsRequest       -> MethodsReply        control "list"
+//   bus.start          StartRequest         -> StartReply          control "start"
+//   bus.stop           StopRequest          -> StopReply           control "stop"
+//   bus.reload         ReloadRequest        -> ReloadReply         control "reload"
+//   bus.reload_config  ReloadConfigRequest  -> ReloadConfigReply   control "reload_config"
+//   bus.token          TokenRequest         -> TokenReply          control "token"
+//   bus.renew          RenewRequest         -> RenewReply
+//   bus.revoke         RevokeRequest        -> RevokeReply         control "revoke"
+//   bus.rotate_key     RotateKeyRequest     -> RotateKeyReply      control "rotate_key"
+
+package tilr.bus.v1;
+
+import "bus.proto";
+
+// Answered by the broker at once (the former Ping / Pong).
+message PingRequest {
+  // Echoed in the reply.
+  uint64 nonce = 1;
+}
+
+message PingReply {
+  uint64 nonce = 1;
+}
+
+message InstancesRequest {}
+
+message InstancesReply {
+  // Every configured instance, sorted by name.
+  repeated InstanceInfo instances = 1;
+  // The outside participants and the owner's connections connected now.
+  repeated ParticipantInfo participants = 2;
+}
+
+message InstanceInfo {
+  string name = 1;
+  string module = 2;
+  // "fd" or "socket".
+  string transport = 3;
+  // "down", "starting", "up", "draining" or "stopped".
+  string state = 4;
+  // 0 when no process runs.
+  uint32 pid = 5;
+  // Restarts after a crash, a lost connection or a missing Hello.
+  uint32 restarts = 6;
+  repeated string provides = 7;
+}
+
+message ParticipantInfo {
+  // "owner" or "token:<name>".
+  string identity = 1;
+  string client_name = 2;
+  string client_id = 3;
+  uint64 connection_id = 4;
+  // Where the connection comes from, as the server sees it.
+  string address = 5;
+  // The WebSocket Origin; empty without.
+  string origin = 6;
+  repeated string provides = 7;
+}
+
+message MethodsRequest {}
+
+message MethodsReply {
+  // Sorted by method.
+  repeated MethodInfo methods = 1;
+}
+
+message MethodInfo {
+  string method = 1;
+  Kind kind = 2;
+  Lane lane = 3;
+  Select select = 4;
+  // Identities of the live, non-draining providers.
+  repeated string providers = 5;
+}
+
+// Answered once the instance said Hello.
+message StartRequest {
+  string instance = 1;
+}
+
+message StartReply {
+  uint32 pid = 1;
+}
+
+message StopRequest {
+  string instance = 1;
+  // How long to drain before SIGTERM; unset = bus.toml's drain_ms.
+  optional uint32 drain_ms = 2;
+}
+
+message StopReply {}
+
+// Restarts instances one at a time, each drained and waited for until Hello.
+message ReloadRequest {
+  oneof what {
+    string instance = 1;
+    string module = 2;
+    bool all = 3;
+  }
+}
+
+message ReloadReply {
+  repeated Reloaded reloaded = 1;
+}
+
+message Reloaded {
+  string instance = 1;
+  uint32 old_pid = 2;
+  uint32 new_pid = 3;
+}
+
+// Reads bus.toml again and applies the difference; bad_config changes nothing.
+message ReloadConfigRequest {}
+
+message ReloadConfigReply {
+  repeated string started = 1;
+  repeated string stopped = 2;
+  repeated string reloaded = 3;
+  repeated string kept = 4;
+}
+
+// Mints a token for the participant `token:<name>`.
+message TokenRequest {
+  string name = 1;
+  // The rights, as in [instances.<name>.rights] of bus.toml.
+  repeated string call = 2;
+  repeated string provide = 3;
+  repeated string emit = 4;
+  repeated string subscribe = 5;
+  repeated string control = 6;
+  repeated string pane = 7;
+  // Binds the token to a WebSocket Origin; empty = not bound.
+  string origin = 8;
+  // At most 24 h; 0 = 24 h.
+  uint64 ttl_ms = 9;
+}
+
+message TokenReply {
+  bytes credential = 1;
+  // Unix time in milliseconds.
+  uint64 expires_at_ms = 2;
+  // The token's first revocation id, hex.
+  string revocation_id = 3;
+}
+
+// A fresh token with the same authority block for a valid, unrevoked token
+// without appended blocks; the old one is revoked. Attenuated: bad_request.
+message RenewRequest {
+  // Empty = the token of this connection.
+  bytes credential = 1;
+}
+
+message RenewReply {
+  bytes credential = 1;
+  uint64 expires_at_ms = 2;
+  string revocation_id = 3;
+}
+
+message RevokeRequest {
+  oneof what {
+    bytes credential = 1;
+    // Hex, as TokenReply.revocation_id.
+    string revocation_id = 2;
+  }
+}
+
+message RevokeReply {}
+
+// A new root key: every token dies at once.
+message RotateKeyRequest {}
+
+message RotateKeyReply {}

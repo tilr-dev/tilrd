@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+// Input to panes, answered once applied:
+//
+//   pane.input           InputRequest          -> InputAck
+//   pane.resize          ResizeRequest         -> InputAck
+//   pane.applied         AppliedRequest        -> AppliedReply
+//   pane.input_finalize  InputFinalizeRequest  -> InputFinalizeReply
+//
+// The input types are copied from tilr.v1 with their field numbers; the pane is
+// named by the request, so their own `pane_id` (field 1) is reserved. A request
+// keeps the field numbers of the tilr.v1 message it replaces (ClientMessage for
+// InputRequest, Resize for ResizeRequest).
+//
+// A reply comes when the input was applied: the pty took its last byte, or the
+// scroll, clear or resize took effect (the former InputAck). Calls from one
+// connection are applied in the order sent; a client does not wait for a reply
+// before the next input. A pane that does not exist: `not_found` with
+// `no such pane: <name as sent>`, terminal (the client reclaims that input).
+
+package tilr.pane.v1;
+
+message InputRequest {
+  string pane_id = 1;
+  oneof input {
+    KeyInput key = 8;
+    MouseInput mouse = 9;
+    Paste paste = 10;
+    RawInput raw = 11;
+    Scroll scroll = 12;
+    ClearPane clear = 31;
+  }
+  // Latency seq: seq_base + n, n = 1, 2, 3, ... counted by the client on its
+  // connection, seq_base = HelloAck.connection_id << 32; echoed in
+  // Frame.last_input_seq. 0 = not named.
+  uint64 seq = 100;
+  // Delivery sequence per Hello.client_id and pane: applied at most once across
+  // reconnects. > 0 needs a client_id (else bad_request).
+  uint64 input_seq = 101;
+  // tilr.v1's internal supervisor-to-pane fields; never on the bus.
+  reserved 102, 103, 104;
+}
+
+message ResizeRequest {
+  string pane_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  // The client's cell in pixels: image placements are measured in it, and
+  // programs that ask for the screen size in pixels get it. 0 = keep what the pane
+  // has (10x20 to begin with).
+  uint32 cell_width_px = 4;
+  uint32 cell_height_px = 5;
+  // As in InputRequest.
+  uint64 seq = 100;
+  uint64 input_seq = 101;
+}
+
+// The reply to pane.input and pane.resize, and an entry of AppliedReply:
+// cumulative applied input of the caller's client_id for one pane.
+message InputAck {
+  string pane_id = 1;
+  // The input_seq applied last (0 for input without one).
+  uint64 seq = 2;
+}
+
+// The applied counters of the caller's client_id per running pane, within 5 s
+// (the former HelloAck.applied_input).
+message AppliedRequest {}
+
+message AppliedReply {
+  repeated InputAck applied = 1;
+}
+
+// Ends this client_id's numbered input session and removes its delivery history
+// (the former FinalizeInput).
+message InputFinalizeRequest {}
+
+message InputFinalizeReply {}
+
+enum KeyAction {
+  KEY_ACTION_PRESS = 0;
+  KEY_ACTION_RELEASE = 1;
+  KEY_ACTION_REPEAT = 2;
+}
+
+enum NamedKey {
+  NAMED_KEY_UNSPECIFIED = 0;
+  NAMED_KEY_ENTER = 1;
+  NAMED_KEY_TAB = 2;
+  NAMED_KEY_BACKSPACE = 3;
+  NAMED_KEY_ESCAPE = 4;
+  NAMED_KEY_SPACE = 5;
+  NAMED_KEY_UP = 6;
+  NAMED_KEY_DOWN = 7;
+  NAMED_KEY_LEFT = 8;
+  NAMED_KEY_RIGHT = 9;
+  NAMED_KEY_HOME = 10;
+  NAMED_KEY_END = 11;
+  NAMED_KEY_PAGE_UP = 12;
+  NAMED_KEY_PAGE_DOWN = 13;
+  NAMED_KEY_INSERT = 14;
+  NAMED_KEY_DELETE = 15;
+  NAMED_KEY_F1 = 16;
+  NAMED_KEY_F2 = 17;
+  NAMED_KEY_F3 = 18;
+  NAMED_KEY_F4 = 19;
+  NAMED_KEY_F5 = 20;
+  NAMED_KEY_F6 = 21;
+  NAMED_KEY_F7 = 22;
+  NAMED_KEY_F8 = 23;
+  NAMED_KEY_F9 = 24;
+  NAMED_KEY_F10 = 25;
+  NAMED_KEY_F11 = 26;
+  NAMED_KEY_F12 = 27;
+}
+
+// Modifier bitmask shared by key and mouse input (`tilr_bus::pane::mods`):
+//   1 = shift, 2 = alt, 4 = ctrl, 8 = super
+message KeyInput {
+  reserved 1;
+  KeyAction action = 2;
+  uint32 mods = 3;
+  // Exactly one of `named` / `codepoint` identifies the key. `codepoint` is the
+  // unshifted character of the key ('a' for Shift+A).
+  NamedKey named = 4;
+  uint32 codepoint = 5;
+  // Text the key produced, if any ("A" for Shift+A).
+  string text = 6;
+  // The physical key, as W3C KeyboardEvent.code names it ("KeyC", "Digit1"). With
+  // Ctrl and a character that is not ASCII the server encodes the key as its
+  // US-layout character (Ctrl+С is 0x03). Empty: no physical key; the key is taken
+  // from `codepoint` as if the layout were US.
+  string code = 7;
+}
+
+enum MouseAction {
+  MOUSE_ACTION_PRESS = 0;
+  MOUSE_ACTION_RELEASE = 1;
+  MOUSE_ACTION_MOTION = 2;
+}
+
+enum MouseButton {
+  MOUSE_BUTTON_NONE = 0;
+  MOUSE_BUTTON_LEFT = 1;
+  MOUSE_BUTTON_RIGHT = 2;
+  MOUSE_BUTTON_MIDDLE = 3;
+  MOUSE_BUTTON_WHEEL_UP = 4;
+  MOUSE_BUTTON_WHEEL_DOWN = 5;
+}
+
+message MouseInput {
+  reserved 1;
+  MouseAction action = 2;
+  MouseButton button = 3;
+  uint32 mods = 4;
+  // Cell coordinates inside the pane, zero-based.
+  uint32 x = 5;
+  uint32 y = 6;
+}
+
+message Paste {
+  reserved 1;
+  string text = 2;
+}
+
+// Bytes written to the pty as-is, for scripts and automation.
+message RawInput {
+  reserved 1;
+  bytes data = 2;
+}
+
+// Move the scrollback viewport. Negative = up (into history). Applied at once.
+message Scroll {
+  reserved 1;
+  sint32 delta = 2;
+  // Jump back to the live bottom; `delta` is ignored.
+  bool to_bottom = 3;
+}
+
+// Clear the active screen and home the cursor, without writing to the pty;
+// return the shared viewport to the live screen and send every viewer a full
+// frame.
+message ClearPane {
+  reserved 1;
+  // Also erase scrollback; false keeps history available through Scroll.
+  bool history = 2;
+}

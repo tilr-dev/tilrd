@@ -1,0 +1,2 @@
+panes { pane_id: "p-1" cols: 100 rows: 30 command: "/bin/sh" title: "t" cwd: "/home" viewers: 1 created_at_ms: 1000 pid: 77 viewed_by { client_id: "c" client_name: "tilr" address: "127.0.0.1:5" } used_at_ms: 2000 }
+request_id: 9

@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+// SSH agent forwarding, as `ssh -A` does (feature "agent"). Provided by clients,
+// called by tilrd:
+//
+//   ssh_agent.request  AgentRequest  -> AgentReply
+//   ssh_agent.close    CloseRequest  -> CloseReply
+//
+// Every pane has SSH_AUTH_SOCK pointing at a socket of the server's. For each
+// agent message (u32 length + body) a program writes there, tilrd calls
+// ssh_agent.request on the pane.output consumer of the pane that provides it and
+// opened its stream last, and writes the reply back; the agent protocol is
+// request/response per connection. An error Reply closes the program's
+// connection. With no such consumer the program's connection is closed at once,
+// as if there were no agent.
+
+package tilr.agent.v1;
+
+message AgentRequest {
+  // Names the program's connection, chosen by the server and never used again
+  // while it runs: a client keeps one upstream agent connection per conn_id
+  // (session-bind@openssh.com).
+  uint64 conn_id = 1;
+  // The pane whose socket the program connected to.
+  string pane_id = 2;
+  // One agent message, with its u32 length prefix.
+  bytes message = 3;
+}
+
+message AgentReply {
+  // The agent's answer, with its u32 length prefix.
+  bytes message = 1;
+}
+
+// The program closed its connection.
+message CloseRequest {
+  uint64 conn_id = 1;
+}
+
+message CloseReply {}
