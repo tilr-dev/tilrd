@@ -99,7 +99,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 
 ## Phase 7: one bus for everything
 
-Added 2026-11-17 (owner's decisions, session TILR-892); first one change `unified-bus`, split
+Added 2026-11-17 (owner's decisions); first one change `unified-bus`, split
 the same day by the owner into one change per task, each one PR into `main`, so that several
 agents work at once (shared design `openspec/design/unified-bus.md`, O1-O6). The bus
 `tilr.bus.v1` is built in `main` beside `tilr.v1` (served both until `remove-tilr-v1`, O2) and

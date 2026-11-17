@@ -47,7 +47,7 @@ that change's PR.
   clients reconnect; panes, screens, pending input and the listeners cross the exec in
   `server-<pid>.state` (format 2) and `panes/<id>.state` (format 3); `tilrd state-formats`
   guards the successor (`crates/tilrd/src/reload.rs:63-120`).
-- Prototype `runtime-tmp` (commit 9fbbc3e per its docs): star broker with Call/Reply, ACL by
+- Prototype `runtime-tmp` (the version its docs describe): star broker with Call/Reply, ACL by
   instance-name globs, fd/socket transports, supervision, control methods, Deno/Python
   libraries, a `term` runtime without an emulator; its limits are listed in
   `docs/how-it-works.md` §10, its sandbox experiments in §12.
@@ -57,7 +57,7 @@ that change's PR.
 
 ### Owner's decisions
 
-Recorded on 2026-11-17 (session TILR-892) in three rounds.
+Recorded on 2026-11-17, in the session that wrote this design, in three rounds.
 
 First round: panes get named launch profiles (`profiles/<name>.toml`); the sandboxed pane is
 done now (Seatbelt on macOS after the probe, Landlock on Linux); the component bus of the
@@ -1055,9 +1055,9 @@ capability is added or modified by exactly one change (O3 says which). The first
 directories stay removed; `bus-gateway` stays deferred in `openspec/ROADMAP.md`.
 
 A change enters `main` with its own task: the first commit of the task's PR adds the change's
-directory under `openspec/changes/`, the rest is its code. The changes were written together
-(TILR-892) and are taken as written from the commit "Split the unified bus into one change
-per task" on the branch `spec/phase7-changes`; a task adjusts only its own change. So `main`
+directory under `openspec/changes/`, the rest is its code. The changes were written together,
+in the session that wrote this design, and are taken as written from the head of the branch
+`spec/phase7-changes`; a task adjusts only its own change. So `main`
 holds this document and the roadmap first, and a change of O3 that has not started is not in
 `openspec/changes/` yet (owner, 2026-11-17: the spec gate lets a task add one change).
 
@@ -1076,7 +1076,8 @@ After every PR, `main` builds and every existing test is green (the checks of AG
 nothing of the phase is released (O5).
 
 #### O3. The changes, their order and dependencies
-Numbers are the tasks of `unified-bus`'s `tasks.md` (at 75fc8ce0); each is in exactly one change.
+Numbers are the tasks of the former single change `unified-bus` (its `tasks.md`, before the
+split); each is in exactly one change.
 
 Two orders are kept apart. **Starts after** is when an agent can begin: most changes start
 as soon as `bus-broker-core` has merged, coding against its frozen contract and stubs (and the
@@ -1152,6 +1153,18 @@ files several changes need:
   `mod` declaration under `bus/` are `bus-broker-core`'s: it creates every submodule as a stub
   file with its owner named at the top. A lane edits only its own submodules (the list is in
   `bus-broker-core`'s design).
+- **Broker** (decision of the coordinator after the review of `bus-broker-core`):
+  `crates/tilrd/src/bus/broker.rs` and `crates/tilrd/src/bus/transport.rs` are created by
+  `bus-broker-core`; after it, only `bus-streams-events` edits them (`busy` and
+  `max_in_flight`, deadlines, credits, events dropped for a laggard, the connection window, the
+  memory bound of the bulk relay), then `bus-reload` (adopting an instance's connection after
+  the exec without a Hello, `resume_routing`), strictly one after the other in the merge order
+  `bus-broker-core` → `bus-streams-events` → `bus-reload` (which O3 implies: `bus-reload`
+  merges after `bus-core-panes`, which merges after `bus-streams-events`). Every other change
+  uses the broker's API: `ConnInfo.provides`, `drain_connection`, `ConnState::Ended{code,
+  message}`, `Authorizer::credential_update`, `BrokerHandle::update_principal`,
+  `resume_routing`, `BusObserver` called with `&Supervisor`; `bus-web` takes the handshake's
+  `Origin` from `HelloContext.origin` and keeps its rules in `bus/acl.rs`.
 - **Supervisor**: `crates/tilrd/src/supervisor.rs` is not where lanes put their code. The code
   of the core's methods lives in `bus/core/*.rs` and reaches the supervisor through the handle
   of `bus-broker-core` (`SupervisorHandle`); a lane that needs a new request adds a variant at
