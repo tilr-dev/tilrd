@@ -12,18 +12,23 @@ use common::{Peer, ack};
 use tilr_bus::bus::{Call, Cancel, Credit, Kind, Lane, envelope::Msg, reply};
 use tilr_bus::codes;
 
-/// `target/<profile>/examples/test_runtime`, next to the directory of this test.
+/// `target/<profile>/examples/test_runtime`: the nearest `examples/test_runtime` above this
+/// test's executable, which is `target/<profile>/deps/` before Cargo 1.100 and
+/// `target/<profile>/build/tilr-bus/<hash>/out/` from 1.100 on.
 fn runtime_path() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    let profile_dir = exe.parent().unwrap().parent().unwrap();
-    let path = profile_dir.join("examples").join("test_runtime");
-    assert!(
-        path.exists(),
-        "{} is not built: cargo build -p tilr-bus --example test_runtime \
-         (cargo nextest run -p tilr-bus builds it)",
-        path.display()
-    );
-    path
+    let name = format!("test_runtime{}", std::env::consts::EXE_SUFFIX);
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join("examples").join(&name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no examples/{name} above {}: cargo build -p tilr-bus --example test_runtime \
+                 (cargo nextest run -p tilr-bus builds it)",
+                exe.display()
+            )
+        })
 }
 
 struct Runtime {
