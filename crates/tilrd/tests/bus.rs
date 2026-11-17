@@ -3544,6 +3544,7 @@ async fn a_draining_instance_is_offered_no_calls_before_it_is_listed_draining() 
 
     // Held between the broker's drain and its listing as draining: the broker
     // offers it no new call by method already.
+    assert_eq!(info(&owner, "t-1").await.state, "up");
     let echoed = calls(&owner, "test.echo", "x").await;
     assert!(
         matches!(&echoed, Err(error) if error.code == codes::UNAVAILABLE),

@@ -805,6 +805,7 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | A stream is a call answered in chunks and End; a cancel reaches the provider; a reply to a stream is `bad_reply` | `bus::a_stream_is_a_call_answered_in_chunks` |
 | Events reach the subscribers connected now, by NATS patterns, once each, without history | `bus::events_reach_the_subscribers_connected_now` |
 | A participant with the same client id supersedes the older (close 4000) | `bus::a_participant_with_the_same_client_id_supersedes_the_older` |
+| A connection superseded by a newer one of the same client before it was announced up stays ended: it is never announced up | `supervisor::bus::broker::tests::a_connection_superseded_before_it_is_announced_is_never_up` |
 | The end of a relayed bulk stream, End or an error, comes after its chunks | `bus::the_end_of_a_relayed_bulk_stream_comes_after_its_chunks` |
 | The end of a native bulk stream comes after its chunks | `supervisor::bus::broker::tests::the_end_of_a_bulk_stream_comes_after_its_chunks` |
 | A late end of a cancelled native call leaves a new call of the same id alone | `supervisor::bus::broker::tests::a_late_end_of_a_cancelled_call_leaves_a_new_call_of_its_id_alone` |
