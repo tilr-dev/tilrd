@@ -635,8 +635,15 @@ async fn events_reach_the_subscribers_connected_now() {
     .collect();
     assert_eq!(subjects, ["test.a", "test.a.b", "test.end"]);
 
-    // No history: a later subscriber gets only later events.
+    // No history: a later subscriber gets only later events. `old` is emitted on
+    // another connection than t4 subscribes on: an earlier subscriber having it is
+    // what puts it before the subscription.
     within(t1.emit("test.a", "old")).await.unwrap();
+    let event = within(star.next()).await.unwrap();
+    assert_eq!(
+        (event.subject.as_str(), text(&event.payload).as_str()),
+        ("test.a", "old")
+    );
     let t4 = server.owner().await;
     let mut late = within(t4.subscribe("test.*")).await.unwrap();
     within(t1.emit("test.b", "new")).await.unwrap();
@@ -2274,13 +2281,15 @@ async fn an_instance_is_stopped_and_started() {
     stop_instance(&owner, "t-1", None).await.unwrap();
     let still = info(&owner, "t-1").await;
     assert_eq!((still.state.as_str(), still.restarts), ("stopped", 0));
+    // The log reaches the test behind the replies: waited for, then looked at whole.
+    server
+        .wait_logged_event("instance t-1 is stopped", |lines| {
+            lines
+                .iter()
+                .any(|line| line.contains("instance t-1 is stopped"))
+        })
+        .await;
     let lines = server.log_lines();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("instance t-1 is stopped")),
-        "{lines:?}"
-    );
     assert!(
         !lines
             .iter()
