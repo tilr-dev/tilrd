@@ -1782,6 +1782,7 @@ impl Supervisor {
         // outlives it. One still there after PANE_STOP is killed with its
         // handle.
         tracing::info!("shutting down, closing {} pane(s)", self.panes.len());
+        bus::runner::stop_for_exit(&self).await;
         self.stop_panes().await;
         // Asked to exit, so it signs off at Cloudflare, and reaped.
         self.tunnel.hold().await;
@@ -2186,14 +2187,16 @@ impl Supervisor {
             }
         }
 
-        // It is not carried over: the successor starts its own.
-        self.tunnel.hold().await;
+        // It is not carried over: the successor starts its own. Nor are the bus instances
+        // (until `bus-reload`): the successor starts them again. Both stop at once.
+        tokio::join!(self.tunnel.hold(), bus::runner::stop_for_exit(self));
         let err = match crate::fail::point("reload-before-exec") {
             Ok(()) => self.exec_successor(&handed_over, hand_over_socket),
             Err(err) => err,
         };
         tracing::error!("reload failed: {err:#}");
         self.tunnel.release();
+        bus::runner::resume_after_failed_exit(self);
         // Carry on as before.
         for (pane_id, to_pane, reader) in handed_over {
             let (sender, link) = attach(
