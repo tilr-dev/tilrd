@@ -997,7 +997,7 @@ impl BrokerHandle {
     /// newer connection superseded it in between: returns whether it is up. A
     /// connection of the same principal and `client_id` still open is closed 4000
     /// (B12).
-    pub(super) fn register(
+    pub(super) async fn register(
         &self,
         principal: Principal,
         provides: Vec<MethodSpec>,
@@ -1006,12 +1006,12 @@ impl BrokerHandle {
         state: watch::Sender<ConnState>,
     ) -> bool {
         let announce = state.clone();
-        self.enter(principal, provides, ack, out, state);
+        self.enter(principal, provides, ack, out, state).await;
         ConnState::up(&announce)
     }
 
     /// [`register`](Self::register) up to the announcement.
-    fn enter(
+    async fn enter(
         &self,
         principal: Principal,
         provides: Vec<MethodSpec>,
@@ -1046,6 +1046,10 @@ impl BrokerHandle {
             .into_iter()
             .map(|spec| (spec.method.clone(), spec))
             .collect();
+        // Held here by a test: a greeted connection the broker is about to enter, of
+        // which nothing may be observable yet (no `HelloAck`, not up, not logged).
+        #[cfg(feature = "failpoints")]
+        crate::fail::point_async(format!("bus-registering:{}", principal.client_name)).await;
         let mut st = self.lock();
         for method in provides.keys() {
             st.providers.entry(method.clone()).or_default().push(id);
@@ -3532,8 +3536,14 @@ mod tests {
         let (state_a, mut watched_a) = watch::channel(ConnState::AwaitingHello);
         let (state_b, watched_b) = watch::channel(ConnState::AwaitingHello);
         // A is in the table and not yet announced when B, the same client, comes.
-        broker.enter(principal(1), Vec::new(), ack(), out_a, state_a.clone());
-        assert!(broker.register(principal(2), Vec::new(), ack(), out_b, state_b));
+        broker
+            .enter(principal(1), Vec::new(), ack(), out_a, state_a.clone())
+            .await;
+        assert!(
+            broker
+                .register(principal(2), Vec::new(), ack(), out_b, state_b)
+                .await
+        );
         assert!(matches!(
             *watched_a.borrow_and_update(),
             ConnState::Ended(_)

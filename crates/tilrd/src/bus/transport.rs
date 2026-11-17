@@ -556,13 +556,15 @@ async fn greet(
     let count = provides.len();
     // Registered before it is announced: once a participant has its HelloAck, or
     // anybody saw the connection up, its methods are routed and listed.
-    let up = broker.register(
-        principal,
-        provides,
-        Msg::HelloAck(ack),
-        out.clone(),
-        state.clone(),
-    );
+    let up = broker
+        .register(
+            principal,
+            provides,
+            Msg::HelloAck(ack),
+            out.clone(),
+            state.clone(),
+        )
+        .await;
     if up {
         tracing::info!(
             target: "tilrd::bus",
@@ -588,9 +590,6 @@ async fn greet(
             "participant superseded before it was up"
         );
     }
-    // Held here by a test: what the broker shows of a connection just greeted.
-    #[cfg(feature = "failpoints")]
-    crate::fail::point_async(format!("bus-greeted:{name}")).await;
     true
 }
 
