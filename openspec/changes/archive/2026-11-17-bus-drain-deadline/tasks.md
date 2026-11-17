@@ -7,4 +7,4 @@
 ## 2. Checks and archive
 
 - [x] 2.1 Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`; verify all green
-- [ ] 2.2 Archive the change; verify `openspec validate --all --strict`
+- [x] 2.2 Archive the change; verify `openspec validate --all --strict`
