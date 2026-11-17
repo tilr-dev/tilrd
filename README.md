@@ -462,6 +462,8 @@ network = "none"                         # "none" (default), "client" or "server
 - **`pane.profiles`** lists the profiles, sorted by name, with their `description`,
   whether they have a `[sandbox]` (said of an invalid one too, when its file was read
   and is TOML) and, for one that does not load, the `error` `pane.create` would give.
+  Without the directory the list is empty; a directory that is there and cannot be
+  read is `handler_error` naming it.
 - A profile with a `[sandbox]` table is refused (`profile <name> asks for a sandbox,
   which this server cannot enforce`) on a server that cannot enforce it, and nothing
   starts.

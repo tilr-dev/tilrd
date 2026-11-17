@@ -66,11 +66,12 @@ pub fn register(registry: &mut Registry, _core: &Core) {
             check_request(&ctx, &payload)?;
             let listed = tokio::task::spawn_blocking(|| {
                 let Some(dir) = profile::dir() else {
-                    return Vec::new();
+                    return Ok(Vec::new());
                 };
                 profile::list(dir, profile::home().as_deref())
             })
             .await
+            .map_err(|err| BusError::handler_error(format!("pane.profiles: {err}")))?
             .map_err(|err| BusError::handler_error(format!("pane.profiles: {err}")))?;
             let infos = listed.into_iter().map(|row| ProfileInfo {
                 name: row.name,

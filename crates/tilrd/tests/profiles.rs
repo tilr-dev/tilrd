@@ -282,6 +282,8 @@ async fn profiles_are_listed_with_their_errors() {
     assert_eq!(listed[0].description, "the first");
     assert!(!listed[0].sandboxed && listed[0].error.is_empty());
     assert!(listed[1].sandboxed && listed[1].error.is_empty());
+    // No description: valid, listed with an empty one.
+    assert_eq!(listed[1].description, "");
     assert!(!listed[2].error.is_empty() && !listed[2].sandboxed);
     assert!(
         listed[3].error.contains("comand") && listed[3].sandboxed,

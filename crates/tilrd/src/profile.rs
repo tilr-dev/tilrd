@@ -443,10 +443,13 @@ fn cut(mut text: String) -> String {
 }
 
 /// Every `*.toml` of `dir` whose stem is a valid name, sorted by name, at most
-/// [`MAX_LISTED`] (P6); no directory, no profiles.
-pub fn list(dir: &Path, home: Option<&Path>) -> Vec<Listed> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+/// [`MAX_LISTED`] (P6); no directory, no profiles. A directory that is there and
+/// cannot be read is an error naming it, not an empty listing.
+pub fn list(dir: &Path, home: Option<&Path>) -> Result<Vec<Listed>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(format!("{}: {err}", dir.display())),
     };
     let mut names: Vec<String> = entries
         .filter_map(Result::ok)
@@ -458,7 +461,7 @@ pub fn list(dir: &Path, home: Option<&Path>) -> Vec<Listed> {
         .collect();
     names.sort();
     names.truncate(MAX_LISTED);
-    names
+    Ok(names
         .into_iter()
         .map(|name| {
             let failed = |sandboxed: bool, err: Error, name: String| Listed {
@@ -486,7 +489,7 @@ pub fn list(dir: &Path, home: Option<&Path>) -> Vec<Listed> {
                 ),
             }
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -812,7 +815,12 @@ pub(crate) mod tests {
             load(&dir, "../x", tree.home()),
             Err(Error::BadName("../x".to_owned()))
         );
-        assert!(list(&dir.join("absent"), tree.home()).is_empty());
+        assert!(list(&dir.join("absent"), tree.home()).unwrap().is_empty());
+        // A profiles directory that is there and cannot be read is no empty listing.
+        let file = dir.join("not-a-directory");
+        std::fs::write(&file, "").unwrap();
+        let err = list(&file, tree.home()).unwrap_err();
+        assert!(err.starts_with(&file.display().to_string()), "{err}");
     }
 
     #[test]
@@ -827,7 +835,7 @@ pub(crate) mod tests {
         // Invalid for another reason, with a [sandbox] table; and one never read.
         write(&dir, "d.toml", "comand = []\n[sandbox]\n", 0o600);
         write(&dir, "e.toml", "[sandbox]\n", 0o666);
-        let listed = list(&dir, tree.home());
+        let listed = list(&dir, tree.home()).unwrap();
         let names: Vec<&str> = listed.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["a", "b", "c", "d", "e"]);
         assert_eq!(listed[0].description, "first");
@@ -842,7 +850,7 @@ pub(crate) mod tests {
             &format!("description = \"{}\"", "é".repeat(2000)),
             0o600,
         );
-        let listed = list(&dir, tree.home());
+        let listed = list(&dir, tree.home()).unwrap();
         assert!(listed[5].description.len() <= MAX_TEXT);
     }
 
