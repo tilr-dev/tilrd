@@ -62,7 +62,9 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use biscuit_auth::builder::{self as datalog, Fact, Term};
 use biscuit_auth::error::{Logic, Token as TokenError};
-use biscuit_auth::{Algorithm, AuthorizerBuilder, AuthorizerLimits, Biscuit, KeyPair, PrivateKey};
+use biscuit_auth::{
+    Algorithm, AuthorizerBuilder, AuthorizerLimits, Biscuit, KeyPair, PrivateKey, UnverifiedBiscuit,
+};
 use bytes::Bytes;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
@@ -1268,16 +1270,24 @@ impl Acl {
                 return Ok(Arc::clone(parsed));
             }
         }
-        let biscuit = Biscuit::from(bytes, pair.public())
+        // Counted before any signature is checked: one per block.
+        let unverified = UnverifiedBiscuit::from(bytes)
             .map_err(|_| Denied::new("not a token of this server"))?;
-        if biscuit.block_count() > MAX_BLOCKS {
+        if unverified.block_count() > MAX_BLOCKS {
             return Err(Denied::new(format!(
                 "the token has over {MAX_BLOCKS} blocks"
             )));
         }
-        if biscuit.external_public_keys().iter().any(Option::is_some) {
+        if unverified
+            .external_public_keys()
+            .iter()
+            .any(Option::is_some)
+        {
             return Err(Denied::new("third-party blocks are not accepted"));
         }
+        let biscuit = unverified
+            .verify(pair.public())
+            .map_err(|_| Denied::new("not a token of this server"))?;
         for index in 1..biscuit.block_count() {
             check_appended_block(&biscuit, index).map_err(Denied::new)?;
         }
@@ -2888,6 +2898,17 @@ mod tests {
             .authorize(&owner, Some(&foreign.bytes), &call("test.echo", ""))
             .unwrap_err();
         assert_eq!(refused.reason, "not a token of this server");
+        // Blocks are counted before a signature is checked: nine blocks of another
+        // key are refused for their count.
+        let mut long = tilr_bus::Credential::from_bytes(foreign.bytes.clone());
+        for _ in 0..MAX_BLOCKS {
+            long = long.attenuate("check if true;").unwrap();
+        }
+        let refused = f
+            .acl
+            .authorize(&owner, Some(long.as_bytes()), &call("test.echo", ""))
+            .unwrap_err();
+        assert!(refused.reason.contains("blocks"), "{refused}");
     }
 
     /// `f` on another thread, waited for `WAIT` at most: what it answers, or `None`
