@@ -93,6 +93,12 @@ pub const INSTANCE_RENEWAL: Duration = Duration::from_secs(12 * 3600);
 pub const MAX_TOKEN_BYTES: usize = 16 * 1024;
 /// The most blocks a token may have (R7).
 pub const MAX_BLOCKS: usize = 8;
+/// The most checks an appended block may hold, counting each `or` alternative.
+pub const MAX_BLOCK_CHECKS: usize = 16;
+/// The most predicates in the body of one check of an appended block.
+const MAX_CHECK_PREDICATES: usize = 16;
+/// The most expression operations an appended block may hold, all checks together.
+const MAX_BLOCK_OPS: usize = 64;
 /// Parsed tokens kept (R7).
 const PARSED_CACHE: usize = 1024;
 /// How long a decision is reused (R7).
@@ -361,6 +367,18 @@ fn hex(bytes: &[u8]) -> String {
         })
 }
 
+/// `text` cut to at most `max` bytes (on a character boundary), for messages and logs.
+fn clip(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 fn is_hex(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= 256
@@ -434,6 +452,104 @@ fn rights_facts(rights: &RightsText) -> Vec<Fact> {
         }
     }
     facts
+}
+
+/// The facts the authorizer adds for a request ([`request_facts`] and
+/// [`Acl::datalog_run`]): all a check of an appended block may read. Each holds one
+/// fact per request at most, so a check binds its variables once, whatever it joins.
+pub const REQUEST_FACTS: &[&str] = &[
+    "kind",
+    "caller",
+    "server",
+    "origin",
+    "time",
+    "method",
+    "namespace",
+    "target",
+    "subject",
+    "pattern",
+    "action",
+    "instance",
+    "scope",
+    "pane_profile_requested",
+    "pane_overrides",
+    "pane",
+    "pane_creator",
+];
+
+/// Whether the appended block `index` of `biscuit` is one a decision stays cheap
+/// with (R7): checks only (no fact, no rule), at most [`MAX_BLOCK_CHECKS`] of them,
+/// each reading only [`REQUEST_FACTS`] with at most [`MAX_CHECK_PREDICATES`]
+/// predicates, and at most [`MAX_BLOCK_OPS`] expression operations, none of them a
+/// closure over values (`.all`, `.any`), a regex or an extern function. Biscuit
+/// checks its time limit only between checks, so one check must never be costly:
+/// with one binding per check and a bounded expression it never is.
+fn check_appended_block(biscuit: &Biscuit, index: usize) -> Result<(), String> {
+    use biscuit_auth::builder::{Binary, Op, Unary};
+    let source = biscuit
+        .print_block_source(index)
+        .map_err(|_| "an appended block does not read".to_owned())?;
+    let block = biscuit_auth::BlockBuilder::new()
+        .code(&source)
+        .map_err(|_| "an appended block does not read".to_owned())?;
+    if !block.facts.is_empty() || !block.rules.is_empty() {
+        return Err("an appended block holds checks only, no facts or rules".into());
+    }
+    let queries: Vec<_> = block.checks.iter().flat_map(|c| &c.queries).collect();
+    if queries.len() > MAX_BLOCK_CHECKS {
+        return Err(format!(
+            "an appended block holds at most {MAX_BLOCK_CHECKS} checks"
+        ));
+    }
+    fn ops_ok(ops: &[Op], count: &mut usize) -> Result<(), String> {
+        for op in ops {
+            *count += 1;
+            match op {
+                Op::Closure(params, _) if !params.is_empty() => {
+                    return Err("an appended block may not iterate (.all, .any)".into());
+                }
+                Op::Closure(_, inner) => ops_ok(inner, count)?,
+                Op::Binary(Binary::All | Binary::Any) => {
+                    return Err("an appended block may not iterate (.all, .any)".into());
+                }
+                Op::Binary(Binary::Regex) => {
+                    return Err("an appended block may not use .matches".into());
+                }
+                Op::Binary(Binary::Ffi(_)) | Op::Unary(Unary::Ffi(_)) => {
+                    return Err("an appended block may not call extern functions".into());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut ops = 0;
+    for query in queries {
+        if query.body.len() > MAX_CHECK_PREDICATES {
+            return Err(format!(
+                "an appended block's check reads at most {MAX_CHECK_PREDICATES} facts"
+            ));
+        }
+        if let Some(predicate) = query
+            .body
+            .iter()
+            .find(|p| !REQUEST_FACTS.contains(&p.name.as_str()))
+        {
+            return Err(format!(
+                "an appended block's checks read the request's facts only, not {}",
+                clip(&predicate.name, 64)
+            ));
+        }
+        for expression in &query.expressions {
+            ops_ok(&expression.ops, &mut ops)?;
+        }
+    }
+    if ops > MAX_BLOCK_OPS {
+        return Err(format!(
+            "an appended block holds at most {MAX_BLOCK_OPS} operations"
+        ));
+    }
+    Ok(())
 }
 
 /// Segments of `[a-z0-9_-]`, dot-separated, at least one.
@@ -1082,6 +1198,9 @@ impl Acl {
         }
         if biscuit.external_public_keys().iter().any(Option::is_some) {
             return Err(Denied::new("third-party blocks are not accepted"));
+        }
+        for index in 1..biscuit.block_count() {
+            check_appended_block(&biscuit, index).map_err(Denied::new)?;
         }
         let meta: Meta = biscuit
             .context()
@@ -2540,7 +2659,7 @@ mod tests {
             .authorize(&owner, Some(long.as_bytes()), &call("test.echo", ""))
             .unwrap_err();
         assert!(refused.reason.contains("blocks"), "{refused}");
-        // A rule that makes too many facts: the run limit.
+        // A rule (that would make too many facts): refused before Datalog runs.
         let heavy = credential
             .attenuate(
                 "n(0); n(1); n(2); n(3); n(4); n(5); n(6); n(7); n(8); n(9);
@@ -2552,7 +2671,7 @@ mod tests {
             .acl
             .authorize(&owner, Some(heavy.as_bytes()), &call("test.echo", ""))
             .unwrap_err();
-        assert_eq!(refused.reason, "authorization limit reached");
+        assert!(refused.reason.contains("checks only"), "{refused}");
         // Garbage and another server's token.
         assert!(
             f.acl
@@ -2566,6 +2685,96 @@ mod tests {
             .authorize(&owner, Some(&foreign.bytes), &call("test.echo", ""))
             .unwrap_err();
         assert_eq!(refused.reason, "not a token of this server");
+    }
+
+    /// `f` on another thread, waited for `WAIT` at most: what it answers, or `None`
+    /// when it is still running (it is left to run out).
+    fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        const WAIT: Duration = Duration::from_secs(5);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(WAIT).ok()
+    }
+
+    #[test]
+    fn an_appended_block_holds_bounded_checks_only() {
+        let f = fixture("s");
+        let owner = Principal {
+            identity: Identity::Owner,
+            ..Principal::tilrd()
+        };
+        // 40 rights: a join over them in one check is 40^5 bindings.
+        let many: Vec<String> = (0..40).map(|i| format!("m.x{i}")).collect();
+        let token = minted(&f, &rights(|r| r.call = many));
+        let credential = tilr_bus::Credential::from_bytes(token.bytes.clone());
+        let attenuate = |block: &str| credential.attenuate(block).unwrap().as_bytes().clone();
+        let mut join = String::new();
+        for i in 0..40 {
+            join.push_str(&format!("f({i});\n"));
+        }
+        join.push_str(
+            "check if f($a), f($b), f($c), f($d), f($e), $a + $b + $c + $d + $e == -1;\n",
+        );
+        let refused = [
+            // Facts of its own and a 5-way join over them (the 86 s token).
+            attenuate(&join),
+            // A join over the authority block's facts.
+            attenuate(
+                "check if call($a), call($b), call($c), call($d), call($e),
+                 $a.length() + $b.length() + $c.length() + $d.length() + $e.length() == -1;",
+            ),
+            // Nested closures over arrays it writes itself.
+            attenuate(&format!(
+                "check if [{list}].all($x -> [{list}].all($y -> [{list}].all($z -> $x + $y + $z != -1)));",
+                list = (0..200)
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+            // A fact, a rule.
+            attenuate("call_any(true);"),
+            attenuate("p($m) <- method($m); check if p(\"m.x1\");"),
+            // A regex, compiled on every decision.
+            attenuate(r#"check if method($m), $m.matches("^m\\.x[0-9]+$");"#),
+            // Too many checks in one block.
+            attenuate(&"check if true;\n".repeat(MAX_BLOCK_CHECKS + 1)),
+        ];
+        for (n, bytes) in refused.into_iter().enumerate() {
+            let acl = Arc::clone(&f.acl);
+            let owner = owner.clone();
+            let refused = within(move || {
+                acl.authorize(&owner, Some(&bytes), &call("m.x1", ""))
+                    .map_err(|denied| denied.reason)
+            })
+            .unwrap_or_else(|| panic!("block {n}: still deciding after 5 s"));
+            let reason = refused.expect_err("refused");
+            assert!(
+                reason.starts_with("an appended block"),
+                "block {n}: {reason}"
+            );
+        }
+        // Checks on the request's facts are what a holder narrows with.
+        for block in [
+            r#"check if target("instance:t-2") or kind("subscribe");"#,
+            r#"check if kind($k), method($m), target($t), caller($c), origin($o), server($s), $k == "call";"#,
+            r#"check if namespace("bus") or instance($i), $i.starts_with("s-");"#,
+            r#"check if method("m.x1") or kind("control");"#,
+            r#"check if time($t), $t <= 2100-01-01T00:00:00Z;"#,
+            r#"reject if method($m), [ "m.x2", "m.x3" ].contains($m);"#,
+            "check if true || false;",
+        ] {
+            let bytes = attenuate(block);
+            assert!(f.acl.verify(&bytes).is_ok(), "{block}");
+        }
+        let narrowed = attenuate(r#"check if target("instance:t-2");"#);
+        let narrowed_call = |target| {
+            f.acl
+                .authorize(&owner, Some(&narrowed), &call("m.x1", target))
+        };
+        assert!(narrowed_call("instance:t-2").is_ok());
+        assert!(narrowed_call("instance:t-3").is_err());
     }
 
     #[test]

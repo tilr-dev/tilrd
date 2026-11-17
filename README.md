@@ -1044,9 +1044,15 @@ and may do only what its token lists (least privilege; design R1-R9 in
   `from` stays the caller, and audit lines name both (`from=… bearer=…`).
 - **Attenuation.** A holder appends a block of checks without the server
   (`Credential::attenuate` in `tilr-bus`, its feature `attenuate`), e.g.
-  `check if target("token:t-2");`. Checks may test `kind`, `method`, `namespace`, `target`,
-  `subject`, `pattern`, `action`, `instance`, `scope`, `caller`, `origin`, `server` and
-  `time`; every block is enforced, and a fact in an appended block grants nothing.
+  `check if target("token:t-2");`. An appended block holds checks only (`check if`,
+  `check all`, `reject if`; a fact or a rule makes the token `denied`), at most 16 of them
+  (each `or` alternative counts) with at most 16 predicates each and 64 expression
+  operations in the block, and they read only the request's facts: `kind`, `method`,
+  `namespace`, `target`, `subject`, `pattern`, `action`, `instance`, `scope`, `caller`,
+  `origin`, `server`, `time` and the pane facts (`pane_profile_requested`,
+  `pane_overrides`, `pane`, `pane_creator`), one fact each per request; `.all`, `.any`,
+  `.matches` and extern functions are refused. So a check costs the same whatever it joins,
+  and every block is enforced; none adds a right.
 - **Expiry and renewal.** A token lives at most 24 h (`bus.token` `ttl_ms`, 0 = 24 h). The
   server renews an instance's token 12 h after minting it and sends the new one to the
   instance in a `CredentialUpdate` (as after a rotation). An outside participant calls
@@ -1061,8 +1067,10 @@ and may do only what its token lists (least privilege; design R1-R9 in
   its connection ends. A `bus-revoked` that does not read makes the server refuse every token
   and is never written over: fix or remove it and restart. `bus.rotate_key` makes a new root key: every earlier token is refused
   at once, instances get new tokens, outside participants are closed with 4003.
-- **Limits.** A decision makes at most 1000 facts in 100 iterations (and stops after 50 ms of
-  wall clock as a backstop), else it is `denied` with `authorization limit reached`; any error
+- **Limits.** A token's blocks are checked when it is first verified (above), so no token
+  makes a decision costly; a decision makes at most 1000 facts in 100 iterations (and stops
+  after 50 ms of wall clock as a backstop), else it is `denied` with `authorization limit
+  reached`; any error
   is a denial. Decisions are cached for 1 s (a revocation drops those of the tokens it ends, a
   rotation all; a denial by the wall clock is not cached), parsed tokens (1024) until rotation.
 - **Audit.** `bus audit:` lines on the log target `tilrd::bus::audit`: every denial (who, the

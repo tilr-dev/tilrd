@@ -48,6 +48,18 @@ nor one of over 512 rights facts), parsed-token LRU 1024, decision cache TTL 1 s
 clock is a backstop of 50 ms, not R7's 1 ms: under load 1 ms ended ordinary decisions (the
 owner's measurement of R7 saw it under 12-thread load), and a denial the clock caused is the
 machine's state, not the token's, so it is never cached; the deterministic limits' denials are.
+Biscuit 6 looks at the wall clock only between fixpoint iterations and after each check, so
+one costly check runs to its end (a block of 40 facts and a 5-way join in one check ran
+87 s); the limits alone do not bound a decision. So an appended block holds checks only (no
+fact, no rule), at most 16 (each `or` alternative counted), each of at most 16 predicates,
+at most 64 expression operations in the block, without `.all`/`.any` (closures over
+values), `.matches` or extern functions, and its predicates are the request's facts only
+(`acl::REQUEST_FACTS`, one fact each per request, never the authority block's rights): a
+check binds once and costs its expression, whatever it joins. `verify` checks this once per
+token (re-parsing each appended block from its printed source), so such a token is refused
+before any Datalog runs and is never parsed into the cache. A block-level `trusting` scope is
+not printed and so not checked: it can only make facts of earlier appended blocks visible,
+and they have none.
 `bus.renew` is accepted in the second half of a token's life only, so a holder cannot make the
 server rewrite and fsync the revocation file at will, and a revocation drops the cached
 decisions of the tokens it ends only.

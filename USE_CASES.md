@@ -929,8 +929,8 @@ server minted for it.
 | A token minted by a participant is named under it, lives no longer than its token, is bound to its origin; revoked alone it leaves the minter working, the minter revoked ends it; an attenuated minter mints nothing | `bus_acl::a_minted_token_lives_within_its_minter` |
 | A token of another server, or a malformed one, is denied at Hello and per call | `bus_acl::a_token_of_another_server_is_refused` |
 | A per-call credential authorizes its call alone, for a narrow caller and against a wide one; `from` stays the caller; the audit names both | `bus_acl::a_per_call_credential_is_a_bearer` |
-| An appended block narrows (one target), never widens; over 8 blocks or 16 KiB is denied | `bus_acl::an_attenuated_token_only_narrows` |
-| A block whose rules make over 1000 facts is `authorization limit reached` | `bus_acl::authorization_that_runs_too_long_is_denied` |
+| An appended block narrows (one target); one that adds a fact is denied; over 8 blocks or 16 KiB is denied | `bus_acl::an_attenuated_token_only_narrows` |
+| A block of facts and a 5-way join, or of a rule, is denied at once, per call and at Hello; the token it came from still works | `bus_acl::authorization_that_runs_too_long_is_denied` |
 | A revocation and a key rotation take effect inside the decision cache's second | `bus_acl::a_revocation_clears_cached_decisions` |
 | A revoked token, and one attenuated from it, is denied at once and after a restart; its connection is closed with 4003 | `bus_acl::a_revoked_token_stops_working_at_once` |
 | A key rotation ends every token at once and closes their connections with 4003; tokens of the new key work; a running instance gets a token of the new key by `CredentialUpdate` and keeps its connection and pid | `bus_acl::rotating_the_root_key_ends_every_token` |
@@ -946,6 +946,7 @@ server minted for it.
 | `*` rights, reserved namespaces, a principal without a token and the owner | `supervisor::bus::acl::tests::stars_and_the_owner` |
 | A per-call credential decides alone and only for calls | `supervisor::bus::acl::tests::a_per_call_credential_decides_alone` |
 | Appended blocks narrow and never widen; block, size and run limits; another key | `supervisor::bus::acl::tests::appended_blocks_narrow_and_never_widen` |
+| An appended block holds bounded checks on the request's facts only: facts, rules, joins over the rights, closures, regexes and too many checks are refused before Datalog runs | `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only` |
 | A token is bound to its server id, also with a copied key | `supervisor::bus::acl::tests::a_token_is_bound_to_its_server_id` |
 | Expiry, revocation (also through the cache and after a restart) and rotation | `supervisor::bus::acl::tests::expiry_revocation_and_rotation` |
 | An instance gets a token of its rights at Hello; per call by others while its connection lives; revoked at its end; never in Hello | `supervisor::bus::acl::tests::an_instance_gets_a_token_of_its_rights_at_hello` |

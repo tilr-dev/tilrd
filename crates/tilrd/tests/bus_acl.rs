@@ -918,16 +918,15 @@ async fn an_attenuated_token_only_narrows() {
     assert_eq!(narrow_bus.identity(), "token:t-1");
     denied(calls(&narrow_bus, "test.echo", "x", to("token:t-3")).await);
 
-    // A block that adds a right adds nothing.
+    // A block that adds a right: the token is refused, also inside its rights.
     let (echo, _) = mint(&owner, "e", Rights::default().call(&["test.echo"])).await;
     let widened = echo
         .attenuate(r#"call_any(true); call("test.whoami"); control_all(true);"#)
         .unwrap();
     denied(calls(&owner, "test.whoami", "", with(&widened)).await);
     denied(calls(&owner, "bus.rotate_key", "", with(&widened)).await);
-    calls(&owner, "test.echo", "", with(&widened))
-        .await
-        .unwrap();
+    let reason = denied(calls(&owner, "test.echo", "", with(&widened)).await);
+    assert!(reason.contains("checks only"), "{reason}");
 
     // More than 8 blocks or 16 KiB: denied.
     let mut long = echo.clone();
@@ -952,7 +951,35 @@ async fn authorization_that_runs_too_long_is_denied() {
     let owner = server.owner().await;
     let _t2 = runtime(&server, &owner, "t-2", Rights::default()).await;
     let (token, _) = mint(&owner, "t-1", Rights::default().call(&["test.*"])).await;
-    // 10 x 10 x 10 derived facts: over the 1000-fact limit.
+    // 40 facts and a 5-way join over them in one check: 40^5 bindings, which
+    // Biscuit's time limit does not stop (it ran 87 s). Refused when verified, at
+    // once, per call and at Hello.
+    let mut join = String::new();
+    for i in 0..40 {
+        join.push_str(&format!("f({i});\n"));
+    }
+    join.push_str("check if f($a), f($b), f($c), f($d), f($e), $a + $b + $c + $d + $e == -1;");
+    let costly = token.attenuate(&join).unwrap();
+    let reason = denied(
+        bounded(
+            "the costly call",
+            calls(&owner, "test.echo", "", with(&costly)),
+        )
+        .await,
+    );
+    assert!(
+        reason.starts_with("an appended block holds checks only"),
+        "{reason}"
+    );
+    let error = bounded(
+        "the costly Hello",
+        connect(&server, &costly, ConnectOptions::new("c")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert!(error.message.contains("checks only"), "{error}");
+    // A rule: refused too.
     let heavy = token
         .attenuate(
             "n(0); n(1); n(2); n(3); n(4); n(5); n(6); n(7); n(8); n(9);
@@ -960,8 +987,8 @@ async fn authorization_that_runs_too_long_is_denied() {
              check if p(0, 0, 0);",
         )
         .unwrap();
-    let reason = denied(calls(&owner, "test.echo", "", with(&heavy)).await);
-    assert_eq!(reason, "authorization limit reached");
+    let reason = denied(bounded("the rule", calls(&owner, "test.echo", "", with(&heavy))).await);
+    assert!(reason.contains("checks only"), "{reason}");
     // The token itself still works.
     calls(&owner, "test.echo", "", with(&token)).await.unwrap();
 }
