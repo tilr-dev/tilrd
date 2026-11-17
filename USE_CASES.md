@@ -953,7 +953,7 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 
 | Use case | Test |
 |---|---|
-| A profile is the file `<name>.toml` in the configuration directory's `profiles/`; a pane created with it reports its name and command | `profiles::a_pane_starts_with_the_profile_from_the_config_directory` |
+| A profile is the file `<name>.toml` in the configuration directory's `profiles/`; a pane created with it reports its name and command in the reply and in `pane.list`, a pane without one names none; tilrd provides `pane.profiles` | `profiles::a_pane_starts_with_the_profile_from_the_config_directory` |
 | `profiles_dir` in `server.toml` names another directory, and the default one is not read | `profiles::profiles_dir_names_another_directory` |
 | `profiles_dir` defaults to `profiles/` next to the configuration file in use, must be absolute or `~`, and is the key's value otherwise | `config::tests::profiles_dir_defaults_next_to_the_configuration_file` |
 | A profile file or directory that group or others can write, or that another user owns, does not load, and the error names the file | `profiles::a_profile_others_can_write_is_refused`, `profile::tests::a_profile_others_can_write_does_not_load` |
@@ -969,5 +969,3 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | A profile is read on every create: an edit applies to the next pane only | `profiles::an_edited_profile_applies_to_the_next_pane_only` |
 | A profile with `[sandbox]` is refused where the server cannot enforce it, and its program never starts | `profiles::a_sandboxed_profile_is_refused_where_it_cannot_be_enforced`, `supervisor::bus::core::profiles::tests::prepare_create_refuses_a_sandbox_it_cannot_enforce` |
 | `pane.profiles` lists the profiles sorted by name with their errors, skips other files, cuts long texts, answers in protobuf and JSON | `profiles::profiles_are_listed_with_their_errors`, `profile::tests::the_listing_is_sorted_with_errors_and_skips_other_files` |
-
-The pane-creating tests of `tests/profiles.rs` are `#[ignore]`d until `bus-core-panes` provides `pane.create`.

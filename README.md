@@ -985,7 +985,7 @@ by either protocol is seen, typed into and closed by both.
 
 | method | takes | answers |
 |---|---|---|
-| `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (none exists in this build: `bad_request`) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
+| `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (a name from [Launch profiles](#launch-profiles); empty: none) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
 | `pane.list` | nothing | the `PaneInfo` of every pane, oldest first |
 | `pane.close` | `pane_id` | `{exit_code}` once the program ended |
 | `pane.input` | `pane_id`, one of `key`, `mouse`, `paste`, `raw`, `scroll`, `clear`; `seq`, `input_seq` | `InputAck{pane_id, seq}` once applied: the pty took its last byte, or the scroll or clear took effect |
@@ -994,11 +994,14 @@ by either protocol is seen, typed into and closed by both.
 | `pane.input_finalize` | nothing | ends the caller's numbered input session |
 | `pane.output` | `pane_id`, the caller's cell in pixels | a stream of frames (below) |
 | `pane.read` | `pane_id`, `since_seq`, `wait_ms`, `history_lines` | the screen as text (below) |
+| `pane.profiles` | nothing | the launch profiles, sorted by name: `name`, `description`, `sandboxed`, `error` |
 
 A `pane_id` naming no pane, or one the caller may not access, is `not_found`
 `no such pane: <id as sent>`, and the connection stays. `PaneInfo.created_by` is the
 identity that created the pane on the bus (`owner`, `instance:<name>`, `token:<name>`);
-a pane of `tilr.v1`, or one from before a reload, is `owner`'s. `PaneInfo.viewed_by` lists
+a pane of `tilr.v1`, or one from before a reload, is `owner`'s. `PaneInfo.profile` names the
+profile a pane was created with (empty without one, and after a reload until profiles
+cross it), `PaneInfo.sandboxed` whether that profile has a `[sandbox]`. `PaneInfo.viewed_by` lists
 the open `pane.output` streams.
 
 Input and resizes of a connection are applied in the order it sent them; past the call's

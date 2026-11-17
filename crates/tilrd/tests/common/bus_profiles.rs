@@ -6,15 +6,14 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use tilr_bus::pane::{
     CreateRequest, ListReply, PaneInfo, ProfileInfo, ProfilesReply, ProfilesRequest,
 };
 use tilr_bus::{Bus, BusError, CallOptions};
 
-use super::TIMEOUT;
 use super::bus::BusServer;
+pub use super::bus_panes::Sink;
 
 /// `profiles/` in the configuration directory of the server, where it looks by default.
 pub fn default_profiles_dir(server: &BusServer) -> PathBuf {
@@ -85,28 +84,12 @@ pub async fn list_panes(bus: &Bus) -> Vec<PaneInfo> {
     reply.panes
 }
 
-/// A shell command that writes what `script` prints to `out`, atomically.
-pub fn write_to(out: &Path, script: &str) -> Vec<String> {
-    let tmp = format!("{}.tmp", out.display());
+/// A shell command that writes what `script` prints into the FIFO of `sink`, which
+/// the test reads as the bytes come.
+pub fn write_to(sink: &Sink, script: &str) -> Vec<String> {
     vec![
         "/bin/sh".into(),
         "-c".into(),
-        format!("( {script} ) > '{tmp}' && mv '{tmp}' '{}'", out.display()),
+        format!("( {script} ) > '{}'", sink.path.display()),
     ]
-}
-
-/// Wait for the file `path` and return its content.
-pub async fn wait_for_file(path: &Path) -> String {
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    loop {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            return text;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{} was not written",
-            path.display()
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 }

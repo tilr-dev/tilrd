@@ -1,18 +1,20 @@
 //! Use cases: launch profiles (`pane-profiles`): `profiles_dir`, file modes, names,
 //! strict parsing, the request's override, `pane.profiles`. Real server, the owner
-//! on the Unix socket; a pane's program writes what it saw to a file the test reads.
-//!
-//! A test that creates a pane is `#[ignore]`d until `bus-core-panes` provides
-//! `pane.create`; its reason says so. Remove the attribute with that change's merge.
+//! on the Unix socket; a pane's program writes what it saw into a FIFO the test
+//! reads as the bytes come (`Sink`), so every wait is on an event.
 
 mod common;
 
 use common::Server;
 use common::bus::{BusOptions, BusServer};
+use common::bus_panes::{raw, shell};
 use common::bus_profiles::{
-    create, default_profiles_dir, list_panes, profiles, wait_for_file, write_in, write_profile,
-    write_to,
+    Sink, create, default_profiles_dir, list_panes, profiles, write_in, write_profile, write_to,
 };
+use common::bus_streams::within;
+use prost::Message;
+use tilr_bus::CallOptions;
+use tilr_bus::pane::PaneInfo;
 
 fn start() -> BusServer {
     BusServer::start(BusOptions::default())
@@ -23,7 +25,6 @@ fn as_strs(args: &[String]) -> Vec<&str> {
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn a_pane_starts_with_the_profile_from_the_config_directory() {
     let server = start();
     write_profile(&server, "demo", "command = [\"/bin/sh\"]");
@@ -32,11 +33,30 @@ async fn a_pane_starts_with_the_profile_from_the_config_directory() {
     assert_eq!(pane.profile, "demo");
     assert_eq!(pane.command, ["/bin/sh"]);
     assert!(!pane.sandboxed);
-    assert_eq!(list_panes(&bus).await.len(), 1);
+    let listed = list_panes(&bus).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].profile, "demo");
+    // A pane without a profile names none.
+    let plain = create(&bus, "", &as_strs(&shell()), "").await.unwrap();
+    assert_eq!(plain.profile, "");
+    // tilrd provides `pane.profiles` among its methods.
+    let methods: tilr_bus::bus::MethodsReply = bus
+        .call_typed(
+            "bus.methods",
+            &tilr_bus::bus::MethodsRequest {},
+            CallOptions::default(),
+        )
+        .await
+        .unwrap();
+    let info = methods
+        .methods
+        .iter()
+        .find(|m| m.method == "pane.profiles")
+        .expect("pane.profiles is listed");
+    assert_eq!(info.providers, ["tilrd"]);
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn profiles_dir_names_another_directory() {
     let other = Server::scratch_dir();
     write_in(&other, "demo", "command = [\"/bin/sh\"]", 0o600);
@@ -55,7 +75,6 @@ async fn profiles_dir_names_another_directory() {
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn a_profile_others_can_write_is_refused() {
     let server = start();
     let file = write_in(
@@ -74,10 +93,15 @@ async fn a_profile_others_can_write_is_refused() {
     assert!(err.message.contains(&file.display().to_string()), "{err}");
     assert!(err.message.contains("is writable by others"), "{err}");
     assert!(list_panes(&bus).await.is_empty());
+    // pane.profiles gives the same reason.
+    let listed = profiles(&bus).await;
+    assert!(
+        listed[0].error.contains("is writable by others"),
+        "{listed:?}"
+    );
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn a_profile_name_is_never_a_path() {
     let server = start();
     // A file the names would reach if they were paths.
@@ -96,7 +120,6 @@ async fn a_profile_name_is_never_a_path() {
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn an_unknown_profile_is_an_error() {
     let server = start();
     let bus = server.owner().await;
@@ -104,12 +127,11 @@ async fn an_unknown_profile_is_an_error() {
     assert_eq!(err.code, "bad_request");
     assert_eq!(err.message, "create pane: no such profile: nope");
     // The connection stays open and a pane without a profile can be created next.
-    let pane = create(&bus, "", &[], "").await.unwrap();
+    let pane = create(&bus, "", &as_strs(&shell()), "").await.unwrap();
     assert_eq!(pane.profile, "");
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn a_misspelt_key_makes_the_profile_invalid() {
     let server = start();
     let file = write_profile(&server, "demo", "comand = [\"/bin/sh\"]");
@@ -126,12 +148,10 @@ async fn a_misspelt_key_makes_the_profile_invalid() {
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn request_fields_override_the_profile() {
     let server = start();
     let work = Server::scratch_dir();
     let other = Server::scratch_dir();
-    let out = server.dir.join("out");
     let script = "printf '%s|%s|%s' \"$GREETING\" \"$TERM\" \"$(pwd -P)\"";
     write_profile(
         &server,
@@ -144,56 +164,56 @@ async fn request_fields_override_the_profile() {
     let bus = server.owner().await;
     // The request's command and an existing directory win; [env] stays; TERM is the
     // server's, not the profile's.
-    let command = write_to(&out, script);
+    let mut seen = Sink::new(server.dir.join("out"));
+    let command = write_to(&seen, script);
     let pane = create(&bus, "demo", &as_strs(&command), other.to_str().unwrap())
         .await
         .unwrap();
     assert_eq!(pane.profile, "demo");
     assert_eq!(pane.command, command);
-    let seen = wait_for_file(&out).await;
-    assert_eq!(
-        seen,
-        format!(
-            "hi|xterm-256color|{}",
-            std::fs::canonicalize(&other).unwrap().display()
-        )
-    );
+    seen.holds(format!(
+        "hi|xterm-256color|{}",
+        std::fs::canonicalize(&other).unwrap().display()
+    ))
+    .await;
     // A directory that does not exist: the profile's.
-    let out2 = server.dir.join("out2");
-    let command = write_to(&out2, script);
-    create(&bus, "demo", &as_strs(&command), "/no/such/directory")
+    let mut seen = Sink::new(server.dir.join("out2"));
+    let command = write_to(&seen, script);
+    let pane = create(&bus, "demo", &as_strs(&command), "/no/such/directory")
         .await
         .unwrap();
     assert_eq!(
-        wait_for_file(&out2).await,
-        format!(
-            "hi|xterm-256color|{}",
-            std::fs::canonicalize(&work).unwrap().display()
-        )
+        std::fs::canonicalize(&pane.cwd).unwrap(),
+        std::fs::canonicalize(&work).unwrap()
     );
+    seen.holds(format!(
+        "hi|xterm-256color|{}",
+        std::fs::canonicalize(&work).unwrap().display()
+    ))
+    .await;
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn an_edited_profile_applies_to_the_next_pane_only() {
     let server = start();
     let bus = server.owner().await;
-    let script = "printf '%s' \"$X\"";
-    let (first, second) = (server.dir.join("first"), server.dir.join("second"));
-    let command = |out: &std::path::Path| write_to(out, script);
+    // The first pane prints $X, waits for a line, and prints $X again.
+    let mut first = Sink::new(server.dir.join("first"));
+    let mut second = Sink::new(server.dir.join("second"));
     write_profile(&server, "demo", "[env]\nX = \"1\"\n");
-    let c = command(&first);
-    create(&bus, "demo", &as_strs(&c), "").await.unwrap();
-    assert_eq!(wait_for_file(&first).await, "1");
+    let c = write_to(&first, "printf '%s' \"$X\"; read line; printf '%s' \"$X\"");
+    let running = create(&bus, "demo", &as_strs(&c), "").await.unwrap();
+    first.holds("1").await;
     write_profile(&server, "demo", "[env]\nX = \"2\"\n");
-    let c = command(&second);
+    let c = write_to(&second, "printf '%s' \"$X\"");
     create(&bus, "demo", &as_strs(&c), "").await.unwrap();
-    assert_eq!(wait_for_file(&second).await, "2");
-    assert_eq!(std::fs::read_to_string(&first).unwrap(), "1");
+    second.holds("2").await;
+    // The pane that ran before the edit still has what the profile said then.
+    raw(&bus, &running.pane_id, "\r").await.unwrap();
+    first.holds("11").await;
 }
 
 #[tokio::test]
-#[ignore = "needs pane.create of bus-core-panes"]
 async fn a_sandboxed_profile_is_refused_where_it_cannot_be_enforced() {
     let server = start();
     let marker = server.dir.join("marker");
@@ -206,6 +226,7 @@ async fn a_sandboxed_profile_is_refused_where_it_cannot_be_enforced() {
         ),
     );
     let bus = server.owner().await;
+    let mut created = bus.subscribe("pane.created").await.unwrap();
     let err = create(&bus, "boxed", &[], "").await.unwrap_err();
     assert_eq!(err.code, "bad_request");
     assert_eq!(
@@ -213,7 +234,13 @@ async fn a_sandboxed_profile_is_refused_where_it_cannot_be_enforced() {
         "create pane: profile boxed asks for a sandbox, which this server cannot enforce"
     );
     assert!(list_panes(&bus).await.is_empty());
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The next pane is the first one created: the refused one never started.
+    let plain = create(&bus, "", &as_strs(&shell()), "").await.unwrap();
+    let event = within(created.next())
+        .await
+        .expect("the subscription ended");
+    let info = PaneInfo::decode(event.payload).unwrap();
+    assert_eq!(info.pane_id, plain.pane_id);
     assert!(!marker.exists());
 }
 
@@ -246,7 +273,7 @@ async fn profiles_are_listed_with_their_errors() {
         .call(
             "pane.profiles",
             "{}",
-            tilr_bus::CallOptions::default().content_type(tilr_bus::CONTENT_TYPE_JSON),
+            CallOptions::default().content_type(tilr_bus::CONTENT_TYPE_JSON),
         )
         .await
         .unwrap();
