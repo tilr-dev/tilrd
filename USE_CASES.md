@@ -852,7 +852,7 @@ Helpers: `tests/common/bus_panes.rs`.
 | Unit: a `pane.read` reply over `max_frame` as JSON (control characters escaped) is `too_large`, though it fits as protobuf | `supervisor::bus::core::panes::tests::a_text_reply_over_max_frame_as_json_is_too_large` |
 | Unit: a consumer's own seqs are told apart by connection | `supervisor::bus::core::panes::tests::own_seqs_are_told_apart_by_connection` |
 | Unit: numbered input identities differ by identity and client id | `supervisor::bus::core::panes::tests::numbered_identities_differ_by_identity_and_client_id` |
-| Unit: base64 of proto3 JSON reads back what it writes | `supervisor::bus::core::json::tests::base64_reads_back_what_it_writes` |
+| Unit: bytes in proto3 JSON are written padded and read in any base64 form | `supervisor::bus::core::json::tests::bytes_are_written_padded_and_read_in_any_base64_form` |
 | Unit: the pane messages map to proto3 JSON and back | `supervisor::bus::core::json::tests::pane_messages_map_to_proto3_json_and_back` |
 | Unit: the screen reads as text with its history, cursor and title (`crates/tilr-screen`) | `ghostty::tests::the_screen_reads_as_text_with_its_history` |
 | Unit: the text of a screen is bounded: history past the bound left out, a viewport over it an error (`crates/tilr-screen`) | `ghostty::tests::the_text_of_a_screen_is_bounded` |
