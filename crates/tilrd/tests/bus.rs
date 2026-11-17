@@ -1635,12 +1635,18 @@ async fn a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow
     let mut reader = server.raw_greeted("reader", Vec::new()).await;
     const STREAMS: usize = 3;
     let window = tilr_bus::limits::MAX_STREAM_WINDOW;
+    // All opened first, while the reader's lane is empty (no call is busy and
+    // the reader sends nothing once it may be closed).
+    let mut hops = Vec::new();
     for id in 1..=STREAMS as u64 {
         reader.send(call_with(id, "test.big", "", window, 0)).await;
         let (hop, _, forwarded) = next_call(&mut provider).await;
         assert_eq!(forwarded, window as usize);
-        // Its whole window in chunks of 1 MiB that do not compress, unread.
-        for _ in 0..forwarded / MIB {
+        hops.push(hop);
+    }
+    // Each its whole window in chunks of 1 MiB that do not compress, unread.
+    for hop in hops {
+        for _ in 0..window as usize / MIB {
             provider.send(noise_chunk(hop, MIB)).await;
         }
     }
@@ -1717,45 +1723,46 @@ async fn a_reader_that_never_credits_cannot_grow_the_relay() {
         )
         .await;
     let mut reader = server.raw_greeted("reader", Vec::new()).await;
-    // Streams opened one after another, each sent whole and ended, never read:
-    // what the broker holds of them stops new ones (busy). A marker call after
+    // Streams opened one after another, each sent its whole window and left
+    // open, never credited: past the connection window (1 MiB) the broker
+    // holds them, and what it holds stops new ones (busy). A marker call after
     // each tells the provider whether the stream came: calls from one
     // connection to one provider keep their order.
     const MAX: u64 = 64;
     let mut opened = 0;
+    let mut window = 0;
     for i in 1..=MAX {
         reader.send(call(i, "test.relay", "")).await;
         reader.send(call(1000 + i, "test.marker", "")).await;
-        let (hop, method, window) = next_call(&mut provider).await;
+        let (hop, method, given) = next_call(&mut provider).await;
         if method == "test.marker" {
             break;
         }
         opened += 1;
+        window = given;
         assert_eq!(
-            send_within_credit(&mut provider, hop, window, window, 64 << 10).await,
-            window
+            send_within_credit(&mut provider, hop, given, given, 64 << 10).await,
+            given
         );
-        provider
-            .send(Msg::End(End {
-                id: hop,
-                payload: Bytes::new(),
-            }))
-            .await;
         let (_, method, _) = next_call(&mut provider).await;
         assert_eq!(method, "test.marker");
     }
-    assert!(
-        opened < MAX,
-        "{opened} streams of 1 MiB held for a reader that reads none"
-    );
+    // The relay budget (16 MiB) in streams of 1 MiB, and the one the connection
+    // window let through.
     let budget = (16 << 20) / MIB as u64;
-    assert!(opened >= budget, "busy after {opened}");
-    // It reads at last: every stream opened, whole, then the busy one.
-    let (mut ends, mut busy) = (0, false);
-    while ends < opened || !busy {
+    assert!(
+        (budget..=budget + 2).contains(&opened),
+        "{opened} streams of 1 MiB opened for a reader that credits none"
+    );
+    // It reads at last, crediting: every stream opened, whole, and the busy one.
+    let (mut got, mut busy) = (0, false);
+    while got < opened as usize * window || !busy {
         match reader.recv().await.expect("open") {
-            Msg::Chunk(_) => {}
-            Msg::End(_) => ends += 1,
+            Msg::Chunk(chunk) => {
+                got += chunk.payload.len();
+                reader.send(credit(chunk.id, chunk.payload.len())).await;
+            }
+            Msg::Reply(reply) if reply.id > 1000 => {}
             msg => {
                 let (id, code, _) = error_of(&msg).expect("an error");
                 assert_eq!((id, code.as_str()), (opened + 1, codes::BUSY));
@@ -1763,4 +1770,5 @@ async fn a_reader_that_never_credits_cannot_grow_the_relay() {
             }
         }
     }
+    assert_eq!(got, opened as usize * window);
 }
