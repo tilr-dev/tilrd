@@ -98,21 +98,18 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | the phase 3 changes | - | design first |
 | multi-user-sessions | `tilrd --system` as root runs each session as its user (per-user tokens, per-user sockets); options for the owner in design.md (TILR-138) | L | - | yes | needs owner |
 
-## Phase 7: launch profiles, sandboxed panes, component bus
+## Phase 7: one bus for everything
 
-Added 2026-11-17 (owner's decisions, session TILR-892): panes with named launch profiles, the
-sandboxed pane done now (no longer deferred), the component bus of `runtime-tmp` moved into this
-repo with Biscuit rights. In working order; does not gate the first release.
+Added 2026-11-17 (owner's decisions, session TILR-892); reshaped the same day into one change
+(owner): one task, one branch, one PR. The bus `tilr.bus.v1` becomes the only protocol (Deno,
+Python, Tilr Web, the terminal and tilrd's core are its participants), `tilr.proto` is removed,
+with Biscuit rights, launch profiles, sandboxed panes and the SDKs in the same switch. Does not
+gate the first release; nothing of it is released until Tilr.app speaks the bus and the owner
+cuts a new minor line (design M2).
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
-| pane-profiles | `profiles/<name>.toml` launch profiles: `CreatePane.profile`, `ListProfiles`, `tilr new --profile`, `tilr profiles`; `[sandbox]` parsed and refused | M | - | no | ready |
-| sandboxed-pane | a profile's `[sandbox]` enforced (Landlock + seccomp on Linux; Seatbelt `sandbox-exec` with a generated profile on macOS), a normal terminal inside, fail closed, survives reload | L | pane-profiles | no | ready |
-| component-bus | `tilr-bus` crate and the broker/runner in tilrd: `bus.toml` modules and instances, fd/socket transports, supervision, `bus.*` control, `tilr bus`, handover on reload | L | - | no | ready |
-| bus-acl-biscuit | Biscuit tokens for every bus call: rights from `bus.toml`, minting, attenuation, expiry, revocation, caches, fail closed, audit | L | component-bus | no | ready |
-| bus-runtime-sdks | Deno and Python client libraries (`sdk/`), tested against the real broker in a CI job `sdk` | M | component-bus | no | ready |
-| bus-gateway | `tilrd gateway`: HTTP `POST /call/...` on loopback, Bearer Biscuit per request, no ambient rights | M | component-bus, bus-acl-biscuit | no | ready |
-| bus-panes | `pane.*` methods served by tilrd on the bus (create with a profile, write, screen, resize, close) under pane rights | M | pane-profiles, component-bus, bus-acl-biscuit | no | ready |
+| unified-bus | `tilr.bus.v1` for everything: broker with calls, events, streams (credits); instances from `bus.toml`; Tilr Web over WebSocket; the terminal as `pane.*`/`server.*`/`fs.*`/`exec.*`; `tilr.proto` removed; Biscuit rights; profiles; sandboxed panes (Landlock + seccomp, Seatbelt); Deno/browser and Python SDKs | L | - | no (two open questions in design.md: shells across the switch, old-line fixes) | ready |
 
 ## Deferred
 
@@ -123,6 +120,7 @@ repo with Biscuit rights. In working order; does not gate the first release.
 | release-platforms | musl, macOS on the CDN, x86_64 builds | M | public-repo-readiness | - | deferred |
 | read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | - | no | deferred |
 | libghostty-upstream-fixes | report and carry fixes for libghostty-vt (also: OSC 8 in the reload snapshot) | S | - | - | deferred |
+| bus-gateway | `tilrd gateway`: HTTP `POST /call/...` on loopback, a Biscuit per request; deferred 2026-11-17 (owner): Tilr Web reaches the bus over WebSocket, scripts through `tilr bus call`. No change directory; to be proposed again on top of `unified-bus` | M | unified-bus | - | deferred |
 
 ## Done
 
