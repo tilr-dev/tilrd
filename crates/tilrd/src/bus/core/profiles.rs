@@ -7,8 +7,13 @@
 //! - [`prepare_create`] is the seam for `pane.create` (`bus-core-panes`): everything
 //!   the request and the profile decide before a pane starts, with no supervisor in
 //!   it. `panes.rs` calls it first thing in its `pane.create` handler and starts the
-//!   pane from what it returns.
+//!   pane from what it returns;
+//! - [`remember`], [`of`] and [`forget`] keep the snapshot of each pane created with
+//!   a profile on the supervisor (a slot, [`ProfilesState`]), for `PaneInfo.profile`
+//!   and `PaneInfo.sandboxed`, until the pane is gone. A reload does not carry it
+//!   yet (`bus-reload`).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use prost::Message;
@@ -20,6 +25,31 @@ use crate::bus::core::{Core, Registry};
 use crate::bus::identity::CallCtx;
 use crate::bus::streams::NativeMethod;
 use crate::profile::{self, Error, Snapshot};
+use crate::supervisor::{PaneId, Supervisor};
+
+/// The snapshots of the panes created with a profile (`CoreState::slot`).
+#[derive(Default)]
+pub struct ProfilesState {
+    panes: HashMap<PaneId, Snapshot>,
+}
+
+/// The pane `pane_id` was created with `snapshot`.
+pub(crate) fn remember(s: &mut Supervisor, pane_id: PaneId, snapshot: Snapshot) {
+    s.bus
+        .slot::<ProfilesState>()
+        .panes
+        .insert(pane_id, snapshot);
+}
+
+/// The snapshot of the profile the pane was created with, if any.
+pub fn of(s: &Supervisor, pane_id: PaneId) -> Option<&Snapshot> {
+    s.bus.slot_ref::<ProfilesState>()?.panes.get(&pane_id)
+}
+
+/// The pane is gone, or never started.
+pub(crate) fn forget(s: &mut Supervisor, pane_id: PaneId) {
+    s.bus.slot::<ProfilesState>().panes.remove(&pane_id);
+}
 
 /// Whether this server can enforce a profile's `[sandbox]` (S7, B14: the `sandbox`
 /// feature). `sandbox-linux` and `sandbox-macos` replace this with their platform
