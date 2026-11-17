@@ -928,6 +928,78 @@ without history. A subscriber whose connection lags (a packet queued over 250 ms
 
 ### Instances
 
+Components (Deno, Python, any program that speaks the bus) run as instances `tilrd` starts and
+supervises from its own file, `bus.toml` in the configuration directory beside `server.toml`
+(`$TILR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/tilr`, else `~/.config/tilr`). No file means no
+instances. It is read at start and again on `bus.reload_config`, which applies the difference.
+
+```toml
+call_timeout_ms = 10000      # default 10000
+drain_ms = 3000              # default 3000, at most 30000: how long a stop or reload waits for calls in flight
+[modules.deno]
+command = ["deno", "run", "-A", "main.ts"]   # required, not empty
+cwd = "~/tilr/components"    # absolute; ~ or ~/… (the home directory); relative: under the configuration directory, also the default
+[modules.deno.env]
+LOG = "info"
+[instances.deno-1]
+module = "deno"              # required
+connect = "fd"               # "fd" (default) | "socket"
+autostart = true             # default true
+[instances.deno-1.rights]    # what the instance may do; call, provide, emit, subscribe, control, pane
+call = ["math.*"]
+provide = ["ui.*"]
+[instances.deno-1.env]
+WORKERS = "2"
+```
+
+The file is strict: an unknown key, a wrong type, an instance naming no module, an empty command,
+a reserved name (`owner`, `tilrd`, names starting with `bus`), a name with characters other
+than letters, digits, `.`, `_` and `-`, a socket path over the platform limit (104 bytes on
+macOS, 108 on Linux), and the first round's `calls` key (it says `rights` replaced it) are
+errors. A bad file at start is logged, naming the file and the reason, and the server serves
+panes with no instances; on `bus.reload_config` the answer is `bad_config` and nothing changes.
+
+An instance is started in a session of its own, so a signal to its process group reaches what
+it started, with standard input from `/dev/null`, the server's environment (without the
+pane's variables) plus the module's `env`, the instance's `env`, `TILR_INSTANCE` and
+`TILR_CONFIG_DIR`, and no descriptor of the server but its bus connection. `connect = "fd"`
+hands the connection over as descriptor 3 (`TILR_BUS_FD=3`). `connect = "socket"` binds
+`<runtime dir>/bus/<name>.sock` (0600, in a 0700 directory) and sets `TILR_BUS_SOCK` and
+`TILR_BUS_TOKEN`, 32 hex characters, new at each start: the first `Hello` with that token is
+the instance, any other connection is refused and closed, and one that says nothing within
+10 seconds is closed. Both carry the same envelopes, as a u32 big-endian length and one
+`Envelope`, up to 16 MiB. Each line the instance writes to stdout or stderr is in the server
+log as `bus <name>: <line>` (a line over 64 KiB is cut).
+
+An instance that exits, whose connection ends while its process lives, or that has not said
+`Hello` 30 seconds after its start has its process group killed and is started again after
+200 ms, doubling up to 5 s, back at 200 ms after it ran 10 s. Its identity is
+`instance:<name>` and survives that. `bus.stop` drains the instance (no new calls by method,
+the ones in flight answered), sends SIGTERM to its group, SIGKILL after 3 s, and keeps it
+stopped until `bus.start`. `bus.reload` restarts an instance, a module or all that run, one
+at a time, each drained and waited for until its `Hello`, so a method with two providers has
+no gap. A caller that stops or reloads itself has its reply first. Until the server hands its
+instances over a reload, a reload stops every instance and the successor starts them again.
+
+The control methods, called by the owner or by an instance with the matching `control`
+right (`list`, `start`, `stop`, `reload`, `reload_config`, each for one instance or all):
+
+| method | does |
+|---|---|
+| `bus.instances` | every configured instance: name, module, transport, state (`down`, `starting`, `up`, `draining`, `stopped`), pid, restarts, provided methods; and the outside participants connected now |
+| `bus.methods` | every method with its kind, lane, selection and the live providers that are not draining |
+| `bus.start {instance}` | start a stopped instance; answers its pid once it said `Hello` (`spawn_failed`, `start_failed`, `start_timeout`) |
+| `bus.stop {instance, drain_ms?}` | drain, stop and keep stopped |
+| `bus.reload {instance \| module \| all}` | restart one at a time; the old and new pids |
+| `bus.reload_config` | read `bus.toml` again: stop the removed, start the added, reload the instances whose module or entry changed (`rights` included), leave the others and the stopped ones alone |
+
+They are serialized in one queue; the listings answer at any time.
+
+`call_timeout_ms` is the deadline of a call that names none and the most one names (0: no
+default deadline); it is applied to new calls at start and on `bus.reload_config`. The
+methods an instance provided, and those its `provide` rights name exactly (without `*`), stay
+known: a call of one while no provider is up is `unavailable`, not `not_found`.
+
 ### Rights
 
 ### Tilr Web
