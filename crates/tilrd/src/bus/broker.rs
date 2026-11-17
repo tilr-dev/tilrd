@@ -1549,9 +1549,13 @@ mod tests {
     const CHUNK: usize = 32 << 10;
 
     /// A broker whose core has a bulk stream `test.count` (n chunks of 32 KiB),
-    /// `test.hold` (keeps its `StreamOut` 100 ms past a cancel, then drops it) and
-    /// `test.slow` (answers `second` after 300 ms).
+    /// `test.hold` (keeps its `StreamOut` past a cancel until `test.slow` has
+    /// started, then drops it) and `test.slow` (answers `second` once `test.hold`
+    /// has let go of its `StreamOut`).
     fn broker() -> BrokerHandle {
+        let slow_started = Arc::new(tokio::sync::Notify::new());
+        let held_dropped = Arc::new(tokio::sync::Notify::new());
+        let (hold_started, hold_dropped) = (slow_started.clone(), held_dropped.clone());
         let broker = BrokerHandle::new(BrokerOptions {
             authz: default_authorizer(&AuthzConfig::default()),
             server_id: "server-1".into(),
@@ -1569,21 +1573,29 @@ mod tests {
                 }
                 out.end(Bytes::from_static(b"done"));
             }),
-            NativeMethod::stream("test.hold", Lane::Interactive, |_, _, out| async move {
-                out.send(Chunk::new(Bytes::from_static(b"held")))
-                    .await
-                    .unwrap();
-                // Outlives the handler, which the cancel aborts.
-                tokio::spawn(async move {
-                    out.cancelled().cancelled().await;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    drop(out);
-                });
-                std::future::pending::<()>().await;
+            NativeMethod::stream("test.hold", Lane::Interactive, move |_, _, out| {
+                let (slow_started, held_dropped) = (hold_started.clone(), hold_dropped.clone());
+                async move {
+                    out.send(Chunk::new(Bytes::from_static(b"held")))
+                        .await
+                        .unwrap();
+                    // Outlives the handler, which the cancel aborts.
+                    tokio::spawn(async move {
+                        out.cancelled().cancelled().await;
+                        slow_started.notified().await;
+                        drop(out);
+                        held_dropped.notify_one();
+                    });
+                    std::future::pending::<()>().await;
+                }
             }),
-            NativeMethod::unary("test.slow", |_, _| async {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                Ok(Reply::new("second"))
+            NativeMethod::unary("test.slow", move |_, _| {
+                let (slow_started, held_dropped) = (slow_started.clone(), held_dropped.clone());
+                async move {
+                    slow_started.notify_one();
+                    held_dropped.notified().await;
+                    Ok(Reply::new("second"))
+                }
             }),
         ]);
         broker
@@ -1691,7 +1703,7 @@ mod tests {
         peer.call(5, "test.hold", "").await;
         assert!(matches!(peer.recv().await, Msg::Chunk(chunk) if chunk.id == 5));
         // Cancel and reuse the id at once; the old stream's provider lets go of it
-        // 100 ms later, while the new call is still running.
+        // once the new call has started, and the new call answers after that.
         peer.send(Msg::Cancel(Cancel {
             id: 5,
             reason: "enough".into(),
