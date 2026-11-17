@@ -98,12 +98,27 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 | itests-stage-5 | itests group H (load, security), distributions, macOS backend | L | the phase 3 changes | - | design first |
 | multi-user-sessions | `tilrd --system` as root runs each session as its user (per-user tokens, per-user sockets); options for the owner in design.md (TILR-138) | L | - | yes | needs owner |
 
+## Phase 7: launch profiles, sandboxed panes, component bus
+
+Added 2026-11-17 (owner's decisions, session TILR-892): panes with named launch profiles, the
+sandboxed pane done now (no longer deferred), the component bus of `runtime-tmp` moved into this
+repo with Biscuit rights. In working order; does not gate the first release.
+
+| change | goal | size | depends on | blocker | status |
+|---|---|---|---|---|---|
+| pane-profiles | `profiles/<name>.toml` launch profiles: `CreatePane.profile`, `ListProfiles`, `tilr new --profile`, `tilr profiles`; `[sandbox]` parsed and refused | M | - | no | ready |
+| sandboxed-pane | a profile's `[sandbox]` enforced (Landlock + seccomp on Linux; Seatbelt `sandbox-exec` with a generated profile on macOS), a normal terminal inside, fail closed, survives reload | L | pane-profiles | no | ready |
+| component-bus | `tilr-bus` crate and the broker/runner in tilrd: `bus.toml` modules and instances, fd/socket transports, supervision, `bus.*` control, `tilr bus`, handover on reload | L | - | no | ready |
+| bus-acl-biscuit | Biscuit tokens for every bus call: rights from `bus.toml`, minting, attenuation, expiry, revocation, caches, fail closed, audit | L | component-bus | no | ready |
+| bus-runtime-sdks | Deno and Python client libraries (`sdk/`), tested against the real broker in a CI job `sdk` | M | component-bus | no | ready |
+| bus-gateway | `tilrd gateway`: HTTP `POST /call/...` on loopback, Bearer Biscuit per request, no ambient rights | M | component-bus, bus-acl-biscuit | no | ready |
+| bus-panes | `pane.*` methods served by tilrd on the bus (create with a profile, write, screen, resize, close) under pane rights | M | pane-profiles, component-bus, bus-acl-biscuit | no | ready |
+
 ## Deferred
 
 | change | goal | size | depends on | blocker | status |
 |---|---|---|---|---|---|
 | end-to-end-encryption | security design for E2E between client and server | L | - | - | deferred |
-| sandboxed-pane | panes in a sandbox for agents (App Sandbox, Landlock) | L | - | - | deferred |
 | public-repo-readiness | checklist for making the repository public | S | readme-code-reconciliation | - | deferred |
 | release-platforms | musl, macOS on the CDN, x86_64 builds | M | public-repo-readiness | - | deferred |
 | read-only-viewer | a viewer token gives read-only connections; deferred until a use is named (design ready: per-server viewer token) | M | - | no | deferred |
