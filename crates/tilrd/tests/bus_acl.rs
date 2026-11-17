@@ -951,6 +951,42 @@ async fn children_of_an_instance_and_a_token_of_one_name_differ() {
         .expect("the instance's child is not the token's");
 }
 
+/// A child's own name has no dot, so the last component of a child's name is the
+/// child and the rest its minter: the instance `a` may not mint `instance.a.b.x`,
+/// which is the child `x` of the instance `a.b`.
+#[tokio::test]
+async fn a_childs_own_name_has_no_dot() {
+    let (file_a, _scratch_a) = token_file("a");
+    let (file_ab, _scratch_ab) = token_file("a.b");
+    let minter_rights: &[(&str, &[&str])] = &[("call", &["test.*"]), ("control", &["token"])];
+    let server = start_with_instances(&format!(
+        "{}{}",
+        socket_instance("a", &file_a, minter_rights),
+        socket_instance("a.b", &file_ab, minter_rights)
+    ));
+    let a = as_instance(&server, "a", &file_a).await;
+    let ab = as_instance(&server, "a.b", &file_ab).await;
+    let wanted = || Rights::default().call(&["test.*"]);
+
+    let error = try_mint(&a, "instance.a.b.x", wanted()).await.unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert!(error.message.contains("without a dot"), "{error}");
+    let (of_a, _) = try_mint(&a, "instance.a.x", wanted())
+        .await
+        .expect("the child x of a");
+    let (of_ab, _) = try_mint(&ab, "instance.a.b.x", wanted())
+        .await
+        .expect("the child x of a.b");
+    assert_eq!(
+        participant(&server, &of_a, "ax").await.identity(),
+        "token:instance.a.x"
+    );
+    assert_eq!(
+        participant(&server, &of_ab, "abx").await.identity(),
+        "token:instance.a.b.x"
+    );
+}
+
 #[tokio::test]
 async fn a_token_of_another_server_is_refused() {
     let a = start();

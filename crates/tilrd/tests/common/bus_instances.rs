@@ -33,6 +33,16 @@ pub fn toml_string(text: &str) -> String {
     out
 }
 
+/// `name` as a TOML key: quoted when it holds a dot (an instance `a.b`), so it is one
+/// key and not a nested table.
+fn toml_key(name: &str) -> String {
+    if name.contains('.') {
+        toml_string(name)
+    } else {
+        name.to_owned()
+    }
+}
+
 fn toml_array(items: &[&str]) -> String {
     let items: Vec<String> = items.iter().map(|item| toml_string(item)).collect();
     format!("[{}]", items.join(", "))
@@ -40,6 +50,7 @@ fn toml_array(items: &[&str]) -> String {
 
 /// `[modules.<name>]` running `command`, with `env`.
 pub fn module(name: &str, command: &[&str], env: &[(&str, &str)]) -> String {
+    let name = toml_key(name);
     let mut text = format!("[modules.{name}]\ncommand = {}\n", toml_array(command));
     if !env.is_empty() {
         text.push_str(&format!("[modules.{name}.env]\n"));
@@ -71,6 +82,7 @@ pub fn instance_with(
     rights: &[(&str, &[&str])],
     env: &[(&str, &str)],
 ) -> String {
+    let name = toml_key(name);
     let mut text = format!(
         "[instances.{name}]\nmodule = {}\n{top}",
         toml_string(module)

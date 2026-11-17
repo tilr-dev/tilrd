@@ -1100,7 +1100,8 @@ and may do only what its token lists (least privilege; design R1-R9 in
   with any token). A participant other than the owner with `control = ["token"]` mints only
   rights it holds itself, with a token without appended blocks, named
   `<its kind>.<its name>.<name>` (`instance:a` mints `token:instance.a.x`, `token:a`
-  `token:token.a.x`),
+  `token:token.a.x`), where `<name>` has no dot (`instance:a` may not mint
+  `instance.a.b.x`: that is the child `x` of `instance:a.b`),
   bound to its own origin if it has one, for no longer than its own token lives (renewals
   included); revoking the minter's token (any token of its chain of renewals) ends the
   tokens it minted, renewing it does not; an instance's end ends what it minted, its 12 h

@@ -773,7 +773,8 @@ fn rights_within(wanted: &RightsText, held: &RightsText) -> bool {
 /// not reach the child), a name outside the minter's own (`<minter kind>.<minter
 /// name>.<name>`: `instance.a.x` for `instance:a`, `token.a.x` for `token:a`, so a
 /// child cannot pass for another participant, nor the child of a minter of the other
-/// kind with the same name), and an origin other than the one the minter is bound to
+/// kind with the same name; the child's own `<name>` has no dot, so `instance.a.b.x` is
+/// child `x` of `instance:a.b` and never a child of `instance:a`), and an origin other than the one the minter is bound to
 /// (a bound minter's child is bound to it too).
 fn child_lineage(minter: &Parsed, name: &str, origin: &mut String) -> Result<Lineage, BusError> {
     let refuse = |message: String| BusError::new(codes::DENIED, message);
@@ -793,10 +794,10 @@ fn child_lineage(minter: &Parsed, name: &str, origin: &mut String) -> Result<Lin
         .and_then(|rest| rest.strip_prefix('.'))
         .and_then(|rest| rest.strip_prefix(own))
         .and_then(|rest| rest.strip_prefix('.'))
-        .is_some_and(|rest| !rest.is_empty());
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains('.'));
     if own.is_empty() || !under {
         return Err(refuse(format!(
-            "{} mints tokens named {kind}.{own}.<name> only, not {name:?}",
+            "{} mints tokens named {kind}.{own}.<name> only, <name> without a dot, not {name:?}",
             minter.identity
         )));
     }

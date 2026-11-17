@@ -117,7 +117,14 @@ is the contract.
   account `system:serviceaccount:<ns>:<name>`: `token:app` mints `token:token.app.child`,
   `instance:app` mints `token:instance.app.child`; the name rule of `bus.token` stays
   `[A-Za-z0-9_.:-]`, up to 128, the prefix included), so it cannot pass for another
-  participant, nor for the child of a minter of the other kind with the same name; a minter
+  participant, nor for the child of a minter of the other kind with the same name. The
+  child's own `<name>` has no dot (owner's decision, as Kubernetes forbids `:` inside the
+  parts of `system:serviceaccount:<ns>:<name>`): instance names may hold dots, so without it
+  `instance:a` could mint `instance.a.b.x`, the name of the child `x` of `instance:a.b`; with
+  it the last component is the child and the rest its minter. Instance names are unchanged.
+  Revocation does not read names (a child's minters are revocation ids in its signed
+  metadata), so the rule keeps names unambiguous for people and for what routes by name. A
+  minter
   bound to an origin mints for that origin only (an empty `origin` takes it, another is
   denied). The child's signed metadata holds a ceiling (the minter's expiry: no renewal goes
   past it) and its minters' families (below): revoking a minter ends its children, as it ends

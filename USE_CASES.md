@@ -974,6 +974,7 @@ server minted for it.
 | `server.command` is the owner's on the Unix socket only (not on TCP, not for any token); `server.update` needs its control action, not `call` | `bus_acl::server_command_is_the_owners_on_the_unix_socket_only` |
 | A token minted by a participant is named under it (`token.<name>.…`), lives no longer than its token, is bound to its origin; revoked alone it leaves the minter working, the minter revoked ends it; an attenuated minter mints nothing | `bus_acl::a_minted_token_lives_within_its_minter` |
 | The children of the instance `a` and the token `a` are `token:instance.a.x` and `token:token.a.x`; neither minter may name the other's or a name without its kind; revoking the token `a` ends its child only | `bus_acl::children_of_an_instance_and_a_token_of_one_name_differ` |
+| A child's own name has no dot: the instance `a` is refused `instance.a.b.x` and mints `instance.a.x`; the instance `a.b` mints `instance.a.b.x` | `bus_acl::a_childs_own_name_has_no_dot` |
 | A token of another server, or a malformed one, is denied at Hello and per call | `bus_acl::a_token_of_another_server_is_refused` |
 | A per-call credential authorizes its call alone, for a narrow caller and against a wide one; `from` stays the caller; the audit names both | `bus_acl::a_per_call_credential_is_a_bearer` |
 | `pane.*` is decided by `call` rights like every core method; a per-call credential decides it alone, the pane checks of `pane.create` and of a pane included | `bus_acl::pane_calls_follow_call_rights_and_a_per_call_credential` |
