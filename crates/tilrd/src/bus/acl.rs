@@ -205,6 +205,13 @@ struct Meta {
     /// revocation ids it dies with.
     #[serde(default)]
     lineage: Lineage,
+    /// The authority revocation id of the token it renews, and of all its earlier
+    /// renewals: the first of the chain (empty: this token is the first). Revoking
+    /// any token of the chain revokes this id, so a renewal never outlives a
+    /// revocation of the token it came from; a renewal supersedes its predecessor's
+    /// own id only.
+    #[serde(default)]
+    family: String,
 }
 
 /// What a token minted by a participant other than the owner inherits from its
@@ -281,9 +288,27 @@ impl Parsed {
         self.rids.len() > 1
     }
 
-    /// Every revocation id that ends this token: its blocks' and its minters'.
+    /// Every revocation id that ends this token: its blocks', its family's and its
+    /// minters' (their families).
     fn ending_ids(&self) -> impl Iterator<Item = &String> {
-        self.rids.iter().chain(self.meta.lineage.parents.iter())
+        self.rids
+            .iter()
+            .chain(self.family_id())
+            .chain(self.meta.lineage.parents.iter())
+    }
+
+    /// The id of its chain of renewals ([`Meta::family`]): the first token's
+    /// authority revocation id; `None` only for a token with no blocks.
+    fn family_id(&self) -> Option<&String> {
+        if self.meta.family.is_empty() {
+            self.rids.first()
+        } else {
+            Some(&self.meta.family)
+        }
+    }
+
+    fn family(&self) -> &str {
+        self.family_id().map_or("", String::as_str)
     }
 
     /// The first 16 hex digits of the authority block's revocation id.
@@ -671,8 +696,10 @@ fn child_lineage(minter: &Parsed, name: &str, origin: &mut String) -> Result<Lin
         0 => minter.meta.expires_ms,
         ceiling => ceiling.min(minter.meta.expires_ms),
     };
+    // The minter's family, not its token's own id: renewing the minter keeps its
+    // children, revoking it (any token of the chain) ends them.
     let mut parents = minter.meta.lineage.parents.clone();
-    parents.extend(minter.rids.first().cloned());
+    parents.extend(minter.family_id().cloned());
     Ok(Lineage {
         ceiling_ms,
         parents,
@@ -702,12 +729,19 @@ struct InstanceSeat {
     expires_ms: u64,
     /// The key epoch it was minted under.
     epoch: u64,
+    /// Its family ([`Parsed::family`]), revoked with it when the connection ends.
+    family: String,
 }
 
 #[derive(Default)]
 struct Revoked {
-    /// Revocation id → Unix ms until which it is kept.
+    /// Revocation id → Unix ms until which it is kept: it ends every token it is
+    /// one of the [`Parsed::ending_ids`] of.
     ids: HashMap<String, u64>,
+    /// The authority revocation ids of renewed tokens → Unix ms until which each is
+    /// kept: it ends that token (and those attenuated from it) only, not its family
+    /// or the tokens its holder minted.
+    renewed: HashMap<String, u64>,
     /// The file could not be read: every token is refused, and the file is never
     /// written (so it stays broken, and refused, after a restart) until the
     /// operator fixes or removes it.
@@ -731,18 +765,22 @@ impl Store {
             return Ok(());
         };
         let _files = lock(&self.files);
-        let snapshot: Vec<(String, u64)> = {
+        let snapshot: Vec<(String, u64, bool)> = {
             let revoked = lock(&self.revoked);
             if let Some(reason) = &revoked.broken {
                 return Err(format!(
                     "{REVOKED_FILE} is not written while it does not read ({reason}); fix or remove it and restart"
                 ));
             }
-            revoked
+            let ids = revoked
                 .ids
                 .iter()
-                .map(|(id, until)| (id.clone(), *until))
-                .collect()
+                .map(|(id, until)| (id.clone(), *until, false));
+            let renewed = revoked
+                .renewed
+                .iter()
+                .map(|(id, until)| (id.clone(), *until, true));
+            ids.chain(renewed).collect()
         };
         write_revoked(&dir.join(REVOKED_FILE), &snapshot).map_err(|err| format!("{err:#}"))
     }
@@ -1012,12 +1050,12 @@ impl Acl {
         let revoked = match &cfg.state_dir {
             None => Revoked::default(),
             Some(dir) => match load_revoked(&dir.join(REVOKED_FILE), clock()) {
-                Ok(ids) => Revoked { ids, broken: None },
+                Ok(revoked) => revoked,
                 Err(err) => {
                     tracing::error!(target: "tilrd::bus", "bus tokens are refused: {err:#}");
                     Revoked {
-                        ids: HashMap::new(),
                         broken: Some(format!("{err:#}")),
+                        ..Revoked::default()
                     }
                 }
             },
@@ -1068,6 +1106,7 @@ impl Acl {
         origin: &str,
         ttl: Duration,
         lineage: &Lineage,
+        family: &str,
     ) -> Result<Token, String> {
         let keys = self.keys();
         let pair = keys.pair.as_ref().ok_or_else(|| keys.missing.clone())?;
@@ -1094,6 +1133,7 @@ impl Acl {
             origin: origin.to_owned(),
             rights: rights.clone(),
             lineage: lineage.clone(),
+            family: family.to_owned(),
         };
         let context = serde_json::to_string(&meta).map_err(|err| err.to_string())?;
         let build = || -> Result<Biscuit, TokenError> {
@@ -1138,15 +1178,17 @@ impl Acl {
         Ok(Token { bytes, parsed })
     }
 
-    /// An instance's token for its connection `conn` (R2, R3).
+    /// An instance's token for its connection `conn` (R2, R3), of the family
+    /// `family` when it renews one (empty: a new family).
     fn mint_instance(
         &self,
         identity: &Identity,
         rights: &RightsText,
         conn: ConnId,
         seen: bool,
+        family: &str,
     ) -> Result<Token, String> {
-        let token = self.mint(identity, rights, "", MAX_TTL, &Lineage::default())?;
+        let token = self.mint(identity, rights, "", MAX_TTL, &Lineage::default(), family)?;
         lock(&self.instances).insert(
             token.revocation_id().to_owned(),
             InstanceSeat {
@@ -1155,6 +1197,7 @@ impl Acl {
                 made: Instant::now(),
                 expires_ms: token.expires_ms(),
                 epoch: token.parsed.epoch,
+                family: token.parsed.family().to_owned(),
             },
         );
         Ok(token)
@@ -1255,8 +1298,19 @@ impl Acl {
                     "this server cannot check revocations: {reason}"
                 )));
             }
-            if parsed.rids.iter().any(|rid| revoked.ids.contains_key(rid)) {
+            if parsed.rids.iter().any(|rid| revoked.ids.contains_key(rid))
+                || parsed
+                    .family_id()
+                    .is_some_and(|family| revoked.ids.contains_key(family))
+            {
                 return Err(Denied::new("revoked: the token was revoked"));
+            }
+            if parsed
+                .rids
+                .iter()
+                .any(|rid| revoked.renewed.contains_key(rid))
+            {
+                return Err(Denied::new("revoked: the token was renewed"));
             }
             if parsed
                 .meta
@@ -1333,15 +1387,44 @@ impl Acl {
         }
     }
 
-    /// Revoke the token of an instance whose connection ended: at once in memory,
-    /// on disk from a blocking thread (this runs on the envelope path and in the
+    /// Revoke the token of an instance whose connection ended, with its family
+    /// (its earlier tokens and what the instance minted): at once in memory, on
+    /// disk from a blocking thread (this runs on the envelope path and in the
     /// sweeper).
     fn end_instance_token(&self, rid: &str) {
         let Some(seat) = lock(&self.instances).remove(rid) else {
             return;
         };
         tracing::info!(target: AUDIT, "bus audit: revoke rid={} reason=its instance's connection ended", &rid[..rid.len().min(16)]);
-        self.revoke_in_memory(&[(rid.to_owned(), seat.expires_ms.saturating_add(1000))]);
+        // Every token of the family expires within a day from now.
+        let family_until = self.family_until();
+        self.revoke_in_memory(&[
+            (rid.to_owned(), seat.expires_ms.saturating_add(1000)),
+            (seat.family, family_until),
+        ]);
+        self.persist_off_path();
+    }
+
+    /// An instance's token replaced by its renewal: it alone is refused from now
+    /// on, not its family (the instance keeps what it minted).
+    fn supersede_instance_token(&self, rid: &str) {
+        let Some(seat) = lock(&self.instances).remove(rid) else {
+            return;
+        };
+        self.supersede_in_memory(rid, seat.expires_ms.saturating_add(1000));
+        self.persist_off_path();
+    }
+
+    /// Until when the revocation of a family is kept: every token of it expires
+    /// within [`MAX_TTL`] from now, and none is renewed once it is revoked.
+    fn family_until(&self) -> u64 {
+        let max_ms = u64::try_from(MAX_TTL.as_millis()).unwrap_or(u64::MAX);
+        self.now_ms().saturating_add(max_ms).saturating_add(1000)
+    }
+
+    /// Write the revocation file from a blocking thread (or here, without a
+    /// runtime).
+    fn persist_off_path(&self) {
         let store = Arc::clone(&self.store);
         let persist = move || {
             if let Err(err) = store.persist() {
@@ -1514,12 +1597,31 @@ impl Acl {
                 *kept = (*kept).max(*until);
             }
             revoked.ids.retain(|_, until| *until >= now);
+            revoked.renewed.retain(|_, until| *until >= now);
         }
+        self.drop_decisions(ids.iter().map(|(id, _)| id.as_str()));
+    }
+
+    /// Mark the renewed token of authority revocation id `rid` superseded (kept
+    /// until `until`), at once.
+    fn supersede_in_memory(&self, rid: &str, until: u64) {
+        let now = self.now_ms();
+        {
+            let mut revoked = lock(&self.store.revoked);
+            let kept = revoked.renewed.entry(rid.to_owned()).or_insert(0);
+            *kept = (*kept).max(until);
+            revoked.renewed.retain(|_, until| *until >= now);
+        }
+        self.drop_decisions(std::iter::once(rid));
+    }
+
+    /// Drop the cached decisions of the tokens one of `ids` ends.
+    fn drop_decisions<'a>(&self, ids: impl Iterator<Item = &'a str> + Clone) {
         lock(&self.decisions).retain(|_, decision| {
             !decision
                 .ids
                 .iter()
-                .any(|rid| ids.iter().any(|(id, _)| id == rid))
+                .any(|rid| ids.clone().any(|id| id == rid))
         });
     }
 
@@ -1589,7 +1691,8 @@ impl Acl {
                 .unwrap_or_default()
         });
         let old = token_of(principal).map(|token| token.revocation_id().to_owned());
-        match self.mint_instance(&principal.identity, &rights, conn, true) {
+        let family = token_of(principal).map_or("", |token| token.parsed.family());
+        match self.mint_instance(&principal.identity, &rights, conn, true, family) {
             Ok(token) => {
                 tracing::info!(target: AUDIT, "bus audit: renew from={} rid={} reason=instance token", principal.identity, token.parsed.rid16());
                 let bytes = token.bytes.clone();
@@ -1606,7 +1709,7 @@ impl Acl {
                     tracing::info!(target: "tilrd::bus", identity = %principal.identity, "the instance's connection ended before its new token was sent");
                 }
                 if let Some(old) = old {
-                    self.end_instance_token(&old);
+                    self.supersede_instance_token(&old);
                 }
             }
             Err(err) => {
@@ -1761,7 +1864,7 @@ impl Acl {
         }
         let identity = Identity::Token(name.to_owned());
         let token = self
-            .mint(&identity, &rights, &origin, ttl, &lineage)
+            .mint(&identity, &rights, &origin, ttl, &lineage, "")
             .map_err(BusError::unavailable)?;
         tracing::info!(target: AUDIT, "bus audit: mint from={} participant={identity} rid={} expires_ms={}", ctx.from, token.parsed.rid16(), token.expires_ms());
         Ok(Reply::encode(&wire::TokenReply {
@@ -1808,18 +1911,22 @@ impl Acl {
                 &meta.origin,
                 Duration::from_millis(life),
                 &meta.lineage,
+                parsed.family(),
             )
             .map_err(BusError::unavailable)?;
-        let kept =
-            self.revoke_ids(&[(parsed.rids[0].clone(), meta.expires_ms.saturating_add(1000))]);
+        // The old token alone: its family (the new token) and what it minted live on.
+        self.supersede_in_memory(&parsed.rids[0], meta.expires_ms.saturating_add(1000));
+        let kept = self.store.persist();
         tracing::info!(target: AUDIT, "bus audit: renew from={} old={} rid={} expires_ms={}", ctx.from, parsed.rid16(), token.parsed.rid16(), token.expires_ms());
         if let Err(err) = kept {
             tracing::error!(target: "tilrd::bus", "the renewed token's revocation is not kept on disk: {err}");
         }
+        // The family's id (the one `bus.token` answered): revoking it ends the new
+        // token, every token of its chain and what they minted.
         Ok(Reply::encode(&wire::RenewReply {
             credential: token.bytes.clone(),
             expires_at_ms: token.expires_ms(),
-            revocation_id: token.revocation_id().to_owned(),
+            revocation_id: token.parsed.family().to_owned(),
         }))
     }
 
@@ -1832,9 +1939,15 @@ impl Acl {
                 let parsed = self
                     .verify(&credential)
                     .map_err(|denied| BusError::bad_request(denied.reason))?;
-                // Its last block: the token and every one attenuated from it.
-                let last = parsed.rids.last().cloned().unwrap_or_default();
-                (last, parsed.meta.expires_ms.saturating_add(1000))
+                if parsed.attenuated() {
+                    // Its last block: the token and every one attenuated from it.
+                    let last = parsed.rids.last().cloned().unwrap_or_default();
+                    (last, parsed.meta.expires_ms.saturating_add(1000))
+                } else {
+                    // Its family: the token, its renewals (also one made from it
+                    // before), what is attenuated from them and what they minted.
+                    (parsed.family().to_owned(), self.family_until())
+                }
             }
             Some(wire::revoke_request::What::RevocationId(id)) => {
                 if !is_hex(&id) {
@@ -1855,7 +1968,7 @@ impl Acl {
         };
         let kept = self.revoke_ids(&[(id.clone(), until)]);
         tracing::info!(target: AUDIT, "bus audit: revoke from={} rid={}", ctx.from, &id[..id.len().min(16)]);
-        lock(&self.instances).remove(&id);
+        lock(&self.instances).retain(|rid, seat| *rid != id && seat.family != id);
         self.close_holders(&[id]);
         kept.map_err(|err| {
             BusError::unavailable(format!(
@@ -1920,8 +2033,13 @@ impl Authorizer for Acl {
                 .as_deref()
                 .map(RightsText::from)
                 .unwrap_or_default();
-            let token = match self.mint_instance(&seat.identity, &rights, conn.connection_id, false)
-            {
+            let token = match self.mint_instance(
+                &seat.identity,
+                &rights,
+                conn.connection_id,
+                false,
+                "",
+            ) {
                 Ok(token) => {
                     tracing::info!(target: AUDIT, "bus audit: mint from=tilrd participant={} rid={} expires_ms={}", seat.identity, token.parsed.rid16(), token.expires_ms());
                     Some(Arc::new(token) as Arc<dyn Any + Send + Sync>)
@@ -2229,39 +2347,49 @@ fn sync_dir(dir: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("sync {}", dir.display()))
 }
 
-/// The revocation ids still kept at `now`: one `<hex id> <until ms>` per line. A
-/// missing file is none; one that does not read is an error.
-fn load_revoked(path: &Path, now: u64) -> anyhow::Result<HashMap<String, u64>> {
+/// The revocation ids still kept at `now`: one `<hex id> <until ms>` per line, with
+/// ` renewed` after a renewed token's ([`Revoked::renewed`]). A missing file is
+/// none; one that does not read is an error.
+fn load_revoked(path: &Path, now: u64) -> anyhow::Result<Revoked> {
     use anyhow::Context;
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Revoked::default()),
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    let mut ids = HashMap::new();
+    let mut revoked = Revoked::default();
     for (n, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let parsed = line
-            .split_once(' ')
-            .and_then(|(id, until)| Some((id, until.parse::<u64>().ok()?)))
-            .filter(|(id, _)| is_hex(id));
-        let Some((id, until)) = parsed else {
+        let mut fields = line.split_whitespace();
+        let (Some(id), until, kind, None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            if line.trim().is_empty() {
+                continue;
+            }
+            anyhow::bail!("{} line {}: not `<id> <until ms>`", path.display(), n + 1);
+        };
+        let until = until.and_then(|until| until.parse::<u64>().ok());
+        let set = match kind {
+            None => &mut revoked.ids,
+            Some("renewed") => &mut revoked.renewed,
+            Some(_) => anyhow::bail!("{} line {}: not `<id> <until ms>`", path.display(), n + 1),
+        };
+        let Some(until) = until.filter(|_| is_hex(id)) else {
             anyhow::bail!("{} line {}: not `<id> <until ms>`", path.display(), n + 1);
         };
         if until >= now {
-            ids.insert(id.to_owned(), until);
+            set.insert(id.to_owned(), until);
         }
     }
-    Ok(ids)
+    Ok(revoked)
 }
 
-fn write_revoked(path: &Path, ids: &[(String, u64)]) -> anyhow::Result<()> {
+/// `(id, until, renewed)` lines, as [`load_revoked`] reads them.
+fn write_revoked(path: &Path, ids: &[(String, u64, bool)]) -> anyhow::Result<()> {
     let mut text = String::new();
-    for (id, until) in ids {
-        text.push_str(&format!("{id} {until}\n"));
+    for (id, until, renewed) in ids {
+        let kind = if *renewed { " renewed" } else { "" };
+        text.push_str(&format!("{id} {until}{kind}\n"));
     }
     replace_private(path, &text)
 }
@@ -2427,6 +2555,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap()
     }
@@ -3000,6 +3129,7 @@ mod tests {
                 "tilr://app",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap();
         assert!(
@@ -3027,6 +3157,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap();
         assert!(f.acl.credential_update(&principal, &other.bytes).is_err());
@@ -3073,8 +3204,18 @@ mod tests {
     fn the_revocation_file_reads_back_and_a_broken_one_refuses_all() {
         let f = fixture("s");
         let path = f.dir.join(REVOKED_FILE);
-        write_revoked(&path, &[("ab".into(), now() + 5), ("cd".into(), now() - 5)]).unwrap();
-        let ids = load_revoked(&path, now()).unwrap();
+        write_revoked(
+            &path,
+            &[
+                ("ab".into(), now() + 5, false),
+                ("cd".into(), now() - 5, false),
+                ("ef".into(), now() + 5, true),
+            ],
+        )
+        .unwrap();
+        let read = load_revoked(&path, now()).unwrap();
+        assert_eq!(read.renewed.keys().collect::<Vec<_>>(), ["ef"]);
+        let ids = read.ids;
         assert_eq!(ids.len(), 1);
         assert!(ids.contains_key("ab"));
         std::fs::write(&path, "not a line\n").unwrap();
@@ -3092,6 +3233,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap();
         let owner = Principal {
@@ -3291,6 +3433,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap();
         let participant = acl.hello(&hello(token.bytes.clone()), &conn).unwrap();
@@ -3330,6 +3473,7 @@ mod tests {
                 "tilr://app",
                 Duration::from_secs(3600),
                 &Lineage::default(),
+                "",
             )
             .unwrap();
         let minter_expires = minter.expires_ms();
@@ -3526,6 +3670,167 @@ mod tests {
         NOW.store(start, Ordering::SeqCst);
     }
 
+    /// `bus.revoke` of `what` by the owner.
+    fn revoke(f: &Fixture, what: wire::revoke_request::What) {
+        let payload = Bytes::from(wire::RevokeRequest { what: Some(what) }.encode_to_vec());
+        let owner = owner_on(Transport::UnixSocket);
+        f.acl
+            .method_revoke(&ctx(&owner, "bus.revoke", None), &payload)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_renewal_dies_with_the_token_it_renewed() {
+        use wire::revoke_request::What;
+        let _clock = lock(&CLOCK_LOCK);
+        let start = now();
+        let hour = 3_600_000;
+        let f = fixture("s");
+        let owner = owner_on(Transport::UnixSocket);
+        let echo = call("test.echo", "");
+        let ok = |acl: &Acl, bytes: &Bytes| acl.authorize(&owner, Some(bytes), &echo);
+        let revoked = |acl: &Acl, bytes: &Bytes| {
+            let refused = ok(acl, bytes).unwrap_err();
+            assert!(refused.reason.starts_with("revoked"), "{refused}");
+        };
+        let restarted = || {
+            Acl::new(
+                &AuthzConfig {
+                    state_dir: Some(f.dir.clone()),
+                    server_id: "s".into(),
+                    ..AuthzConfig::default()
+                },
+                now,
+            )
+        };
+        let wanted = rights(|r| r.call = strings(&["test.*"]));
+        // Two leaked tokens; the thief renews both, the second one twice.
+        let leaked = [minted(&f, &wanted), minted(&f, &wanted)];
+        let ids: Vec<String> = leaked
+            .iter()
+            .map(|token| token.revocation_id().to_owned())
+            .collect();
+        let bytes: Vec<Bytes> = leaked.iter().map(|token| token.bytes.clone()).collect();
+        NOW.store(start + 13 * hour, Ordering::SeqCst);
+        let [first, second] = leaked;
+        let renewed = renew(&f, &holder(first)).unwrap();
+        let payload = Bytes::from(wire::RenewRequest::default().encode_to_vec());
+        let reply = f
+            .acl
+            .method_renew(&ctx(&holder(second), "bus.renew", None), &payload)
+            .unwrap();
+        let reply = wire::RenewReply::decode(reply.payload).unwrap();
+        let again = Token {
+            parsed: f.acl.verify(&reply.credential).unwrap(),
+            bytes: reply.credential,
+        };
+        // Renewed: the old ones refused, the new ones work, also after a restart.
+        for acl in [&*f.acl, &restarted()] {
+            revoked(acl, &bytes[0]);
+            revoked(acl, &bytes[1]);
+            assert!(ok(acl, &renewed.bytes).is_ok());
+            assert!(ok(acl, &again.bytes).is_ok());
+        }
+        NOW.store(start + 26 * hour, Ordering::SeqCst);
+        let twice = renew(&f, &holder(again)).unwrap();
+        assert!(ok(&f.acl, &twice.bytes).is_ok());
+        // The owner revokes what it gave out, the token or its id: the renewals die.
+        revoke(&f, What::Credential(bytes[0].clone()));
+        revoke(&f, What::RevocationId(ids[1].clone()));
+        for acl in [&*f.acl, &restarted()] {
+            revoked(acl, &renewed.bytes);
+            revoked(acl, &twice.bytes);
+        }
+        // The renewal's reply named the id `bus.token` answered: the chain's.
+        assert_eq!(reply.revocation_id, ids[1]);
+        // And no further renewal.
+        assert_eq!(renew(&f, &holder(twice)).unwrap_err().code, codes::DENIED);
+        NOW.store(start, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn renewing_a_minter_keeps_its_children() {
+        use wire::revoke_request::What;
+        let _clock = lock(&CLOCK_LOCK);
+        let start = now();
+        let hour = 3_600_000;
+        let f = fixture("s");
+        let owner = owner_on(Transport::UnixSocket);
+        let echo = call("test.echo", "");
+        let ok = |bytes: &Bytes| f.acl.authorize(&owner, Some(bytes), &echo);
+        let minter_rights = rights(|r| {
+            r.call = strings(&["test.*"]);
+            r.control = strings(&["token"]);
+        });
+        let wanted = rights(|r| r.call = strings(&["test.*"]));
+        // An outside minter: renewed, its child lives; revoked, its child dies.
+        let minter = holder(minted(&f, &minter_rights));
+        let child = mint_by(
+            &f,
+            &ctx(&minter, "bus.token", None),
+            token_request("t-1.c", &wanted, "", 0),
+        )
+        .unwrap();
+        NOW.store(start + 13 * hour, Ordering::SeqCst);
+        let renewed = renew(&f, &minter).unwrap();
+        assert!(ok(&child.bytes).is_ok());
+        let renewed_bytes = renewed.bytes.clone();
+        // What the renewed minter mints dies with the chain as well.
+        let later = mint_by(
+            &f,
+            &ctx(&holder(renewed), "bus.token", None),
+            token_request("t-1.d", &wanted, "", 0),
+        )
+        .unwrap();
+        revoke(&f, What::Credential(renewed_bytes.clone()));
+        for bytes in [&child.bytes, &later.bytes] {
+            assert_eq!(
+                ok(bytes).unwrap_err().reason,
+                "revoked: the token of its minter was revoked"
+            );
+        }
+        NOW.store(start, Ordering::SeqCst);
+
+        // An instance: its 12 h renewal (as `renew_instance` does it) keeps what it
+        // minted; the end of its connection ends it.
+        let identity = Identity::Instance("i".into());
+        let first = f
+            .acl
+            .mint_instance(&identity, &minter_rights, 9, true, "")
+            .unwrap();
+        let first_rid = first.revocation_id().to_owned();
+        let family = first.parsed.family().to_owned();
+        let instance = |token: Token| Principal {
+            identity: identity.clone(),
+            credential: Some(Arc::new(token)),
+            connection_id: 9,
+            ..Principal::tilrd()
+        };
+        let first = instance(first);
+        let child = mint_by(
+            &f,
+            &ctx(&first, "bus.token", None),
+            token_request("i.c", &wanted, "", 0),
+        )
+        .unwrap();
+        let next = f
+            .acl
+            .mint_instance(&identity, &minter_rights, 9, true, &family)
+            .unwrap();
+        let next_rid = next.revocation_id().to_owned();
+        f.acl.supersede_instance_token(&first_rid);
+        let next = instance(next);
+        assert!(f.acl.authorize(&first, None, &echo).is_err());
+        assert!(f.acl.authorize(&next, None, &echo).is_ok());
+        assert!(ok(&child.bytes).is_ok());
+        f.acl.end_instance_token(&next_rid);
+        assert!(f.acl.authorize(&next, None, &echo).is_err());
+        assert_eq!(
+            ok(&child.bytes).unwrap_err().reason,
+            "revoked: the token of its minter was revoked"
+        );
+    }
+
     #[test]
     fn a_timeout_is_denied_and_never_cached() {
         let mut f = fixture("s");
@@ -3574,7 +3879,7 @@ mod tests {
                 });
             }
         });
-        let ids = load_revoked(&f.dir.join(REVOKED_FILE), now()).unwrap();
+        let ids = load_revoked(&f.dir.join(REVOKED_FILE), now()).unwrap().ids;
         assert_eq!(ids.len(), threads * each);
         // No staged file left behind.
         let left: Vec<_> = std::fs::read_dir(&f.dir)
@@ -3613,6 +3918,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap();
         let owner = owner_on(Transport::UnixSocket);
@@ -3671,7 +3977,7 @@ mod tests {
                 .reason
                 .starts_with("revoked")
         );
-        let ids = load_revoked(&f.dir.join(REVOKED_FILE), now()).unwrap();
+        let ids = load_revoked(&f.dir.join(REVOKED_FILE), now()).unwrap().ids;
         assert!(ids.contains_key(token.revocation_id()));
     }
 
@@ -3688,6 +3994,7 @@ mod tests {
                         &RightsText::default(),
                         9,
                         true,
+                        "",
                     )
                     .unwrap(),
             )),
@@ -3718,6 +4025,7 @@ mod tests {
                 &rights(|r| r.call = strings(&["*"])),
                 11,
                 false,
+                "",
             )
             .unwrap();
         let rid = token.revocation_id().to_owned();
@@ -3746,6 +4054,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap_err();
         assert!(error.contains("at most"), "{error}");
@@ -3760,6 +4069,7 @@ mod tests {
                 "",
                 MAX_TTL,
                 &Lineage::default(),
+                "",
             )
             .unwrap_err();
         assert!(error.contains("16 KiB"), "{error}");

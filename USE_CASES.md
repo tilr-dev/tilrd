@@ -959,6 +959,8 @@ server minted for it.
 | Without an access token (`--no-auth`) a TCP connection without a credential is the owner, still without `server.command`; one with a credential is its participant | `supervisor::bus::acl::tests::without_an_access_token_tcp_is_the_owner` |
 | A non-owner minter mints under its name and origin, never past its own token, never when attenuated; the chain of minters is kept | `supervisor::bus::acl::tests::a_minter_mints_under_its_name_origin_and_life` |
 | A minted token dies with its minter and can be revoked alone, also after a restart | `supervisor::bus::acl::tests::a_child_dies_with_its_minter_and_alone` |
+| A token renewed by whoever holds it dies when the owner revokes the one it gave out (the token or its id), also after a restart; the old tokens are refused once renewed, the reply names the first id | `supervisor::bus::acl::tests::a_renewal_dies_with_the_token_it_renewed` |
+| Renewing a minter (`bus.renew`, an instance's 12 h renewal) keeps what it minted; revoking it, or an instance's end, ends them | `supervisor::bus::acl::tests::renewing_a_minter_keeps_its_children` |
 | `bus.renew` in the second half of a token's life only, never past its minter's expiry | `supervisor::bus::acl::tests::renewal_is_for_the_second_half_and_stops_at_the_minters_expiry` |
 | A decision the wall-clock backstop ends is denied and not cached; the limits are 1000 facts, 100 iterations, 50 ms | `supervisor::bus::acl::tests::a_timeout_is_denied_and_never_cached` |
 | Concurrent revocations all reach the file and survive a restart; no staged file is left | `supervisor::bus::acl::tests::concurrent_revocations_all_survive_a_restart` |

@@ -98,9 +98,9 @@ A participant other than the owner with `control = ["token"]` SHALL mint only ri
 - **THEN** it is `denied`; one named `app.child` is minted
 
 ### Requirement: A minted token lives within its minter
-A token minted by a participant other than the owner SHALL NOT live, also through renewals, past the minter's token, and SHALL be refused once the minter's token is revoked; revoking the minted token alone SHALL leave the minter's working.
+A token minted by a participant other than the owner SHALL NOT live, also through renewals, past the minter's token, and SHALL be refused once the minter's token, or any token of the minter's chain of renewals, is revoked (for an instance: once its connection ends); renewing the minter's token (`bus.renew`, or an instance's renewal by the server) SHALL leave it working; revoking the minted token alone SHALL leave the minter's working.
 
-**Verified by**: `bus_acl::a_minted_token_lives_within_its_minter`, `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (controlled time), `supervisor::bus::acl::tests::a_child_dies_with_its_minter_and_alone`.
+**Verified by**: `bus_acl::a_minted_token_lives_within_its_minter`, `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (controlled time), `supervisor::bus::acl::tests::a_child_dies_with_its_minter_and_alone`, `supervisor::bus::acl::tests::renewing_a_minter_keeps_its_children` (controlled time).
 
 #### Scenario: Asked for a day
 - **WHEN** a participant whose token has one hour left mints a token with `ttl_ms` 0
@@ -151,7 +151,7 @@ Every token SHALL expire at most 24 h after it was minted, and a call or subscri
 - **THEN** `t-1` has received `CredentialUpdate` and its calls are still allowed after 25 h
 
 ### Requirement: bus.renew gives a fresh token for an unattenuated one
-`bus.renew` SHALL answer, for a valid, unrevoked token without appended blocks in the second half of its life, a new token with the same rights and a new expiry (never past the ceiling its minter set), and revoke the old one; for an attenuated token, one in the first half of its life, or one that already lives to its ceiling it SHALL answer `bad_request`.
+`bus.renew` SHALL answer, for a valid, unrevoked token without appended blocks in the second half of its life, a new token with the same rights and a new expiry (never past the ceiling its minter set), with the `revocation_id` that `bus.token` answered for the first token of the chain, and refuse the old token from then on (that token and those attenuated from it only, not the tokens minted with it); for an attenuated token, one in the first half of its life, or one that already lives to its ceiling it SHALL answer `bad_request`.
 
 **Verified by**: `bus_acl::an_outside_token_is_renewed_on_its_connection` (controlled time), `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (controlled time), `supervisor::bus::acl::tests::renewal_is_for_the_second_half_and_stops_at_the_minters_expiry`.
 
@@ -168,9 +168,13 @@ Every token SHALL expire at most 24 h after it was minted, and a call or subscri
 - **THEN** its connection is closed with code 4003
 
 ### Requirement: Revoked tokens stop working at once
-After `bus.revoke` (`tilr bus revoke TOKEN | --id REVOCATION_ID`), every call carrying that token, one attenuated from it or one minted with it MUST be `denied` with reason `revoked`, also on the next call and after a restart of the server, and a connection that said `Hello` with it SHALL be closed with code 4003; an instance's token SHALL be revoked when its process ends.
+After `bus.revoke` (`tilr bus revoke TOKEN | --id REVOCATION_ID`), every call carrying that token, one attenuated from it or one minted with it MUST be `denied` with reason `revoked`, also on the next call and after a restart of the server, and a connection that said `Hello` with it SHALL be closed with code 4003; an instance's token SHALL be revoked when its process ends. A renewal belongs to the token it renews: revoking a token without appended blocks, or the revocation id `bus.token` or `bus.renew` answered for it, MUST also deny every token of its chain of renewals (one renewed from it before the revocation too), the tokens attenuated from them and the tokens minted with them; revoking an attenuated token denies it and the tokens attenuated from it.
 
-**Verified by**: `bus_acl::a_revoked_token_stops_working_at_once`, `bus_acl::a_stopped_instances_token_is_revoked`.
+**Verified by**: `bus_acl::a_revoked_token_stops_working_at_once`, `bus_acl::a_stopped_instances_token_is_revoked`, `supervisor::bus::acl::tests::a_renewal_dies_with_the_token_it_renewed` (controlled time).
+
+#### Scenario: Revoked after a thief renewed it
+- **WHEN** a leaked token is renewed with `bus.renew` by whoever holds it, and the owner then revokes the leaked token (or its revocation id)
+- **THEN** the renewed token is `denied` with `revoked`, also after a restart, and cannot be renewed again
 
 #### Scenario: Revoke while cached
 - **WHEN** a minted token is used for 10 calls in a second, then revoked, then used again

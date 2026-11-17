@@ -1035,7 +1035,9 @@ and may do only what its token lists (least privilege; design R1-R9 in
   with any token). A participant other than the owner with `control = ["token"]` mints only
   rights it holds itself, with a token without appended blocks, named `<its name>.<name>`,
   bound to its own origin if it has one, for no longer than its own token lives (renewals
-  included); revoking (or renewing) the minter's token ends the tokens it minted.
+  included); revoking the minter's token (any token of its chain of renewals) ends the
+  tokens it minted, renewing it does not; an instance's end ends what it minted, its 12 h
+  renewal does not.
 - **A token is bound** to this server (`check if server(<id>)`), to its expiry and, when
   minted with `origin`, to the WebSocket `Origin`. A token of another server, a malformed
   one, one over 16 KiB or 8 blocks, or one with a third-party block is `denied`.
@@ -1058,10 +1060,15 @@ and may do only what its token lists (least privilege; design R1-R9 in
   instance in a `CredentialUpdate` (as after a rotation). An outside participant calls
   `bus.renew` in the second half of its token's life (an unattenuated token; an attenuated
   one, or one called earlier, is `bad_request`) and presents the new one with
-  `CredentialUpdate`; the old one is revoked. A
+  `CredentialUpdate`; the old one is refused from then on (it alone: what its holder
+  minted keeps working). The renewal belongs to the token it renews: `RenewReply`'s
+  `revocation_id` is the one `bus.token` answered, and revoking any token of the chain ends
+  them all. A
   connection whose token expires is closed with close code **4003** `credential`.
 - **Revocation and rotation.** `bus.revoke` (a token, or the `revocation_id` that
-  `bus.token` answered) refuses it and every token attenuated from it from the next call on,
+  `bus.token` answered) refuses it, its renewals (also one its holder made before) and every
+  token attenuated from or minted with them from the next call on (revoking an attenuated
+  token refuses it and what is attenuated from it only),
   also after a restart (`<state dir>/bus-revoked`, 0600, kept until the token's expiry), and
   closes connections that said `Hello` with it (4003). An instance's token is revoked when
   its connection ends. A `bus-revoked` that does not read makes the server refuse every token

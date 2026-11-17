@@ -103,9 +103,20 @@ is the contract.
   stays `[A-Za-z0-9_.:-]`, up to 128), so it cannot pass for another participant; a minter
   bound to an origin mints for that origin only (an empty `origin` takes it, another is
   denied). The child's signed metadata holds a ceiling (the minter's expiry: no renewal goes
-  past it) and its minters' revocation ids: revoking a minter (or renewing it, which revokes
-  its old token) ends its children, as it ends tokens attenuated from it; so what an instance
-  mints ends at the instance's 12 h renewal.
+  past it) and its minters' families (below): revoking a minter ends its children, as it ends
+  tokens attenuated from it; renewing it (an instance's every 12 h) does not.
+- **Chains of renewals (families).** A renewed token's signed metadata names its family: the
+  authority revocation id of the first token of its chain, kept through every renewal (an
+  instance's too). The revocation set ends a token whose blocks' ids, family or minters'
+  families it holds. A renewal does not revoke the old token's id (for the first token that
+  is the family): it marks it renewed, a second set (`<id> <until> renewed` in
+  `bus-revoked`) that ends that token and those attenuated from it only. `bus.revoke` of a
+  token without appended blocks revokes its family (kept a day from now: every token of the
+  chain expires before), so a token renewed by a thief dies with the leaked one;
+  `RenewReply.revocation_id` is the family's id, the one `bus.token` answered, so the id the
+  holder has always ends the chain. An instance's family is revoked when its connection ends.
+  Revoking the authority id of a later token of a chain (read from its bytes, never
+  answered by the server) ends that token and what is attenuated from it only.
 - **Per-call credential and control.** A non-empty `Call.credential` decides the call and
   every `AuthzRequest::Control` the method checks with it; it is refused for anything else
   (provide, emit, subscribe, events, pane requests). Audit lines of such a decision name
