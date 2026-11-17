@@ -825,10 +825,10 @@ Helpers: `tests/common/bus_panes.rs`.
 | A pane is created, listed and closed by calls; `created_by` names the caller; a `tilr.v1` client sees it; a missing pane is `not_found` | `bus_terminal::a_pane_is_created_listed_and_closed_by_calls` |
 | Pane changes are events in order (`pane.created`, `pane.title`, `pane.bell`, `pane.exited`, with `pane.changed`), scoped to the pane, from `tilrd` | `bus_terminal::pane_changes_are_events` |
 | Watching a pane is a stream of frames: a full frame first, the stream's caller a viewer until it cancels, `End` with the exit when the program exits | `bus_terminal::watching_a_pane_is_a_stream_of_frames` |
-| A watcher that reads nothing for 3 s of output gets the screen as it is then in a full frame and stays connected | `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen` |
+| A watcher that reads nothing while its pane prints 7 MB gets the screen as it is then in a full frame and stays connected | `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen` |
 | Input is acknowledged once the pane applied it, also to a program that does not echo; 100 inputs arrive in order; the seq is echoed in a frame | `bus_terminal::input_is_acknowledged_after_it_is_applied` |
 | Numbered input needs a stable client id, is applied once across reconnects, has counters per client id, and is refused after `pane.input_finalize` | `bus_terminal::numbered_input_is_applied_once_across_reconnects` |
-| A pane reads as text with its cursor and history; a read with `since_seq` waits for a change (typing after its call is in) or the end of `wait_ms` | `bus_terminal::reading_a_pane_and_waiting_for_a_change` |
+| A pane reads as text with its cursor and history; a read with `since_seq` waits for a change (typing after its call is in) or the end of `wait_ms`, answered before a shorter deadline | `bus_terminal::reading_a_pane_and_waiting_for_a_change` |
 | A pane is resized by a call, answered once applied: the list, the text and the program see the new size | `bus_terminal::a_pane_is_resized_by_a_call` |
 | Keys, a paste and a mouse press reach the program as it reads them; a scroll moves the viewport into history and back | `bus_terminal::keys_mouse_paste_and_scroll_reach_the_pane` |
 | A numbered input replayed while its bytes wait for the pty is written once, and both calls are answered after its last byte | `bus_terminal::a_replayed_input_still_pending_is_written_once` |
@@ -837,11 +837,14 @@ Helpers: `tests/common/bus_panes.rs`.
 | A watcher behind when the pane exits gets the last screen before `End` | `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen` |
 | An input applied whose reply was lost with its connection is reported applied after reconnecting and not applied again | `bus_terminal::failpoints::an_input_whose_reply_was_lost_is_applied_once` |
 | `pane.applied` closes a pane it sent numbered input to that does not answer within 5 s and leaves panes it did not alone | `bus_terminal::failpoints::a_stuck_pane_is_closed_by_pane_applied` |
+| A reader of `pane.output` that stops reading holds up no other reader of its pane, no other pane and no input; reading again, it gets the screen as it is then | `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader` |
+| A pane call past its deadline is answered `timeout` and its handler stopped: an input that is never applied, a `pane.output` whose caller is then no viewer | `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled` |
 | Payloads pass byte for byte, whatever their content type | `bus::payloads_pass_byte_for_byte` |
 | The core's methods answer JSON to JSON (proto3 JSON: lowerCamel names, 64-bit integers as strings) and protobuf to protobuf | `bus::core_methods_answer_json_to_json` |
 | Unit: a frame goes on the bus as the pane encoded it, only its wrapping tag changed | `supervisor::bus::core::panes::tests::a_frame_goes_on_the_bus_as_the_pane_encoded_it` |
 | Unit: the full frame after a lag carries the consumer's latest skipped seq | `supervisor::bus::core::panes::tests::a_frame_after_lag_carries_the_consumers_seq` |
 | Unit: a frame over the largest chunk sends its images first | `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first` |
+| Unit: a frame is split to the stream's window, images first; a frame of text over it is `too_large` | `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window` |
 | Unit: a consumer's own seqs are told apart by connection | `supervisor::bus::core::panes::tests::own_seqs_are_told_apart_by_connection` |
 | Unit: numbered input identities differ by identity and client id | `supervisor::bus::core::panes::tests::numbered_identities_differ_by_identity_and_client_id` |
 | Unit: base64 of proto3 JSON reads back what it writes | `supervisor::bus::core::json::tests::base64_reads_back_what_it_writes` |

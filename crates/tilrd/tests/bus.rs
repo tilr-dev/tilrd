@@ -1874,23 +1874,29 @@ async fn core_methods_answer_json_to_json() {
     .await
     .unwrap();
     assert_eq!(ack, json!({"paneId": pane_id, "seq": "0"}));
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    loop {
-        let text = json_call("pane.read", json!({"paneId": pane_id}))
+    // Read until the echo shows, each read waiting for a change after the last.
+    within(async {
+        let mut since = json!(null);
+        loop {
+            let text = json_call(
+                "pane.read",
+                json!({"paneId": pane_id, "sinceSeq": since, "waitMs": 5000}),
+            )
             .await
             .unwrap();
-        assert_eq!(text["alive"], true);
-        if text["lines"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|line| line == "json")
-        {
-            break;
+            assert_eq!(text["alive"], true);
+            if text["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line == "json")
+            {
+                break;
+            }
+            since = text["seq"].clone();
         }
-        assert!(tokio::time::Instant::now() < deadline, "{text}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    })
+    .await;
 
     let listed = json_call("pane.list", json!({})).await.unwrap();
     assert_eq!(listed["panes"][0]["paneId"], pane_id.as_str());

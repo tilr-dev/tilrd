@@ -1,5 +1,6 @@
 //! Helpers of `bus-core-panes` for the bus tests, beside `bus.rs`: `pane.*` calls
-//! as the owner, a pane's screen from the chunks of `pane.output`, waiting for text.
+//! as the owner, a pane's screen from the chunks of `pane.output`, waiting for text,
+//! for a pane's info to change and for what a pane's program wrote.
 //!
 //! Owner: `bus-core-panes`.
 
@@ -8,7 +9,8 @@
     reason = "each test binary that declares `mod common` uses some of these"
 )]
 
-use std::time::Duration;
+use std::io::Read;
+use std::path::PathBuf;
 
 use bytes::Bytes;
 use prost::Message;
@@ -16,9 +18,11 @@ use tilr_bus::pane::{
     CreateRequest, Frame, InputAck, InputRequest, ListReply, ListRequest, PaneInfo, PaneOutput,
     RawInput, ReadReply, ReadRequest, input_request::Input, pane_output::Output,
 };
-use tilr_bus::{Bus, BusError, CallOptions, ChunkStream, StreamOptions};
+use tilr_bus::{Bus, BusError, CallOptions, ChunkStream, StreamOptions, Subscription};
+use tokio::sync::watch;
 
 use super::TIMEOUT;
+use super::bus_streams::within;
 
 /// The command of a test pane: a plain `sh` with the prompt `$ `.
 pub fn shell() -> Vec<String> {
@@ -222,16 +226,71 @@ impl Watching {
     }
 }
 
-/// Poll `check` every 20 ms until it holds, for up to [`TIMEOUT`].
-pub async fn eventually<F, Fut>(what: &str, mut check: F)
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = bool>,
-{
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    while !check().await {
-        assert!(tokio::time::Instant::now() < deadline, "never: {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+/// A FIFO a pane's program writes to (`cat > path`), read by the test as the
+/// bytes come: waiting for what it holds waits on those reads, not on a timer.
+/// Made before the pane, so the program's open of it finds its reader.
+pub struct Sink {
+    pub path: PathBuf,
+    seen: watch::Receiver<Vec<u8>>,
+}
+
+impl Sink {
+    pub fn new(path: PathBuf) -> Self {
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success(), "mkfifo {}", path.display());
+        let (tx, seen) = watch::channel(Vec::new());
+        let fifo = path.clone();
+        // A thread of its own: the open waits for the writer, the reads for its
+        // bytes; the test process ends it.
+        std::thread::spawn(move || {
+            let Ok(mut file) = std::fs::File::open(&fifo) else {
+                return;
+            };
+            let mut buf = [0u8; 64 << 10];
+            while let Ok(n @ 1..) = file.read(&mut buf) {
+                tx.send_modify(|seen| seen.extend_from_slice(&buf[..n]));
+            }
+        });
+        Self { path, seen }
+    }
+
+    /// Wait until the program wrote `expected`, all it wrote so far.
+    pub async fn holds(&mut self, expected: impl AsRef<[u8]>) {
+        let expected = expected.as_ref();
+        let done = within(
+            self.seen
+                .wait_for(|seen| seen.len() >= expected.len() || !expected.starts_with(seen)),
+        )
+        .await
+        .map(|seen| seen.clone());
+        let seen = done.unwrap_or_else(|_| self.seen.borrow().clone());
+        assert_eq!(
+            String::from_utf8_lossy(&seen),
+            String::from_utf8_lossy(expected),
+            "what {} holds",
+            self.path.display()
+        );
+    }
+}
+
+/// The next `pane.changed` of `pane_id` whose `PaneInfo` satisfies `done`.
+pub async fn changed_until(
+    events: &mut Subscription,
+    pane_id: &str,
+    done: impl Fn(&PaneInfo) -> bool,
+) -> PaneInfo {
+    loop {
+        let event = within(events.next()).await.expect("the subscription ended");
+        if event.subject != "pane.changed" {
+            continue;
+        }
+        let info = PaneInfo::decode(event.payload).expect("a PaneInfo");
+        if info.pane_id == pane_id && done(&info) {
+            return info;
+        }
     }
 }
 

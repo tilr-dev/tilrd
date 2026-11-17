@@ -80,10 +80,13 @@ Where the implementation differs from or adds to the decisions above:
   every pane's), so `pane-profiles` can resolve a profile before it and pass what it adds.
 - **Viewers.** `Viewer.address` is the transport (`unix`, `tcp`, `instance`): the broker's
   principal has no peer address.
-- **`pane.read` deadline.** The wait is bounded by the call's deadline when the broker gives
-  one; until `bus-streams-events` it gives none, so only `wait_ms` and 25 s bound it.
-- **Sessions of numbered input** are swept once a second for connections the broker no longer
-  knows: the broker tells the core of no connection's end.
+- **`pane.read` deadline.** The wait is bounded by the call's deadline, which the broker
+  gives every unary call (`call_timeout_ms`, 10 s by default): the answer comes 100 ms
+  before it, the text as it is then, not `timeout`.
+- **Sessions of numbered input** are forgotten when the broker tells their connection ended
+  (`BrokerHandle::watch_connection`, at once when it is not connected any more); an
+  acknowledgement wait whose call was cancelled or timed out goes with the next input of
+  its identity to that pane, or with the acknowledgement.
 - **Cancelled handlers.** The broker aborts a native handler when its caller cancels; the
   watcher of `pane.output` and the waiter of `pane.read` are dropped by guards, not by code
   after an `await`.
@@ -103,12 +106,35 @@ Where the implementation differs from or adds to the decisions above:
   `bus_terminal::failpoints::an_input_whose_reply_was_lost_is_applied_once` and
   `bus_terminal::failpoints::a_stuck_pane_is_closed_by_pane_applied` the rest of the
   scenarios on the bus.
-- **Pending the merge with `bus-streams-events` and `pane-profiles`.** Left for when those
-  land: splitting a `pane.output` frame into chunks of the stream's window, and
-  `caught_up` meaning credit enough for the next chunk; the test of the scenario "Deadline
-  shorter than the wait" of `pane.read` (the broker gives no deadline yet); calling the
-  profile resolution of `pane-profiles` in `pane.create` and passing the environment it
-  adds to `start_pane`.
+- **Chunks to the window.** No `pane.output` chunk is larger than the stream's window
+  (`StreamOut::window`, at most `max_frame` less 1 KiB for the envelope): a frame over it
+  goes as its images first, in chunks of at most the window, then the frame; an image over
+  it is left out, as one over `max_frame` is; a frame over it without its images cannot go
+  and ends the stream `too_large` (the broker would end it so on the send).
+- **A frame goes whole.** When the first chunk of a frame finds no credit (`try_send` is
+  `Full`), the frame is skipped (latest-wins); once one chunk of it went, the rest waits for
+  credit (`send`), so a consumer never sees images without their frame. Only that stream's
+  task waits: the observer hands each stream at most 16 frames and never waits, so a slow
+  reader holds up no other reader and no pane.
+- **Credit before a full frame.** A consumer behind is asked a full frame once it caught up
+  for the chunk that did not fit (`StreamOut::caught_up_for(bytes)`), not for one byte: a
+  full frame larger than the credit back is not asked for again and again.
+- **Unary replies are not chunked.** The replies of `pane.read` (at most
+  `tilr_screen::MAX_TEXT_BYTES`, 4 MiB, `too_large` past `max_frame`) and of the other
+  methods are one `Reply` each; the interactive lane's bound (32 MiB, then 4001) is the
+  caller's to keep with `max_in_flight`.
+- **No `know_methods`.** `pane.*` are methods of the native participant `tilrd`, installed
+  before the broker serves; they never lack a provider while the bus runs, so the broker's
+  list of methods known without a provider (`BrokerHandle::know_methods`, `unavailable`
+  instead of `not_found`) does not name them, and the spec asks for no such answer.
+- **Deadlines.** A pane call past its deadline is answered `timeout` by the broker, which
+  aborts the handler: an input's wait is dropped (above), a `pane.output` watcher goes with
+  its guard (the caller is no viewer any more).
+- **Profiles: the seam.** `pane.create` does not resolve `profile`; `pane-profiles` adds it
+  in `create_method` (`bus/core/panes.rs`) before the supervisor's part: it resolves the
+  profile with the call's `CallCtx`, then queues `create(s, &caller, request, env)`, which
+  passes `env`, the environment the profile adds, to `start_pane`
+  (`Supervisor::create_pane` adds it to every pane's). Today `env` is empty.
 
 ## Reload and reconnect
 

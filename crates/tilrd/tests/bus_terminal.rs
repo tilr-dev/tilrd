@@ -14,9 +14,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use common::bus::{BusOptions, BusServer};
 use common::bus_panes::{
-    Screen, Watching, call, create, create_shell, eventually, list, next_reply, raw,
+    Screen, Sink, Watching, call, changed_until, create, create_shell, list, next_reply, raw,
     raw_with_client_id, read, send_call, send_call_bytes, shell, wait_text,
 };
+use common::bus_streams::within;
 use common::{Client, TIMEOUT};
 use prost::Message;
 use tilr_bus::bus::{Call, Credit, envelope::Msg, reply};
@@ -27,7 +28,7 @@ use tilr_bus::pane::{
     PaneExited, PaneInfo, Paste, RawInput, ReadReply, ReadRequest, ResizeRequest, Scroll,
     input_request::Input,
 };
-use tilr_bus::{Bus, BusError, ConnectOptions, codes};
+use tilr_bus::{Bus, BusError, CallOptions, ConnectOptions, codes};
 
 // ---------------------------------------------------------------------------
 // bus-core-panes
@@ -71,14 +72,6 @@ async fn applied(bus: &Bus) -> Vec<(String, u64)> {
         .into_iter()
         .map(|ack| (ack.pane_id, ack.seq))
         .collect()
-}
-
-async fn file_is(path: &std::path::Path, expected: &str) {
-    eventually(
-        &format!("{} holds {expected:?}", path.display()),
-        || async { std::fs::read_to_string(path).is_ok_and(|text| text == expected) },
-    )
-    .await;
 }
 
 #[tokio::test]
@@ -259,11 +252,11 @@ async fn watching_a_pane_is_a_stream_of_frames() {
     assert_eq!(bus_viewer.identity, "owner");
 
     // Cancelled: the caller is no viewer any more.
+    let mut changes = owner.subscribe("pane.changed").await.unwrap();
     drop(watching);
-    eventually("the stream's caller stopped viewing", || async {
-        let panes = list(&owner).await;
-        panes[0].viewers == 1
-            && !panes[0]
+    changed_until(&mut changes, &info.pane_id, |info| {
+        info.viewers == 1
+            && !info
                 .viewed_by
                 .iter()
                 .any(|viewer| viewer.client_name == "watcher-test")
@@ -305,62 +298,19 @@ async fn a_lagging_watcher_skips_to_the_latest_screen() {
     let owner = server.owner().await;
     let info = create_shell(&owner).await;
     let mut laggard = server.raw_greeted("laggard", Vec::new()).await;
-    laggard
-        .send(Msg::Call(Call {
-            id: 1,
-            method: "pane.output".into(),
-            payload: OutputRequest {
-                pane_id: info.pane_id.clone(),
-                ..Default::default()
-            }
-            .encode_to_vec()
-            .into(),
-            window: 64 << 10,
-            ..Call::default()
-        }))
-        .await;
+    open_output(&mut laggard, 1, &info.pane_id, LAGGARD_WINDOW).await;
     let mut screen = Screen::default();
-    let chunk = async |laggard: &mut common::bus::Raw, screen: &mut Screen, wait: Duration| {
-        let msg = laggard.recv_within(wait).await?;
-        match msg {
-            Msg::Chunk(chunk) => {
-                assert_eq!(chunk.id, 1);
-                let bytes = chunk.payload.len() as u32;
-                let payload = tilr_bus::Chunk {
-                    payload: chunk.payload,
-                    content_encoding: chunk.content_encoding,
-                }
-                .bytes()
-                .unwrap();
-                let frame = screen.apply_chunk(&payload);
-                laggard.send(Msg::Credit(Credit { id: 1, bytes })).await;
-                Some(frame.is_some_and(|frame| frame.full))
-            }
-            other => panic!("expected a chunk of pane.output, got {other:?}"),
-        }
-    };
-    assert_eq!(chunk(&mut laggard, &mut screen, TIMEOUT).await, Some(true));
+    assert!(credited_chunk(&mut laggard, 1, &mut screen).await);
 
-    // The laggard reads nothing while the pane prints for 3 s.
-    raw(
-        &owner,
-        &info.pane_id,
-        "end=$(($(date +%s)+3)); while [ $(date +%s) -lt $end ]; do seq 1 20000; done; echo fin''ished\n",
-    )
-    .await
-    .unwrap();
+    // The laggard reads nothing while the pane prints some 7 MB.
+    raw(&owner, &info.pane_id, "seq 1 1000000; echo fin''ished\n")
+        .await
+        .unwrap();
     wait_text(&owner, &info.pane_id, |lines| {
         let last = lines.iter().rposition(|line| !line.is_empty());
         last.is_some_and(|last| last > 0 && lines[last] == "$" && lines[last - 1] == "finished")
     })
     .await;
-
-    // It reads again: a full frame of the screen as it is now, and it was not
-    // dropped for lagging.
-    while chunk(&mut laggard, &mut screen, Duration::from_millis(500))
-        .await
-        .is_some()
-    {}
     let now = read(
         &owner,
         &ReadRequest {
@@ -370,7 +320,15 @@ async fn a_lagging_watcher_skips_to_the_latest_screen() {
     )
     .await
     .unwrap();
-    assert_eq!(screen.rows, now.lines);
+
+    // It reads again: a full frame of the screen as it is now, and it was not
+    // dropped for lagging.
+    within(async {
+        while screen.rows != now.lines {
+            credited_chunk(&mut laggard, 1, &mut screen).await;
+        }
+    })
+    .await;
     assert!(
         screen.full_frames >= 2,
         "the laggard caught up with a full frame ({} frames, {} full)",
@@ -379,6 +337,48 @@ async fn a_lagging_watcher_skips_to_the_latest_screen() {
     );
     assert!(laggard.close.is_none());
     assert_eq!(list(&owner).await[0].viewers, 1);
+}
+
+/// The next chunk of the `pane.output` stream `id` on `raw`, applied to
+/// `screen` and credited; whether it was a full frame.
+async fn credited_chunk(raw: &mut common::bus::Raw, id: u64, screen: &mut Screen) -> bool {
+    match raw.recv().await {
+        Some(Msg::Chunk(chunk)) => {
+            assert_eq!(chunk.id, id);
+            let bytes = chunk.payload.len() as u32;
+            let payload = tilr_bus::Chunk {
+                payload: chunk.payload,
+                content_encoding: chunk.content_encoding,
+            }
+            .bytes()
+            .unwrap();
+            let frame = screen.apply_chunk(&payload);
+            raw.send(Msg::Credit(Credit { id, bytes })).await;
+            frame.is_some_and(|frame| frame.full)
+        }
+        other => panic!("expected a chunk of pane.output, got {other:?}"),
+    }
+}
+
+/// The window of a reader meant to fall behind: a full frame of a 100x30
+/// screen of numbers fits, a few dozen frames of `seq` output do not.
+const LAGGARD_WINDOW: u32 = 8 << 10;
+
+/// Open `pane.output` of `pane_id` as call `id` of `raw` with a `window`.
+async fn open_output(raw: &mut common::bus::Raw, id: u64, pane_id: &str, window: u32) {
+    raw.send(Msg::Call(Call {
+        id,
+        method: "pane.output".into(),
+        payload: OutputRequest {
+            pane_id: pane_id.into(),
+            ..Default::default()
+        }
+        .encode_to_vec()
+        .into(),
+        window,
+        ..Call::default()
+    }))
+    .await;
 }
 
 #[tokio::test]
@@ -392,12 +392,12 @@ async fn input_is_acknowledged_after_it_is_applied() {
     assert_eq!((ack.pane_id.as_str(), ack.seq), (quiet.pane_id.as_str(), 0));
 
     // 100 inputs sent without waiting reach the program in that order.
-    let out = server.dir.join("order.txt");
+    let mut out = Sink::new(server.dir.join("order.txt"));
     let pane = create(
         &owner,
         80,
         24,
-        sh(&format!("stty -echo; cat > '{}'", out.display())),
+        sh(&format!("stty -echo; cat > '{}'", out.path.display())),
     )
     .await;
     let mut raw_client = server.raw_greeted("orderly", Vec::new()).await;
@@ -432,7 +432,7 @@ async fn input_is_acknowledged_after_it_is_applied() {
         }
     }
     let expected: String = (1..=100).map(|n| format!("{n}\n")).collect();
-    file_is(&out, &expected).await;
+    out.holds(&expected).await;
 
     // The seq is echoed in a frame, seq_base being connection_id << 32.
     assert_eq!(owner.seq_base(), owner.connection_id() << 32);
@@ -472,12 +472,12 @@ async fn input_is_acknowledged_after_it_is_applied() {
 async fn numbered_input_is_applied_once_across_reconnects() {
     let server = start();
     let anonymous = server.owner().await;
-    let out = server.dir.join("numbered.txt");
+    let mut out = Sink::new(server.dir.join("numbered.txt"));
     let pane = create(
         &anonymous,
         80,
         24,
-        sh(&format!("stty -echo; cat > '{}'", out.display())),
+        sh(&format!("stty -echo; cat > '{}'", out.path.display())),
     )
     .await;
     let error = numbered(&anonymous, &pane.pane_id, 1, "0\n")
@@ -517,7 +517,7 @@ async fn numbered_input_is_applied_once_across_reconnects() {
         numbered(&again, &pane.pane_id, 2, "2\n").await.unwrap().seq,
         2
     );
-    file_is(&out, "1\n2\n").await;
+    out.holds("1\n2\n").await;
     // Another client's counters are its own: none, as it sent nothing.
     let other = server
         .owner_with(ConnectOptions::new("numbered").client_id("numbered-2"))
@@ -532,7 +532,7 @@ async fn numbered_input_is_applied_once_across_reconnects() {
     let error = numbered(&again, &pane.pane_id, 3, "3\n").await.unwrap_err();
     assert_eq!(error.code, codes::BAD_REQUEST);
     raw(&again, &pane.pane_id, "4\n").await.unwrap();
-    file_is(&out, "1\n2\n4\n").await;
+    out.holds("1\n2\n4\n").await;
 }
 
 #[tokio::test]
@@ -596,27 +596,55 @@ async fn reading_a_pane_and_waiting_for_a_change() {
     // It shows the typing: it came after it.
     assert!(changed.lines[0].starts_with("$ e"), "{:?}", changed.lines);
 
-    // Nothing changes: the same seq once the wait is over.
-    let quiet = wait_text(&owner, &info.pane_id, |lines| {
+    // Nothing changes: the same seq once the wait is over. The shell may still
+    // draw after its prompt: a read that saw a change goes on from it.
+    let mut quiet = wait_text(&owner, &info.pane_id, |lines| {
         lines.get(1).is_some_and(|line| line == "typed")
             && lines.get(2).is_some_and(|line| line == "$")
     })
     .await;
-    let started = std::time::Instant::now();
-    let unchanged = read_now(ReadRequest {
-        pane_id: info.pane_id.clone(),
-        since_seq: Some(quiet.seq),
-        wait_ms: Some(300),
-        ..Default::default()
+    within(async {
+        loop {
+            let started = std::time::Instant::now();
+            let unchanged = read_now(ReadRequest {
+                pane_id: info.pane_id.clone(),
+                since_seq: Some(quiet.seq),
+                wait_ms: Some(300),
+                ..Default::default()
+            })
+            .await;
+            let waited = started.elapsed();
+            if unchanged.seq != quiet.seq {
+                assert!(unchanged.seq > quiet.seq);
+                quiet = unchanged;
+                continue;
+            }
+            assert_eq!(unchanged.lines, quiet.lines);
+            assert!(
+                waited >= Duration::from_millis(280) && waited < Duration::from_secs(4),
+                "{waited:?}"
+            );
+            break;
+        }
     })
     .await;
-    let waited = started.elapsed();
-    assert_eq!(unchanged.seq, quiet.seq);
-    assert_eq!(unchanged.lines, quiet.lines);
-    assert!(
-        waited >= Duration::from_millis(280) && waited < Duration::from_secs(4),
-        "{waited:?}"
-    );
+    // A deadline shorter than the wait: answered before it, not `timeout`.
+    let started = std::time::Instant::now();
+    let unchanged: ReadReply = owner
+        .call_typed(
+            "pane.read",
+            &ReadRequest {
+                pane_id: info.pane_id.clone(),
+                since_seq: Some(quiet.seq),
+                wait_ms: Some(5000),
+                ..Default::default()
+            },
+            CallOptions::default().timeout(Duration::from_millis(500)),
+        )
+        .await
+        .unwrap();
+    assert!(unchanged.seq >= quiet.seq);
+    assert!(started.elapsed() < Duration::from_millis(500));
 
     // History above the viewport, oldest first, as much as asked for.
     raw(&owner, &info.pane_id, "seq 1 50\n").await.unwrap();
@@ -727,12 +755,12 @@ async fn keys_mouse_paste_and_scroll_reach_the_pane() {
     let owner = server.owner().await;
 
     // A key, a paste and Enter, as the program reads them.
-    let typed = server.dir.join("typed.txt");
+    let mut typed = Sink::new(server.dir.join("typed.txt"));
     let pane = create(
         &owner,
         80,
         24,
-        sh(&format!("stty -echo; cat > '{}'", typed.display())),
+        sh(&format!("stty -echo; cat > '{}'", typed.path.display())),
     )
     .await;
     input(&owner, &pane.pane_id, key(NamedKey::Unspecified, "k")).await;
@@ -745,17 +773,17 @@ async fn keys_mouse_paste_and_scroll_reach_the_pane() {
     )
     .await;
     input(&owner, &pane.pane_id, key(NamedKey::Enter, "")).await;
-    file_is(&typed, "kpasted\n").await;
+    typed.holds("kpasted\n").await;
 
     // A mouse press, once the program asked for SGR mouse reports.
-    let clicked = server.dir.join("clicked.txt");
+    let mut clicked = Sink::new(server.dir.join("clicked.txt"));
     let mouse = create(
         &owner,
         80,
         24,
         sh(&format!(
             "stty -echo raw; printf '\\033[?1000h\\033[?1006hready'; head -c 9 > '{}'",
-            clicked.display()
+            clicked.path.display()
         )),
     )
     .await;
@@ -772,7 +800,7 @@ async fn keys_mouse_paste_and_scroll_reach_the_pane() {
         }),
     )
     .await;
-    file_is(&clicked, "\x1b[<0;4;3M").await;
+    clicked.holds("\x1b[<0;4;3M").await;
 
     // Scrolling moves the viewport into history; answered once it did.
     let shell = create_shell(&owner).await;
@@ -810,7 +838,8 @@ async fn a_replayed_input_still_pending_is_written_once() {
         .status()
         .unwrap();
     assert!(status.success());
-    let (payload, tail) = (server.dir.join("payload"), server.dir.join("tail"));
+    let payload = server.dir.join("payload");
+    let mut tail = Sink::new(server.dir.join("tail"));
     // The reader waits on the fifo: the input stays pending for the pty.
     let pane = create(
         &owner,
@@ -821,7 +850,7 @@ async fn a_replayed_input_still_pending_is_written_once() {
              head -c 1048576 > '{}'; printf 'payload-%s\\n' saved; head -c 4 > '{}'",
             fifo.display(),
             payload.display(),
-            tail.display()
+            tail.path.display()
         )),
     )
     .await;
@@ -881,7 +910,7 @@ async fn a_replayed_input_still_pending_is_written_once() {
     };
     send_call(&mut client, 4, "pane.input", &end).await;
     assert_eq!(next_reply(&mut client).await.0, 4);
-    file_is(&tail, "END\n").await;
+    tail.holds("END\n").await;
     assert_eq!(std::fs::read(&payload).unwrap(), vec![b'a'; 1 << 20]);
 }
 
@@ -889,12 +918,12 @@ async fn a_replayed_input_still_pending_is_written_once() {
 async fn internal_fields_cannot_be_forged() {
     let server = start();
     let owner = server.owner().await;
-    let out = server.dir.join("forged.txt");
+    let mut out = Sink::new(server.dir.join("forged.txt"));
     let pane = create(
         &owner,
         80,
         24,
-        sh(&format!("stty -echo; cat > '{}'", out.display())),
+        sh(&format!("stty -echo; cat > '{}'", out.path.display())),
     )
     .await;
     let victim = server
@@ -920,7 +949,7 @@ async fn internal_fields_cannot_be_forged() {
     send_call_bytes(&mut attacker, 1, "pane.input", forged).await;
     let (_, ack) = next_reply(&mut attacker).await;
     assert_eq!(InputAck::decode(ack.unwrap()).unwrap().seq, 0);
-    file_is(&out, "v\nx\n").await;
+    out.holds("v\nx\n").await;
     assert_eq!(applied(&victim).await, [(pane.pane_id.clone(), 1)]);
 
     // `created_by` (PaneInfo field 12) sent with pane.create is not taken.
@@ -947,12 +976,20 @@ async fn a_read_the_pane_process_does_not_answer_ends() {
     // SAFETY: kill has no memory-safety preconditions.
     assert_eq!(unsafe { libc::kill(pane_process, libc::SIGSTOP) }, 0);
 
-    // No answer from the pane process: unavailable, not a call that hangs.
+    // No answer from the pane process: unavailable before the deadline, not a
+    // call that hangs or times out.
     let request = ReadRequest {
         pane_id: info.pane_id.clone(),
         ..Default::default()
     };
-    let error = read(&owner, &request).await.unwrap_err();
+    let error = owner
+        .call_typed::<_, ReadReply>(
+            "pane.read",
+            &request,
+            CallOptions::default().timeout(Duration::from_secs(1)),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(error.code, codes::UNAVAILABLE, "{error:?}");
 
     // The pane ends while a read waits for its text: the read says so.
@@ -975,28 +1012,20 @@ async fn a_watcher_behind_when_the_pane_exits_gets_its_last_screen() {
     let owner = server.owner().await;
     let subscriber = server.owner().await;
     let mut events = subscriber.subscribe("pane.exited").await.unwrap();
-    // It prints for 2 s once told to, then its last words, and exits.
+    // It prints some 7 MB once told to, then its last words, and exits.
     let info = create(
         &owner,
         100,
         30,
-        sh("read go; end=$(($(date +%s)+2)); while [ $(date +%s) -lt $end ]; do seq 1 20000; done; echo last''words; exit 4"),
+        sh("read go; seq 1 1000000; echo last''words; exit 4"),
     )
     .await;
     let mut laggard = server.raw_greeted("laggard", Vec::new()).await;
-    send_call(
-        &mut laggard,
-        1,
-        "pane.output",
-        &OutputRequest {
-            pane_id: info.pane_id.clone(),
-            ..Default::default()
-        },
-    )
-    .await;
+    open_output(&mut laggard, 1, &info.pane_id, LAGGARD_WINDOW).await;
     let mut screen = Screen::default();
     let mut chunk = async |laggard: &mut common::bus::Raw| match laggard.recv().await {
         Some(Msg::Chunk(chunk)) => {
+            let bytes = chunk.payload.len() as u32;
             let payload = tilr_bus::Chunk {
                 payload: chunk.payload,
                 content_encoding: chunk.content_encoding,
@@ -1004,6 +1033,8 @@ async fn a_watcher_behind_when_the_pane_exits_gets_its_last_screen() {
             .bytes()
             .unwrap();
             screen.apply_chunk(&payload);
+            // Credit as read, as clients do: the last frame waits for it.
+            laggard.send(Msg::Credit(Credit { id: 1, bytes })).await;
             None
         }
         Some(Msg::End(end)) => Some(PaneExited::decode(end.payload).unwrap()),
@@ -1013,10 +1044,7 @@ async fn a_watcher_behind_when_the_pane_exits_gets_its_last_screen() {
 
     // The laggard reads nothing until the pane has exited.
     raw(&owner, &info.pane_id, "\n").await.unwrap();
-    tokio::time::timeout(TIMEOUT, events.next())
-        .await
-        .expect("the pane exits")
-        .expect("the subscription ended");
+    within(events.next()).await.expect("the subscription ended");
     let exited = loop {
         if let Some(exited) = chunk(&mut laggard).await {
             break exited;
@@ -1028,6 +1056,127 @@ async fn a_watcher_behind_when_the_pane_exits_gets_its_last_screen() {
         "the last screen before End:\n{}",
         screen.text()
     );
+}
+
+#[tokio::test]
+async fn a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader() {
+    let server = start();
+    let owner = server.owner().await;
+    let mut changes = owner.subscribe("pane.changed").await.unwrap();
+    let busy = create_shell(&owner).await;
+    let other = create_shell(&owner).await;
+    // A reader that stops reading its connection once it opened pane.output.
+    let mut stalled = server.raw_greeted("stalled", Vec::new()).await;
+    open_output(&mut stalled, 1, &busy.pane_id, LAGGARD_WINDOW).await;
+    changed_until(&mut changes, &busy.pane_id, |info| info.viewers == 1).await;
+    // Others watch both panes, on the bus and on tilr.v1.
+    let watcher = server.owner().await;
+    let mut watching_busy = Watching::open(&watcher, &busy.pane_id).await.unwrap();
+    let mut watching_other = Watching::open(&watcher, &other.pane_id).await.unwrap();
+    let mut client = Client::connect(&server).await;
+    client.hello().await;
+    client.subscribe(busy.pane_id.parse().unwrap()).await;
+
+    raw(&owner, &busy.pane_id, "seq 1 1000000; echo busy''-done\n")
+        .await
+        .unwrap();
+    // The other pane takes input and shows it while the busy one prints.
+    raw(&owner, &other.pane_id, "echo other''-done\n")
+        .await
+        .unwrap();
+    watching_other.wait_screen("other-done").await;
+    // Every other reader of the busy pane sees it to the end.
+    watching_busy.wait_screen("busy-done").await;
+    client.wait_screen("busy-done").await;
+
+    // The stalled reader reads again: the pane's screen as it is now, not a
+    // backlog, and it is still connected.
+    let now = wait_text(&owner, &busy.pane_id, |lines| {
+        let last = lines.iter().rposition(|line| !line.is_empty());
+        last.is_some_and(|last| last > 0 && lines[last] == "$" && lines[last - 1] == "busy-done")
+    })
+    .await;
+    let mut screen = Screen::default();
+    within(async {
+        while screen.rows != now.lines {
+            credited_chunk(&mut stalled, 1, &mut screen).await;
+        }
+    })
+    .await;
+    assert!(
+        screen.full_frames >= 2,
+        "it caught up with a full frame ({} frames, {} full)",
+        screen.frames,
+        screen.full_frames
+    );
+    assert!(stalled.close.is_none());
+}
+
+#[tokio::test]
+async fn a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled() {
+    use common::bus_streams::{error_of, ping};
+    let server = start();
+    let owner = server.owner().await;
+    let mut changes = owner.subscribe("pane.changed").await.unwrap();
+    // A program that never reads its input, the pty not in line mode (which
+    // drops what overflows): a megabyte of input is never applied.
+    let deaf = create(
+        &owner,
+        80,
+        24,
+        sh("stty -echo -icanon min 1 time 0; echo de''af; exec sleep 100000"),
+    )
+    .await;
+    wait_text(&owner, &deaf.pane_id, |lines| lines[0] == "deaf").await;
+    let mut hasty = server.raw_greeted("hasty", Vec::new()).await;
+    hasty
+        .send(Msg::Call(Call {
+            id: 1,
+            method: "pane.input".into(),
+            payload: InputRequest {
+                pane_id: deaf.pane_id.clone(),
+                input: Some(Input::Raw(RawInput {
+                    data: vec![b'a'; 1 << 20].into(),
+                })),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into(),
+            timeout_ms: 300,
+            ..Call::default()
+        }))
+        .await;
+    // A stream with a deadline: its caller is a viewer until then.
+    hasty
+        .send(Msg::Call(Call {
+            id: 2,
+            method: "pane.output".into(),
+            payload: OutputRequest {
+                pane_id: deaf.pane_id.clone(),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into(),
+            timeout_ms: 300,
+            ..Call::default()
+        }))
+        .await;
+    let mut timed_out = HashSet::new();
+    while timed_out.len() < 2 {
+        let msg = hasty.recv().await.expect("open");
+        if matches!(msg, Msg::Chunk(_)) {
+            continue;
+        }
+        let (id, code, message) = error_of(&msg).unwrap_or_else(|| panic!("{msg:?}"));
+        assert_eq!(code, codes::TIMEOUT, "{id}: {message}");
+        timed_out.insert(id);
+    }
+    // The callee side is stopped: the stream's caller is no viewer any more,
+    // and the connection goes on.
+    changed_until(&mut changes, &deaf.pane_id, |info| info.viewers == 1).await;
+    changed_until(&mut changes, &deaf.pane_id, |info| info.viewers == 0).await;
+    ping(&mut hasty, 3).await;
+    assert!(list(&owner).await.iter().any(|p| p.pane_id == deaf.pane_id));
 }
 
 #[cfg(feature = "failpoints")]
@@ -1048,12 +1197,12 @@ mod failpoints {
         let server = start();
         let pauses = PauseController::bind(&server.dir);
         let owner = server.owner().await;
-        let out = server.dir.join("lost.txt");
+        let mut out = Sink::new(server.dir.join("lost.txt"));
         let pane = create(
             &owner,
             80,
             24,
-            sh(&format!("stty -echo; cat > '{}'", out.display())),
+            sh(&format!("stty -echo; cat > '{}'", out.path.display())),
         )
         .await;
         let options = || ConnectOptions::new("lost").client_id("lost-1");
@@ -1083,7 +1232,7 @@ mod failpoints {
             numbered(&again, &pane.pane_id, 2, "2\n").await.unwrap().seq,
             2
         );
-        file_is(&out, "1\n2\n").await;
+        out.holds("1\n2\n").await;
     }
 
     #[tokio::test]

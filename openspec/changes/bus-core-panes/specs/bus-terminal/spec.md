@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A pane is created, listed and closed by calls
-`pane.create {cols, rows, command, cwd, profile}` SHALL start a pane as the `panes` and `pane-profiles` specs say and answer its `PaneInfo` once the program runs; a call cancelled before then still starts the pane, which is closed once its program runs; `pane.list {}` SHALL answer the `PaneInfo` of every pane the caller may access; `pane.close {pane_id}` SHALL close it and answer `{exit_code}` once the program ended. A pane id that names no pane, or a pane the caller may not access, SHALL be answered `not_found` with `no such pane: <name as sent>` and the connection MUST stay open.
+`pane.create {cols, rows, command, cwd, profile}` SHALL start a pane as the `panes` and `pane-profiles` specs say and answer its `PaneInfo` once the program runs (cancelled before then, it is closed once it runs); `pane.list {}` SHALL answer the `PaneInfo` of every pane the caller may access; `pane.close {pane_id}` SHALL answer `{exit_code}` once the program ended. An id naming no pane, or one the caller may not access, SHALL get `not_found` `no such pane: <name as sent>`, the connection kept.
 
 **Verified by**: `panes::a_pane_runs_commands_and_reports_how_its_shell_exited`, `panes::asking_for_a_pane_that_does_not_exist_gets_an_error`, `bus_terminal::a_pane_is_created_listed_and_closed_by_calls`.
 
@@ -23,9 +23,9 @@ The server SHALL emit `pane.created` (`PaneInfo`) when a pane appears, `pane.cha
 - **THEN** it receives `pane.created`, `pane.title` with `t`, `pane.bell` and `pane.exited` with `exit_code` 3, in that order
 
 ### Requirement: Watching a pane is a stream of frames
-`pane.output {pane_id}` SHALL be a stream on the interactive lane whose first chunk is a full frame of the pane's screen and whose later chunks are the frames the pane process builds from its screen model, with the content the `screen-frames` spec gives a `Frame`; it SHALL end with `End{exit_code}` when the program exits, after a full frame of the last screen if the consumer was behind. A frame whose encoding would pass `max_frame` SHALL be preceded by chunks carrying its images. The caller SHALL count as a viewer while the stream is open.
+`pane.output {pane_id}` SHALL be an interactive stream: a full frame of the pane's screen, then the frames the pane process builds (a `Frame` as `screen-frames` says), and `End{exit_code}` when the program exits, after a full frame of the last screen if the consumer was behind. No chunk SHALL pass the stream's window or `max_frame`: a frame over it goes as its images first; over it without them, the stream ends `too_large`. The caller SHALL be a viewer while the stream is open.
 
-**Verified by**: `reconnect::subscribing_again_sends_the_whole_screen_again`, `panes::two_clients_watch_and_type_into_the_same_pane`, `panes::a_client_that_stops_watching_gets_no_more_frames`, `bus_terminal::watching_a_pane_is_a_stream_of_frames`, `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen`.
+**Verified by**: `reconnect::subscribing_again_sends_the_whole_screen_again`, `panes::two_clients_watch_and_type_into_the_same_pane`, `panes::a_client_that_stops_watching_gets_no_more_frames`, `bus_terminal::watching_a_pane_is_a_stream_of_frames`, `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen`, `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled`, `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window`, `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first`.
 
 #### Scenario: Typed command shows
 - **WHEN** a client opens `pane.output` on a new pane and inputs `echo "sum is $((6 * 7))"` and Enter
@@ -35,19 +35,31 @@ The server SHALL emit `pane.created` (`PaneInfo`) when a pane appears, `pane.cha
 - **WHEN** the client cancels the stream
 - **THEN** no more frames arrive and `pane.list` no longer lists it in `viewed_by`
 
-### Requirement: A lagging watcher skips to the latest screen
-A `pane.output` consumer whose connection's interactive lane has held a packet over 250 ms, or whose stream credit is spent, SHALL have its frames of that pane skipped until it caught up and SHALL then receive a full frame whose `last_input_seq` is its latest seq a skipped frame echoed; it MUST NOT be dropped for lagging nor slow other consumers.
+#### Scenario: A frame over the window
+- **WHEN** a consumer opens `pane.output` with a 64 KiB window and a frame carries three images of 40 KiB
+- **THEN** the images come in chunks of at most 64 KiB, then the frame
 
-**Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo`, `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`, itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`).
+#### Scenario: A stream with a deadline
+- **WHEN** a consumer opens `pane.output` with `timeout_ms` 300
+- **THEN** at the deadline it gets `timeout` and is no viewer any more
+
+### Requirement: A lagging watcher skips to the latest screen
+A `pane.output` consumer whose connection's interactive lane has held a packet over 250 ms, or whose stream credit is spent, SHALL have its frames of that pane skipped until it caught up (credit for the frame that did not fit) and SHALL then receive a full frame whose `last_input_seq` is its latest seq a skipped frame echoed; it MUST NOT be dropped for lagging nor hold up other consumers or panes.
+
+**Verified by**: `metrics::a_client_that_lags_skips_to_the_latest_screen_and_still_gets_its_echo`, `reconnect::a_lagging_client_gets_the_last_screen_without_new_output`, itests `UC-049` (`uc_049.py::a_slow_client_under_heavy_output_gets_the_latest_screens_without_slowing_the_others`), `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen`, `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader`.
 
 #### Scenario: No credit
-- **WHEN** a consumer opens `pane.output` with a 64 KiB window, credits nothing while the pane prints 30 MB, then credits again
+- **WHEN** a consumer opens `pane.output` with an 8 KiB window, credits nothing while the pane prints 7 MB, then credits again
 - **THEN** it receives a full frame matching the pane's screen and stays connected
 
-### Requirement: Input is acknowledged after it is applied
-`pane.input {pane_id, seq, input_seq, key | mouse | paste | raw | scroll | clear}` and `pane.resize {pane_id, cols, rows, cell_width_px, cell_height_px, seq, input_seq}` SHALL be applied in the order a connection sent them and answered once applied (the pty took the last byte, or the scroll, clear or resize took effect); `seq` SHALL be echoed in `Frame.last_input_seq` as the `screen-frames` spec says, with the connection's `seq_base` = `HelloAck.connection_id << 32`.
+#### Scenario: A reader that stops reading
+- **WHEN** a consumer stops reading its connection while its pane prints 7 MB
+- **THEN** the other consumers of that pane and of another pane see their output to the end, and the stopped one, reading again, gets the pane's screen as it is then
 
-**Verified by**: `input_delivery::disconnect_before_application_replays_one_copy`, `clear_pane::clearing_history_reaches_all_viewers_and_survives_reconnecting`, `bus_terminal::input_is_acknowledged_after_it_is_applied`, `bus_terminal::a_pane_is_resized_by_a_call`, `bus_terminal::keys_mouse_paste_and_scroll_reach_the_pane`.
+### Requirement: Input is acknowledged after it is applied
+`pane.input {pane_id, seq, input_seq, key | mouse | paste | raw | scroll | clear}` and `pane.resize {pane_id, cols, rows, cell_*_px, seq, input_seq}` SHALL be applied in the order a connection sent them and answered once applied (the pty took the last byte, or the scroll, clear or resize took effect), `timeout` past the call's deadline; `seq` SHALL be echoed in `Frame.last_input_seq` (`screen-frames`), with `seq_base` = `HelloAck.connection_id << 32`.
+
+**Verified by**: `input_delivery::disconnect_before_application_replays_one_copy`, `clear_pane::clearing_history_reaches_all_viewers_and_survives_reconnecting`, `bus_terminal::input_is_acknowledged_after_it_is_applied`, `bus_terminal::a_pane_is_resized_by_a_call`, `bus_terminal::keys_mouse_paste_and_scroll_reach_the_pane`, `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled`.
 
 #### Scenario: A program that prints nothing
 - **WHEN** a client inputs `x` into a pane whose program reads without echoing
@@ -57,8 +69,12 @@ A `pane.output` consumer whose connection's interactive lane has held a packet o
 - **WHEN** a client sends 100 `pane.input` calls with `raw` `1` to `100` without waiting
 - **THEN** the program reads them in that order
 
+#### Scenario: Past the deadline
+- **WHEN** a client inputs 1 MiB with `timeout_ms` 300 into a program that does not read
+- **THEN** the reply is `timeout` and the connection keeps answering
+
 ### Requirement: Numbered input is applied once across reconnects
-Input with `input_seq` > 0 SHALL need a `client_id` in `Hello` (else `bad_request: numbered input requires a stable client_id`) and SHALL be applied at most once per `client_id` and pane; `pane.applied {}` SHALL answer the caller's applied counters per running pane it sent numbered input to within 5 s; input naming a missing pane SHALL get a terminal `not_found` and change no counter. `pane.input_finalize {}` SHALL end the session at once; an unfinalized one SHALL be forgotten an hour after its last connection.
+Input with `input_seq` > 0 SHALL need a `client_id` in `Hello` (else `bad_request: numbered input requires a stable client_id`) and SHALL be applied at most once per `client_id` and pane; `pane.applied {}` SHALL answer within 5 s the caller's applied counters per running pane it sent numbered input to; input naming a missing pane SHALL get a terminal `not_found`, no counter changed. `pane.input_finalize {}` SHALL end the session; an unfinalized one is forgotten an hour after its last connection.
 
 **Verified by**: `input_delivery::applied_input_with_a_lost_ack_is_not_applied_twice`, `input_delivery::numbered_input_requires_a_stable_client_id`, `input_delivery::missing_pane_input_is_rejected_and_reclaimed_across_reconnect`, `input_delivery::finalized_sessions_do_not_accumulate_delivery_history`, `input_delivery::a_stuck_pane_does_not_block_other_panes_hello`, `bus_terminal::numbered_input_is_applied_once_across_reconnects`, `bus_terminal::failpoints::an_input_whose_reply_was_lost_is_applied_once`, `bus_terminal::a_replayed_input_still_pending_is_written_once`, `bus_terminal::failpoints::a_stuck_pane_is_closed_by_pane_applied`, `bus_terminal::internal_fields_cannot_be_forged`.
 
@@ -87,7 +103,7 @@ Input with `input_seq` > 0 SHALL need a `client_id` in `Hello` (else `bad_reques
 - **THEN** no such field exists in `tilr.pane.v1`, and no other identity's delivery state changes
 
 ### Requirement: Reading a pane's text
-`pane.read {pane_id, since_seq?, wait_ms?, history_lines?}` SHALL answer the pane's screen as text rows with `seq`, size, cursor (`x` a cell column), title, cwd, `alive` and `exit_code`, and up to `history_lines` (≤ 10000) scrollback lines, fewer when the text would pass 4 MiB (`too_large` when the screen alone does); with `since_seq` it SHALL wait for a change after that `seq` or the program's exit, at most `min(wait_ms, 25 s)` and always before the call's deadline. A pane process that does not answer within the call's deadline (5 s without one) SHALL get `unavailable`; a pane that ends before it answered SHALL be answered with `alive` false and its exit code.
+`pane.read {pane_id, since_seq?, wait_ms?, history_lines?}` SHALL answer the screen as text: rows, `seq`, size, cursor (`x` a cell column), title, cwd, `alive`, `exit_code` and `history_lines` (≤ 10000) of scrollback, fewer past 4 MiB (`too_large`: the screen alone); with `since_seq` it SHALL wait for a change or the exit, ≤ `min(wait_ms, 25 s)` and before the deadline. A pane process silent until the deadline (or 5 s) SHALL give `unavailable`; one ending first, `alive` false and its exit code.
 
 **Verified by**: `bus_terminal::reading_a_pane_and_waiting_for_a_change`, `bus_terminal::a_read_the_pane_process_does_not_answer_ends`.
 

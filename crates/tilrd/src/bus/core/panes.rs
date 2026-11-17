@@ -62,6 +62,7 @@ use tokio::time::Instant;
 use super::json::{self, Json};
 use super::{BusObserver, Core, CoreCmd, PaneEvent, Registry};
 use crate::bus::authz::AuthzRequest;
+use crate::bus::broker::ConnState;
 use crate::bus::identity::{CallCtx, Identity, Principal, Transport};
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut, TrySendError};
 use crate::link::{self, FrameHead};
@@ -83,8 +84,6 @@ const DEADLINE_MARGIN: Duration = Duration::from_millis(100);
 /// a deadline: one that does not (stuck, or an old binary after a failed
 /// self-reload) gets `unavailable`.
 const TEXT_WAIT: Duration = Duration::from_secs(5);
-/// How often the connections that sent input are checked for having ended.
-const SWEEP: Duration = Duration::from_secs(1);
 /// The `tilr.v1` client id a pane made by the bus is started for: no connection
 /// has it, so the `tilr.v1` answers to it go nowhere.
 const NO_CLIENT: u64 = u64::MAX;
@@ -118,7 +117,6 @@ pub struct PanesState {
     delivered: HashMap<String, HashSet<PaneId>>,
     /// The connections that sent input or asked for their counters.
     sessions: HashMap<u64, Session>,
-    sweeping: bool,
     probes: HashMap<u64, Probe>,
     next_probe: u64,
     closing: HashMap<PaneId, Vec<oneshot::Sender<Result<pane::CloseReply, BusError>>>>,
@@ -953,11 +951,8 @@ fn session<'a>(s: &'a mut Supervisor, caller: &Caller) -> &'a mut Session {
                 next_plain: 0,
             },
         );
-        if !st.sweeping
-            && let Some(core) = st.core.clone()
-        {
-            st.sweeping = true;
-            tokio::spawn(sweep(core));
+        if let Some(core) = st.core.clone() {
+            tokio::spawn(watch_end(core, conn));
         }
     }
     state(s)
@@ -966,49 +961,36 @@ fn session<'a>(s: &'a mut Supervisor, caller: &Caller) -> &'a mut Session {
         .expect("the session was just made")
 }
 
-/// Forget the sessions of connections that ended: their own identity at once,
-/// their `client_id`'s an hour after its last connection (`expire_input`).
-async fn sweep(core: Core) {
-    loop {
-        tokio::time::sleep(SWEEP).await;
-        let broker = core.broker.clone();
-        let more = core.supervisor.ask(move |s| {
-            let st = state(s);
-            let gone: Vec<u64> = st
-                .sessions
-                .keys()
-                .copied()
-                .filter(|&conn| broker.principal_of(conn).is_none())
-                .collect();
-            for conn in gone {
-                let Some(session) = state(s).sessions.remove(&conn) else {
-                    continue;
-                };
-                s.forget_input(&session.plain);
-                // Its calls waiting for an acknowledgement have nobody to answer.
-                drop_acks(state(s), "the connection ended", |_, wait| {
-                    wait.conn == conn
-                });
-                let shared = state(s)
-                    .sessions
-                    .values()
-                    .any(|other| other.numbered == session.numbered);
-                if !session.numbered.is_empty() && !shared {
-                    s.input_retention
-                        .disconnect(session.numbered, std::time::Instant::now());
-                }
-            }
-            forget_delivered(s);
-            let st = state(s);
-            // Calls cancelled while their input waited.
-            drop_acks(st, "", |_, wait| wait.reply.is_closed());
-            st.sweeping = !st.sessions.is_empty();
-            st.sweeping
+/// Forget the session of `conn` once the broker tells its connection ended (at
+/// once if it is not connected): its own identity at once, its `client_id`'s an
+/// hour after its last connection (`expire_input`).
+async fn watch_end(core: Core, conn: u64) {
+    if let Some(mut state) = core.broker.watch_connection(conn) {
+        // An error: the broker dropped the connection, which ended too.
+        let _ = state
+            .wait_for(|state| matches!(state, ConnState::Ended(_)))
+            .await;
+    }
+    let _ = core.supervisor.with(move |s| connection_ended(s, conn));
+}
+
+fn connection_ended(s: &mut Supervisor, conn: u64) {
+    if let Some(session) = state(s).sessions.remove(&conn) {
+        s.forget_input(&session.plain);
+        // Its calls waiting for an acknowledgement have nobody to answer.
+        drop_acks(state(s), "the connection ended", |_, wait| {
+            wait.conn == conn
         });
-        if !more.await.unwrap_or(false) {
-            return;
+        let shared = state(s)
+            .sessions
+            .values()
+            .any(|other| other.numbered == session.numbered);
+        if !session.numbered.is_empty() && !shared {
+            s.input_retention
+                .disconnect(session.numbered, std::time::Instant::now());
         }
     }
+    forget_delivered(s);
 }
 
 /// Drop the acknowledgement waits `which` picks, answering those whose caller
@@ -1085,15 +1067,15 @@ fn deliver(
             .or_default()
             .insert(pane_id);
     }
-    st.acks
-        .entry((identity, pane_id))
-        .or_default()
-        .push(AckWait {
-            conn: caller.conn(),
-            seq: delivery_seq,
-            input_seq,
-            reply: tx,
-        });
+    let waits = st.acks.entry((identity, pane_id)).or_default();
+    // Calls cancelled (or past their deadline) while their input waited.
+    waits.retain(|wait| !wait.reply.is_closed());
+    waits.push(AckWait {
+        conn: caller.conn(),
+        seq: delivery_seq,
+        input_seq,
+        reply: tx,
+    });
     if let Some(p) = s.panes.get_mut(&pane_id) {
         if received.is_some() {
             p.counters.input += 1;
@@ -1455,6 +1437,7 @@ async fn output(core: Core, ctx: CallCtx, payload: Bytes, out: StreamOut) {
         waiting_full: true,
         lagging: false,
         asked: false,
+        need: 1,
         own_seq: 0,
         sent: 0,
         unsent: None,
@@ -1462,7 +1445,7 @@ async fn output(core: Core, ctx: CallCtx, payload: Bytes, out: StreamOut) {
     .run(frames)
     .await;
     match ended {
-        Some(exit_code) => out.end(
+        Ended::Exit(exit_code) => out.end(
             pane::PaneExited {
                 pane_id: pane_id.to_string(),
                 exit_code,
@@ -1470,9 +1453,28 @@ async fn output(core: Core, ctx: CallCtx, payload: Bytes, out: StreamOut) {
             .encode_to_vec()
             .into(),
         ),
+        Ended::Failed(err) => out.fail(err),
         // Cancelled or gone: nobody hears the end.
-        None => out.end(Bytes::new()),
+        Ended::Gone => out.end(Bytes::new()),
     }
+}
+
+/// How a `pane.output` stream ends.
+enum Ended {
+    /// The program exited with this code.
+    Exit(i32),
+    /// Cancelled, or its reader gone.
+    Gone,
+    /// A frame cannot go in the stream's window.
+    Failed(BusError),
+}
+
+/// What became of a frame offered to the stream.
+enum Step {
+    /// Sent or skipped: go on.
+    Go,
+    Closed,
+    Failed(BusError),
 }
 
 /// One stream's state of T4.
@@ -1488,6 +1490,10 @@ struct Watch<'a> {
     lagging: bool,
     /// A full frame was asked for since it caught up.
     asked: bool,
+    /// The bytes of the chunk that did not get out: the credit to wait for
+    /// before a full frame is asked for, so a frame over the credit left is not
+    /// asked for again and again.
+    need: u64,
     /// The latest of its own seqs among the frames skipped.
     own_seq: u64,
     /// The number of the last frame sent.
@@ -1497,8 +1503,8 @@ struct Watch<'a> {
 }
 
 impl Watch<'_> {
-    /// Until the program exits (`Some(exit_code)`) or the stream is over.
-    async fn run(mut self, mut frames: mpsc::Receiver<FrameHeadPacket>) -> Option<i32> {
+    /// Until the program exits or the stream is over.
+    async fn run(mut self, mut frames: mpsc::Receiver<FrameHeadPacket>) -> Ended {
         loop {
             self.take_missed();
             if self.shared.exit.get().is_some() {
@@ -1506,18 +1512,19 @@ impl Watch<'_> {
             }
             tokio::select! {
                 biased;
-                () = self.out.cancelled().cancelled() => return None,
+                () = self.out.cancelled().cancelled() => return Ended::Gone,
                 frame = frames.recv() => match frame {
-                    Some((n, head, packet)) => {
-                        if !self.frame(n, head, &packet) {
-                            return None;
-                        }
-                    }
+                    Some((n, head, packet)) => match self.frame(n, head, &packet).await {
+                        Step::Go => {}
+                        Step::Closed => return Ended::Gone,
+                        Step::Failed(err) => return Ended::Failed(err),
+                    },
                     // The watchers go after the exit is set (`on_exited`).
                     None => return self.finish(&mut frames).await,
                 },
                 () = self.shared.wake.notified() => {}
-                () = self.out.caught_up(), if self.lagging && !self.asked => {
+                // Credit for the chunk that did not fit, not a byte (T4).
+                () = self.out.caught_up_for(self.need), if self.lagging && !self.asked => {
                     self.asked = true;
                     let pane_id = self.pane_id;
                     let _ = self.core.supervisor.with(move |s| {
@@ -1533,16 +1540,20 @@ impl Watch<'_> {
     /// The program ended: what the pane showed last comes before the end. Its
     /// last frame is full; a consumer still behind then gets it whole, waiting
     /// for credit if it must.
-    async fn finish(&mut self, frames: &mut mpsc::Receiver<FrameHeadPacket>) -> Option<i32> {
-        let exit_code = *self.shared.exit.get()?;
+    async fn finish(&mut self, frames: &mut mpsc::Receiver<FrameHeadPacket>) -> Ended {
+        let Some(&exit_code) = self.shared.exit.get() else {
+            return Ended::Gone;
+        };
         while let Ok((n, head, packet)) = frames.try_recv() {
-            if !self.frame(n, head, &packet) {
-                return None;
+            match self.frame(n, head, &packet).await {
+                Step::Go => {}
+                Step::Closed => return Ended::Gone,
+                Step::Failed(err) => return Ended::Failed(err),
             }
         }
         self.take_missed();
         if !(self.waiting_full || self.lagging) {
-            return Some(exit_code);
+            return Ended::Exit(exit_code);
         }
         let missed = self
             .shared
@@ -1558,24 +1569,36 @@ impl Watch<'_> {
         if let Some((_, head, packet)) = last {
             let carried = self.own_seq.max(own_seq(head.last_input_seq, self.conn));
             let patch = (carried != 0 && carried != head.last_input_seq).then_some(carried);
-            match output_chunks(&packet, patch) {
+            match output_chunks(&packet, patch, self.limit()) {
                 Ok(chunks) => {
                     for chunk in chunks {
-                        tokio::select! {
-                            biased;
-                            () = self.out.cancelled().cancelled() => return None,
-                            sent = self.out.send(chunk) => if sent.is_err() {
-                                return None;
-                            },
+                        if !self.send(chunk).await {
+                            return Ended::Gone;
                         }
                     }
                 }
-                Err(err) => {
+                Err(FrameError::TooLarge(err)) => return Ended::Failed(too_large(&err)),
+                Err(FrameError::Bad(err)) => {
                     tracing::warn!(pane = %self.pane_id, "last frame not sent on the bus: {err}");
                 }
             }
         }
-        Some(exit_code)
+        Ended::Exit(exit_code)
+    }
+
+    /// The largest chunk this stream takes: its window, at most `max_frame`
+    /// less the envelope.
+    fn limit(&self) -> usize {
+        usize::try_from(self.out.window()).map_or(MAX_CHUNK, |window| window.min(MAX_CHUNK))
+    }
+
+    /// Send `chunk`, waiting for credit; `false` once the stream is over.
+    async fn send(&self, chunk: Chunk) -> bool {
+        tokio::select! {
+            biased;
+            () = self.out.cancelled().cancelled() => false,
+            sent = self.out.send(chunk) => sent.is_ok(),
+        }
     }
 
     /// A frame did not fit the queue: skipping, and a full frame is asked for
@@ -1605,8 +1628,11 @@ impl Watch<'_> {
         self.own_seq = self.own_seq.max(own_seq(seq, self.conn));
     }
 
-    /// Pass frame `n` on or skip it; `false` once the stream is closed.
-    fn frame(&mut self, n: u64, head: FrameHead, packet: &Bytes) -> bool {
+    /// Pass frame `n` on or skip it. A frame goes whole or not at all: when its
+    /// first chunk finds no credit it is skipped, the rest of a frame whose
+    /// first chunk went waits for credit (a frame is at most a few windows,
+    /// its images first).
+    async fn frame(&mut self, n: u64, head: FrameHead, packet: &Bytes) -> Step {
         self.take_missed();
         let own = own_seq(head.last_input_seq, self.conn);
         let mut patch = None;
@@ -1621,43 +1647,84 @@ impl Watch<'_> {
             self.own_seq = 0;
         } else if self.waiting_full || self.lagging {
             self.own_seq = self.own_seq.max(own);
-            return true;
+            return Step::Go;
         } else if self.out.is_lagging() {
             self.skip(head.last_input_seq);
-            return true;
+            return Step::Go;
         }
-        let chunks = match output_chunks(packet, patch) {
+        let chunks = match output_chunks(packet, patch, self.limit()) {
             Ok(chunks) => chunks,
-            Err(err) => {
+            Err(FrameError::TooLarge(err)) => return Step::Failed(too_large(&err)),
+            Err(FrameError::Bad(err)) => {
                 tracing::warn!(pane = %self.pane_id, "frame not sent on the bus: {err}");
-                return true;
+                return Step::Go;
             }
         };
-        for chunk in chunks {
-            match self.out.try_send(chunk) {
+        let mut chunks = chunks.into_iter();
+        if let Some(first) = chunks.next() {
+            match self.out.try_send(first) {
                 Ok(()) => {}
-                // No room or no credit: lagging, the rest of this frame skipped.
-                Err(TrySendError::Full(_)) => {
+                // No credit: lagging, this frame skipped; a full frame is asked
+                // for once there is credit for this chunk.
+                Err(TrySendError::Full(chunk)) => {
                     self.skip(0);
                     self.own_seq = carried;
+                    self.need = (chunk.payload.len() as u64).max(1);
                     if head.full {
                         self.unsent = Some((n, head, packet.clone()));
                     }
-                    return true;
+                    return Step::Go;
                 }
-                Err(TrySendError::Closed) => return false,
+                Err(TrySendError::Closed) => return Step::Closed,
             }
         }
+        for chunk in chunks {
+            if !self.send(chunk).await {
+                return Step::Closed;
+            }
+        }
+        self.need = 1;
         self.sent = n;
-        true
+        Step::Go
     }
+}
+
+/// Why a frame packet makes no chunks.
+#[derive(Debug)]
+enum FrameError {
+    /// Not a frame the core can read: skipped.
+    Bad(String),
+    /// The frame without its images is over the largest chunk: the stream
+    /// cannot carry it.
+    TooLarge(String),
+}
+
+impl From<String> for FrameError {
+    fn from(err: String) -> Self {
+        Self::Bad(err)
+    }
+}
+
+impl From<&str> for FrameError {
+    fn from(err: &str) -> Self {
+        Self::Bad(err.into())
+    }
+}
+
+fn too_large(err: &str) -> BusError {
+    BusError::new(codes::TOO_LARGE, format!("pane.output: {err}"))
 }
 
 /// The chunks of `pane.output` for a frame packet of a pane process (`tilr.v1`
 /// `ServerMessage{frame}`, compressed or not), with `Frame.last_input_seq` set
-/// to `patch` if given. A frame over `max_frame` goes as its images first, then
-/// the frame without them; an image alone over it is left out.
-fn output_chunks(packet: &Bytes, patch: Option<u64>) -> Result<Vec<Chunk>, String> {
+/// to `patch` if given, each at most `limit` bytes (the stream's window, at
+/// most `max_frame` less the envelope). A frame over it goes as its images
+/// first, then the frame without them; an image alone over it is left out.
+fn output_chunks(
+    packet: &Bytes,
+    patch: Option<u64>,
+    limit: usize,
+) -> Result<Vec<Chunk>, FrameError> {
     let flag = *packet.first().ok_or("empty packet")?;
     if patch.is_none() {
         // The frame's own encoding, only the wrapping tag changed: a copy of a
@@ -1671,22 +1738,23 @@ fn output_chunks(packet: &Bytes, patch: Option<u64>) -> Result<Vec<Chunk>, Strin
             .bytes()
             .ok()
             .map(BytesMut::from),
-            other => return Err(format!("unknown packet flag {other}")),
+            other => return Err(format!("unknown packet flag {other}").into()),
         };
         if let Some(mut plain) = plain
             && plain.first() == Some(&SERVER_MESSAGE_FRAME_TAG)
-            && plain.len() <= MAX_CHUNK
+            && plain.len() <= limit
         {
             plain[0] = PANE_OUTPUT_FRAME_TAG;
             return Ok(vec![Chunk::new(plain.freeze())]);
         }
     }
-    let message = tilr_proto::decode::<ServerMessage>(packet).map_err(|err| err.to_string())?;
+    let message = tilr_proto::decode::<ServerMessage>(packet)
+        .map_err(|err| FrameError::Bad(err.to_string()))?;
     let Some(server_message::Msg::Frame(frame)) = message.msg else {
         return Err("not a frame".into());
     };
     let mut frame = pane::Frame::decode(frame.encode_to_vec().as_slice())
-        .map_err(|err| format!("frame: {err}"))?;
+        .map_err(|err| FrameError::Bad(format!("frame: {err}")))?;
     if let Some(seq) = patch {
         frame.last_input_seq = seq;
     }
@@ -1694,7 +1762,7 @@ fn output_chunks(packet: &Bytes, patch: Option<u64>) -> Result<Vec<Chunk>, Strin
     let whole = pane::PaneOutput {
         output: Some(pane::pane_output::Output::Frame(Box::new(frame))),
     };
-    if whole.encoded_len() <= MAX_CHUNK {
+    if whole.encoded_len() <= limit {
         chunks.push(Chunk::new(whole.encode_to_vec()));
         return Ok(chunks);
     }
@@ -1705,15 +1773,16 @@ fn output_chunks(packet: &Bytes, patch: Option<u64>) -> Result<Vec<Chunk>, Strin
     let mut size = 0;
     for image in std::mem::take(&mut frame.images) {
         let len = image.encoded_len() + 8;
-        if len > MAX_CHUNK {
+        if len > limit {
             tracing::warn!(
                 image = image.id,
                 bytes = len,
-                "an image over max_frame left out of a frame"
+                limit,
+                "an image over the largest chunk of pane.output left out of a frame"
             );
             continue;
         }
-        if size + len > MAX_CHUNK && !batch.is_empty() {
+        if size + len > limit && !batch.is_empty() {
             chunks.push(images_chunk(std::mem::take(&mut batch)));
             size = 0;
         }
@@ -1726,8 +1795,11 @@ fn output_chunks(packet: &Bytes, patch: Option<u64>) -> Result<Vec<Chunk>, Strin
     let rest = pane::PaneOutput {
         output: Some(pane::pane_output::Output::Frame(frame)),
     };
-    if rest.encoded_len() > MAX_CHUNK {
-        return Err("a frame without its images is over max_frame".into());
+    let len = rest.encoded_len();
+    if len > limit {
+        return Err(FrameError::TooLarge(format!(
+            "a frame of {len} bytes without its images is over the largest chunk of the stream ({limit} bytes: its window, at most max_frame)"
+        )));
     }
     chunks.push(Chunk::new(rest.encode_to_vec()));
     Ok(chunks)
@@ -2008,7 +2080,7 @@ mod tests {
             let original = frame(rows, 5);
             let packet = frame_packet(original.clone());
             assert_eq!(packet[0], u8::from(rows > 1), "flag of {rows} rows");
-            let chunks = output_chunks(&packet, None).unwrap();
+            let chunks = output_chunks(&packet, None, MAX_CHUNK).unwrap();
             assert_eq!(chunks.len(), 1);
             assert!(chunks[0].content_encoding.is_empty());
             // The bytes of the frame are the pane's: only the outer tag differs.
@@ -2026,7 +2098,7 @@ mod tests {
     #[test]
     fn a_frame_after_lag_carries_the_consumers_seq() {
         let packet = frame_packet(frame(3, 9));
-        let chunks = output_chunks(&packet, Some(42)).unwrap();
+        let chunks = output_chunks(&packet, Some(42), MAX_CHUNK).unwrap();
         let Some(pane::pane_output::Output::Frame(frame)) = decoded(&chunks[0]).output else {
             panic!("a frame");
         };
@@ -2050,7 +2122,7 @@ mod tests {
             png: vec![0; 17 << 20].into(),
             ..image(4)
         });
-        let chunks = output_chunks(&frame_packet(big), None).unwrap();
+        let chunks = output_chunks(&frame_packet(big), None, MAX_CHUNK).unwrap();
         let outputs: Vec<_> = chunks.iter().map(decoded).collect();
         let ids: Vec<Vec<u32>> = outputs
             .iter()
@@ -2067,6 +2139,31 @@ mod tests {
             .collect();
         assert_eq!(ids, [vec![1, 2], vec![3], vec![]]);
         assert!(chunks.iter().all(|chunk| chunk.payload.len() <= MAX_CHUNK));
+    }
+
+    #[test]
+    fn a_frame_is_split_to_the_streams_window() {
+        let image = |id| tilr_proto::Image {
+            id,
+            generation: 1,
+            width: 1,
+            height: 1,
+            png: vec![id as u8; 40 << 10].into(),
+        };
+        // A 64 KiB window: the images go in chunks of it, then the frame.
+        let window = 64 << 10;
+        let mut framed = frame(2, 0);
+        framed.images = vec![image(1), image(2), image(3)];
+        let chunks = output_chunks(&frame_packet(framed), None, window).unwrap();
+        assert_eq!(chunks.len(), 4);
+        assert!(chunks.iter().all(|chunk| chunk.payload.len() <= window));
+        assert!(matches!(
+            decoded(&chunks[3]).output,
+            Some(pane::pane_output::Output::Frame(_))
+        ));
+        // A frame of text over the window cannot go: too_large, not skipped.
+        let err = output_chunks(&frame_packet(frame(50, 0)), None, 1 << 10).unwrap_err();
+        assert!(matches!(err, FrameError::TooLarge(_)), "{err:?}");
     }
 
     #[test]
