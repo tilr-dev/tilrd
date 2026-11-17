@@ -949,7 +949,7 @@ server minted for it.
 | An appended block holds bounded checks on the request's facts only: facts, rules, joins over the rights, closures, regexes and too many checks are refused before Datalog runs | `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only` |
 | A token is bound to its server id, also with a copied key | `supervisor::bus::acl::tests::a_token_is_bound_to_its_server_id` |
 | Expiry, revocation (also through the cache and after a restart) and rotation | `supervisor::bus::acl::tests::expiry_revocation_and_rotation` |
-| An instance gets a token of its rights at Hello; per call by others while its connection lives; revoked at its end; never in Hello | `supervisor::bus::acl::tests::an_instance_gets_a_token_of_its_rights_at_hello` |
+| An instance gets a token of its rights at Hello; per call by others it is denied when no broker can say its connection lives; revoked at its end; never in Hello | `supervisor::bus::acl::tests::an_instance_gets_a_token_of_its_rights_at_hello` |
 | Hello with a credential is its participant; origin binding; a credential update names the same participant | `supervisor::bus::acl::tests::hello_with_a_credential_is_its_participant` |
 | `bus.token` checks the rights it is given and what a non-owner minter holds | `supervisor::bus::acl::tests::minting_checks_rights` |
 | The revocation file reads back; a broken one refuses every token | `supervisor::bus::acl::tests::the_revocation_file_reads_back_and_a_broken_one_refuses_all` |

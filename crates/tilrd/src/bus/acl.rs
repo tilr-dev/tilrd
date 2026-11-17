@@ -1414,7 +1414,10 @@ impl Acl {
                     ))
                 }
             }
-            None => Ok(()),
+            // No broker to ask: fail closed.
+            None => Err(Denied::new(
+                "the instance's connection cannot be checked: the server has no broker",
+            )),
         }
     }
 
@@ -3066,17 +3069,18 @@ mod tests {
                 .is_err()
         );
         // The instance's token, presented per call by someone else, works while
-        // the instance's connection is open (no broker here: taken as open).
+        // the instance's connection is open (`bus_acl` checks that); with no broker
+        // to ask whether it is, it fails closed.
         let owner = Principal {
             identity: Identity::Owner,
             connection_id: 12,
             ..Principal::tilrd()
         };
-        assert!(
-            f.acl
-                .authorize(&owner, Some(&credential), &call("test.echo", ""))
-                .is_ok()
-        );
+        let refused = f
+            .acl
+            .authorize(&owner, Some(&credential), &call("test.echo", ""))
+            .unwrap_err();
+        assert!(refused.reason.contains("cannot be checked"), "{refused}");
         // Its end revokes it.
         let rid = token_of(&principal).unwrap().revocation_id().to_owned();
         f.acl.end_instance_token(&rid);

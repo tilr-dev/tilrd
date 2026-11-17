@@ -150,7 +150,8 @@ is the contract.
   replaced). A request from the instance's own connection marks it open at once. A seat not
   yet seen open is taken as not registered yet for 1 s after its `Hello` (the broker
   registers the connection right after it queued `HelloAck`); after that, its token presented
-  on another connection while its own is not open is denied (the sweeper revokes it). The sweeper also renews an instance, or closes an outside participant with
+  on another connection while its own is not open is denied (the sweeper revokes it), and so
+  is one presented on another connection while no broker is registered to ask (fail closed). The sweeper also renews an instance, or closes an outside participant with
   4003, whose token is of an earlier key: a connection that said `Hello` while a rotation ran.
 - **Forged core events** are dropped by the broker before the authorizer; their audit line is
   the broker's (`dropped an event in a namespace of tilrd`) on the audit target, not
