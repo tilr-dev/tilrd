@@ -807,3 +807,52 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
 | Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
 | An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |
+
+## Bus instances — `tests/bus.rs`
+
+Components run as instances `tilrd` starts and supervises from its own `bus.toml`: a
+process in a session of its own, its bus connection as descriptor 3 or on an instance
+socket, restarted with a pause when it ends. Tests start the real server with a `bus.toml`
+and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module; the
+`bus.*` control methods are called as the owner.
+
+| Use case | Test |
+|---|---|
+| An instance of `bus.toml` is started, listed `up`, answers calls and is `instance:<name>`; `autostart = false` is listed `stopped` until `bus.start` | `bus::an_instance_from_bus_toml_is_started_and_answers` |
+| A bad `bus.toml` at start (a misspelt key, the old `calls` key naming `rights`) is logged with the file, the server serves panes with no instances | `bus::a_bad_bus_toml_leaves_panes_working` |
+| A bad `bus.toml` on `bus.reload_config` is `bad_config` and changes nothing: the instance keeps its pid | `bus::reloading_a_bad_bus_toml_changes_nothing` |
+| A socket path over the platform limit is a configuration error, naming the file | `bus::a_socket_path_that_is_too_long_is_a_config_error` |
+| `bus.toml` is read with its defaults; an unknown key, a wrong type, an instance without its module, an empty command, a reserved or unusable name are refused naming the reason | `supervisor::bus::config::tests::bus_toml_is_read_with_its_defaults` |
+| A misspelt key is named, with its line | `supervisor::bus::config::tests::a_misspelt_key_is_named` |
+| The first round's `calls` key says `rights` replaced it | `supervisor::bus::config::tests::the_first_rounds_calls_key_names_rights` |
+| A wrong type is refused | `supervisor::bus::config::tests::a_wrong_type_is_refused` |
+| A `drain_ms` over 30000 is refused | `supervisor::bus::config::tests::a_drain_over_the_limit_is_refused` |
+| An instance needs a module and a module a command | `supervisor::bus::config::tests::an_instance_needs_a_module_and_a_module_a_command` |
+| `owner`, `tilrd`, `bus…` and unusable instance names are refused | `supervisor::bus::config::tests::reserved_and_unusable_instance_names_are_refused` |
+| A socket path over the platform limit is refused for a socket instance only | `supervisor::bus::config::tests::a_socket_path_over_the_platform_limit_is_refused` |
+| A changed file is compared instance by instance: added, removed, changed, kept (`autostart` aside) | `supervisor::bus::config::tests::a_changed_file_is_compared_instance_by_instance` |
+| A module's working directory defaults to the configuration directory | `supervisor::bus::config::tests::the_working_directory_defaults_to_the_configuration_directory` |
+| An instance gets descriptor 3 as `TILR_BUS_FD`, its name and the configuration directory; its `env` over the module's over the server's, without pane variables; no other descriptor | `bus::an_instance_gets_its_connection_and_names` |
+| A socket instance gets its socket (0600 in a 0700 directory) and a one-time token; the token is taken once, a second use or a wrong one is refused; a connection that says nothing is closed | `bus::a_socket_instance_connects_once_with_its_token` |
+| A crashed instance is started again after 200, 400, 800 ms (as logged), counting `restarts` | `bus::a_crashed_instance_is_restarted_with_backoff` |
+| An instance that closes its connection but keeps running is killed and started again | `bus::an_instance_that_loses_its_connection_is_restarted` |
+| An instance that never says Hello is killed and started again (the limit is 30 s, shortened by the test build) | `bus::an_instance_that_never_says_hello_is_restarted` |
+| A program that is not there is `spawn_failed`, one that exits before Hello `start_failed`; both are tried again | `bus::an_instance_that_cannot_start_is_reported` |
+| `bus.stop` drains (a call in flight is answered), stops and keeps the instance stopped until `bus.start`; stopping or starting twice is no error | `bus::an_instance_is_stopped_and_started` |
+| An instance that ignores SIGTERM is killed after 3 s | `bus::an_instance_that_ignores_sigterm_is_killed_after_3_s` |
+| A process an instance started ends with it, when the instance is stopped and when it exits by itself (its process group is killed before its leader is reaped) | `bus::an_instances_own_processes_end_with_it` |
+| `bus.reload` of an instance that cannot start again answers `start_failed`; the instance stays supervised and comes up once it can | `bus::a_reload_answers_a_start_error` |
+| `bus.reload` of a module or all takes the right over every instance first: a caller without it is `denied` for a module that exists, one that does not and all alike | `bus::reloading_a_module_takes_the_right_over_every_instance` |
+| `bus.reload` of a module restarts its instances one at a time without a failed call; a caller that reloads itself has its reply first; the control right is checked | `bus::a_module_is_reloaded_one_instance_at_a_time` |
+| `bus.reload_config` starts the added, stops the removed, reloads the changed and leaves the others and the manually stopped alone | `bus::reloading_bus_toml_applies_the_difference` |
+| `bus.instances` lists instances and the outside participants, `bus.methods` the methods with their live providers; a draining instance is not offered | `bus::participants_and_methods_are_listed` |
+| An instance's stdout and stderr lines are in the server log as `bus <name>: <line>`; a line over 64 KiB is cut | `bus::an_instances_output_is_in_the_server_log` |
+| A line over the limit is cut and the next is whole | `supervisor::bus::runner::tests::an_instances_lines_are_cut_at_the_limit` |
+| Instance states are named `down`, `starting`, `up`, `draining`, `stopped` | `supervisor::bus::runner::tests::states_are_named_as_listed` |
+| The same call works over descriptor 3, an instance socket and a WebSocket | `bus::every_transport_speaks_the_same_envelopes` |
+| A length prefix over 16 MiB closes an instance's connection and the instance is restarted | `bus::a_frame_over_the_limit_closes_the_connection` |
+| An instance that provides a method of a reserved namespace is refused `reserved` and started again | `bus::reserved_namespaces_cannot_be_provided` |
+| A reload stops the instances before the exec and the successor starts them again from `bus.toml` | `bus::a_reload_stops_instances_and_the_successor_starts_them` |
+| A reload whose exec fails leaves the server running, and it starts the instances it stopped | `bus::a_failed_reload_starts_the_instances_again` |
+| A reload of the server does not wait for an instance's drain: a `bus.stop` draining a long call ends at once; `drain_ms` over 30000 is `bad_request` | `bus::a_reload_of_the_server_does_not_wait_for_a_long_drain` |
+| The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
