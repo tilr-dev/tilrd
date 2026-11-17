@@ -133,7 +133,6 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 | bus-reload | instances, tokens, profile snapshot, creator and sandbox across a reload; `internal.proto`; `supervisor-state 3`, `bus-state 1` (from a pre-bus build: a restart, M3) | L | bus-instances (handover of the runner's instances) and `pane-profiles` task 1.1 | bus-rights, bus-core-panes, bus-pane-rights, pane-profiles, sandbox-linux | no | ready |
 | bus-web | Tilr Web pages as participants: Origin, origin-bound tokens, `LAST_ACTIVE` providers | M | bus-broker-core (contract) | bus-streams-events, bus-pane-rights | no | ready |
 | remove-tilr-v1 | `tilr.v1` and `crates/tilr-proto` removed, refusal packet, README "Protocol", main specs in bus terms, release-notes text | L | bus-test-clients and bus-tilr-client (task 1.4, the spec text, may start after bus-broker-core) | every other Phase 7 change | no | ready |
-| bus-greet-order | a greeted bus connection is registered before it is announced: callable once it has its `HelloAck`, its methods listed and known when `bus.start` answers | S | - | - | no | ready |
 
 
 ## Deferred
@@ -152,6 +151,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
+| bus-greet-order | [PR #143](https://github.com/tilr-dev/tilrd/pull/143) |
 | bus-drain-deadline | [PR #140](https://github.com/tilr-dev/tilrd/pull/140) |
 | bus-instances | [PR #139](https://github.com/tilr-dev/tilrd/pull/139) |
 | bus-streams-events | [PR #138](https://github.com/tilr-dev/tilrd/pull/138) |
