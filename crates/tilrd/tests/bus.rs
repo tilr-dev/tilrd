@@ -2849,6 +2849,11 @@ async fn participants_and_methods_are_listed() {
     assert_eq!(count.lane, Lane::Interactive as i32);
     assert_eq!(provider_of("bus.ping").providers, ["tilrd"]);
     assert_eq!(provider_of("bus.instances").providers, ["tilrd"]);
+    assert_eq!(provider_of("pane.list").providers, ["tilrd"]);
+    let output = provider_of("pane.output");
+    assert_eq!(output.kind, tilr_bus::bus::Kind::Stream as i32);
+    assert_eq!(output.lane, Lane::Interactive as i32);
+    assert_eq!(output.providers, ["tilrd"]);
 
     // Draining is not offered: while t-1 waits for a call it is not a provider. The call
     // takes longer than the drain, so t-1 drains until the call is dropped below.

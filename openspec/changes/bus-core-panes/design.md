@@ -18,8 +18,9 @@ compressed chunks). This change's part follows.
   `bus-test-clients` moves them; until then the `bus_terminal::*` tests are the bus's check and
   the old ones keep checking `tilr.v1`. `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen`
   *(added by the split)* covers the lag rule on the bus meanwhile.
-- **Listing.** The `tilrd`/`pane.output` clause of `bus::participants_and_methods_are_listed`
-  (`bus-instances`) is added here.
+- **Listing.** The `tilrd` clause of `bus::participants_and_methods_are_listed`
+  (`bus-instances`) is added here: `bus.methods` lists `pane.list` and `pane.output` (a stream
+  on the interactive lane) with the provider `tilrd`.
 - **Broker files untouched** *(coordinator's decision after the review of the broker)*: this
   change does not edit `bus/broker.rs` or `bus/transport.rs` (after `bus-broker-core` only
   `bus-streams-events`, then `bus-reload`, do); it uses the broker's API: the `BrokerHandle`, `StreamOut`, and
@@ -99,8 +100,11 @@ Where the implementation differs from or adds to the decisions above:
 - **Cancelled handlers.** The broker aborts a native handler when its caller cancels; the
   watcher of `pane.output` and the waiter of `pane.read` are dropped by guards, not by code
   after an `await`.
-- **Listing.** The `tilrd` clause of `bus::participants_and_methods_are_listed` waits for
-  `bus-instances`: that test is not in this change's base.
+- **Listing.** The `tilrd` clause of `bus::participants_and_methods_are_listed` was added
+  once `bus-instances`, which brought that test, was merged: the test checks that `bus.methods`
+  lists `pane.list` and `pane.output` (kind stream, lane interactive) provided by `tilrd`. The
+  requirement "Listing participants and methods" (`component-bus`) already covers it; no
+  requirement changed.
 - **A broker test changed.** `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` called
   `pane.list` to get `not_found` from a broker without pane methods; it calls `bus.absent` now,
   which the participant `tilrd` does not provide either.
