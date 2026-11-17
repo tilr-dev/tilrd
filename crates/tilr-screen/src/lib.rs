@@ -6,9 +6,43 @@
 mod ghostty;
 
 use anyhow::Result;
-use tilr_proto::{Frame, KeyInput, MouseInput, PaneStatus};
+use tilr_proto::{Cursor, Frame, KeyInput, MouseInput, PaneStatus};
 
 pub use ghostty::{DEFAULT_CELL_PX, GhosttyScreen};
+
+/// The most bytes of text [`Screen::text`] gives (4 MiB): rows of history past
+/// it are left out, the oldest first; a viewport alone over it is
+/// [`TextTooLarge`]. Escaped as JSON, twice this still fits a bus envelope
+/// (`max_frame`, 16 MiB).
+pub const MAX_TEXT_BYTES: usize = 4 << 20;
+
+/// The screen as text, as `tmux capture-pane` gives it (`pane.read`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScreenText {
+    /// The viewport's rows, top first, trailing blanks trimmed; a wide character
+    /// once, a multi-codepoint grapheme whole.
+    pub lines: Vec<String>,
+    /// Rows of history right above the viewport, oldest first; fewer than
+    /// asked for when [`MAX_TEXT_BYTES`] is reached.
+    pub history: Vec<String>,
+    /// Where the cursor is in the viewport; not visible when it is out of view.
+    /// `x` is a cell column, not an index into the line's characters: a wide
+    /// character takes two cells and is one character of its line.
+    pub cursor: Cursor,
+    pub title: String,
+}
+
+/// The viewport's text alone is over [`MAX_TEXT_BYTES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextTooLarge;
+
+impl std::fmt::Display for TextTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the screen as text is over {MAX_TEXT_BYTES} bytes")
+    }
+}
+
+impl std::error::Error for TextTooLarge {}
 
 /// Content the application copied to the clipboard.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +98,12 @@ pub trait Screen {
     /// Title and working directory as reported by the application, if either
     /// changed since the previous call.
     fn take_status(&mut self) -> Option<PaneStatus>;
+
+    /// The viewport as text with up to `history_lines` rows of history above it,
+    /// at most [`MAX_TEXT_BYTES`] in all. Without the screen's scrollbar (where
+    /// the viewport is in it) only the viewport is read, without history.
+    /// Reading does not change what the next [`Screen::frame`] holds.
+    fn text(&self, history_lines: u32) -> Result<ScreenText>;
 
     /// What the application copied to the standard clipboard (OSC 52, OSC
     /// 1337 Copy) since the previous call, oldest first. Other clipboards

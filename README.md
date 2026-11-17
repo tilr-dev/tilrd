@@ -883,7 +883,8 @@ thing a participant hears: its identity (`owner`), the connection id, the server
 the frame limit. The broker sets `from` of every call and event to the sender's
 identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
 `clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
-`bus.ping`. A call goes to the provider named by `target`, else round robin over the
+`bus.ping`, the control methods of [Instances](#instances) and the `pane.*` methods of
+[Panes](#panes). A call goes to the provider named by `target`, else round robin over the
 providers, or to the one that activated last for a method declared `LAST_ACTIVE`; calls
 between two participants keep their order. A newer connection with the same `client_id`
 supersedes the older (close 4000).
@@ -925,6 +926,69 @@ Events go to the subscribers connected now, by NATS patterns, at most once each,
 without history. A subscriber whose connection lags (a packet queued over 250 ms, or
 768 envelopes or 24 MiB queued) does not get them: they are dropped and counted in
 `tilrd_bus_events_dropped_total`, and the connection stays.
+
+### Panes
+
+tilrd serves the panes of `tilr.v1` on the bus too (schemas in `tilr.pane.v1`): a pane made
+by either protocol is seen, typed into and closed by both.
+
+| method | takes | answers |
+|---|---|---|
+| `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (none exists in this build: `bad_request`) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
+| `pane.list` | nothing | the `PaneInfo` of every pane, oldest first |
+| `pane.close` | `pane_id` | `{exit_code}` once the program ended |
+| `pane.input` | `pane_id`, one of `key`, `mouse`, `paste`, `raw`, `scroll`, `clear`; `seq`, `input_seq` | `InputAck{pane_id, seq}` once applied: the pty took its last byte, or the scroll or clear took effect |
+| `pane.resize` | `pane_id`, `cols`, `rows`, `cell_width_px`, `cell_height_px` (0: keep), `seq`, `input_seq` | `InputAck` once the resize took effect |
+| `pane.applied` | nothing | within 5 s, the caller's applied `input_seq` per running pane it sent numbered input to; a pane process that does not answer by then is closed |
+| `pane.input_finalize` | nothing | ends the caller's numbered input session |
+| `pane.output` | `pane_id`, the caller's cell in pixels | a stream of frames (below) |
+| `pane.read` | `pane_id`, `since_seq`, `wait_ms`, `history_lines` | the screen as text (below) |
+
+A `pane_id` naming no pane, or one the caller may not access, is `not_found`
+`no such pane: <id as sent>`, and the connection stays. `PaneInfo.created_by` is the
+identity that created the pane on the bus (`owner`, `instance:<name>`, `token:<name>`);
+a pane of `tilr.v1`, or one from before a reload, is `owner`'s. `PaneInfo.viewed_by` lists
+the open `pane.output` streams.
+
+Input and resizes of a connection are applied in the order it sent them; past the call's
+deadline the answer is `timeout`. `seq` (`HelloAck.connection_id << 32` plus a count) comes
+back in `Frame.last_input_seq`. `input_seq` > 0 is numbered input, applied at most once per
+`client_id` and pane across reconnects, as in `tilr.v1`: it needs a `client_id` in `Hello`
+(else `bad_request`), and a session not finalized is forgotten an hour after its last
+connection.
+
+`pane.output` is an interactive stream: a full frame of the screen first, then each frame
+the pane process builds, as `PaneOutput{frame}` chunks; the caller is a viewer while it is
+open. No chunk passes the stream's window (`Call.window`) nor the 16 MiB frame limit: a
+frame over it goes as `PaneOutput{images}` chunks first, then the frame without them; a
+frame over it even without its images ends the stream `too_large`. A watcher that lags (its
+interactive lane held a packet over 250 ms, or its credit is spent) gets no deltas until it
+caught up, then the latest full screen, whose `last_input_seq` is its own latest seq a
+skipped frame echoed; it is not dropped and holds up no other watcher or pane. When the
+program exits the stream ends with `End{pane_id, exit_code}`, after a full frame of the
+last screen for a watcher that was behind.
+
+`pane.read` answers the viewport's rows as text (trailing blanks trimmed), `seq`, size,
+cursor, title, cwd, `alive`, `exit_code` and up to `history_lines` (at most 10000) rows of
+scrollback, oldest first. The text is at most 4 MiB: past it the oldest history rows are
+left out, and a screen alone over it is `too_large`. With `since_seq` the call waits for a
+`seq` after it or the exit, at most `min(wait_ms, 25 s)` (`wait_ms` 0: not at all) and
+100 ms short of the call's deadline; when that runs out it answers its last text with its
+`seq`, not `timeout`. A pane process that does not give its text in the time the call has
+left (5 s for a call without a deadline) is `unavailable`.
+
+Events, each with scope `pane:<id>` (delivered only to subscribers that may access the
+pane): `pane.created`, `pane.changed` (size, title, directory or viewers) and `pane.title`,
+each with the `PaneInfo`; `pane.bell`; `pane.command_finished {pane_id, at_ms}`;
+`pane.exited {pane_id, exit_code}`.
+
+A `pane.*` call with `content_type` `application/json` is read and answered in the proto3
+JSON mapping, so scripts need no codec; stream chunks and events stay protobuf. Fields are
+written under their lowerCamelCase names, defaults too (an unset `optional` field is left
+out), and read under that name or the proto name; 64-bit integers are written as strings
+and read from strings or numbers; `bytes` are written as padded standard base64 and read
+with or without padding, in the standard or URL alphabet; enums are written by name and read
+by name or number; `null` is the default and unknown fields are ignored.
 
 ### Instances
 

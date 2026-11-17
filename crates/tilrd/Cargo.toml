@@ -27,6 +27,7 @@ biscuit-auth = { version = "=6.0.0", default-features = false, features = ["data
 # The prost of biscuit-auth's protobuf schema (already in the tree through it): an
 # appended block is decoded from its signed bytes, never read from printed source.
 biscuit-prost = { package = "prost", version = "0.10", default-features = false }
+base64 = "0.23"
 bytes.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
@@ -51,5 +52,4 @@ uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9"
 
 [dev-dependencies]
-base64 = "0.23"
 tokio = { version = "1", features = ["test-util"] }
