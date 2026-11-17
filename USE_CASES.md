@@ -965,6 +965,7 @@ server minted for it.
 | A decision the wall-clock backstop ends is denied and not cached; the limits are 1000 facts, 100 iterations, 50 ms | `supervisor::bus::acl::tests::a_timeout_is_denied_and_never_cached` |
 | Concurrent revocations all reach the file and survive a restart; no staged file is left | `supervisor::bus::acl::tests::concurrent_revocations_all_survive_a_restart` |
 | A revocation file that does not read is never overwritten, by a revocation or a rotation; a restart still refuses | `supervisor::bus::acl::tests::a_broken_revocation_file_is_never_overwritten` |
+| A call whose target is longer than any participant's name is denied unread and not cached; cache keys are length-prefixed hashes | `supervisor::bus::acl::tests::a_target_longer_than_a_name_is_denied_unread` |
 | A revocation drops the cached decisions of the tokens it ends only | `supervisor::bus::acl::tests::a_revocation_keeps_the_decisions_of_other_tokens` |
 | `bus.revoke` (and the other file methods) do nothing on the envelope path; the reply comes once it is revoked in memory and on disk | `supervisor::bus::acl::tests::the_file_methods_run_off_the_envelope_path` |
 | The sweeper closes an outside participant, and renews an instance, whose token is of an earlier key | `supervisor::bus::acl::tests::the_sweeper_ends_tokens_of_an_earlier_key` |

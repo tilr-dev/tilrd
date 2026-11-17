@@ -99,6 +99,11 @@ pub const MAX_BLOCK_CHECKS: usize = 16;
 const MAX_CHECK_PREDICATES: usize = 16;
 /// The most expression operations an appended block may hold, all checks together.
 const MAX_BLOCK_OPS: usize = 64;
+/// The longest `Call.target` decided: a target names a participant
+/// (`token:<name>`, names up to 128 bytes), so a longer one is denied unread.
+pub const MAX_TARGET_BYTES: usize = 512;
+/// How much of a target an audit line shows.
+const AUDIT_TARGET_BYTES: usize = 128;
 /// Parsed tokens kept (R7).
 const PARSED_CACHE: usize = 1024;
 /// How long a decision is reused (R7).
@@ -817,7 +822,8 @@ pub struct Acl {
     store: Arc<Store>,
     parsed: Mutex<ParsedCache>,
     parsed_tick: Mutex<u64>,
-    decisions: Mutex<HashMap<String, Decision>>,
+    /// By [`decision_key`].
+    decisions: Mutex<HashMap<[u8; 32], Decision>>,
     instances: Mutex<HashMap<String, InstanceSeat>>,
     broker: OnceLock<BrokerHandle>,
     policies: AuthorizerBuilder,
@@ -863,12 +869,34 @@ struct Request<'a> {
     audit: String,
     target: &'a str,
     facts: Vec<Fact>,
-    /// Part of the decision cache key besides kind, caller, origin.
-    key: String,
+    /// The parts of the decision cache key besides the token, kind, caller and
+    /// origin.
+    key: Vec<&'a str>,
+}
+
+/// The decision cache's key: SHA-256 of the token's hash and the length-prefixed
+/// `parts`, so a key is 32 bytes whatever a request names, and no two requests
+/// share one.
+fn decision_key(token: &[u8; 32], parts: &[&str]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(token);
+    for part in parts {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    hash.finalize().into()
 }
 
 /// Map a request to its kind and facts (R6); `None`: unknown, denied.
 fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> {
+    if let AuthzRequest::Call { target, .. } = *request
+        && target.len() > MAX_TARGET_BYTES
+    {
+        // Not read further, not cached, not logged.
+        return Err(Denied::new(format!(
+            "the target is over {MAX_TARGET_BYTES} bytes: no participant has such a name"
+        )));
+    }
     let mut facts = Vec::new();
     #[allow(
         unreachable_patterns,
@@ -917,7 +945,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 },
                 target,
                 facts,
-                key: format!("{method}|{target}"),
+                key: vec![method, target],
             }
         }
         AuthzRequest::Provide { method } => {
@@ -929,7 +957,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("method={method}"),
                 target: "",
                 facts,
-                key: method.to_owned(),
+                key: vec![method],
             }
         }
         AuthzRequest::Emit { subject } => {
@@ -947,7 +975,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("subject={subject}"),
                 target: "",
                 facts,
-                key: subject.to_owned(),
+                key: vec![subject],
             }
         }
         AuthzRequest::Subscribe { pattern } => {
@@ -958,7 +986,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("pattern={pattern}"),
                 target: "",
                 facts,
-                key: pattern.to_owned(),
+                key: vec![pattern],
             }
         }
         AuthzRequest::Control { action, instance } => {
@@ -975,7 +1003,10 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("action={action} instance={}", instance.unwrap_or("")),
                 target: instance.unwrap_or(""),
                 facts,
-                key: format!("{action}|{}", instance.unwrap_or("\u{0}")),
+                key: match instance {
+                    Some(instance) => vec![action, "instance", instance],
+                    None => vec![action],
+                },
             }
         }
         AuthzRequest::Event { subject, scope } => {
@@ -987,7 +1018,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("subject={subject}"),
                 target: "",
                 facts,
-                key: format!("{subject}|{scope}"),
+                key: vec![subject, scope],
             }
         }
         AuthzRequest::PaneCreate { profile, overrides } => {
@@ -999,7 +1030,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("profile={profile}"),
                 target: "",
                 facts,
-                key: format!("create|{profile}|{overrides}"),
+                key: vec!["create", profile, if overrides { "true" } else { "false" }],
             }
         }
         AuthzRequest::PaneAccess { pane_id, creator } => {
@@ -1011,7 +1042,7 @@ fn request_facts<'a>(request: &AuthzRequest<'a>) -> Result<Request<'a>, Denied> 
                 audit: format!("pane={pane_id}"),
                 target: "",
                 facts,
-                key: format!("access|{pane_id}|{creator}"),
+                key: vec!["access", pane_id, creator],
             }
         }
         _ => return Err(Denied::new("a request this server does not know")),
@@ -1448,13 +1479,9 @@ impl Acl {
     ) -> Result<(), Denied> {
         self.usable(parsed, &principal.origin, principal.connection_id)?;
         let caller = principal.identity.to_string();
-        let key = format!(
-            "{}|{}|{caller}|{}|{}",
-            hex(&parsed.hash),
-            request.kind,
-            principal.origin,
-            request.key
-        );
+        let mut parts = vec![request.kind, caller.as_str(), principal.origin.as_str()];
+        parts.extend(&request.key);
+        let key = decision_key(&parsed.hash, &parts);
         let epoch = self.keys().epoch;
         if let Some(decision) = lock(&self.decisions).get(&key)
             && decision.epoch == epoch
@@ -1559,7 +1586,11 @@ impl Acl {
             _ => principal.identity.to_string(),
         };
         let (kind, detail, target) = match request {
-            Ok(request) => (request.kind, request.audit.as_str(), request.target),
+            Ok(request) => (
+                request.kind,
+                request.audit.as_str(),
+                clip(request.target, AUDIT_TARGET_BYTES),
+            ),
             Err(_) => ("unknown", "", ""),
         };
         match result {
@@ -3926,6 +3957,33 @@ mod tests {
             .authorize(&owner, Some(&token.bytes), &call("a.b", ""))
             .unwrap_err();
         assert!(refused.reason.contains("revocations"), "{refused}");
+    }
+
+    #[test]
+    fn a_target_longer_than_a_name_is_denied_unread() {
+        let f = fixture("s");
+        let p = holder(minted(&f, &rights(|r| r.call = strings(&["*"]))));
+        let owner = owner_on(Transport::UnixSocket);
+        let long = "x".repeat(MAX_TARGET_BYTES + 1);
+        for who in [&p, &owner] {
+            let refused = f.acl.authorize(who, None, &call("a.b", &long)).unwrap_err();
+            assert!(
+                refused.reason.starts_with("the target is over"),
+                "{refused}"
+            );
+        }
+        // Not cached: the cache keeps no target's bytes.
+        assert!(lock(&f.acl.decisions).is_empty());
+        let longest = "x".repeat(MAX_TARGET_BYTES);
+        assert!(f.acl.authorize(&p, None, &call("a.b", &longest)).is_ok());
+        assert_eq!(lock(&f.acl.decisions).len(), 1);
+        // Parts are length-prefixed: `a.b` with the target `c|d` is not `a.b|c`
+        // with `d`.
+        let hash = [0; 32];
+        assert_ne!(
+            decision_key(&hash, &["a.b", "c|d"]),
+            decision_key(&hash, &["a.b|c", "d"])
+        );
     }
 
     #[test]

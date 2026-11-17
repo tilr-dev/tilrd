@@ -60,6 +60,10 @@ token (re-parsing each appended block from its printed source), so such a token 
 before any Datalog runs and is never parsed into the cache. A block-level `trusting` scope is
 not printed and so not checked: it can only make facts of earlier appended blocks visible,
 and they have none.
+The decision cache is keyed by a SHA-256 of the token's hash and the request's
+length-prefixed parts, so an entry is the same size whatever a call names; a `Call.target`
+over 512 bytes (a participant's name is far shorter) is denied before it is decided, cached
+or logged, and audit lines clip a target to 128 bytes.
 `bus.renew` is accepted in the second half of a token's life only, so a holder cannot make the
 server rewrite and fsync the revocation file at will, and a revocation drops the cached
 decisions of the tokens it ends only.

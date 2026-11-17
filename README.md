@@ -1078,7 +1078,9 @@ and may do only what its token lists (least privilege; design R1-R9 in
   makes a decision costly; a decision makes at most 1000 facts in 100 iterations (and stops
   after 50 ms of wall clock as a backstop), else it is `denied` with `authorization limit
   reached`; any error
-  is a denial. Decisions are cached for 1 s (a revocation drops those of the tokens it ends, a
+  is a denial. A call whose `target` is over 512 bytes is `denied` unread (no participant has
+  such a name); audit lines show at most 128 bytes of a target. Decisions are cached for 1 s,
+  keyed by a SHA-256 of the request (a revocation drops those of the tokens it ends, a
   rotation all; a denial by the wall clock is not cached), parsed tokens (1024) until rotation.
 - **Audit.** `bus audit:` lines on the log target `tilrd::bus::audit`: every denial (who, the
   first 16 hex digits of the token's revocation id, the kind, the method or subject, the
