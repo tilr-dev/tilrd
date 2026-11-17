@@ -1775,12 +1775,17 @@ impl Bus {
             rx: event_rx,
             dropped,
         };
-        inner
+        let sent = inner
             .send(Msg::Subscribe(wire::Subscribe {
                 id,
                 pattern: pattern.to_owned(),
             }))
-            .await?;
+            .await;
+        if let Err(error) = sent {
+            // Dropping the subscription takes its queue; the pending answer goes too.
+            lock(&inner.state).calls.remove(&id);
+            return Err(error);
+        }
         match rx.await {
             Ok(Ok(_)) => Ok(subscription),
             Ok(Err(error)) => Err(error),
@@ -2294,6 +2299,34 @@ fn error_reply(id: u64, error: BusError) -> Msg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_subscribe_that_cannot_be_sent_leaves_nothing_pending() {
+        let (client, broker) = std::os::unix::net::UnixStream::pair().unwrap();
+        broker.set_nonblocking(true).unwrap();
+        let mut broker = tokio::net::UnixStream::from_std(broker).unwrap();
+        let options = ConnectOptions::new("t");
+        let (bus, ()) = tokio::join!(Bus::connect(Transport::Fd(client.into()), options), async {
+            let mut buf = BytesMut::new();
+            while crate::codec::decode_stream(&mut buf).unwrap().is_none() {
+                assert_ne!(broker.read_buf(&mut buf).await.unwrap(), 0);
+            }
+            let ack = wire::HelloAck {
+                protocol_version: 1,
+                identity: "owner".into(),
+                max_frame: 64,
+                ..Default::default()
+            };
+            let frame = crate::codec::encode_stream(&envelope(Msg::HelloAck(ack))).unwrap();
+            broker.write_all(&frame).await.unwrap();
+        });
+        let bus = bus.unwrap();
+        let pattern = format!("test.{}", "a".repeat(100));
+        let error = bus.subscribe(&pattern).await.err().unwrap();
+        assert_eq!(error.code, codes::TOO_LARGE);
+        let state = lock(&bus.inner().state);
+        assert!(state.calls.is_empty() && state.subscriptions.is_empty());
+    }
 
     fn lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Transport, BusError> {
         Transport::from_lookup(lookup, &AtomicBool::new(false))

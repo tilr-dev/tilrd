@@ -769,6 +769,7 @@ the client tests drive a partner in the test that plays the broker (`tests/commo
 | A provided stream is paced by the reader's credit | `client::a_provided_stream_is_paced_by_the_readers_credit` |
 | Events reach the subscriptions whose pattern matches; dropping one unsubscribes | `client::events_reach_the_subscriptions_whose_pattern_matches` |
 | A denied subscription fails with `denied`; a bad pattern is `bad_request` | `client::a_denied_subscription_fails_with_denied` |
+| A subscription that cannot be sent (`too_large`, a closed connection) leaves nothing pending | `client::tests::a_subscribe_that_cannot_be_sent_leaves_nothing_pending` |
 | A full subscription keeps 1024 events and counts those it dropped | `client::a_full_subscription_counts_the_events_it_dropped` |
 | Emitting, activating and renewing send their envelopes; a renewal from the broker replaces the token | `client::emitting_activating_and_renewing_send_their_envelopes` |
 | The same call works over an instance socket and a WebSocket with subprotocol, access token, credential and origin | `client::the_same_call_works_over_fd_socket_and_websocket` |
