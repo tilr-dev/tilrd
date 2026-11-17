@@ -224,16 +224,31 @@ async fn a_tcp_participant_needs_a_token() {
             ConnectOptions::new("tcp"),
         )
     };
+    // Neither the access token nor a credential; a wrong access token.
     let error = tcp(None, None).await.unwrap_err();
     assert_eq!(error.code, codes::DENIED, "{error}");
+    assert_eq!(
+        error.message,
+        "this server asks for its access token or a credential"
+    );
+    let error = tcp(Some("0".repeat(64)), None).await.unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert_eq!(error.message, "wrong access token");
     let owner = tcp(Some(server.token()), None).await.unwrap();
     assert_eq!(owner.identity(), "owner");
+    // A credential stands in for the access token (also through Cloud's tunnel,
+    // which is a connection to this port).
     let (token, _) = mint(&owner, "remote", Rights::default().call(&["test.*"])).await;
     let remote = tcp(None, Some(token)).await.unwrap();
     assert_eq!(remote.identity(), "token:remote");
+    // A credential that does not verify is refused, also with the right access
+    // token, and says no more than that.
     let garbage = Credential::from_bytes(Bytes::from_static(b"not a token"));
-    let error = tcp(None, Some(garbage)).await.unwrap_err();
-    assert_eq!(error.code, codes::DENIED, "{error}");
+    for access_token in [None, Some(server.token())] {
+        let error = tcp(access_token, Some(garbage.clone())).await.unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{error}");
+        assert_eq!(error.message, "not a token of this server");
+    }
 }
 
 #[tokio::test]
