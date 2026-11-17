@@ -765,15 +765,18 @@ the client tests drive a partner in the test that plays the broker (`tests/commo
 | A handler's error keeps its code; a panic is `handler_error` | `client::a_handlers_error_keeps_its_code_and_a_panic_is_a_handler_error` |
 | A handler that panics before returning its future is `handler_error`, for a method and a stream | `client::a_handler_that_panics_before_its_future_is_a_handler_error` |
 | A cancelled handler stops without a reply | `client::a_cancelled_handler_stops_without_a_reply` |
+| A handler can close the connection after its reply, which goes out first | `client::a_handler_can_close_the_connection_after_its_reply` |
 | A provided stream is paced by the reader's credit | `client::a_provided_stream_is_paced_by_the_readers_credit` |
 | Events reach the subscriptions whose pattern matches; dropping one unsubscribes | `client::events_reach_the_subscriptions_whose_pattern_matches` |
 | A denied subscription fails with `denied`; a bad pattern is `bad_request` | `client::a_denied_subscription_fails_with_denied` |
+| A subscription that cannot be sent (`too_large`, a closed connection) leaves nothing pending | `client::tests::a_subscribe_that_cannot_be_sent_leaves_nothing_pending` |
 | A full subscription keeps 1024 events and counts those it dropped | `client::a_full_subscription_counts_the_events_it_dropped` |
 | Emitting, activating and renewing send their envelopes; a renewal from the broker replaces the token | `client::emitting_activating_and_renewing_send_their_envelopes` |
 | The same call works over an instance socket and a WebSocket with subprotocol, access token, credential and origin | `client::the_same_call_works_over_fd_socket_and_websocket` |
 | A bad WebSocket message is skipped; a close code (4000) is reported | `client::a_bad_websocket_message_is_skipped_and_a_close_code_is_reported` |
 | Dropping the last handle closes the connection | `client::dropping_the_last_handle_closes_the_connection` |
 | The test runtime connects over an instance socket with its token and provides its methods | `runtime::the_test_runtime_provides_its_methods_over_an_instance_socket` |
+| The test runtime answers `test.close_bus`, then closes its connection and keeps running | `runtime::the_test_runtime_answers_close_bus_before_it_closes_the_connection` |
 | The test runtime's flood waits for credit | `runtime::the_test_runtimes_flood_waits_for_credit` |
 | The test runtime with `TEST_NO_HELLO` says nothing | `runtime::the_test_runtime_without_hello_says_nothing` |
 
@@ -793,9 +796,10 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
 | A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
 | `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
-| Calls go round robin over the providers; no provider is `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
+| Calls go round robin over the providers; a method nobody provides is `not_found`, a target that is not connected `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
 | `LAST_ACTIVE` goes to the provider that activated last, then to the next | `bus::last_active_goes_to_the_provider_that_activated_last` |
 | Methods in a reserved namespace cannot be provided, nor events emitted there | `bus::reserved_namespaces_cannot_be_provided` |
+| A Hello that provides more than 1024 methods is refused `bad_request`; 1024 are accepted | `bus::a_hello_provides_at_most_1024_methods` |
 | 1000 calls between two participants arrive in the order sent | `bus::calls_between_two_participants_keep_their_order` |
 | A stream is a call answered in chunks and End; a cancel reaches the provider; a reply to a stream is `bad_reply` | `bus::a_stream_is_a_call_answered_in_chunks` |
 | Events reach the subscribers connected now, by NATS patterns, once each, without history | `bus::events_reach_the_subscribers_connected_now` |
@@ -807,6 +811,143 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
 | Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
 | An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |
+
+## The terminal on the bus — `tests/bus_terminal.rs`
+
+The participant `tilrd` serves panes on `tilr.bus.v1` as on `tilr.v1`: `pane.*` calls
+create, list, close, resize and type into panes, `pane.output` streams a pane's frames as
+the pane process encoded them, `pane.read` reads it as text, and `pane.*` events with the
+scope `pane:<id>` tell what changed. `tilr.v1` clients see the same panes meanwhile.
+Helpers: `tests/common/bus_panes.rs`.
+
+| Use case | Test |
+|---|---|
+| A pane is created, listed and closed by calls; `created_by` names the caller; a `tilr.v1` client sees it; a missing pane is `not_found` | `bus_terminal::a_pane_is_created_listed_and_closed_by_calls` |
+| Pane changes are events in order (`pane.created`, `pane.title`, `pane.bell`, `pane.exited`, with `pane.changed`), scoped to the pane, from `tilrd` | `bus_terminal::pane_changes_are_events` |
+| Watching a pane is a stream of frames: a full frame first, the stream's caller a viewer until it cancels, `End` with the exit when the program exits | `bus_terminal::watching_a_pane_is_a_stream_of_frames` |
+| A watcher that reads nothing while its pane prints 7 MB gets the screen as it is then in a full frame and stays connected | `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen` |
+| Input is acknowledged once the pane applied it, also to a program that does not echo; 100 inputs arrive in order; the seq is echoed in a frame | `bus_terminal::input_is_acknowledged_after_it_is_applied` |
+| Numbered input needs a stable client id, is applied once across reconnects, has counters per client id, and is refused after `pane.input_finalize` | `bus_terminal::numbered_input_is_applied_once_across_reconnects` |
+| A pane reads as text with its cursor and history; a read with `since_seq` waits for a change (typing after its call is in) or the end of `wait_ms`, answered before a shorter deadline | `bus_terminal::reading_a_pane_and_waiting_for_a_change` |
+| A pane is resized by a call, answered once applied: the list, the text and the program see the new size | `bus_terminal::a_pane_is_resized_by_a_call` |
+| Keys, a paste and a mouse press reach the program as it reads them; a scroll moves the viewport into history and back | `bus_terminal::keys_mouse_paste_and_scroll_reach_the_pane` |
+| A numbered input replayed while its bytes wait for the pty is written once, and both calls are answered after its last byte | `bus_terminal::a_replayed_input_still_pending_is_written_once` |
+| Fields used towards pane processes cannot be sent in `pane.input`, nor `created_by` in `pane.create` | `bus_terminal::internal_fields_cannot_be_forged` |
+| A read the pane process does not answer is `unavailable`; one waiting when the pane ends says it ended, with its exit code | `bus_terminal::a_read_the_pane_process_does_not_answer_ends` |
+| A watcher behind when the pane exits gets the last screen before `End` | `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen` |
+| An input applied whose reply was lost with its connection is reported applied after reconnecting and not applied again | `bus_terminal::failpoints::an_input_whose_reply_was_lost_is_applied_once` |
+| `pane.applied` closes a pane it sent numbered input to that does not answer within 5 s and leaves panes it did not alone | `bus_terminal::failpoints::a_stuck_pane_is_closed_by_pane_applied` |
+| A reader of `pane.output` that stops reading holds up no other reader of its pane, no other pane and no input; reading again, it gets the screen as it is then | `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader` |
+| A pane call past its deadline is answered `timeout` and its handler stopped: an input that is never applied, a `pane.output` whose caller is then no viewer | `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled` |
+| A finished foreground command is the event `pane.command_finished`, scoped to the pane, from `tilrd` | `bus_terminal::a_finished_command_is_a_pane_event` |
+| A frame over a reader's window goes whole while it is short of credit: each image once, in image chunks no larger than the window, then the frame that places them | `bus_terminal::a_frame_over_the_window_goes_whole_to_a_reader_short_of_credit` |
+| A pane the caller may not access is answered `not_found` `no such pane: <id>` by every pane call, as a missing pane is, and is not listed | `bus_terminal::failpoints::a_pane_the_caller_may_not_access_is_answered_as_a_missing_one` |
+| Payloads pass byte for byte, whatever their content type | `bus::payloads_pass_byte_for_byte` |
+| The core's methods answer JSON to JSON (proto3 JSON: lowerCamel names, 64-bit integers as strings) and protobuf to protobuf | `bus::core_methods_answer_json_to_json` |
+| Unit: a frame goes on the bus as the pane encoded it, only its wrapping tag changed | `supervisor::bus::core::panes::tests::a_frame_goes_on_the_bus_as_the_pane_encoded_it` |
+| Unit: the full frame after a lag carries the consumer's latest skipped seq | `supervisor::bus::core::panes::tests::a_frame_after_lag_carries_the_consumers_seq` |
+| Unit: a frame over the largest chunk sends its images first | `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first` |
+| Unit: a frame is split to the stream's window, images first; a frame of text over it is `too_large` | `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window` |
+| Unit: a full frame queued before a frame that did not fit the stream's queue is sent but does not end the lag; every delta sent follows the frame before it | `supervisor::bus::core::panes::tests::a_full_frame_queued_before_a_missed_frame_does_not_end_the_lag` |
+| Unit: a `pane.read` reply over `max_frame` as JSON (control characters escaped) is `too_large`, though it fits as protobuf | `supervisor::bus::core::panes::tests::a_text_reply_over_max_frame_as_json_is_too_large` |
+| Unit: a consumer's own seqs are told apart by connection | `supervisor::bus::core::panes::tests::own_seqs_are_told_apart_by_connection` |
+| Unit: numbered input identities differ by identity and client id | `supervisor::bus::core::panes::tests::numbered_identities_differ_by_identity_and_client_id` |
+| Unit: bytes in proto3 JSON are written padded and read in any base64 form | `supervisor::bus::core::json::tests::bytes_are_written_padded_and_read_in_any_base64_form` |
+| Unit: the pane messages map to proto3 JSON and back | `supervisor::bus::core::json::tests::pane_messages_map_to_proto3_json_and_back` |
+| Unit: the screen reads as text with its history, cursor and title (`crates/tilr-screen`) | `ghostty::tests::the_screen_reads_as_text_with_its_history` |
+| Unit: the text of a screen is bounded: history past the bound left out, a viewport over it an error (`crates/tilr-screen`) | `ghostty::tests::the_text_of_a_screen_is_bounded` |
+
+## The bus's bounds — `tests/bus.rs`
+
+Why a call failed, deadlines and cancellation, credits per stream and per connection, the
+two lanes, `busy` instead of growth, events dropped for a lagging subscriber
+(`tilrd_bus_events_dropped_total`). Helpers in `tests/common/bus_streams.rs`.
+
+| Use case | Test |
+|---|---|
+| A failed call says why: `not_found` for a method nobody provides (a name only a participant that is gone provided is forgotten), `unavailable` for a method of windows with none open, also on a fresh server, and once its providers are gone, `timeout` at the deadline (the callee gets `Cancel`), `bad_request` for a window over 16 MiB; a call that names no deadline gets 10 s | `bus::a_failed_call_says_why` |
+| A provider that is draining gets no call: `unavailable` | `supervisor::bus::broker::tests::a_draining_provider_is_unavailable` |
+| Draining a connection with a call it never answers ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::draining_a_connection_ends_at_its_deadline_without_spinning` |
+| Draining the broker with a call never answered ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::the_broker_drain_ends_at_its_deadline_without_spinning` |
+| tilrd's own call keeps the deadline it gives, over `call_timeout_ms`; without one it gets `call_timeout_ms` and the callee `Cancel` | `supervisor::bus::broker::tests::a_native_callers_own_deadline_is_kept` |
+| The broker sends a connection a `CredentialUpdate` and tells when a connection ends | `supervisor::bus::broker::tests::the_broker_sends_a_credential_update_and_tells_when_a_connection_ends` |
+| A call outside the caller's rights is `denied`, naming the method | `supervisor::bus::broker::tests::a_call_outside_its_rights_is_denied_naming_the_method` |
+| 256 calls stay pending per caller and more are `busy`; a callee whose queue is full gets no more calls (`busy`) and is not closed | `bus::a_full_queue_is_answered_busy` |
+| A nested call gets the time that is left; the callee is cancelled at the deadline and when the caller's connection ends | `bus::a_nested_call_gets_the_time_that_is_left_and_a_cancel` |
+| A late `Reply`, `Chunk` or `End` after a timeout or a cancel is dropped | `bus::late_answers_after_a_timeout_or_a_cancel_are_dropped` |
+| A native call past its deadline is answered `timeout` and its handler stopped | `supervisor::bus::broker::tests::a_native_call_past_its_deadline_is_answered_timeout_and_cancelled` |
+| A lagging subscriber loses events, counted in the metric, not its connection | `bus::a_lagging_subscriber_loses_events_not_its_connection` |
+| A participant that stops reading does not hold up calls between the others | `bus::a_slow_participant_does_not_hold_up_the_others` |
+| A stream sends its reader's window, then waits for credit; the connection keeps answering | `bus::streams_are_paced_by_the_readers_credit` |
+| A native stream sends no more than its credit; a chunk larger than its window ends it `too_large` | `supervisor::bus::broker::tests::a_native_stream_sends_no_more_than_its_credit` |
+| The end of a native stream needs no credit | `supervisor::bus::broker::tests::the_end_of_a_native_stream_needs_no_credit` |
+| A native bulk stream waits for the connection window, then goes on when credited | `supervisor::bus::broker::tests::a_native_bulk_stream_waits_for_the_connection_window` |
+| A chunk larger than the window ends a latest-wins stream `too_large`; `try_send` is `Closed`, not `Full` | `supervisor::bus::broker::tests::a_chunk_larger_than_the_window_ends_a_latest_wins_stream` |
+| A latest-wins producer waits for credit for its whole chunk, not a byte, and learns the window | `supervisor::bus::broker::tests::a_latest_wins_producer_waits_for_credit_for_its_chunk` |
+| `caught_up` waits for a spent connection window: a latest-wins bulk producer does not spin | `supervisor::bus::broker::tests::caught_up_waits_for_the_connection_window` |
+| A producer waiting in `caught_up` on a reader that does not read returns once the reader's connection ends, and its stream is closed | `supervisor::bus::broker::tests::a_producer_waiting_in_caught_up_returns_when_its_readers_connection_ends` |
+| A provider that overruns a stream's credit is cancelled and its reader gets `bad_reply`, on either lane | `bus::a_stream_that_overruns_its_credit_is_ended` |
+| An empty chunk is relayed like any other; empty chunks that pile up for a reader that does not read end their stream `bad_reply` (each counts as 1 KiB held), and the reader stays | `bus::an_empty_chunk_is_relayed_and_a_flood_of_tiny_ones_ends_the_stream` |
+| A chunk the broker cannot relay within the frame limit ends its stream `too_large`, the provider is cancelled | `bus::a_chunk_too_large_to_relay_ends_its_stream` |
+| Bulk data sent and not credited is at most 1 MiB per connection, across streams; interactive streams still flow | `bus::bulk_data_in_the_network_is_bounded_per_connection` |
+| A bulk stream that ends uncredited gives the connection window back | `bus::a_bulk_stream_that_ends_uncredited_gives_the_window_back` |
+| The end of a relayed bulk stream (End, an error, a timeout, its provider gone) waits behind the chunks the broker holds | `bus::the_end_of_a_relayed_bulk_stream_waits_behind_held_chunks` |
+| A reader that never credits cannot grow what the broker holds of its streams: past 16 MiB a new stream is `busy` | `bus::a_reader_that_never_credits_cannot_grow_the_relay` |
+| A reader that stops reading large interactive chunks is closed 4001 past 32 MiB queued | `bus::a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow` |
+| Interactive traffic goes ahead of bulk traffic: an echo is answered before the next megabyte of a bulk stream | `bus::interactive_traffic_goes_ahead_of_bulk_traffic` |
+
+## Bus instances — `tests/bus.rs`
+
+Components run as instances `tilrd` starts and supervises from its own `bus.toml`: a
+process in a session of its own, its bus connection as descriptor 3 or on an instance
+socket, restarted with a pause when it ends. Tests start the real server with a `bus.toml`
+and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module; the
+`bus.*` control methods are called as the owner.
+
+| Use case | Test |
+|---|---|
+| An instance of `bus.toml` is started, listed `up`, answers calls and is `instance:<name>`; `autostart = false` is listed `stopped` until `bus.start` | `bus::an_instance_from_bus_toml_is_started_and_answers` |
+| A bad `bus.toml` at start (a misspelt key, the old `calls` key naming `rights`) is logged with the file, the server serves panes with no instances | `bus::a_bad_bus_toml_leaves_panes_working` |
+| A bad `bus.toml` on `bus.reload_config` is `bad_config` and changes nothing: the instance keeps its pid | `bus::reloading_a_bad_bus_toml_changes_nothing` |
+| A socket path over the platform limit is a configuration error, naming the file | `bus::a_socket_path_that_is_too_long_is_a_config_error` |
+| `bus.toml` is read with its defaults; an unknown key, a wrong type, an instance without its module, an empty command, a reserved or unusable name are refused naming the reason | `supervisor::bus::config::tests::bus_toml_is_read_with_its_defaults` |
+| A misspelt key is named, with its line | `supervisor::bus::config::tests::a_misspelt_key_is_named` |
+| The first round's `calls` key says `rights` replaced it | `supervisor::bus::config::tests::the_first_rounds_calls_key_names_rights` |
+| A wrong type is refused | `supervisor::bus::config::tests::a_wrong_type_is_refused` |
+| A `drain_ms` over 30000 is refused | `supervisor::bus::config::tests::a_drain_over_the_limit_is_refused` |
+| An instance needs a module and a module a command | `supervisor::bus::config::tests::an_instance_needs_a_module_and_a_module_a_command` |
+| `owner`, `tilrd`, `bus…` and unusable instance names are refused | `supervisor::bus::config::tests::reserved_and_unusable_instance_names_are_refused` |
+| A socket path over the platform limit is refused for a socket instance only | `supervisor::bus::config::tests::a_socket_path_over_the_platform_limit_is_refused` |
+| A changed file is compared instance by instance: added, removed, changed, kept (`autostart` aside) | `supervisor::bus::config::tests::a_changed_file_is_compared_instance_by_instance` |
+| A module's working directory defaults to the configuration directory | `supervisor::bus::config::tests::the_working_directory_defaults_to_the_configuration_directory` |
+| An instance gets descriptor 3 as `TILR_BUS_FD`, its name and the configuration directory; its `env` over the module's over the server's, without pane variables; no other descriptor | `bus::an_instance_gets_its_connection_and_names` |
+| A socket instance gets its socket (0600 in a 0700 directory) and a one-time token; the token is taken once, a second use or a wrong one is refused; a connection that says nothing is closed | `bus::a_socket_instance_connects_once_with_its_token` |
+| A crashed instance is started again after 200, 400, 800 ms (as logged), counting `restarts` | `bus::a_crashed_instance_is_restarted_with_backoff` |
+| An instance that closes its connection but keeps running is killed and started again | `bus::an_instance_that_loses_its_connection_is_restarted` |
+| An instance that never says Hello is killed and started again (the limit is 30 s, shortened by the test build) | `bus::an_instance_that_never_says_hello_is_restarted` |
+| A program that is not there is `spawn_failed`, one that exits before Hello `start_failed`; both are tried again | `bus::an_instance_that_cannot_start_is_reported` |
+| `bus.stop` drains (a call in flight is answered), stops and keeps the instance stopped until `bus.start`; stopping or starting twice is no error | `bus::an_instance_is_stopped_and_started` |
+| `bus.stop` ends an instance with SIGTERM: it starts with no signal blocked, though the supervisor's threads hold them | `bus::an_instance_is_stopped_with_sigterm` |
+| An instance that ignores SIGTERM is killed after 3 s | `bus::an_instance_that_ignores_sigterm_is_killed_after_3_s` |
+| A process an instance started ends with it, when the instance is stopped and when it exits by itself (its process group is killed before its leader is reaped) | `bus::an_instances_own_processes_end_with_it` |
+| `bus.reload` of an instance that cannot start again answers `start_failed`; the instance stays supervised and comes up once it can | `bus::a_reload_answers_a_start_error` |
+| `bus.reload` of a module or all takes the right over each instance it restarts (over every configured one for a module that does not exist): a caller without it is `denied` for a module that exists, one that does not and all alike, and nothing is restarted | `bus::reloading_a_module_takes_the_right_over_every_instance` |
+| Every control check names one instance, with the call's credential: `bus.instances` and `bus.methods` check `list` on each configured instance, `bus.reload_config` each instance the file adds, changes or removes (every configured one for a bad file); one denial is `denied` and nothing is done | `bus::control_rights_are_checked_for_each_instance` |
+| `bus.reload` of a module restarts its instances one at a time without a failed call; a caller that reloads itself has its reply first; the control right is checked | `bus::a_module_is_reloaded_one_instance_at_a_time` |
+| `bus.reload_config` starts the added, stops the removed, reloads the changed and leaves the others and the manually stopped alone | `bus::reloading_bus_toml_applies_the_difference` |
+| `bus.instances` lists instances and the outside participants, `bus.methods` the methods with their live providers; a draining instance is not offered | `bus::participants_and_methods_are_listed` |
+| An instance's stdout and stderr lines are in the server log as `bus <name>: <line>`; a line over 64 KiB is cut | `bus::an_instances_output_is_in_the_server_log` |
+| A line over the limit is cut and the next is whole | `supervisor::bus::runner::tests::an_instances_lines_are_cut_at_the_limit` |
+| Instance states are named `down`, `starting`, `up`, `draining`, `stopped` | `supervisor::bus::runner::tests::states_are_named_as_listed` |
+| The same call works over descriptor 3, an instance socket and a WebSocket | `bus::every_transport_speaks_the_same_envelopes` |
+| A length prefix over 16 MiB closes an instance's connection and the instance is restarted | `bus::a_frame_over_the_limit_closes_the_connection` |
+| An instance that provides a method of a reserved namespace is refused `reserved` and started again | `bus::reserved_namespaces_cannot_be_provided` |
+| A reload stops the instances before the exec and the successor starts them again from `bus.toml` | `bus::a_reload_stops_instances_and_the_successor_starts_them` |
+| A reload whose exec fails leaves the server running, and it starts the instances it stopped | `bus::a_failed_reload_starts_the_instances_again` |
+| A reload of the server does not wait for an instance's drain: a `bus.stop` draining a long call ends at once; `drain_ms` over 30000 is `bad_request` | `bus::a_reload_of_the_server_does_not_wait_for_a_long_drain` |
+| The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
+| `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
+| A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
 
 ## Launch profiles (`pane-profiles`) - `tests/profiles.rs`, `src/profile.rs`, `src/bus/core/profiles.rs`
 

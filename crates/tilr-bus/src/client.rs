@@ -525,6 +525,7 @@ pub struct Request {
     /// For a stream: the caller's initial window.
     pub window: u32,
     bus: Bus,
+    close_after_reply: Arc<AtomicBool>,
 }
 
 impl Request {
@@ -544,6 +545,13 @@ impl Request {
     pub fn time_left(&self) -> Option<Duration> {
         self.deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    /// End the connection (as [`Bus::close`]) once this call's reply, or a stream's
+    /// `End`, is queued: it goes out before the close. A handler aborted by a `Cancel`
+    /// does not close it.
+    pub fn close_after_reply(&self) {
+        self.close_after_reply.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1767,12 +1775,17 @@ impl Bus {
             rx: event_rx,
             dropped,
         };
-        inner
+        let sent = inner
             .send(Msg::Subscribe(wire::Subscribe {
                 id,
                 pattern: pattern.to_owned(),
             }))
-            .await?;
+            .await;
+        if let Err(error) = sent {
+            // Dropping the subscription takes its queue; the pending answer goes too.
+            lock(&inner.state).calls.remove(&id);
+            return Err(error);
+        }
         match rx.await {
             Ok(Ok(_)) => Ok(subscription),
             Ok(Err(error)) => Err(error),
@@ -2199,7 +2212,9 @@ fn on_call(inner: &Arc<Inner>, handle: &Weak<Handle>, call: wire::Call) {
         credential: call.credential,
         window,
         bus: bus.clone(),
+        close_after_reply: Arc::new(AtomicBool::new(false)),
     };
+    let close_after_reply = request.close_after_reply.clone();
     let gate =
         matches!(handler, Handler::Stream(_)).then(|| Arc::new(CreditGate::new(u64::from(window))));
     {
@@ -2264,6 +2279,9 @@ fn on_call(inner: &Arc<Inner>, handle: &Weak<Handle>, call: wire::Call) {
         {
             let _ = inner.send(error_reply(id, error)).await;
         }
+        if close_after_reply.load(Ordering::SeqCst) {
+            task_bus.close();
+        }
     });
     if let Some(served) = lock(&inner.state).served.get_mut(&id) {
         served.abort = Some(task.abort_handle());
@@ -2281,6 +2299,34 @@ fn error_reply(id: u64, error: BusError) -> Msg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_subscribe_that_cannot_be_sent_leaves_nothing_pending() {
+        let (client, broker) = std::os::unix::net::UnixStream::pair().unwrap();
+        broker.set_nonblocking(true).unwrap();
+        let mut broker = tokio::net::UnixStream::from_std(broker).unwrap();
+        let options = ConnectOptions::new("t");
+        let (bus, ()) = tokio::join!(Bus::connect(Transport::Fd(client.into()), options), async {
+            let mut buf = BytesMut::new();
+            while crate::codec::decode_stream(&mut buf).unwrap().is_none() {
+                assert_ne!(broker.read_buf(&mut buf).await.unwrap(), 0);
+            }
+            let ack = wire::HelloAck {
+                protocol_version: 1,
+                identity: "owner".into(),
+                max_frame: 64,
+                ..Default::default()
+            };
+            let frame = crate::codec::encode_stream(&envelope(Msg::HelloAck(ack))).unwrap();
+            broker.write_all(&frame).await.unwrap();
+        });
+        let bus = bus.unwrap();
+        let pattern = format!("test.{}", "a".repeat(100));
+        let error = bus.subscribe(&pattern).await.err().unwrap();
+        assert_eq!(error.code, codes::TOO_LARGE);
+        let state = lock(&bus.inner().state);
+        assert!(state.calls.is_empty() && state.subscriptions.is_empty());
+    }
 
     fn lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Transport, BusError> {
         Transport::from_lookup(lookup, &AtomicBool::new(false))
