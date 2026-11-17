@@ -120,7 +120,6 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | goal | size | starts after | merges after (depends on) | blocker | status |
 |---|---|---|---|---|---|---|
-| bus-streams-events | credits, lanes, bounded queues, `busy`, deadlines, lossy events for laggards, metric | L | bus-broker-core | bus-broker-core | no | ready |
 | bus-instances | `bus.toml`, runner, supervision, `bus.*` control, instance transports | L | bus-broker-core | bus-broker-core | no | ready |
 | bus-core-panes | `pane.*` methods, `pane.output`, pane events, `pane.read`, JSON for core methods | L | bus-broker-core (contract: `StreamOut`, `BusObserver`, handle) | bus-streams-events | no | ready |
 | bus-rights | Biscuit: root key, tokens, bearer credentials, expiry and renewal, revocation, rotation, limits, audit, close code 4003 | L | bus-broker-core (contract: `Authorizer`, `Rights`) | bus-instances | no | ready |
@@ -153,6 +152,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
+| bus-streams-events | [PR #138](https://github.com/tilr-dev/tilrd/pull/138) |
 | bus-broker-core | [PR #137](https://github.com/tilr-dev/tilrd/pull/137) |
 | bus-wire | [PR #135](https://github.com/tilr-dev/tilrd/pull/135) |
 | cargo-build-dir-layout | [PR #134](https://github.com/tilr-dev/tilrd/pull/134) |
