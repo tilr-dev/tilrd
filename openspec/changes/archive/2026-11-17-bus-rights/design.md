@@ -56,10 +56,15 @@ at most 64 expression operations in the block, without `.all`/`.any` (closures o
 values), `.matches` or extern functions, and its predicates are the request's facts only
 (`acl::REQUEST_FACTS`, one fact each per request, never the authority block's rights): a
 check binds once and costs its expression, whatever it joins. `verify` checks this once per
-token (re-parsing each appended block from its printed source), so such a token is refused
-before any Datalog runs and is never parsed into the cache. A block-level `trusting` scope is
-not printed and so not checked: it can only make facts of earlier appended blocks visible,
-and they have none.
+token, so such a token is refused before any Datalog runs and is never parsed into the cache.
+It reads each appended block from its signed bytes, the protobuf `schema::Block` decoded with
+biscuit-auth's own prost and converted with biscuit-auth's `format::convert` and the token's
+symbol table, exactly what the authorizer runs, never from its printed source: Biscuit 6
+prints symbols unescaped and its parser skips comments, so a fact named
+`check if kind("bus");/*f` and a predicate named `X*/check if kind` print 30 facts and a
+5-way join as two checks on `kind` (15 s per decision). A block with a field the schema does
+not know, a schema version above biscuit-auth's, an unknown check kind or operation, a
+`trusting` scope (block or rule) or a public key is refused too.
 The decision cache is keyed by a SHA-256 of the token's hash and the request's
 length-prefixed parts, so an entry is the same size whatever a call names; a `Call.target`
 over 512 bytes (a participant's name is far shorter) is denied before it is decided, cached

@@ -24,6 +24,9 @@ tilr-screen.workspace = true
 anyhow.workspace = true
 # Bus rights (design R1): exact version, without PEM and full regex (6.0.0 does not build without `datalog-macro`).
 biscuit-auth = { version = "=6.0.0", default-features = false, features = ["datalog-macro"] }
+# The prost of biscuit-auth's protobuf schema (already in the tree through it): an
+# appended block is decoded from its signed bytes, never read from printed source.
+biscuit-prost = { package = "prost", version = "0.10", default-features = false }
 bytes.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"

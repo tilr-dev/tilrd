@@ -1056,8 +1056,10 @@ and may do only what its token lists (least privilege; design R1-R9 in
   `namespace`, `target`, `subject`, `pattern`, `action`, `instance`, `scope`, `caller`,
   `origin`, `server`, `time` and the pane facts (`pane_profile_requested`,
   `pane_overrides`, `pane`, `pane_creator`), one fact each per request; `.all`, `.any`,
-  `.matches` and extern functions are refused. So a check costs the same whatever it joins,
-  and every block is enforced; none adds a right.
+  `.matches` and extern functions are refused, and so is a `trusting` scope or a public key.
+  The server reads a block from its signed bytes (the facts, rules and checks the
+  authorizer runs), never from its printed source, and refuses one it cannot read whole. So
+  a check costs the same whatever it joins, and every block is enforced; none adds a right.
 - **Expiry and renewal.** A token lives at most 24 h (`bus.token` `ttl_ms`, 0 = 24 h). The
   server renews an instance's token 12 h after minting it and sends the new one to the
   instance in a `CredentialUpdate` (as after a rotation). An outside participant calls

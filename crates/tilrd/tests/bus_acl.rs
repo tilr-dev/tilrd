@@ -1004,8 +1004,81 @@ async fn authorization_that_runs_too_long_is_denied() {
         .unwrap();
     let reason = denied(bounded("the rule", calls(&owner, "test.echo", "", with(&heavy))).await);
     assert!(reason.contains("checks only"), "{reason}");
+    // The same join hidden from the printed source: symbol names that open and
+    // close a comment make it print as two checks on `kind` (2 s at 20 facts, 15 s
+    // at 30 in a release build). Read from the block's data: refused at once too.
+    let hidden = hidden_join(&token, 30);
+    let reason = denied(
+        bounded(
+            "the hidden join",
+            calls(&owner, "test.echo", "", with(&hidden)),
+        )
+        .await,
+    );
+    assert!(
+        reason.starts_with("an appended block holds checks only"),
+        "{reason}"
+    );
+    let error = bounded(
+        "the hidden join's Hello",
+        connect(&server, &hidden, ConnectOptions::new("c")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert!(error.message.contains("checks only"), "{error}");
     // The token itself still works.
     calls(&owner, "test.echo", "", with(&token)).await.unwrap();
+}
+
+/// `token` with a block appended through Biscuit's builder API whose symbol names
+/// carry source text: printed, the block reads as two checks on `kind`; it holds `n`
+/// facts and a rule with a 5-way join over them.
+fn hidden_join(token: &Credential, n: usize) -> Credential {
+    use biscuit_auth::builder::{self as d, Binary, Expression, Op};
+    let v = d::variable;
+    let mut block = biscuit_auth::BlockBuilder::new()
+        .fact(d::fact(r#"check if kind("bus");/*f"#, &[d::string("x")]))
+        .unwrap();
+    for i in 0..n {
+        block = block
+            .fact(d::fact("f", &[d::string(&i.to_string())]))
+            .unwrap();
+    }
+    let never = Expression {
+        ops: vec![
+            Op::Value(v("a")),
+            Op::Value(d::string("never")),
+            Op::Binary(Binary::Equal),
+        ],
+    };
+    let block = block
+        .rule(d::Rule::new(
+            d::pred("g", &[v("a")]),
+            ["a", "b", "c", "d", "e"]
+                .map(|x| d::pred("f", &[v(x)]))
+                .to_vec(),
+            vec![never],
+            vec![],
+        ))
+        .unwrap()
+        .check(d::Check {
+            queries: vec![d::Rule::new(
+                d::pred("query", &[] as &[d::Term]),
+                vec![d::pred("X*/check if kind", &[d::string("bus")])],
+                vec![],
+                vec![],
+            )],
+            kind: d::CheckKind::One,
+        })
+        .unwrap();
+    let bytes = biscuit_auth::UnverifiedBiscuit::from(token.as_bytes().as_ref())
+        .unwrap()
+        .append(block)
+        .unwrap()
+        .to_vec()
+        .unwrap();
+    Credential::from_bytes(bytes)
 }
 
 #[tokio::test]

@@ -153,9 +153,9 @@ A token holder SHALL be able to append a block of checks (on `method`, `target`,
 - **THEN** every call with that token is `denied`, also one inside the authority block's rights
 
 ### Requirement: An appended block holds bounded checks on the request only
-A token with an appended block that holds a fact or a rule, more than 16 checks (each `or` alternative counted), a check of more than 16 predicates, more than 64 expression operations, a predicate other than the facts the server supplies for the request (`acl::REQUEST_FACTS`), or `.all`, `.any`, `.matches` or an extern function MUST be `denied` when it is verified, at `Hello` and per call, before any Datalog runs.
+A token with an appended block that holds a fact or a rule, over 16 checks (each `or` alternative counted), a check of over 16 predicates, over 64 expression operations, a predicate other than the request's facts (`acl::REQUEST_FACTS`), `.all`, `.any`, `.matches`, an extern function or a `trusting` scope MUST be `denied` when verified, at `Hello` and per call, before any Datalog runs, read from its signed bytes, never its printed source.
 
-**Verified by**: `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::an_attenuated_token_only_narrows`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`.
+**Verified by**: `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::an_attenuated_token_only_narrows`, `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only`, `supervisor::bus::acl::tests::an_appended_block_is_read_from_its_data_not_its_printed_text`.
 
 #### Scenario: A costly block
 - **WHEN** a holder appends a block of 40 facts and a check joining five of them (`check if f($a), f($b), f($c), f($d), f($e), $a + $b + $c + $d + $e == -1`), or of a rule, and presents the token per call and in `Hello`
@@ -164,6 +164,10 @@ A token with an appended block that holds a fact or a rule, more than 16 checks 
 #### Scenario: A join over the token's rights
 - **WHEN** a token with 40 `call` rights is attenuated with `check if call($a), call($b), call($c), call($d), call($e), ...` and presented per call
 - **THEN** the call is `denied` at once: the check reads facts that are not the request's
+
+#### Scenario: A block whose names carry source text
+- **WHEN** a holder appends, with Biscuit's builder API, a block of 30 facts and a rule joining five of them, whose first fact is named `check if kind("bus");/*f` and whose check reads a predicate named `X*/check if kind`, so that its printed source reads as two checks on `kind`, and presents the token per call and in `Hello`
+- **THEN** the call and the `Hello` are `denied` at once, saying an appended block holds checks only; so is a block whose names hide a fact behind `//` or a newline, whose check trusts other blocks, or whose predicate only prints like a request's fact (`kind ` with a trailing space)
 
 #### Scenario: Checks on the request
 - **WHEN** an appended block holds `check if namespace("bus") or instance($i), $i.starts_with("s-")`

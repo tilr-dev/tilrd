@@ -2183,6 +2183,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "notify",
+ "prost 0.10.4",
  "prost 0.14.4",
  "ring",
  "serde",

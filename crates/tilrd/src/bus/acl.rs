@@ -516,25 +516,88 @@ pub const REQUEST_FACTS: &[&str] = &[
     "pane_creator",
 ];
 
-/// Whether the appended block `index` of `biscuit` is one a decision stays cheap
-/// with (R7): checks only (no fact, no rule), at most [`MAX_BLOCK_CHECKS`] of them,
+/// Whether every appended block of `biscuit` is one a decision stays cheap with
+/// (R7), read from the block's signed bytes as the authorizer reads them, never
+/// from printed source: Biscuit prints symbols unescaped, so a name can carry
+/// source text that reads as something else.
+fn check_appended_blocks(biscuit: &Biscuit) -> Result<(), String> {
+    // The token's symbol table as Biscuit makes it (third-party blocks are refused
+    // before): the default symbols, then each block's, in order.
+    let mut names = Vec::new();
+    for index in 0..biscuit.block_count() {
+        names.extend(
+            biscuit
+                .block_symbols(index)
+                .map_err(|_| UNREADABLE.to_owned())?,
+        );
+    }
+    let symbols =
+        biscuit_auth::datalog::SymbolTable::from(names).map_err(|_| UNREADABLE.to_owned())?;
+    let container = biscuit.container().to_proto();
+    for signed in &container.blocks {
+        check_appended_block(&signed.block, &symbols)?;
+    }
+    Ok(())
+}
+
+const UNREADABLE: &str = "an appended block does not read";
+
+/// Whether the appended block of `data` (its protobuf bytes) holds checks only (no
+/// fact, no rule, no scope, no public key), at most [`MAX_BLOCK_CHECKS`] queries,
 /// each reading only [`REQUEST_FACTS`] with at most [`MAX_CHECK_PREDICATES`]
 /// predicates, and at most [`MAX_BLOCK_OPS`] expression operations, none of them a
 /// closure over values (`.all`, `.any`), a regex or an extern function. Biscuit
 /// checks its time limit only between checks, so one check must never be costly:
-/// with one binding per check and a bounded expression it never is.
-fn check_appended_block(biscuit: &Biscuit, index: usize) -> Result<(), String> {
-    use biscuit_auth::builder::{Binary, Op, Unary};
-    let source = biscuit
-        .print_block_source(index)
-        .map_err(|_| "an appended block does not read".to_owned())?;
-    let block = biscuit_auth::BlockBuilder::new()
-        .code(&source)
-        .map_err(|_| "an appended block does not read".to_owned())?;
+/// with one binding per check and a bounded expression it never is. Anything it does
+/// not know is refused: a field the schema does not have, a schema version above
+/// biscuit-auth's, an unknown kind or operation.
+fn check_appended_block(
+    data: &[u8],
+    symbols: &biscuit_auth::datalog::SymbolTable,
+) -> Result<(), String> {
+    use biscuit_auth::builder::{Binary, Check, CheckKind, Convert as _, Op, Unary};
+    use biscuit_auth::format::{convert, schema};
+    use biscuit_prost::Message as _;
+    let unreadable = || UNREADABLE.to_owned();
+    let block = schema::Block::decode(data).map_err(|_| unreadable())?;
+    // Decoding drops what the schema does not know: such a block is not read whole.
+    if block.encoded_len() != data.len() {
+        return Err(unreadable());
+    }
     if !block.facts.is_empty() || !block.rules.is_empty() {
         return Err("an appended block holds checks only, no facts or rules".into());
     }
-    let queries: Vec<_> = block.checks.iter().flat_map(|c| &c.queries).collect();
+    if !block.scope.is_empty()
+        || !block.public_keys.is_empty()
+        || block
+            .checks
+            .iter()
+            .flat_map(|check| &check.queries)
+            .any(|query| !query.scope.is_empty())
+    {
+        return Err("an appended block may not trust other blocks or keys".into());
+    }
+    if block
+        .checks
+        .iter()
+        .any(|check| !matches!(check.kind, None | Some(0..=2)))
+    {
+        return Err(unreadable());
+    }
+    // The version range, check kinds, terms and operations as the authorizer reads them.
+    let block = convert::proto_block_to_token_block(&block, None).map_err(|_| unreadable())?;
+    let checks = block
+        .checks
+        .iter()
+        .map(|check| Check::convert_from(check, symbols))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| unreadable())?;
+    for check in &checks {
+        match check.kind {
+            CheckKind::One | CheckKind::All | CheckKind::Reject => {}
+        }
+    }
+    let queries: Vec<_> = checks.iter().flat_map(|c| &c.queries).collect();
     if queries.len() > MAX_BLOCK_CHECKS {
         return Err(format!(
             "an appended block holds at most {MAX_BLOCK_CHECKS} checks"
@@ -557,13 +620,46 @@ fn check_appended_block(biscuit: &Biscuit, index: usize) -> Result<(), String> {
                 Op::Binary(Binary::Ffi(_)) | Op::Unary(Unary::Ffi(_)) => {
                     return Err("an appended block may not call extern functions".into());
                 }
-                _ => {}
+                // Each linear in its operands, which the block's size bounds.
+                Op::Value(_)
+                | Op::Unary(Unary::Negate | Unary::Parens | Unary::Length | Unary::TypeOf)
+                | Op::Binary(
+                    Binary::LessThan
+                    | Binary::GreaterThan
+                    | Binary::LessOrEqual
+                    | Binary::GreaterOrEqual
+                    | Binary::Equal
+                    | Binary::Contains
+                    | Binary::Prefix
+                    | Binary::Suffix
+                    | Binary::Add
+                    | Binary::Sub
+                    | Binary::Mul
+                    | Binary::Div
+                    | Binary::And
+                    | Binary::Or
+                    | Binary::Intersection
+                    | Binary::Union
+                    | Binary::BitwiseAnd
+                    | Binary::BitwiseOr
+                    | Binary::BitwiseXor
+                    | Binary::NotEqual
+                    | Binary::HeterogeneousEqual
+                    | Binary::HeterogeneousNotEqual
+                    | Binary::LazyAnd
+                    | Binary::LazyOr
+                    | Binary::Get
+                    | Binary::TryOr,
+                ) => {}
             }
         }
         Ok(())
     }
     let mut ops = 0;
     for query in queries {
+        if !query.scopes.is_empty() {
+            return Err("an appended block may not trust other blocks or keys".into());
+        }
         if query.body.len() > MAX_CHECK_PREDICATES {
             return Err(format!(
                 "an appended block's check reads at most {MAX_CHECK_PREDICATES} facts"
@@ -575,7 +671,7 @@ fn check_appended_block(biscuit: &Biscuit, index: usize) -> Result<(), String> {
             .find(|p| !REQUEST_FACTS.contains(&p.name.as_str()))
         {
             return Err(format!(
-                "an appended block's checks read the request's facts only, not {}",
+                "an appended block's checks read the request's facts only, not {:?}",
                 clip(&predicate.name, 64)
             ));
         }
@@ -1291,9 +1387,7 @@ impl Acl {
         let biscuit = unverified
             .verify(pair.public())
             .map_err(|_| Denied::new("not a token of this server"))?;
-        for index in 1..biscuit.block_count() {
-            check_appended_block(&biscuit, index).map_err(Denied::new)?;
-        }
+        check_appended_blocks(&biscuit).map_err(Denied::new)?;
         let meta: Meta = biscuit
             .context()
             .first()
@@ -3027,6 +3121,205 @@ mod tests {
         };
         assert!(narrowed_call("instance:t-2").is_ok());
         assert!(narrowed_call("instance:t-3").is_err());
+    }
+
+    /// `bytes` with `block` appended through Biscuit's builder API (no source text).
+    fn appended(bytes: &[u8], block: biscuit_auth::BlockBuilder) -> Vec<u8> {
+        UnverifiedBiscuit::from(bytes)
+            .unwrap()
+            .append(block)
+            .unwrap()
+            .to_vec()
+            .unwrap()
+    }
+
+    /// The block whose symbol names carry source text: printed, it reads as two
+    /// checks on `kind`; what it holds is `n` facts of its own, a rule with a 5-way
+    /// join over them, and a check reading a predicate no request has.
+    fn hidden_join_block(n: usize) -> biscuit_auth::BlockBuilder {
+        use biscuit_auth::builder::{self as d, Binary, Expression, Op};
+        let v = d::variable;
+        let mut block = biscuit_auth::BlockBuilder::new()
+            .fact(d::fact(r#"check if kind("bus");/*f"#, &[d::string("x")]))
+            .unwrap();
+        for i in 0..n {
+            block = block
+                .fact(d::fact("f", &[d::string(&i.to_string())]))
+                .unwrap();
+        }
+        let body = ["a", "b", "c", "d", "e"].map(|x| d::pred("f", &[v(x)]));
+        let never = Expression {
+            ops: vec![
+                Op::Value(v("a")),
+                Op::Value(d::string("never")),
+                Op::Binary(Binary::Equal),
+            ],
+        };
+        block
+            .rule(d::Rule::new(
+                d::pred("g", &[v("a")]),
+                body.to_vec(),
+                vec![never],
+                vec![],
+            ))
+            .unwrap()
+            .check(check_of(
+                d::pred("X*/check if kind", &[d::string("bus")]),
+                vec![],
+            ))
+            .unwrap()
+    }
+
+    /// `check if <predicate>` with `scopes`.
+    fn check_of(
+        predicate: biscuit_auth::builder::Predicate,
+        scopes: Vec<biscuit_auth::builder::Scope>,
+    ) -> biscuit_auth::builder::Check {
+        use biscuit_auth::builder as d;
+        d::Check {
+            queries: vec![d::Rule::new(
+                d::pred("query", &[] as &[d::Term]),
+                vec![predicate],
+                vec![],
+                scopes,
+            )],
+            kind: d::CheckKind::One,
+        }
+    }
+
+    #[test]
+    fn an_appended_block_is_read_from_its_data_not_its_printed_text() {
+        use biscuit_auth::builder::{self as d, Scope};
+        let f = fixture("s");
+        let owner = Principal {
+            identity: Identity::Owner,
+            ..Principal::tilrd()
+        };
+        let many: Vec<String> = (0..40).map(|i| format!("m.x{i}")).collect();
+        let token = minted(&f, &rights(|r| r.call = many));
+        let block = |predicates: Vec<d::Predicate>| {
+            biscuit_auth::BlockBuilder::new()
+                .check(d::Check {
+                    queries: vec![d::Rule::new(
+                        d::pred("query", &[] as &[d::Term]),
+                        predicates,
+                        vec![],
+                        vec![],
+                    )],
+                    kind: d::CheckKind::One,
+                })
+                .unwrap()
+        };
+        let joins = || ["a", "b", "c", "d", "e"].map(|x| d::pred("call", &[d::variable(x)]));
+        let refused = [
+            // 30 hidden facts and a 5-way join (15 s in a release build).
+            hidden_join_block(30),
+            // A `"` in a string closes it: the 5-way join over the rights sits in a
+            // comment the string opens.
+            block(
+                [d::pred("kind", &[d::string(r#"x")/*"#)])]
+                    .into_iter()
+                    .chain(joins())
+                    .chain([d::pred("*/,kind", &[d::string("y")])])
+                    .collect(),
+            ),
+            // A `//` comment hides the fact on its line.
+            biscuit_auth::BlockBuilder::new()
+                .fact(d::fact(r#"check if kind("bus");//"#, &[d::string("x")]))
+                .unwrap(),
+            // A newline in a predicate name, inside a comment the name opens.
+            biscuit_auth::BlockBuilder::new()
+                .fact(d::fact("check if kind(\"bus\");/*\nf", &[d::string("x")]))
+                .unwrap()
+                .fact(d::fact("f", &[d::string("y")]))
+                .unwrap()
+                .check(check_of(
+                    d::pred("\n*/check if kind", &[d::string("bus")]),
+                    vec![],
+                ))
+                .unwrap(),
+            // A rule alone.
+            biscuit_auth::BlockBuilder::new()
+                .rule(d::Rule::new(
+                    d::pred("g", &[d::variable("m")]),
+                    vec![d::pred("method", &[d::variable("m")])],
+                    vec![],
+                    vec![],
+                ))
+                .unwrap(),
+            // Checks that trust other blocks.
+            biscuit_auth::BlockBuilder::new()
+                .check(check_of(
+                    d::pred("kind", &[d::string("call")]),
+                    vec![Scope::Previous],
+                ))
+                .unwrap(),
+            biscuit_auth::BlockBuilder::new()
+                .check(check_of(d::pred("kind", &[d::string("call")]), vec![]))
+                .unwrap()
+                .scope(Scope::Previous),
+            // Names that print like a request's fact and are not one.
+            block(vec![d::pred("kind ", &[d::string("call")])]),
+            block(vec![d::pred("k\u{0456}nd", &[d::string("call")])]),
+        ];
+        for (n, block) in refused.into_iter().enumerate() {
+            let bytes = appended(&token.bytes, block);
+            let acl = Arc::clone(&f.acl);
+            let owner = owner.clone();
+            let refused = within(move || {
+                acl.authorize(&owner, Some(&bytes), &call("m.x1", ""))
+                    .map_err(|denied| denied.reason)
+            })
+            .unwrap_or_else(|| panic!("block {n}: still deciding after 5 s"));
+            let reason = refused.expect_err("refused");
+            assert!(
+                reason.starts_with("an appended block"),
+                "block {n}: {reason}"
+            );
+        }
+        // The same narrowing built with the builder API verifies and narrows.
+        let narrowed = appended(
+            &token.bytes,
+            biscuit_auth::BlockBuilder::new()
+                .check(check_of(
+                    d::pred("target", &[d::string("instance:t-2")]),
+                    vec![],
+                ))
+                .unwrap(),
+        );
+        let decide = |target| {
+            f.acl
+                .authorize(&owner, Some(&narrowed), &call("m.x1", target))
+        };
+        assert!(decide("instance:t-2").is_ok());
+        assert!(decide("instance:t-3").is_err());
+        // About the largest accepted blocks: set operations over literals that fill
+        // the token (7.6 ms in a debug build), and a string of 20 copies of one 13 KB
+        // symbol (a symbol is stored once however often a block uses it) searched (5 ms
+        // with 30 copies). Decided, within the bound.
+        let set = (0..850)
+            .map(|i| format!("\"{i:04}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let big = format!("\"{}\"", "a".repeat(13_000));
+        let credential = tilr_bus::Credential::from_bytes(token.bytes.clone());
+        for block in [
+            format!("check if {{{set}}}.intersection({{{set}}}).length() >= 0;"),
+            format!(
+                "check if ({}).contains({big} + \"b\") || true;",
+                vec![big.as_str(); 20].join(" + ")
+            ),
+        ] {
+            let bytes = credential.attenuate(&block).unwrap().as_bytes().clone();
+            let acl = Arc::clone(&f.acl);
+            let owner = owner.clone();
+            let decided = within(move || {
+                acl.authorize(&owner, Some(&bytes), &call("m.x1", ""))
+                    .map_err(|denied| denied.reason)
+            })
+            .expect("decided within 5 s");
+            assert!(decided.is_ok(), "{decided:?}");
+        }
     }
 
     #[test]
