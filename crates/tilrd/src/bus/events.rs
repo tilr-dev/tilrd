@@ -6,9 +6,45 @@
 //!
 //! The broker stores no event: one is delivered to the connections that hold a
 //! matching subscription when it is emitted, once per connection, in emit order
-//! per emitter, and is gone.
+//! per emitter, and is gone. A subscriber whose interactive lane lags (a packet
+//! held over 250 ms, or the lane as full as a call may fill it) does not get it:
+//! the event is dropped and counted by subject ([`count_dropped`], the metric
+//! `tilrd_bus_events_dropped_total`), and the connection stays.
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+/// Subjects counted apart in `tilrd_bus_events_dropped_total`; the others are
+/// counted under [`OTHER_SUBJECTS`], so a flood of subjects does not grow it.
+const COUNTED_SUBJECTS: usize = 1000;
+/// The `subject` label of the drops beyond [`COUNTED_SUBJECTS`].
+pub const OTHER_SUBJECTS: &str = "other";
+
+/// Events dropped for lagging subscribers, by subject, since the start.
+static DROPPED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+/// `count` deliveries of an event of `subject` were dropped.
+pub fn count_dropped(subject: &str, count: u64) {
+    let mut dropped = DROPPED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = if dropped.contains_key(subject) || dropped.len() < COUNTED_SUBJECTS {
+        subject
+    } else {
+        OTHER_SUBJECTS
+    };
+    *dropped.entry(key.to_owned()).or_default() += count;
+}
+
+/// The drops so far, by subject, sorted.
+pub fn dropped() -> Vec<(String, u64)> {
+    DROPPED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .map(|(subject, count)| (subject.clone(), *count))
+        .collect()
+}
 
 /// The subscriptions of one connection, by the id it chose.
 #[derive(Debug, Default)]
