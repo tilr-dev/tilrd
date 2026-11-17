@@ -23,7 +23,6 @@
 use std::os::fd::{OwnedFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
@@ -316,8 +315,47 @@ impl Out {
             if self.tx.drained() || self.tx.closed() {
                 return;
             }
-            let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
+            // Woken when the lane empties, or when the writer's queue is
+            // dropped ([`WriterQueue`]): no timer needed.
+            notified.await;
         }
+    }
+}
+
+/// The writer's end of a connection's queue. Dropping it (the writer ended or
+/// was aborted) closes the queue, then wakes [`Out::caught_up`], which then
+/// sees the connection closed.
+struct WriterQueue {
+    outbox: Option<outbox::Outbox>,
+    drained: Arc<Notify>,
+}
+
+impl WriterQueue {
+    fn new(outbox: outbox::Outbox, out: &Out) -> Self {
+        Self {
+            outbox: Some(outbox),
+            drained: Arc::clone(&out.drained),
+        }
+    }
+}
+
+impl std::ops::Deref for WriterQueue {
+    type Target = outbox::Outbox;
+    fn deref(&self) -> &outbox::Outbox {
+        self.outbox.as_ref().expect("taken only on drop")
+    }
+}
+
+impl std::ops::DerefMut for WriterQueue {
+    fn deref_mut(&mut self) -> &mut outbox::Outbox {
+        self.outbox.as_mut().expect("taken only on drop")
+    }
+}
+
+impl Drop for WriterQueue {
+    fn drop(&mut self) {
+        drop(self.outbox.take());
+        self.drained.notify_waiters();
     }
 }
 
@@ -570,7 +608,8 @@ where
         limit_unsent(socket);
     }
     let (mut sink, mut source) = ws.split();
-    let (out, mut outbox, mut closing) = out(id, Framing::WebSocket);
+    let (out, outbox, mut closing) = out(id, Framing::WebSocket);
+    let mut outbox = WriterQueue::new(outbox, &out);
     let drained = Arc::clone(&out.drained);
     let written = Written::new(&out, &broker);
     let client_timeout = broker.client_timeout();
@@ -756,7 +795,8 @@ pub(super) fn spawn_stream(
             }
         };
         let (mut reader, mut writer) = stream.into_split();
-        let (out, mut outbox, mut closing) = out(id, Framing::Stream);
+        let (out, outbox, mut closing) = out(id, Framing::Stream);
+        let mut outbox = WriterQueue::new(outbox, &out);
         let drained = Arc::clone(&out.drained);
         let written = Written::new(&out, &broker);
         let mut write = tokio::spawn(async move {
