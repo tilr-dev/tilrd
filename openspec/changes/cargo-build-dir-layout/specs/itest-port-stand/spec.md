@@ -3,9 +3,7 @@
 ### Requirement: Build-script output for Rust tests
 The dt stand SHALL export the Rust test build's Cargo build-script stdout and
 restore it at compile-time paths in each Rust runtime, independently of the
-shared Cargo target cache. The stdout SHALL be read from `<OUT_DIR>/../run/stdout`
-when the build ran on Cargo 1.100 or newer, and from `<OUT_DIR>/../output` on older
-Cargo (MSRV).
+shared Cargo target cache, at the stdout path of the Cargo version that built it.
 
 **Verified by:** `tilr/build_script::every_watched_file_exists_and_the_git_head_is_watched`
 and `tilrd/build_script::every_watched_file_exists_and_the_git_head_is_watched`
