@@ -120,7 +120,6 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | goal | size | starts after | merges after (depends on) | blocker | status |
 |---|---|---|---|---|---|---|
-| bus-broker-core | broker skeleton beside `tilr.v1`: routing, plain streams and events, WebSocket transport, frozen extension points, test harness | L | bus-wire | bus-wire | no | ready |
 | bus-streams-events | credits, lanes, bounded queues, `busy`, deadlines, lossy events for laggards, metric | L | bus-broker-core | bus-broker-core | no | ready |
 | bus-instances | `bus.toml`, runner, supervision, `bus.*` control, instance transports | L | bus-broker-core | bus-broker-core | no | ready |
 | bus-core-panes | `pane.*` methods, `pane.output`, pane events, `pane.read`, JSON for core methods | L | bus-broker-core (contract: `StreamOut`, `BusObserver`, handle) | bus-streams-events | no | ready |

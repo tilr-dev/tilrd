@@ -16,4 +16,4 @@ former `unified-bus` (its `tasks.md` before the split).
 ## 3. Checks and archive
 
 - [x] 3.1 [12.1] Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green and every existing test passes under its name
-- [ ] 3.2 [12.2] Update this change's row in `openspec/ROADMAP.md` and archive the change; verify `openspec validate --all --strict`
+- [x] 3.2 [12.2] Update this change's row in `openspec/ROADMAP.md` and archive the change; verify `openspec validate --all --strict`
