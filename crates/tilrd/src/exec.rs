@@ -605,7 +605,7 @@ async fn run(mut r: Running) {
 /// Once the program has exited, without reaping it: its zombie keeps its pid
 /// (and so its group's id) from being reused until [`Child::wait`].
 /// Woken by SIGCHLD, and once a second should a signal be missed.
-async fn exited(pid: u32, sigchld: &mut Option<Signal>) {
+pub(crate) async fn exited(pid: u32, sigchld: &mut Option<Signal>) {
     loop {
         if has_exited(pid) {
             return;

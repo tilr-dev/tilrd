@@ -875,21 +875,130 @@ send events through it. Its envelope and payload schemas are in the crate
 
 The first envelope is `Hello` with `protocol_version` 1 and the methods the participant
 provides; anything else first, or a message that is not an envelope, is answered
-`expected_hello` and closed, another version `unsupported_version`. On the Unix socket the participant is the owner; on TCP the owner
-shows the access token; a participant with a `credential` is the participant of that
-token (see Rights). The answer, `HelloAck`,
-is the first thing a participant hears: its identity (`owner`), the connection id, the
-server id and the frame limit. The broker sets `from` of every call and event to the
-sender's identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
-`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers `bus.ping`.
-A call goes to the provider named by `target`, else round robin over the providers, or to
-the one that activated last for a method declared `LAST_ACTIVE`; calls between two
-participants keep their order. A newer connection with the same `client_id` supersedes
-the older (close 4000).
+`expected_hello` and closed, another version `unsupported_version`. A `Hello` may provide
+at most 1024 methods; more is refused `bad_request`. On the Unix socket the participant
+is the owner; on TCP the owner shows the access token; a participant with a `credential`
+is the participant of that token (see Rights). The answer, `HelloAck`, is the first
+thing a participant hears: its identity (`owner`), the connection id, the server id and
+the frame limit. The broker sets `from` of every call and event to the sender's
+identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
+`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
+`bus.ping`. A call goes to the provider named by `target`, else round robin over the
+providers, or to the one that activated last for a method declared `LAST_ACTIVE`; calls
+between two participants keep their order. A newer connection with the same `client_id`
+supersedes the older (close 4000).
 
 ### Streams and events
 
+A call fails with a reason: `not_found` (a target that does not provide the method, or
+a method that is not known: known are those a connection provides now, those
+`bus.toml` names, and those of windows and clients such as `ui.notify` or `host.open`),
+`unavailable` (a target not connected, a known method with no provider connected now
+or only draining ones, or a provider that went away before answering), `timeout`,
+`denied`, `busy`, `bad_request`, `bad_reply`, `too_large`; the message names the method
+or the participant. A participant has at most 256 calls and streams pending
+(`HelloAck.max_in_flight`); more are answered `busy` at once, and so is a call to a
+participant whose queue is full (768 of its 1024 interactive envelopes, or 24 MiB
+unwritten), which is not closed for it. A call's deadline is `min(timeout_ms, 10 s)`
+(0: 10 s); a stream has one only when it names one. The callee gets the time that is
+left in `timeout_ms`; at the deadline the caller gets `timeout` and the callee `Cancel`,
+as it does when the caller cancels or its connection ends. A late answer is dropped.
+
+A stream is a call answered by chunks and `End` (or an error). Its provider sends at
+most the credit its reader gave: the window of the call (`Call.window`, 0: 1 MiB, at
+most 16 MiB) plus what the reader returned with `Credit` as it read; one that sends more
+gets `Cancel` and its reader `bad_reply`. A reader that stops crediting stalls only that
+stream. Credit counts `Chunk.payload` bytes as carried in the envelope (a payload its
+producer compressed counts compressed). Chunks and replies of a `BULK` method go in the
+reader connection's bulk lane, written only when its interactive lane (events, replies
+of other methods, credits, cancels) is empty; across all bulk streams to one connection
+at most 1 MiB is sent and not yet credited (`HelloAck.connection_window`). The rest
+waits in the server, at most 1 MiB per stream and 16 MiB over the streams one
+connection reads: a stream that would pass it is `busy`, each chunk counts as at least
+1 KiB there (an empty one too, which is relayed like any other), and a provider whose
+tiny chunks fill it gets its stream ended `bad_reply`. A connection's interactive lane
+holds at most 1024 envelopes or 32 MiB unwritten, its bulk lane 1024 envelopes or
+4 MiB; a full interactive lane closes the connection 4001. The end of a stream comes
+after its chunks and never waits for credit.
+
+Events go to the subscribers connected now, by NATS patterns, at most once each,
+without history. A subscriber whose connection lags (a packet queued over 250 ms, or
+768 envelopes or 24 MiB queued) does not get them: they are dropped and counted in
+`tilrd_bus_events_dropped_total`, and the connection stays.
+
 ### Instances
+
+Components (Deno, Python, any program that speaks the bus) run as instances `tilrd` starts and
+supervises from its own file, `bus.toml` in the configuration directory beside `server.toml`
+(`$TILR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/tilr`, else `~/.config/tilr`). No file means no
+instances. It is read at start and again on `bus.reload_config`, which applies the difference.
+
+```toml
+call_timeout_ms = 10000      # default 10000
+drain_ms = 3000              # default 3000, at most 30000: how long a stop or reload waits for calls in flight
+[modules.deno]
+command = ["deno", "run", "-A", "main.ts"]   # required, not empty
+cwd = "~/tilr/components"    # absolute; ~ or ~/… (the home directory); relative: under the configuration directory, also the default
+[modules.deno.env]
+LOG = "info"
+[instances.deno-1]
+module = "deno"              # required
+connect = "fd"               # "fd" (default) | "socket"
+autostart = true             # default true
+[instances.deno-1.rights]    # what the instance may do; call, provide, emit, subscribe, control, pane
+call = ["math.*"]
+provide = ["ui.*"]
+[instances.deno-1.env]
+WORKERS = "2"
+```
+
+The file is strict: an unknown key, a wrong type, an instance naming no module, an empty command,
+a reserved name (`owner`, `tilrd`, names starting with `bus`), a name with characters other
+than letters, digits, `.`, `_` and `-`, a socket path over the platform limit (104 bytes on
+macOS, 108 on Linux), and the first round's `calls` key (it says `rights` replaced it) are
+errors. A bad file at start is logged, naming the file and the reason, and the server serves
+panes with no instances; on `bus.reload_config` the answer is `bad_config` and nothing changes.
+
+An instance is started in a session of its own, so a signal to its process group reaches what
+it started, with standard input from `/dev/null`, the server's environment (without the
+pane's variables) plus the module's `env`, the instance's `env`, `TILR_INSTANCE` and
+`TILR_CONFIG_DIR`, and no descriptor of the server but its bus connection. `connect = "fd"`
+hands the connection over as descriptor 3 (`TILR_BUS_FD=3`). `connect = "socket"` binds
+`<runtime dir>/bus/<name>.sock` (0600, in a 0700 directory) and sets `TILR_BUS_SOCK` and
+`TILR_BUS_TOKEN`, 32 hex characters, new at each start: the first `Hello` with that token is
+the instance, any other connection is refused and closed, and one that says nothing within
+10 seconds is closed. Both carry the same envelopes, as a u32 big-endian length and one
+`Envelope`, up to 16 MiB. Each line the instance writes to stdout or stderr is in the server
+log as `bus <name>: <line>` (a line over 64 KiB is cut).
+
+An instance that exits, whose connection ends while its process lives, or that has not said
+`Hello` 30 seconds after its start has its process group killed and is started again after
+200 ms, doubling up to 5 s, back at 200 ms after it ran 10 s. Its identity is
+`instance:<name>` and survives that. `bus.stop` drains the instance (no new calls by method,
+the ones in flight answered), sends SIGTERM to its group, SIGKILL after 3 s, and keeps it
+stopped until `bus.start`. `bus.reload` restarts an instance, a module or all that run, one
+at a time, each drained and waited for until its `Hello`, so a method with two providers has
+no gap. A caller that stops or reloads itself has its reply first. Until the server hands its
+instances over a reload, a reload stops every instance and the successor starts them again.
+
+The control methods, called by the owner or by an instance with the matching `control`
+right (`list`, `start`, `stop`, `reload`, `reload_config`, each for one instance or all):
+
+| method | does |
+|---|---|
+| `bus.instances` | every configured instance: name, module, transport, state (`down`, `starting`, `up`, `draining`, `stopped`), pid, restarts, provided methods; and the outside participants connected now |
+| `bus.methods` | every method with its kind, lane, selection and the live providers that are not draining |
+| `bus.start {instance}` | start a stopped instance; answers its pid once it said `Hello` (`spawn_failed`, `start_failed`, `start_timeout`) |
+| `bus.stop {instance, drain_ms?}` | drain, stop and keep stopped |
+| `bus.reload {instance \| module \| all}` | restart one at a time; the old and new pids |
+| `bus.reload_config` | read `bus.toml` again: stop the removed, start the added, reload the instances whose module or entry changed (`rights` included), leave the others and the stopped ones alone |
+
+They are serialized in one queue; the listings answer at any time.
+
+`call_timeout_ms` is the deadline of a call that names none and the most one names (0: no
+default deadline); it is applied to new calls at start and on `bus.reload_config`. The
+methods an instance provided, and those its `provide` rights name exactly (without `*`), stay
+known: a call of one while no provider is up is `unavailable`, not `not_found`.
 
 ### Rights
 
@@ -1220,6 +1329,7 @@ curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 | `tilrd_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings), `no_hello` (no Hello before the handshake deadline) |
 | `tilrd_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
 | `tilrd_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilrd_bus_events_dropped_total{subject}` | counter | Bus events not delivered to a subscriber whose connection lagged, by subject (past 1000 subjects, the rest as `other`) |
 | `tilrd_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
 | `tilrd_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
 | `tilrd_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |

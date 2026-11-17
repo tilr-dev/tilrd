@@ -30,7 +30,7 @@ zstd.workspace = true
 attenuate = ["dep:biscuit-auth"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "test-util", "process"] }
 
 [build-dependencies]
 prost-build.workspace = true
