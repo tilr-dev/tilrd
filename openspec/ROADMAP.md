@@ -58,6 +58,7 @@ All of phase 2 is done (see "Done").
 | test-server-leftovers | no `target/debug` test servers left running after `cargo test` (TILR-153) | S | - | no | ready |
 | reconnect-output-flake | the `reconnect::output_printed_while_nobody_watched_is_there_on_reconnect` flake (TILR-111) | S | - | no | ready |
 | hangup-shell-flake | the `a_server_started_from_a_terminal_outlives_the_terminal_hanging_up` flake, reopened (TILR-117) | S | - | no | ready |
+| cargo-build-dir-layout | red CI on `main`: the `build_script` tests follow Cargo 1.100's build-dir layout (`run/stdout`), the itests source snapshot includes `vendor/` (TILR-911, PR #134) | S | - | no | ready (waits for green CI) |
 
 ## Phase 4: release infrastructure
 
