@@ -3,11 +3,11 @@
 //! Owner: `bus-broker-core`; `bus-rights` replaces the body of
 //! [`default_authorizer`] (and adds its own types in `acl.rs`), nothing else.
 //!
-//! Until then the stub authorizer ([`StubAuthorizer`]) allows `tilrd` and `owner`
-//! everything, allows an instance what its [`Rights`] name as plain patterns (exact,
-//! `ns.*` prefix, `*` without `bus.*`; `control` as `action[:instance]`), allows every
-//! pane request (T7 is `bus-pane-rights`'s) and refuses every credential at `Hello`
-//! (`denied`, `tokens are not supported by this build`): fail closed.
+//! [`default_authorizer`] is Biscuit's ([`super::acl::Acl`]). The stub authorizer of
+//! `bus-broker-core` ([`StubAuthorizer`]) stays for its tests: it allows `tilrd` and
+//! `owner` everything, an instance what its [`Rights`] name as plain patterns (exact,
+//! `ns.*` prefix, `*` without `bus.*`; `control` as `action[:instance]`), every pane
+//! request, and refuses every credential at `Hello`: fail closed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -124,14 +124,12 @@ pub struct AuthzConfig {
     pub state_dir: Option<PathBuf>,
 }
 
-/// The server's authorizer. `bus-rights` replaces this body with Biscuit's.
+/// The server's authorizer: Biscuit's (`bus-rights`, `acl.rs`).
 pub fn default_authorizer(cfg: &AuthzConfig) -> Arc<dyn Authorizer> {
-    Arc::new(StubAuthorizer {
-        access_token: cfg.access_token.clone(),
-    })
+    super::acl::authorizer(cfg)
 }
 
-/// The authorizer before `bus-rights` (module docs).
+/// The authorizer before `bus-rights` (module docs); kept for its tests.
 pub struct StubAuthorizer {
     access_token: Option<String>,
 }
@@ -307,9 +305,15 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    fn stub(cfg: &AuthzConfig) -> StubAuthorizer {
+        StubAuthorizer {
+            access_token: cfg.access_token.clone(),
+        }
+    }
+
     #[test]
     fn the_stub_allows_what_the_rights_name() {
-        let authz = default_authorizer(&AuthzConfig::default());
+        let authz = stub(&AuthzConfig::default());
         let p = instance(Rights {
             call: strings(&["math.*", "pane.read", "*"]),
             provide: strings(&["ui.*"]),
@@ -436,7 +440,7 @@ mod tests {
 
     #[test]
     fn the_stub_refuses_every_credential_at_hello() {
-        let authz = default_authorizer(&AuthzConfig {
+        let authz = stub(&AuthzConfig {
             access_token: Some("secret".into()),
             ..AuthzConfig::default()
         });

@@ -14,6 +14,8 @@ categories = ["network-programming", "encoding"]
 [dependencies]
 tilr-websocket.workspace = true
 base64 = "0.23"
+# `Credential::attenuate` (feature `attenuate`, design R5): exact version and features, as tilrd.
+biscuit-auth = { version = "=6.0.0", default-features = false, features = ["datalog-macro"], optional = true }
 bytes.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 libc = "0.2"
@@ -21,6 +23,11 @@ prost.workspace = true
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "sync", "time"] }
 tokio-tungstenite = "0.30"
 zstd.workspace = true
+
+[features]
+# `Credential::attenuate`: narrowing a token without the server. Off by default, so a
+# client that only presents tokens does not build Biscuit.
+attenuate = ["dep:biscuit-auth"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }

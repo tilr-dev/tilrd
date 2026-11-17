@@ -18,9 +18,12 @@ failpoints = []
 [dependencies]
 tilr-websocket.workspace = true
 tilr-proto.workspace = true
-tilr-bus = { path = "../tilr-bus" }
+# `attenuate`: `Credential::attenuate`, which the bus tests use.
+tilr-bus = { path = "../tilr-bus", features = ["attenuate"] }
 tilr-screen.workspace = true
 anyhow.workspace = true
+# Bus rights (design R1): exact version, without PEM and full regex (6.0.0 does not build without `datalog-macro`).
+biscuit-auth = { version = "=6.0.0", default-features = false, features = ["datalog-macro"] }
 bytes.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
@@ -41,6 +44,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "3"
 uuid = { version = "1", features = ["v4"] }
+# The root key's text is wiped from memory (already in the tree through biscuit-auth's ed25519-dalek).
+zeroize = "1.9"
 
 [dev-dependencies]
 base64 = "0.23"

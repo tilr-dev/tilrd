@@ -876,8 +876,8 @@ send events through it. Its envelope and payload schemas are in the crate
 The first envelope is `Hello` with `protocol_version` 1 and the methods the participant
 provides; anything else first, or a message that is not an envelope, is answered
 `expected_hello` and closed, another version `unsupported_version`. On the Unix socket the participant is the owner; on TCP the owner
-shows the access token. This build refuses credentials (`denied`), at Hello and in
-`CredentialUpdate`. The answer, `HelloAck`,
+shows the access token; a participant with a `credential` is the participant of that
+token (see Rights). The answer, `HelloAck`,
 is the first thing a participant hears: its identity (`owner`), the connection id, the
 server id and the frame limit. The broker sets `from` of every call and event to the
 sender's identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
@@ -892,6 +892,68 @@ the older (close 4000).
 ### Instances
 
 ### Rights
+
+Every participant but the owner and tilrd itself acts with a Biscuit token of this server
+and may do only what its token lists (least privilege; design R1-R9 in
+`openspec/design/unified-bus.md`).
+
+- **Root key.** Ed25519, made on the first start in `<state dir>/bus-root.key` (mode 0600)
+  and kept across restarts and reloads. A key file that does not read, is not the user's or
+  is open to others makes the server refuse every token (and mint none) until it is fixed.
+- **Who holds what.** The owner (the Unix socket, or TCP with the access token, and no
+  credential) holds every right. An instance gets a token minted from its
+  `[instances.<name>.rights]` at each start, in `HelloAck.credential`; an instance without
+  `rights` may do nothing. An outside participant says `Hello` with `credential`, a token
+  the owner minted with `bus.token`, and is `token:<name>`. On TCP, a participant with
+  neither the access token nor a credential is refused.
+- **Rights** (`bus.token` takes the same lists as `bus.toml`):
+
+  | key | allows | forms |
+  |---|---|---|
+  | `call` | calls and streams | `m.x`, `m.*`, `*` (`*` is never `bus.*`) |
+  | `provide` | methods in `Hello.provides` | as `call` |
+  | `emit` | events (never in `bus`, `pane`, `server`, `fs`, `exec`, `clipboard`) | as `call` |
+  | `subscribe` | subscription patterns inside the right | `pane.*` (also `pane.bell`, `pane.>`), `*` |
+  | `control` | `bus.instances`/`bus.methods` (`list`), `bus.start`, `bus.stop`, `bus.reload` (per instance), `bus.reload_config`, `bus.token`, `bus.revoke`, `bus.rotate_key`, `server.reload`, `server.update` | `list`, `reload:t-1`, `reload:t-*`, `*:t-1`, `server.reload`, `server.update`, `*` |
+  | `pane` | pane creation and access (`bus-pane-rights`) | `profile:agent`, `profile:*`, `unrestricted`, `override`, `access:own`, `access:any` |
+
+  `server.command` is no right: only the owner on the Unix socket may call it (not on TCP, not
+  with any token). A participant other than the owner with `control = ["token"]` mints only
+  rights it holds itself, with a token without appended blocks, named `<its name>.<name>`,
+  bound to its own origin if it has one, for no longer than its own token lives (renewals
+  included); revoking (or renewing) the minter's token ends the tokens it minted.
+- **A token is bound** to this server (`check if server(<id>)`), to its expiry and, when
+  minted with `origin`, to the WebSocket `Origin`. A token of another server, a malformed
+  one, one over 16 KiB or 8 blocks, or one with a third-party block is `denied`.
+- **Per-call credential.** `Call.credential` authorizes that call alone, and the
+  per-instance checks of a control method for it, whatever the caller's own token allows;
+  `from` stays the caller, and audit lines name both (`from=… bearer=…`).
+- **Attenuation.** A holder appends a block of checks without the server
+  (`Credential::attenuate` in `tilr-bus`, its feature `attenuate`), e.g.
+  `check if target("token:t-2");`. Checks may test `kind`, `method`, `namespace`, `target`,
+  `subject`, `pattern`, `action`, `instance`, `scope`, `caller`, `origin`, `server` and
+  `time`; every block is enforced, and a fact in an appended block grants nothing.
+- **Expiry and renewal.** A token lives at most 24 h (`bus.token` `ttl_ms`, 0 = 24 h). The
+  server renews an instance's token 12 h after minting it. An outside participant calls
+  `bus.renew` in the second half of its token's life (an unattenuated token; an attenuated
+  one, or one called earlier, is `bad_request`) and presents the new one with
+  `CredentialUpdate`; the old one is revoked. A
+  connection whose token expires is closed with close code **4003** `credential`.
+- **Revocation and rotation.** `bus.revoke` (a token, or the `revocation_id` that
+  `bus.token` answered) refuses it and every token attenuated from it from the next call on,
+  also after a restart (`<state dir>/bus-revoked`, 0600, kept until the token's expiry), and
+  closes connections that said `Hello` with it (4003). An instance's token is revoked when
+  its connection ends. A `bus-revoked` that does not read makes the server refuse every token
+  and is never written over: fix or remove it and restart. `bus.rotate_key` makes a new root key: every earlier token is refused
+  at once, instances get new tokens, outside participants are closed with 4003.
+- **Limits.** A decision makes at most 1000 facts in 100 iterations (and stops after 50 ms of
+  wall clock as a backstop), else it is `denied` with `authorization limit reached`; any error
+  is a denial. Decisions are cached for 1 s (a revocation drops those of the tokens it ends, a
+  rotation all; a denial by the wall clock is not cached), parsed tokens (1024) until rotation.
+- **Audit.** `bus audit:` lines on the log target `tilrd::bus::audit`: every denial (who, the
+  first 16 hex digits of the token's revocation id, the kind, the method or subject, the
+  target, the reason), every control call allowed, and every mint, renewal, revocation and
+  rotation. Token bytes never appear in the log.
 
 ### Tilr Web
 
