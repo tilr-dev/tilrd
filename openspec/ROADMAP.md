@@ -113,6 +113,7 @@ the answer shapes `quic-transport`, `directory-sync` and `port-forwarding`.
 
 | change | commit |
 |---|---|
+| cargo-build-dir-layout | [PR #134](https://github.com/tilr-dev/tilrd/pull/134) |
 | linux-container-debuginfo | [PR #41](https://github.com/tilr-dev/tilrd/pull/41) |
 | build-script-git-dir | - |
 | test-server-cleanup-stand | [PR #13](https://github.com/tilr-dev/tilrd/pull/13) |
