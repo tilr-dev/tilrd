@@ -396,6 +396,9 @@ agent = true
 # Let clients run programs outside a pane (Exec). On when unset; false does
 # what --no-exec does.
 exec = true
+# Where launch profiles live (see "Launch profiles"): absolute or starting
+# with ~. Default: `profiles/` next to this file.
+profiles_dir = "~/.config/tilr/profiles"
 
 # The files protocol.
 [files]
@@ -409,6 +412,54 @@ readonly = false
 # size like "64MB". Default 64MB.
 max_bytes = "64MB"
 ```
+
+### Launch profiles
+
+A profile names how a pane starts: the program, the directory, extra environment
+variables and, in a `[sandbox]` table, what the pane may touch. A pane asks for one
+by name, `pane.create {profile: "demo"}`; a profile is the file `demo.toml` in
+`profiles_dir` (`profiles/` next to the `server.toml` in use, or the directory the
+`profiles_dir` key names; absolute or `~`). Without the directory the server has no
+profiles.
+
+```toml
+description = "Scripts I do not trust"   # optional; shown by pane.profiles
+command = ["/bin/sh"]                    # absent or empty: your login shell
+cwd = "~/work"                           # absolute or ~; never relative
+[env]                                    # set over the server's environment
+GREETING = "hi"                          # not TILR_*; TERM, COLORTERM, SHELL stay the server's
+[sandbox]                                # optional; read, never enforced before the sandbox changes
+read_only = ["~/docs"]
+read_write = ["~/work"]
+executables = ["/usr/bin/git"]
+env = ["LANG"]
+network = "none"                         # "none" (default), "client" or "server"
+```
+
+- **Names, never paths.** A profile name matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`;
+  anything else is refused before the server looks at a file.
+- **The files are yours alone**, as ssh checks `authorized_keys`: a profile (a symlink
+  to a regular file is fine) and the directory must be owned by the server's user and
+  not writable by group or others, else the profile does not load
+  (`... is writable by others`, `... is owned by uid N`). A sandbox profile anyone can
+  edit would turn the sandbox off.
+- **Strict.** An unknown key or a value of the wrong type makes the profile invalid;
+  `pane.create` with it says which file and why. Paths are absolute or start with `~`
+  (the home directory); `.` and `..` are folded. `[env]` names are not empty, have no
+  `=` and do not start with `TILR_`.
+- **Read on every create**, never cached: an edit applies to the next pane that uses
+  the profile, not to a pane that runs. The pane keeps what the profile said when it
+  was created.
+- **The request wins on the command and the directory**: a `command` in the request
+  replaces the profile's, a `cwd` that is an existing directory replaces the profile's
+  (else the profile's, else the home directory). Nothing in a request changes `[env]`
+  or `[sandbox]`.
+- **`pane.profiles`** lists the profiles, sorted by name, with their `description`,
+  whether they have a `[sandbox]` and, for one that does not load, the `error`
+  `pane.create` would give.
+- A profile with a `[sandbox]` table is refused (`profile <name> asks for a sandbox,
+  which this server cannot enforce`) on a server that cannot enforce it, and nothing
+  starts.
 
 ## Starting at boot
 

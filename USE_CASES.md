@@ -807,3 +807,26 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
 | Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
 | An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |
+
+## Launch profiles (`pane-profiles`) - `tests/profiles.rs`, `src/profile.rs`, `src/bus/core/profiles.rs`
+
+| Use case | Test |
+|---|---|
+| A profile is the file `<name>.toml` in the configuration directory's `profiles/`; a pane created with it reports its name and command | `profiles::a_pane_starts_with_the_profile_from_the_config_directory` |
+| `profiles_dir` in `server.toml` names another directory, and the default one is not read | `profiles::profiles_dir_names_another_directory` |
+| `profiles_dir` defaults to `profiles/` next to the configuration file in use, must be absolute or `~`, and is the key's value otherwise | `config::tests::profiles_dir_defaults_next_to_the_configuration_file` |
+| A profile file or directory that group or others can write, or that another user owns, does not load, and the error names the file | `profiles::a_profile_others_can_write_is_refused`, `profile::tests::a_profile_others_can_write_does_not_load` |
+| A symlinked profile is judged where it really is and must be a regular file | `profile::tests::a_symlinked_profile_is_judged_where_it_lives` |
+| A profile name is never a path: traversal, absolute and hidden names are refused before any file is read | `profiles::a_profile_name_is_never_a_path`, `profile::tests::names_never_are_paths`, `supervisor::bus::core::profiles::tests::a_bad_name_is_refused_before_any_file_is_touched` |
+| An unknown profile or a missing directory is `no such profile` and the connection stays open | `profiles::an_unknown_profile_is_an_error`, `profile::tests::a_missing_profile_or_directory_is_no_such_profile` |
+| A misspelt key makes the profile invalid; the error names the file and the key; strict TOML for every `[sandbox]` key | `profiles::a_misspelt_key_makes_the_profile_invalid`, `profile::tests::every_sandbox_key_is_parsed`, `supervisor::bus::core::profiles::tests::an_unknown_or_invalid_profile_is_bad_request_with_its_file` |
+| Paths in a profile are absolute or `~`; relative ones are refused; `~` is the home directory; `.` and `..` fold | `profile::tests::relative_paths_are_refused`, `profile::tests::tilde_is_the_home_directory` |
+| `[env]` and `[sandbox] env` names cannot be empty, contain `=`, or start with `TILR_` | `profile::tests::tilr_variables_cannot_be_set` |
+| The request's command and an existing directory win over the profile's, the profile's `[env]` stays and `TERM` is the server's | `profiles::request_fields_override_the_profile`, `supervisor::bus::core::profiles::tests::the_request_wins_and_the_profiles_environment_stays` |
+| Without a directory of its own a profile pane starts in the home directory, with the login shell | `supervisor::bus::core::profiles::tests::a_profile_without_a_directory_falls_back_to_home` |
+| A request that names no profile is left to `pane.create` | `supervisor::bus::core::profiles::tests::no_profile_is_left_to_pane_create` |
+| A profile is read on every create: an edit applies to the next pane only | `profiles::an_edited_profile_applies_to_the_next_pane_only` |
+| A profile with `[sandbox]` is refused where the server cannot enforce it, and its program never starts | `profiles::a_sandboxed_profile_is_refused_where_it_cannot_be_enforced`, `supervisor::bus::core::profiles::tests::prepare_create_refuses_a_sandbox_it_cannot_enforce` |
+| `pane.profiles` lists the profiles sorted by name with their errors, skips other files, cuts long texts, answers in protobuf and JSON | `profiles::profiles_are_listed_with_their_errors`, `profile::tests::the_listing_is_sorted_with_errors_and_skips_other_files` |
+
+The pane-creating tests of `tests/profiles.rs` are `#[ignore]`d until `bus-core-panes` provides `pane.create`.
