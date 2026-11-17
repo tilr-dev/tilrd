@@ -6,11 +6,17 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The `rerun-if-changed` paths this crate's build script printed; cargo keeps
-/// the script's stdout in `<OUT_DIR>/../output`.
+/// The `rerun-if-changed` paths this crate's build script printed. Cargo keeps
+/// the script's stdout beside `OUT_DIR`: in `<OUT_DIR>/../run/stdout` since
+/// Cargo 1.100's build-dir layout, in `<OUT_DIR>/../output` before it (MSRV).
 fn watched_paths() -> Vec<PathBuf> {
-    let output = Path::new(env!("OUT_DIR")).parent().unwrap().join("output");
-    let output = std::fs::read_to_string(&output)
+    let build = Path::new(env!("OUT_DIR")).parent().unwrap();
+    let candidates = [build.join("run").join("stdout"), build.join("output")];
+    let output = candidates
+        .iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| panic!("no build script stdout in {candidates:?}"));
+    let output = std::fs::read_to_string(output)
         .unwrap_or_else(|err| panic!("read {}: {err}", output.display()));
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     output
