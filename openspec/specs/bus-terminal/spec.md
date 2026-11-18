@@ -4,10 +4,7 @@
 The participant `tilrd` serves panes on `tilr.bus.v1` as on `tilr.v1`: `pane.*` calls create,
 list, close, resize and type into panes, `pane.output` streams a pane's frames as the pane
 process encoded them, paced by the stream's window and credit, `pane.read` reads a pane as
-text, and `pane.*` events scoped to the pane tell what changed. It serves its core services
-there too: `server.*` (describe, reload, update, run its own commands), `fs.*` (the shared
-files and watches), `exec.*` (programs) and `clipboard.*` with `pane.copied`, with the
-limits and options of `tilr.v1` and per-connection bounds on what a connection made.
+text, and `pane.*` events scoped to the pane tell what changed.
 
 ## Requirements
 
