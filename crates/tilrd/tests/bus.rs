@@ -1625,9 +1625,15 @@ async fn an_empty_chunk_is_relayed_and_a_flood_of_tiny_ones_ends_the_stream() {
     ping(&mut reader, 3).await;
 }
 
-#[tokio::test]
-async fn a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow() {
-    let server = start();
+const SLOW_STREAMS: usize = 3;
+
+/// A reader that opens [`SLOW_STREAMS`] interactive streams of the largest
+/// window and reads nothing, and the task in which their provider sends each
+/// its whole window in chunks of 1 MiB that do not compress: 48 MiB, far fewer
+/// than 1024 envelopes. The task ends once the server has taken all of it.
+async fn a_reader_of_large_interactive_chunks(
+    server: &BusServer,
+) -> (common::bus::Raw, tokio::task::JoinHandle<()>) {
     let mut provider = server
         .raw_greeted(
             "big",
@@ -1635,25 +1641,66 @@ async fn a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow
         )
         .await;
     let mut reader = server.raw_greeted("reader", Vec::new()).await;
-    const STREAMS: usize = 3;
     let window = tilr_bus::limits::MAX_STREAM_WINDOW;
     // All opened first, while the reader's lane is empty (no call is busy and
     // the reader sends nothing once it may be closed).
     let mut hops = Vec::new();
-    for id in 1..=STREAMS as u64 {
+    for id in 1..=SLOW_STREAMS as u64 {
         reader.send(call_with(id, "test.big", "", window, 0)).await;
         let (hop, _, forwarded) = next_call(&mut provider).await;
         assert_eq!(forwarded, window as usize);
         hops.push(hop);
     }
-    // Each its whole window in chunks of 1 MiB that do not compress, unread.
-    for hop in hops {
-        for _ in 0..window as usize / MIB {
-            provider.send(noise_chunk(hop, MIB)).await;
+    let sending = tokio::spawn(async move {
+        for hop in hops {
+            let noise = noise_chunk(hop, MIB);
+            for _ in 0..window as usize / MIB {
+                within(provider.send(noise.clone())).await;
+            }
         }
+        ping(&mut provider, 99).await;
+    });
+    (reader, sending)
+}
+
+/// Whether the server's log has `message` for `reader`'s connection.
+fn logged_for<'a>(reader: &common::bus::Raw, message: &'a str) -> impl Fn(&[String]) -> bool + 'a {
+    let connection = format!(
+        "connection={}",
+        reader.ack.as_ref().expect("greeted").connection_id
+    );
+    move |lines: &[String]| {
+        lines.iter().any(|line| {
+            line.contains(message) && line.split_whitespace().any(|field| field == connection)
+        })
     }
-    ping(&mut provider, 99).await;
-    // Far fewer than 1024 envelopes, but 48 MiB: closed 4001 before all came.
+}
+
+/// Wait for the server to log `message` for `reader`'s connection while the
+/// provider sends: until [`TIMEOUT`] after it has sent all at the latest, so a
+/// slow machine stretches the wait and a server that never logs it fails.
+/// Returns how the sending ended, if it did meanwhile.
+async fn logged_while_sending(
+    server: &BusServer,
+    reader: &common::bus::Raw,
+    sending: &mut tokio::task::JoinHandle<()>,
+    message: &str,
+) -> Option<Result<(), tokio::task::JoinError>> {
+    let logged = logged_for(reader, message);
+    let sent = tokio::select! {
+        () = server.logged_event(&logged) => None,
+        sent = &mut *sending => Some(sent),
+    };
+    if sent.is_some() {
+        server
+            .wait_logged_event(&format!("the reader: no {message:?}"), &logged)
+            .await;
+    }
+    sent
+}
+
+/// Read `reader` until its connection ends: how many chunk bytes came.
+async fn read_to_the_end(reader: &mut common::bus::Raw) -> usize {
     let mut got = 0;
     while let Some(msg) = reader.recv().await {
         match msg {
@@ -1661,11 +1708,39 @@ async fn a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow
             other => panic!("{other:?}"),
         }
     }
-    assert!(got < STREAMS * window as usize, "{got} bytes, not closed");
+    got
+}
+
+// Two workers: the reader reads at the close while the provider still encodes
+// and sends its chunks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow() {
+    let server = start();
+    let (mut reader, mut sending) = a_reader_of_large_interactive_chunks(&server).await;
+    // 48 MiB: the server closes the reader before all came. Only a reader that
+    // reads again within the close deadline sees the code, so it reads from
+    // the moment the server decides.
+    let sent = logged_while_sending(
+        &server,
+        &reader,
+        &mut sending,
+        "participant too slow, closing",
+    )
+    .await;
+    let got = read_to_the_end(&mut reader).await;
+    assert!(
+        got < SLOW_STREAMS * tilr_bus::limits::MAX_STREAM_WINDOW as usize,
+        "{got} bytes, not closed"
+    );
     assert_eq!(
         reader.close.as_ref().map(|frame| u16::from(frame.code)),
         Some(tilr_bus::close::TOO_SLOW)
     );
+    match sent {
+        Some(sent) => sent,
+        None => within(sending).await,
+    }
+    .expect("the provider sent all");
 }
 
 #[tokio::test]
@@ -3504,4 +3579,33 @@ async fn core_methods_answer_json_to_json() {
         .await
         .unwrap();
     assert!(closed["exitCode"].is_number(), "{closed}");
+}
+
+// ---------------------------------------------------------------------------
+// slow-reader-close-code
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_that_never_reads_sees_its_too_slow_connection_end_without_a_code() {
+    let server = start();
+    let (mut reader, mut sending) = a_reader_of_large_interactive_chunks(&server).await;
+    // Read only once the server has let the connection go: the Close frame
+    // could not get past what the reader left unread before the close deadline.
+    let sent = logged_while_sending(&server, &reader, &mut sending, "bus participant gone").await;
+    assert!(
+        logged_for(&reader, "participant too slow, closing")(&server.log_lines()),
+        "not closed too slow:\n{}",
+        server.log_lines().join("\n")
+    );
+    let got = read_to_the_end(&mut reader).await;
+    assert!(
+        got < SLOW_STREAMS * tilr_bus::limits::MAX_STREAM_WINDOW as usize,
+        "{got} bytes, not closed"
+    );
+    assert!(reader.close.is_none(), "{:?}", reader.close);
+    match sent {
+        Some(sent) => sent,
+        None => within(sending).await,
+    }
+    .expect("the provider sent all");
 }
