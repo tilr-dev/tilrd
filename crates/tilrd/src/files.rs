@@ -1,7 +1,7 @@
 //! The files protocol: lets a client look at and change the files of the
 //! server's machine, for a file browser and an editor (`FsList`, `FsStat`,
 //! `FsRead`, `FsWrite`, `FsMkdir`, `FsRename`, `FsDelete`, `FsWatch`,
-//! `FsUnwatch`; see tilr.proto).
+//! `FsUnwatch`; see tilr.proto; on the bus `fs.*`, `bus/core/fs.rs`).
 //!
 //! Only the directories in `[files] roots` of the configuration file are
 //! served, the home directory by default; a path that leads out of them, by
@@ -9,9 +9,12 @@
 //! changed. With `enabled = false` or `--no-files` the feature is not offered
 //! at all.
 //!
-//! The supervisor's actor only routes: every look at the disk happens in a
-//! task of its own (`tokio::fs`, `spawn_blocking`), which hands its answer
-//! back through the [`Sink`] as an [`Output`].
+//! What touches the disk is [`Access`], which knows no protocol: paths in,
+//! [`Entry`]s, chunks, [`Change`]s and messages for the user out. [`Files`]
+//! is the `tilr.v1` side on top of it. The supervisor's actor only routes:
+//! every look at the disk happens in a task of its own (`tokio::fs`,
+//! `spawn_blocking`), which hands its answer back through the [`Sink`] as an
+//! [`Output`].
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -22,6 +25,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use bytes::Bytes;
 use notify::Watcher;
 use tilr_proto::{
     FileKind, FsAck, FsChange, FsChanged, FsData, FsEntries, FsEntry, FsInfo, FsRead, FsWrite,
@@ -74,6 +78,54 @@ pub enum Output {
 /// Where answers go: to the supervisor's actor.
 pub type Sink = Arc<dyn Fn(Output) + Send + Sync>;
 
+/// What an entry is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Dir,
+    Link,
+    /// A socket, a pipe, a device; or, as a link's `target`, nothing: the link
+    /// is broken.
+    Other,
+}
+
+/// One entry of a directory, not followed if it is a symbolic link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// The last component of the path.
+    pub name: OsString,
+    pub kind: Kind,
+    /// In bytes; a link's own.
+    pub size: u64,
+    /// Last modification, Unix time in milliseconds.
+    pub mtime_ms: u64,
+    /// Permission bits.
+    pub mode: u32,
+    /// What it is, links followed.
+    pub target: Kind,
+}
+
+/// What happened to an entry of a watched directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeKind {
+    Create,
+    Modify,
+    Remove,
+}
+
+/// A change a watch reports.
+#[derive(Clone, Debug)]
+pub struct Change {
+    /// The directory, as the request named it.
+    pub watch: String,
+    /// The entry that changed, absolute and without links, or the directory.
+    pub path: OsString,
+    pub kind: ChangeKind,
+}
+
+/// Where a watch reports.
+pub type ChangeSink = Arc<dyn Fn(Change) + Send + Sync>;
+
 /// The roots and limits, shared with the tasks.
 struct Shared {
     /// Canonical: absolute, without links.
@@ -83,8 +135,14 @@ struct Shared {
     max_bytes: u64,
 }
 
+/// The way to the shared files, without a protocol: what both `tilr.v1`'s
+/// [`Files`] and the bus's `fs.*` call. The plain methods read the disk:
+/// call them where that may block (`spawn_blocking`).
+#[derive(Clone)]
+pub struct Access(Arc<Shared>);
+
 pub struct Files {
-    shared: Arc<Shared>,
+    access: Access,
     sink: Sink,
     /// Writes in progress, by client and transfer: where their chunks go.
     /// A refused write has a sender nobody receives from, so the rest of its
@@ -134,12 +192,12 @@ impl Files {
             "files on"
         );
         Self {
-            shared: Arc::new(Shared {
+            access: Access(Arc::new(Shared {
                 roots,
                 home,
                 readonly: settings.readonly,
                 max_bytes: settings.max_bytes,
-            }),
+            })),
             sink,
             writes: HashMap::new(),
             watches: HashMap::new(),
@@ -147,39 +205,34 @@ impl Files {
     }
 
     pub fn max_bytes(&self) -> u64 {
-        self.shared.max_bytes
+        self.access.max_bytes()
+    }
+
+    /// The way to the files, for the bus.
+    pub fn access(&self) -> Access {
+        self.access.clone()
     }
 
     /// Take a request from `client`, whose queue is `to_client`: file
     /// content goes there directly, by its bulk lane. Messages that are not
     /// about files are ignored.
     pub fn on_message(&mut self, client: u64, to_client: &ToClient, msg: Msg) {
-        let shared = Arc::clone(&self.shared);
+        let access = self.access.clone();
         let sink = Arc::clone(&self.sink);
         let reply = move |msg: server_message::Msg| sink(Output::Send(client, msg));
         let ack = |request_id: u64, error: String| {
             server_message::Msg::FsAck(FsAck { request_id, error })
         };
-        let changes = matches!(msg, Msg::FsMkdir(_) | Msg::FsRename(_) | Msg::FsDelete(_));
-        if changes && shared.readonly {
-            let request_id = match &msg {
-                Msg::FsMkdir(m) => m.request_id,
-                Msg::FsRename(m) => m.request_id,
-                Msg::FsDelete(m) => m.request_id,
-                _ => 0,
-            };
-            return reply(ack(request_id, READONLY.into()));
-        }
         match msg {
             Msg::FsList(list) => blocking(move || {
                 let path = requested(&list.path, &list.path_bytes);
-                let answer = match shared.list(Named(&path)) {
+                let answer = match access.list(&path) {
                     Ok((path, entries)) => {
                         let (path, path_bytes) = name_of(path.as_os_str());
                         FsEntries {
                             request_id: list.request_id,
                             path,
-                            entries,
+                            entries: entries.into_iter().map(FsEntry::from).collect(),
                             error: String::new(),
                             path_bytes,
                         }
@@ -196,13 +249,13 @@ impl Files {
             }),
             Msg::FsStat(stat) => blocking(move || {
                 let path = requested(&stat.path, &stat.path_bytes);
-                let answer = match shared.stat(Named(&path)) {
+                let answer = match access.stat(&path) {
                     Ok((path, entry)) => {
                         let (path, path_bytes) = name_of(path.as_os_str());
                         FsInfo {
                             request_id: stat.request_id,
                             path,
-                            entry: Some(entry),
+                            entry: Some(entry.into()),
                             error: String::new(),
                             path_bytes,
                         }
@@ -221,7 +274,7 @@ impl Files {
                 let to_client = to_client.clone();
                 tokio::spawn(async move {
                     let request_id = read.request_id;
-                    match shared.read(read, &to_client).await {
+                    match send_read(&access, read, &to_client).await {
                         Ok(()) | Err(Gone) => {}
                         Err(Failed(error)) => {
                             let _ = to_client
@@ -238,28 +291,49 @@ impl Files {
             }
             Msg::FsWrite(write) => self.on_write(client, write),
             Msg::FsMkdir(mkdir) => blocking(move || {
-                let named = requested(&mkdir.path, &mkdir.path_bytes);
-                let error = shared.entry(Named(&named)).and_then(|path| {
-                    fs::create_dir(&path).map_err(|err| failed(Named(&named), &err))
-                });
+                let path = requested(&mkdir.path, &mkdir.path_bytes);
+                let error = access.mkdir(&path);
                 reply(ack(mkdir.request_id, error.err().unwrap_or_default()));
             }),
             Msg::FsRename(rename) => blocking(move || {
                 let from = requested(&rename.from, &rename.from_bytes);
                 let to = requested(&rename.to, &rename.to_bytes);
-                let error = shared.rename(Named(&from), Named(&to));
+                let error = access.rename(&from, &to);
                 reply(ack(rename.request_id, error.err().unwrap_or_default()));
             }),
             Msg::FsDelete(delete) => blocking(move || {
                 let path = requested(&delete.path, &delete.path_bytes);
-                let error = shared.delete(Named(&path), delete.recursive);
+                let error = access.delete(&path, delete.recursive);
                 reply(ack(delete.request_id, error.err().unwrap_or_default()));
             }),
             Msg::FsWatch(watch) => {
                 let sink = Arc::clone(&self.sink);
                 blocking(move || {
                     let path = requested(&watch.path, &watch.path_bytes);
-                    match shared.watch(Named(&path), &watch.path, Arc::clone(&sink), client) {
+                    let changes: ChangeSink = {
+                        let sink = Arc::clone(&sink);
+                        Arc::new(move |change: Change| {
+                            let (path, path_bytes) = name_of(&change.path);
+                            sink(Output::Send(
+                                client,
+                                server_message::Msg::FsChanged(FsChanged {
+                                    request_id: 0,
+                                    watch: change.watch.clone(),
+                                    path,
+                                    kind: FsChange::from(change.kind).into(),
+                                    path_bytes,
+                                }),
+                            ));
+                            #[cfg(feature = "failpoints")]
+                            tracing::info!(
+                                client,
+                                watch = %change.watch,
+                                kind = ?change.kind,
+                                "files change queued"
+                            );
+                        })
+                    };
+                    match access.watch(&path, &watch.path, changes) {
                         Ok(handle) => sink(Output::Watching {
                             client,
                             request_id: watch.request_id,
@@ -320,7 +394,7 @@ impl Files {
             }
             None => {
                 let (chunks, incoming) = mpsc::unbounded_channel();
-                if self.shared.readonly {
+                if self.access.readonly() {
                     (self.sink)(Output::Send(
                         client,
                         server_message::Msg::FsAck(FsAck {
@@ -331,10 +405,10 @@ impl Files {
                     drop(incoming);
                 } else {
                     let _ = chunks.send(write);
-                    let shared = Arc::clone(&self.shared);
+                    let access = self.access.clone();
                     let sink = Arc::clone(&self.sink);
                     tokio::spawn(async move {
-                        if let Some((request_id, error)) = shared.receive(incoming).await {
+                        if let Some((request_id, error)) = receive(access, incoming).await {
                             sink(Output::Send(
                                 client,
                                 server_message::Msg::FsAck(FsAck { request_id, error }),
@@ -374,6 +448,395 @@ fn encode(msg: server_message::Msg) -> bytes::Bytes {
 
 fn blocking(work: impl FnOnce() + Send + 'static) {
     drop(tokio::task::spawn_blocking(work));
+}
+
+/// Send the part of a file `read` asks for as `FsData` chunks, each waiting
+/// for room in the client's bulk lane: a client that takes them slowly is
+/// read for slowly.
+async fn send_read(access: &Access, read: FsRead, to_client: &ToClient) -> Result<(), ReadError> {
+    let path = requested(&read.path, &read.path_bytes);
+    let mut reader = access.open_read(path, read.offset, read.length).await?;
+    while let Some(data) = reader.next().await? {
+        let last = reader.done();
+        let chunk = encode(server_message::Msg::FsData(FsData {
+            request_id: read.request_id,
+            total_size: reader.total,
+            data,
+            last,
+            error: String::new(),
+            file_size: reader.file_size,
+        }));
+        to_client.send_bulk(chunk).await.map_err(|_| Gone)?;
+    }
+    Ok(())
+}
+
+/// Take the chunks of one write as they come into an [`Upload`]. Returns the
+/// acknowledgement to send: `None` when the client left before the end.
+async fn receive(
+    access: Access,
+    mut chunks: mpsc::UnboundedReceiver<FsWrite>,
+) -> Option<(u64, String)> {
+    let first = chunks.recv().await?;
+    let request_id = first.request_id;
+    let start = WriteStart {
+        path: requested(&first.path, &first.path_bytes),
+        total_size: first.total_size,
+        create: first.create,
+        truncate: first.truncate,
+    };
+    let mut upload = match access.begin_write(start).await {
+        Ok(upload) => upload,
+        Err(error) => return Some((request_id, error)),
+    };
+    let mut chunk = first;
+    loop {
+        if let Err(error) = upload.take(&chunk.data).await {
+            // Its temporary file is gone before the failure is told.
+            upload.abandon().await;
+            return Some((request_id, error));
+        }
+        if chunk.last {
+            break;
+        }
+        // The client left in the middle: nobody to answer.
+        let Some(next) = chunks.recv().await else {
+            upload.abandon().await;
+            return None;
+        };
+        chunk = next;
+    }
+    Some((request_id, upload.finish().await.err().unwrap_or_default()))
+}
+
+/// The first chunk of a write: what to replace.
+#[derive(Clone, Debug)]
+pub struct WriteStart {
+    pub path: OsString,
+    /// Size of the whole content.
+    pub total_size: u64,
+    /// The file may be missing and is created.
+    pub create: bool,
+    /// The file may exist and its content is replaced.
+    pub truncate: bool,
+}
+
+/// A read in progress ([`Access::open_read`]): its chunks of at most
+/// [`CHUNK`] bytes, in order.
+pub struct Reader {
+    /// Bytes the whole read carries.
+    pub total: u64,
+    /// Size of the file.
+    pub file_size: u64,
+    path: OsString,
+    file: tokio::fs::File,
+    sent: u64,
+    done: bool,
+}
+
+impl Reader {
+    /// The next chunk; `None` after the last. A read of nothing has one empty
+    /// chunk.
+    pub async fn next(&mut self) -> Result<Option<Bytes>, String> {
+        if self.done {
+            return Ok(None);
+        }
+        let path = Named(&self.path);
+        let want = (self.total - self.sent).min(CHUNK as u64) as usize;
+        let mut data = vec![0; want];
+        let mut filled = 0;
+        while filled < want {
+            match self.file.read(&mut data[filled..]).await {
+                Ok(0) => return Err(format!("{path}: the file got shorter while it was read")),
+                Ok(n) => filled += n,
+                Err(err) => return Err(failed(path, &err)),
+            }
+        }
+        self.sent += want as u64;
+        self.done = self.sent == self.total;
+        Ok(Some(data.into()))
+    }
+
+    /// Whether the chunk [`next`](Self::next) gave last was the last.
+    pub fn done(&self) -> bool {
+        self.done
+    }
+}
+
+/// A write in progress ([`Access::begin_write`]): its content goes to a
+/// temporary file next to the file, renamed over it by [`finish`](Self::finish).
+/// Dropped before, the temporary file is removed and the file stays as it was.
+pub struct Upload {
+    path: OsString,
+    target: PathBuf,
+    temp: PathBuf,
+    note: Option<PathBuf>,
+    file: Option<tokio::fs::File>,
+    total: u64,
+    written: u64,
+    committed: bool,
+}
+
+impl Upload {
+    /// Append a chunk.
+    pub async fn take(&mut self, data: &[u8]) -> Result<(), String> {
+        let path = Named(&self.path);
+        self.written += data.len() as u64;
+        if self.written > self.total {
+            return Err(format!(
+                "{path}: the write carries more data than it announced"
+            ));
+        }
+        let Some(file) = &mut self.file else {
+            return Err(format!("{path}: the write is over"));
+        };
+        file.write_all(data).await.map_err(|err| failed(path, &err))
+    }
+
+    /// Check the content is whole, put it on disk and rename it over the file.
+    /// The temporary file (if the write failed) and the note of the write
+    /// are gone before this returns.
+    pub async fn finish(mut self) -> Result<(), String> {
+        let outcome = self.commit().await;
+        self.clean().await;
+        outcome
+    }
+
+    /// Give the write up: its temporary file and its note are removed before
+    /// this returns, and the file stays as it was.
+    pub async fn abandon(mut self) {
+        self.clean().await;
+    }
+
+    /// Remove what the write leaves behind now, off the runtime's threads.
+    async fn clean(&mut self) {
+        if let Some(clean) = self.leftovers() {
+            let _ = tokio::task::spawn_blocking(clean).await;
+        }
+    }
+
+    /// What removes the temporary file (unless it was renamed over the file)
+    /// and the note; `None` if nothing is left. Taken once.
+    fn leftovers(&mut self) -> Option<impl FnOnce() + Send + 'static> {
+        let temp = (!std::mem::replace(&mut self.committed, true)).then(|| self.temp.clone());
+        let note = self.note.take();
+        if temp.is_none() && note.is_none() {
+            return None;
+        }
+        let file = self.file.take();
+        Some(move || {
+            drop(file);
+            if let Some(temp) = temp {
+                let _ = fs::remove_file(temp);
+            }
+            if let Some(note) = note {
+                let _ = fs::remove_file(note);
+            }
+        })
+    }
+
+    async fn commit(&mut self) -> Result<(), String> {
+        let path = Named(&self.path);
+        let (written, total) = (self.written, self.total);
+        if written != total {
+            return Err(format!(
+                "{path}: the write ended after {written} of {total} bytes"
+            ));
+        }
+        let Some(mut file) = self.file.take() else {
+            return Err(format!("{path}: the write is over"));
+        };
+        file.flush().await.map_err(|err| failed(path, &err))?;
+        // On disk before the answer: the data before the rename, the new name
+        // (the directory) after it.
+        file.sync_all().await.map_err(|err| failed(path, &err))?;
+        drop(file);
+        let (from, to) = (self.temp.clone(), self.target.clone());
+        tokio::task::spawn_blocking(move || crate::durable::rename_synced(&from, &to))
+            .await
+            .map_err(|err| err.to_string())?
+            .map_err(|err| failed(Named(&self.path), &err))?;
+        self.committed = true;
+        // Hold only the writer: the independent watcher must remain able to
+        // report the committed file before this write is acknowledged.
+        #[cfg(feature = "failpoints")]
+        tokio::task::spawn_blocking(|| crate::fail::point("files-write-before-ack"))
+            .await
+            .map_err(|err| err.to_string())?
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+}
+
+impl Drop for Upload {
+    fn drop(&mut self) {
+        let Some(clean) = self.leftovers() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(clean)),
+            Err(_) => clean(),
+        }
+    }
+}
+
+impl Access {
+    pub fn max_bytes(&self) -> u64 {
+        self.0.max_bytes
+    }
+
+    pub fn readonly(&self) -> bool {
+        self.0.readonly
+    }
+
+    /// The entries of a directory, sorted by name, and the directory as an
+    /// absolute path without links.
+    pub fn list(&self, path: &OsStr) -> Result<(PathBuf, Vec<Entry>), String> {
+        self.0.list(Named(path))
+    }
+
+    /// One entry, not followed if it is a link, and its path.
+    pub fn stat(&self, path: &OsStr) -> Result<(PathBuf, Entry), String> {
+        self.0.stat(Named(path))
+    }
+
+    /// Make a directory; its parent must exist.
+    pub fn mkdir(&self, path: &OsStr) -> Result<(), String> {
+        self.writable()?;
+        let named = Named(path);
+        let entry = self.0.entry(named)?;
+        fs::create_dir(&entry).map_err(|err| failed(named, &err))
+    }
+
+    /// Move or rename an entry; `to` must not exist.
+    pub fn rename(&self, from: &OsStr, to: &OsStr) -> Result<(), String> {
+        self.writable()?;
+        self.0.rename(Named(from), Named(to))
+    }
+
+    /// Remove a file, a link or a directory (`recursive`: with what is in it).
+    pub fn delete(&self, path: &OsStr, recursive: bool) -> Result<(), String> {
+        self.writable()?;
+        self.0.delete(Named(path), recursive)
+    }
+
+    /// Start watching a directory; `named` is the path as the request's
+    /// string has it, for [`Change::watch`]. Dropping the [`Watch`] stops it.
+    /// Must run where it may block, inside the runtime.
+    pub fn watch(&self, path: &OsStr, named: &str, sink: ChangeSink) -> Result<Watch, String> {
+        self.0.watch(Named(path), named, sink)
+    }
+
+    /// Open the part of a file from `offset`, `length` bytes (0: to the end),
+    /// at most [`Access::max_bytes`].
+    pub async fn open_read(
+        &self,
+        path: OsString,
+        offset: u64,
+        length: u64,
+    ) -> Result<Reader, String> {
+        let real = {
+            let shared = Arc::clone(&self.0);
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || shared.follow(Named(&path)))
+                .await
+                .map_err(|err| err.to_string())??
+        };
+        let named = Named(&path);
+        let mut file = tokio::fs::File::open(&real)
+            .await
+            .map_err(|err| failed(named, &err))?;
+        let meta = file.metadata().await.map_err(|err| failed(named, &err))?;
+        if meta.is_dir() {
+            return Err(format!("{named}: is a directory"));
+        }
+        let file_size = meta.len();
+        let available = file_size.saturating_sub(offset);
+        let total = match length {
+            0 => available,
+            length => length.min(available),
+        };
+        if total > self.0.max_bytes {
+            return Err(format!(
+                "{named}: too large to read at once: {}, the server sends at most {}",
+                human_size(total),
+                human_size(self.0.max_bytes)
+            ));
+        }
+        if offset > 0 {
+            file.seek(io::SeekFrom::Start(offset))
+                .await
+                .map_err(|err| failed(named, &err))?;
+        }
+        Ok(Reader {
+            total,
+            file_size,
+            path,
+            file,
+            sent: 0,
+            done: false,
+        })
+    }
+
+    /// Check the first chunk of a write and open its temporary file.
+    pub async fn begin_write(&self, start: WriteStart) -> Result<Upload, String> {
+        self.writable()?;
+        let prepared = {
+            let shared = Arc::clone(&self.0);
+            let start = start.clone();
+            tokio::task::spawn_blocking(move || shared.prepare_write(&start))
+                .await
+                .map_err(|err| err.to_string())??
+        };
+        let (target, temp, mode) = prepared;
+        let note = {
+            let temp = temp.clone();
+            tokio::task::spawn_blocking(move || note_write(&writes_dir(), &temp))
+                .await
+                .ok()
+                .flatten()
+        };
+        let mut upload = Upload {
+            path: start.path,
+            target,
+            temp,
+            note,
+            file: None,
+            total: start.total_size,
+            written: 0,
+            committed: false,
+        };
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let file = match options.open(&upload.temp).await {
+            Ok(file) => file,
+            Err(err) => {
+                // Not ours: nothing to remove but the note.
+                upload.committed = true;
+                let error = failed(Named(&upload.path), &err);
+                upload.abandon().await;
+                return Err(error);
+            }
+        };
+        if let Some(mode) = mode
+            && let Err(err) = file.set_permissions(fs::Permissions::from_mode(mode)).await
+        {
+            let error = failed(Named(&upload.path), &err);
+            upload.file = Some(file);
+            upload.abandon().await;
+            return Err(error);
+        }
+        upload.file = Some(file);
+        Ok(upload)
+    }
+
+    fn writable(&self) -> Result<(), String> {
+        if self.0.readonly {
+            Err(READONLY.into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Shared {
@@ -434,7 +897,7 @@ impl Shared {
         self.inside(&path, false)
     }
 
-    fn list(&self, path: Named) -> Result<(PathBuf, Vec<FsEntry>), String> {
+    fn list(&self, path: Named) -> Result<(PathBuf, Vec<Entry>), String> {
         let dir = self.follow(path)?;
         let mut entries = Vec::new();
         for item in fs::read_dir(&dir).map_err(|err| failed(path, &err))? {
@@ -445,11 +908,12 @@ impl Shared {
             };
             entries.push(entry_of(item.file_name(), &item.path(), &meta));
         }
-        entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.name_bytes.cmp(&b.name_bytes)));
+        // As `tilr.v1` sorted its entries: by the name, then its bytes.
+        entries.sort_by_cached_key(|entry| name_of(&entry.name));
         Ok((dir, entries))
     }
 
-    fn stat(&self, path: Named) -> Result<(PathBuf, FsEntry), String> {
+    fn stat(&self, path: Named) -> Result<(PathBuf, Entry), String> {
         // A root is not an entry of anything shared, but can be looked at.
         let (real, meta) = match self.entry(path) {
             Ok(entry) => {
@@ -469,183 +933,11 @@ impl Shared {
         Ok((real, entry))
     }
 
-    /// Send the part of a file `read` asks for as `FsData` chunks, each
-    /// waiting for room in the client's bulk lane: a client that takes them
-    /// slowly is read for slowly.
-    async fn read(self: Arc<Self>, read: FsRead, to_client: &ToClient) -> Result<(), ReadError> {
-        let named = requested(&read.path, &read.path_bytes);
-        let path = Named(&named);
-        let real = {
-            let shared = Arc::clone(&self);
-            let named = named.clone();
-            tokio::task::spawn_blocking(move || shared.follow(Named(&named)))
-                .await
-                .map_err(|err| err.to_string())??
-        };
-        let mut file = tokio::fs::File::open(&real)
-            .await
-            .map_err(|err| failed(path, &err))?;
-        let meta = file.metadata().await.map_err(|err| failed(path, &err))?;
-        if meta.is_dir() {
-            return Err(format!("{path}: is a directory").into());
-        }
-        let file_size = meta.len();
-        let available = file_size.saturating_sub(read.offset);
-        let total = match read.length {
-            0 => available,
-            length => length.min(available),
-        };
-        if total > self.max_bytes {
-            return Err(format!(
-                "{path}: too large to read at once: {}, the server sends at most {}",
-                human_size(total),
-                human_size(self.max_bytes)
-            )
-            .into());
-        }
-        if read.offset > 0 {
-            file.seek(io::SeekFrom::Start(read.offset))
-                .await
-                .map_err(|err| failed(path, &err))?;
-        }
-        let mut sent = 0u64;
-        loop {
-            let want = (total - sent).min(CHUNK as u64) as usize;
-            let mut data = vec![0; want];
-            let mut filled = 0;
-            while filled < want {
-                match file.read(&mut data[filled..]).await {
-                    Ok(0) => {
-                        return Err(
-                            format!("{path}: the file got shorter while it was read").into()
-                        );
-                    }
-                    Ok(n) => filled += n,
-                    Err(err) => return Err(failed(path, &err).into()),
-                }
-            }
-            sent += want as u64;
-            let last = sent == total;
-            let chunk = encode(server_message::Msg::FsData(FsData {
-                request_id: read.request_id,
-                total_size: total,
-                data: data.into(),
-                last,
-                error: String::new(),
-                file_size,
-            }));
-            to_client.send_bulk(chunk).await.map_err(|_| Gone)?;
-            if last {
-                return Ok(());
-            }
-        }
-    }
-
-    /// Take the chunks of one write as they come and write them to a
-    /// temporary file, renamed over the file after the last. Returns the
-    /// acknowledgement to send: `None` when the client left before the end.
-    async fn receive(
-        self: Arc<Self>,
-        mut chunks: mpsc::UnboundedReceiver<FsWrite>,
-    ) -> Option<(u64, String)> {
-        let first = chunks.recv().await?;
-        let request_id = first.request_id;
-        let shared = Arc::clone(&self);
-        let check = {
-            let first = FsWrite {
-                data: Default::default(),
-                ..first.clone()
-            };
-            tokio::task::spawn_blocking(move || shared.prepare_write(&first)).await
-        };
-        let (target, temp, mode) = match check {
-            Ok(Ok(prepared)) => prepared,
-            Ok(Err(error)) => return Some((request_id, error)),
-            Err(err) => return Some((request_id, err.to_string())),
-        };
-        let named = requested(&first.path, &first.path_bytes);
-        let path = Named(&named);
-        let total = first.total_size;
-        let note = {
-            let temp = temp.clone();
-            tokio::task::spawn_blocking(move || note_write(&writes_dir(), &temp))
-                .await
-                .ok()
-                .flatten()
-        };
-        let outcome = async {
-            let mut options = tokio::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            let mut file = options
-                .open(&temp)
-                .await
-                .map_err(|err| failed(path, &err))?;
-            if let Some(mode) = mode {
-                file.set_permissions(fs::Permissions::from_mode(mode))
-                    .await
-                    .map_err(|err| failed(path, &err))?;
-            }
-            let mut written = 0u64;
-            let mut chunk = first;
-            loop {
-                written += chunk.data.len() as u64;
-                if written > total {
-                    return Err(format!(
-                        "{path}: the write carries more data than it announced"
-                    ));
-                }
-                file.write_all(&chunk.data)
-                    .await
-                    .map_err(|err| failed(path, &err))?;
-                if chunk.last {
-                    break;
-                }
-                // The client left in the middle: nobody to answer.
-                chunk = chunks.recv().await.ok_or_else(String::new)?;
-            }
-            if written != total {
-                return Err(format!(
-                    "{path}: the write ended after {written} of {total} bytes"
-                ));
-            }
-            file.flush().await.map_err(|err| failed(path, &err))?;
-            // On disk before the answer: the data before the rename, the
-            // new name (the directory) after it.
-            file.sync_all().await.map_err(|err| failed(path, &err))?;
-            drop(file);
-            let (from, to) = (temp.clone(), target.clone());
-            tokio::task::spawn_blocking(move || crate::durable::rename_synced(&from, &to))
-                .await
-                .map_err(|err| err.to_string())?
-                .map_err(|err| failed(path, &err))?;
-            // Hold only the writer: the independent watcher must remain able
-            // to report the committed file before this write is acknowledged.
-            #[cfg(feature = "failpoints")]
-            tokio::task::spawn_blocking(|| crate::fail::point("files-write-before-ack"))
-                .await
-                .map_err(|err| err.to_string())?
-                .map_err(|err| err.to_string())?;
-            Ok(())
-        }
-        .await;
-        if outcome.is_err() {
-            let _ = tokio::fs::remove_file(&temp).await;
-        }
-        if let Some(note) = note {
-            let _ = tokio::fs::remove_file(&note).await;
-        }
-        match outcome {
-            Ok(()) => Some((request_id, String::new())),
-            Err(error) => (!error.is_empty()).then_some((request_id, error)),
-        }
-    }
-
     /// Check the first chunk of a write: the file to replace, the temporary
     /// file next to it, and the permissions to give it (those of the file it
     /// replaces).
-    fn prepare_write(&self, first: &FsWrite) -> Result<(PathBuf, PathBuf, Option<u32>), String> {
-        let named = requested(&first.path, &first.path_bytes);
-        let path = Named(&named);
+    fn prepare_write(&self, first: &WriteStart) -> Result<(PathBuf, PathBuf, Option<u32>), String> {
+        let path = Named(&first.path);
         if first.total_size > self.max_bytes {
             return Err(format!(
                 "{path}: too large: {}, the server takes at most {}",
@@ -711,8 +1003,8 @@ impl Shared {
 
     /// Start watching a directory. Must run where it may block, inside the
     /// runtime.
-    /// `named` is the path as the request's string has it, for `FsChanged.watch`.
-    fn watch(&self, path: Named, named: &str, sink: Sink, client: u64) -> Result<Watch, String> {
+    /// `named` is the path as the request's string has it, for `Change::watch`.
+    fn watch(&self, path: Named, named: &str, sink: ChangeSink) -> Result<Watch, String> {
         let dir = self.follow(path)?;
         let known: HashSet<PathBuf> = fs::read_dir(&dir)
             .map_err(|err| failed(path, &err))?
@@ -731,14 +1023,7 @@ impl Shared {
         watcher
             .watch(&dir, notify::RecursiveMode::NonRecursive)
             .map_err(|err| format!("{path}: cannot watch: {err}"))?;
-        let task = tokio::spawn(report_changes(
-            named.to_owned(),
-            dir,
-            known,
-            incoming,
-            sink,
-            client,
-        ));
+        let task = tokio::spawn(report_changes(named.to_owned(), dir, known, incoming, sink));
         Ok(Watch {
             watcher: Some(watcher),
             task,
@@ -746,7 +1031,43 @@ impl Shared {
     }
 }
 
-/// Turn what the watcher saw into `FsChanged`: each entry that changed once
+impl From<Kind> for FileKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::File => Self::File,
+            Kind::Dir => Self::Dir,
+            Kind::Link => Self::Link,
+            Kind::Other => Self::Other,
+        }
+    }
+}
+
+impl From<Entry> for FsEntry {
+    fn from(entry: Entry) -> Self {
+        let (name, name_bytes) = name_of(&entry.name);
+        Self {
+            name,
+            name_bytes,
+            kind: FileKind::from(entry.kind).into(),
+            size: entry.size,
+            mtime_ms: entry.mtime_ms,
+            mode: entry.mode,
+            target: FileKind::from(entry.target).into(),
+        }
+    }
+}
+
+impl From<ChangeKind> for FsChange {
+    fn from(kind: ChangeKind) -> Self {
+        match kind {
+            ChangeKind::Create => Self::Create,
+            ChangeKind::Modify => Self::Modify,
+            ChangeKind::Remove => Self::Remove,
+        }
+    }
+}
+
+/// Turn what the watcher saw into [`Change`]s: each entry that changed once
 /// per burst, a create or remove judged by whether it is there now and was
 /// before.
 async fn report_changes(
@@ -754,8 +1075,7 @@ async fn report_changes(
     dir: PathBuf,
     mut known: HashSet<PathBuf>,
     mut incoming: mpsc::UnboundedReceiver<Vec<PathBuf>>,
-    sink: Sink,
-    client: u64,
+    sink: ChangeSink,
 ) {
     while let Some(paths) = incoming.recv().await {
         let mut changed: Vec<PathBuf> = Vec::new();
@@ -782,30 +1102,22 @@ async fn report_changes(
                     // The directory's own times: its entries say more.
                     continue;
                 }
-                FsChange::Remove
+                ChangeKind::Remove
             } else if !exists {
                 if !known.remove(&path) {
                     continue;
                 }
-                FsChange::Remove
+                ChangeKind::Remove
             } else if known.insert(path.clone()) {
-                FsChange::Create
+                ChangeKind::Create
             } else {
-                FsChange::Modify
+                ChangeKind::Modify
             };
-            let (path, path_bytes) = name_of(path.as_os_str());
-            sink(Output::Send(
-                client,
-                server_message::Msg::FsChanged(FsChanged {
-                    request_id: 0,
-                    watch: watch.clone(),
-                    path,
-                    kind: kind.into(),
-                    path_bytes,
-                }),
-            ));
-            #[cfg(feature = "failpoints")]
-            tracing::info!(client, watch, ?kind, "files change queued");
+            sink(Change {
+                watch: watch.clone(),
+                path: path.into_os_string(),
+                kind,
+            });
         }
     }
 }
@@ -924,7 +1236,7 @@ fn expand(path: Named, home: Option<&Path>) -> Result<PathBuf, String> {
 
 /// A path as a request names it: the raw bytes when they are given (a name
 /// that is not UTF-8), the string otherwise.
-fn requested(path: &str, bytes: &[u8]) -> OsString {
+pub fn requested(path: &str, bytes: &[u8]) -> OsString {
     use std::os::unix::ffi::OsStrExt;
 
     if bytes.is_empty() {
@@ -936,7 +1248,7 @@ fn requested(path: &str, bytes: &[u8]) -> OsString {
 
 /// A name or path for an answer: the string, and the raw bytes too if it is
 /// not UTF-8 (the string then has U+FFFD for what is not).
-fn name_of(name: &OsStr) -> (String, Vec<u8>) {
+pub fn name_of(name: &OsStr) -> (String, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt;
 
     match name.to_str() {
@@ -980,34 +1292,32 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-fn kind_of(file_type: fs::FileType) -> FileKind {
+fn kind_of(file_type: fs::FileType) -> Kind {
     if file_type.is_symlink() {
-        FileKind::Link
+        Kind::Link
     } else if file_type.is_dir() {
-        FileKind::Dir
+        Kind::Dir
     } else if file_type.is_file() {
-        FileKind::File
+        Kind::File
     } else {
-        FileKind::Other
+        Kind::Other
     }
 }
 
 /// The entry at `path`, from its own metadata (a link's, not its target's).
-fn entry_of(name: OsString, path: &Path, meta: &fs::Metadata) -> FsEntry {
+fn entry_of(name: OsString, path: &Path, meta: &fs::Metadata) -> Entry {
     let kind = kind_of(meta.file_type());
     let target = match kind {
-        FileKind::Link => match path.metadata() {
-            Ok(meta) if meta.is_dir() => FileKind::Dir,
-            Ok(meta) if meta.is_file() => FileKind::File,
-            _ => FileKind::Other,
+        Kind::Link => match path.metadata() {
+            Ok(meta) if meta.is_dir() => Kind::Dir,
+            Ok(meta) if meta.is_file() => Kind::File,
+            _ => Kind::Other,
         },
         kind => kind,
     };
-    let (name, name_bytes) = name_of(&name);
-    FsEntry {
+    Entry {
         name,
-        name_bytes,
-        kind: kind.into(),
+        kind,
         size: meta.len(),
         mtime_ms: meta
             .modified()
@@ -1015,7 +1325,7 @@ fn entry_of(name: OsString, path: &Path, meta: &fs::Metadata) -> FsEntry {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |since| since.as_millis() as u64),
         mode: meta.mode() & 0o7777,
-        target: target.into(),
+        target,
     }
 }
 

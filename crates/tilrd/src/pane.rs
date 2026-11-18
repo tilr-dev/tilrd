@@ -467,6 +467,9 @@ async fn serve(
                 }
             }
             packet = packets.recv() => match packet {
+                Some(FromSupervisor::Packet(packet)) if packet.first() == Some(&link::READ_TEXT) => {
+                    pane.send_text(&packet[1..]).await?;
+                }
                 Some(FromSupervisor::Packet(packet)) => {
                     match tilr_proto::decode::<ClientMessage>(&packet) {
                         Ok(msg) => {
@@ -514,7 +517,9 @@ async fn serve(
         }
     }
 
-    // Show whatever the shell printed last.
+    // Show whatever the shell printed last, as a full frame: a client that
+    // skipped frames (lagging, `pane.output`) still gets the last screen.
+    pane.want_full = true;
     pane.send_frame().await?;
     let exit_code = match tokio::time::timeout(KILL_GRACE, pane.shell.wait()).await {
         Ok(code) => code.unwrap_or(-1),
@@ -1031,6 +1036,61 @@ impl Pane {
                 .context("send a copy to supervisor")?;
         }
         Ok(())
+    }
+
+    /// Answer a [`link::READ_TEXT`] request (`pane.read`) with the screen as
+    /// text and the seq of the last frame sent.
+    async fn send_text(&mut self, request: &[u8]) -> Result<()> {
+        let (Some(id), Some(history)) = (
+            request.get(..8).and_then(|id| <[u8; 8]>::try_from(id).ok()),
+            request.get(8..12).and_then(|n| <[u8; 4]>::try_from(n).ok()),
+        ) else {
+            tracing::warn!(pane = self.id, "bad text request from supervisor");
+            return Ok(());
+        };
+        let history = u32::from_le_bytes(history);
+        let text = match self.screen.text(history) {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!(pane = self.id, "screen text: {err:#}");
+                let mut packet = id.to_vec();
+                packet.push(if err.is::<tilr_screen::TextTooLarge>() {
+                    link::TEXT_TOO_LARGE
+                } else {
+                    link::TEXT_FAILED
+                });
+                packet.extend_from_slice(format!("{err:#}").as_bytes());
+                return link::write_tagged(&mut self.to_supervisor, link::kind::TEXT, &packet)
+                    .await
+                    .context("send text to supervisor");
+            }
+        };
+        let (cols, rows) = self.screen.size();
+        let reply = tilr_bus::pane::ReadReply {
+            seq: self.seq,
+            cols: cols.into(),
+            rows: rows.into(),
+            lines: text.lines,
+            cursor: Some(tilr_bus::pane::Cursor {
+                visible: text.cursor.visible,
+                x: text.cursor.x,
+                y: text.cursor.y,
+                shape: text.cursor.shape,
+                blinking: text.cursor.blinking,
+            }),
+            title: text.title,
+            cwd: self.cwd.clone(),
+            alive: true,
+            exit_code: None,
+            history: text.history,
+        };
+        let mut packet = Vec::with_capacity(9 + reply.encoded_len());
+        packet.extend_from_slice(&id);
+        packet.push(link::TEXT_OK);
+        reply.encode(&mut packet).context("encode text")?;
+        link::write_tagged(&mut self.to_supervisor, link::kind::TEXT, &packet)
+            .await
+            .context("send text to supervisor")
     }
 
     async fn send_frame(&mut self) -> Result<()> {

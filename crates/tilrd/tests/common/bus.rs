@@ -217,21 +217,25 @@ impl BusServer {
     /// Wait up to [`TIMEOUT`] for the server's log so far to satisfy `done`, woken
     /// by each line it logs (`Server::log_changed`); fails with `what` and the log.
     pub async fn wait_logged_event(&self, what: &str, done: impl Fn(&[String]) -> bool) {
-        let met = tokio::time::timeout(TIMEOUT, async {
-            loop {
-                let changed = self.log_changed.notified();
-                tokio::pin!(changed);
-                // Registered before the look, so a line logged in between wakes it.
-                changed.as_mut().enable();
-                if done(&self.log_lines()) {
-                    return;
-                }
-                changed.await;
-            }
-        })
-        .await;
+        let met = tokio::time::timeout(TIMEOUT, self.logged_event(done)).await;
         if met.is_err() {
             panic!("{what}:\n{}", self.log_lines().join("\n"));
+        }
+    }
+
+    /// Until the server's log so far satisfies `done`, woken by each line it logs
+    /// (`Server::log_changed`). Not bounded: race it with something that is, or
+    /// use [`wait_logged_event`](Self::wait_logged_event).
+    pub async fn logged_event(&self, done: impl Fn(&[String]) -> bool) {
+        loop {
+            let changed = self.log_changed.notified();
+            tokio::pin!(changed);
+            // Registered before the look, so a line logged in between wakes it.
+            changed.as_mut().enable();
+            if done(&self.log_lines()) {
+                return;
+            }
+            changed.await;
         }
     }
 

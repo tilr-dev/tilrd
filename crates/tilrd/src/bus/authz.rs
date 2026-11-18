@@ -3,11 +3,11 @@
 //! Owner: `bus-broker-core`; `bus-rights` replaces the body of
 //! [`default_authorizer`] (and adds its own types in `acl.rs`), nothing else.
 //!
-//! Until then the stub authorizer ([`StubAuthorizer`]) allows `tilrd` and `owner`
-//! everything, allows an instance what its [`Rights`] name as plain patterns (exact,
-//! `ns.*` prefix, `*` without `bus.*`; `control` as `action[:instance]`), allows every
-//! pane request (T7 is `bus-pane-rights`'s) and refuses every credential at `Hello`
-//! (`denied`, `tokens are not supported by this build`): fail closed.
+//! [`default_authorizer`] is Biscuit's ([`super::acl::Acl`]). The stub authorizer of
+//! `bus-broker-core` ([`StubAuthorizer`]) stays for its tests: it allows `tilrd` and
+//! `owner` everything, an instance what its [`Rights`] name as plain patterns (exact,
+//! `ns.*` prefix, `*` without `bus.*`; `control` as `action[:instance]`), every pane
+//! request, and refuses every credential at `Hello`: fail closed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,18 +29,38 @@ pub enum AuthzRequest<'a> {
     Emit { subject: &'a str },
     /// Subscribing to a pattern.
     Subscribe { pattern: &'a str },
-    /// A `bus.*` control action, on an instance or on all (`None`).
+    /// A `bus.*` control action, on an instance or on all (`None`), checked by a
+    /// core method for `call`.
     Control {
         action: &'a str,
         instance: Option<&'a str>,
+        call: ForCall<'a>,
     },
     /// Delivering an event to this subscriber; `scope` is `pane:<id>` or empty.
     Event { subject: &'a str, scope: &'a str },
     /// `pane.create` with a profile (empty: none) and whether `command` or `cwd`
-    /// override it (T7).
-    PaneCreate { profile: &'a str, overrides: bool },
-    /// Any access to a pane made by `creator` (T7).
-    PaneAccess { pane_id: &'a str, creator: &'a str },
+    /// override it (T7), checked for `call`.
+    PaneCreate {
+        profile: &'a str,
+        overrides: bool,
+        call: ForCall<'a>,
+    },
+    /// Any access to a pane made by `creator` (T7), checked for `call`.
+    PaneAccess {
+        pane_id: &'a str,
+        creator: &'a str,
+        call: ForCall<'a>,
+    },
+}
+
+/// The call a core method makes a follow-up check for (`Control`, `PaneCreate`,
+/// `PaneAccess`): its method and target (`CallCtx`), so the check is decided with
+/// the facts of that call too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ForCall<'a> {
+    pub method: &'a str,
+    /// `Call.target` as sent; empty when routed by method.
+    pub target: &'a str,
 }
 
 /// A refusal: the `denied` message, naming the missing right.
@@ -124,14 +144,12 @@ pub struct AuthzConfig {
     pub state_dir: Option<PathBuf>,
 }
 
-/// The server's authorizer. `bus-rights` replaces this body with Biscuit's.
+/// The server's authorizer: Biscuit's (`bus-rights`, `acl.rs`).
 pub fn default_authorizer(cfg: &AuthzConfig) -> Arc<dyn Authorizer> {
-    Arc::new(StubAuthorizer {
-        access_token: cfg.access_token.clone(),
-    })
+    super::acl::authorizer(cfg)
 }
 
-/// The authorizer before `bus-rights` (module docs).
+/// The authorizer before `bus-rights` (module docs); kept for its tests.
 pub struct StubAuthorizer {
     access_token: Option<String>,
 }
@@ -218,7 +236,9 @@ impl Authorizer for StubAuthorizer {
                 pattern_allowed(&rights.subscribe, pattern),
                 format!("subscribe to {pattern}"),
             ),
-            AuthzRequest::Control { action, instance } => (
+            AuthzRequest::Control {
+                action, instance, ..
+            } => (
                 control_allowed(&rights.control, action, instance),
                 match instance {
                     Some(instance) => format!("control {action}:{instance}"),
@@ -307,9 +327,15 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    fn stub(cfg: &AuthzConfig) -> StubAuthorizer {
+        StubAuthorizer {
+            access_token: cfg.access_token.clone(),
+        }
+    }
+
     #[test]
     fn the_stub_allows_what_the_rights_name() {
-        let authz = default_authorizer(&AuthzConfig::default());
+        let authz = stub(&AuthzConfig::default());
         let p = instance(Rights {
             call: strings(&["math.*", "pane.read", "*"]),
             provide: strings(&["ui.*"]),
@@ -358,28 +384,34 @@ mod tests {
         assert!(!ok(AuthzRequest::Subscribe { pattern: "*.>" }));
         assert!(ok(AuthzRequest::Control {
             action: "list",
-            instance: None
+            instance: None,
+            call: ForCall::default()
         }));
         assert!(ok(AuthzRequest::Control {
             action: "reload",
-            instance: Some("t-2")
+            instance: Some("t-2"),
+            call: ForCall::default()
         }));
         assert!(!ok(AuthzRequest::Control {
             action: "reload",
-            instance: Some("u-1")
+            instance: Some("u-1"),
+            call: ForCall::default()
         }));
         assert!(!ok(AuthzRequest::Control {
             action: "reload",
-            instance: None
+            instance: None,
+            call: ForCall::default()
         }));
         assert!(!ok(AuthzRequest::Control {
             action: "stop",
-            instance: Some("t-2")
+            instance: Some("t-2"),
+            call: ForCall::default()
         }));
         // Pane rights are bus-pane-rights'.
         assert!(ok(AuthzRequest::PaneCreate {
             profile: "",
-            overrides: true
+            overrides: true,
+            call: ForCall::default()
         }));
 
         let denied = authz
@@ -436,7 +468,7 @@ mod tests {
 
     #[test]
     fn the_stub_refuses_every_credential_at_hello() {
-        let authz = default_authorizer(&AuthzConfig {
+        let authz = stub(&AuthzConfig {
             access_token: Some("secret".into()),
             ..AuthzConfig::default()
         });

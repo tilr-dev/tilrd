@@ -1,3 +1,198 @@
-//! Helpers of `bus-core-services` for the bus tests, beside `bus.rs`.
+//! Helpers of `bus-core-services` for the bus tests, beside `bus.rs`: a whole
+//! stream read, the method listing, a FIFO whose writer's end the test waits
+//! for, and a program run with `exec.run`.
 //!
-//! Owner: `bus-core-services`. A stub of `bus-broker-core` until then.
+//! Owner: `bus-core-services`.
+
+#![allow(
+    dead_code,
+    reason = "each test binary that declares `mod common` uses some of these"
+)]
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use bytes::Bytes;
+use prost::Message;
+use tilr_bus::bus::{MethodInfo, MethodsReply, MethodsRequest};
+use tilr_bus::exec::{ExecExit, RunChunk, RunRequest, run_chunk};
+use tilr_bus::{Bus, BusError, CallOptions, ChunkStream, StreamOptions};
+use tokio::sync::oneshot;
+
+use super::bus_streams::within;
+
+/// What a stream gave: its chunks' payloads, then its `End` payload or error.
+pub struct Streamed {
+    pub chunks: Vec<Bytes>,
+    pub end: Result<Bytes, BusError>,
+}
+
+/// Read a stream to its end.
+pub async fn read_all(mut stream: ChunkStream) -> Streamed {
+    let mut chunks = Vec::new();
+    loop {
+        match within(stream.next()).await {
+            Some(Ok(chunk)) => chunks.push(chunk.bytes().expect("chunk payload")),
+            Some(Err(err)) => {
+                return Streamed {
+                    chunks,
+                    end: Err(err),
+                };
+            }
+            None => {
+                let end = stream.end_payload().cloned().unwrap_or_default();
+                return Streamed {
+                    chunks,
+                    end: Ok(end),
+                };
+            }
+        }
+    }
+}
+
+/// Open the stream `method` with `request` and a `window` (0: the default),
+/// and read it to its end.
+pub async fn stream_all(bus: &Bus, method: &str, request: &impl Message, window: u32) -> Streamed {
+    let stream = within(bus.stream(
+        method,
+        request.encode_to_vec(),
+        StreamOptions::default().window(window),
+    ))
+    .await;
+    match stream {
+        Ok(stream) => read_all(stream).await,
+        Err(err) => Streamed {
+            chunks: Vec::new(),
+            end: Err(err),
+        },
+    }
+}
+
+/// `bus.methods` as the owner.
+pub async fn methods(bus: &Bus) -> Vec<MethodInfo> {
+    within(bus.call_typed::<_, MethodsReply>(
+        "bus.methods",
+        &MethodsRequest {},
+        CallOptions::default(),
+    ))
+    .await
+    .expect("bus.methods")
+    .methods
+}
+
+/// [`super::bus_panes::call`], bounded.
+pub async fn call<Req: Message, Resp: Message + Default>(
+    bus: &Bus,
+    method: &str,
+    request: &Req,
+) -> Result<Resp, BusError> {
+    within(super::bus_panes::call(bus, method, request)).await
+}
+
+/// A FIFO at `path` a program is to hold open: the first receiver hears once
+/// a writer opened it (the program holds it), the second once every writer
+/// closed it (the program and whatever it left are gone).
+pub fn fifo_held(path: &Path) -> (oneshot::Receiver<()>, oneshot::Receiver<()>) {
+    let made = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success(), "mkfifo {}", path.display());
+    let (opened_tx, opened) = oneshot::channel();
+    let (closed_tx, closed) = oneshot::channel();
+    let fifo = path.to_owned();
+    // A thread of its own: the open waits for the writer, the read for its end.
+    std::thread::spawn(move || {
+        if let Ok(mut file) = std::fs::File::open(&fifo) {
+            let _ = opened_tx.send(());
+            let _ = file.read_to_end(&mut Vec::new());
+            let _ = closed_tx.send(());
+        }
+    });
+    (opened, closed)
+}
+
+/// `/bin/sh -c` holding the FIFO `fifo` open on descriptor 3 while `sleep`
+/// runs, as does a child of it it leaves behind: both go with the group.
+pub fn holding(fifo: &Path) -> Vec<String> {
+    vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("exec 3>'{}'; sleep 1000 & exec sleep 1000", fifo.display()),
+    ]
+}
+
+/// The chunks of `exec.run` and its end.
+pub struct Ran {
+    pub exec_id: u64,
+    pub pid: u32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit: ExecExit,
+}
+
+/// What a stream of `exec.run` (or `server.command`, `server.update`) gave.
+pub fn ran(streamed: Streamed) -> Ran {
+    ran_after(streamed, None)
+}
+
+/// [`ran`] of the rest of a stream whose `started` (exec id, pid) was read.
+pub fn ran_after(streamed: Streamed, started: Option<(u64, u32)>) -> Ran {
+    let end = streamed
+        .end
+        .expect("the program's stream ended with an error");
+    let (exec_id, pid) = started.unwrap_or_default();
+    let mut ran = Ran {
+        exec_id,
+        pid,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        exit: ExecExit::decode(end).expect("ExecExit"),
+    };
+    for (n, chunk) in streamed.chunks.into_iter().enumerate() {
+        match RunChunk::decode(chunk).expect("RunChunk").chunk {
+            Some(run_chunk::Chunk::Started(started)) => {
+                assert_eq!((n, ran.exec_id), (0, 0), "started comes first, once");
+                ran.exec_id = started.exec_id;
+                ran.pid = started.pid;
+            }
+            Some(run_chunk::Chunk::Output(output)) => {
+                assert_eq!(output.exec_id, ran.exec_id);
+                match output.stream {
+                    1 => ran.stdout.extend_from_slice(&output.data),
+                    2 => ran.stderr.extend_from_slice(&output.data),
+                    other => panic!("output of stream {other}"),
+                }
+            }
+            None => panic!("an empty RunChunk"),
+        }
+    }
+    ran
+}
+
+/// `exec.run` of `argv`, read to its end.
+pub async fn run(bus: &Bus, argv: &[&str]) -> Ran {
+    let request = RunRequest {
+        argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+        ..Default::default()
+    };
+    ran(stream_all(bus, "exec.run", &request, 0).await)
+}
+
+/// The first chunk of an `exec.run` stream: its `started`.
+pub async fn started(stream: &mut ChunkStream) -> (u64, u32) {
+    let chunk = within(stream.next())
+        .await
+        .expect("the stream ended before started")
+        .expect("exec.run did not start");
+    match RunChunk::decode(chunk.bytes().unwrap()).unwrap().chunk {
+        Some(run_chunk::Chunk::Started(started)) => (started.exec_id, started.pid),
+        other => panic!("first chunk {other:?}"),
+    }
+}
+
+/// A path under the server's home directory, without links (as `fs.*`
+/// answers paths).
+pub fn real(dir: &Path, name: &str) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap().join(name)
+}

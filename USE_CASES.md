@@ -793,12 +793,14 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 |---|---|
 | Hello comes first (a bad first message is `expected_hello` too) and names version 1; a wrong token or a credential is denied; tilr.v1 is served as before | `bus::hello_comes_first_and_names_a_version` |
 | The first thing a participant hears is its HelloAck, nothing from before it | `bus::the_first_thing_a_participant_hears_is_its_hello_ack` |
+| A participant is callable once it has its HelloAck: held just before the broker enters it (failpoint `bus-registering:<name>`), it has no HelloAck and is not logged greeted; once it has its HelloAck, a call of its method reaches it, not `not_found` | `bus::a_participant_is_callable_once_it_has_its_hello_ack` |
 | The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
 | A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
 | `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
-| Calls go round robin over the providers; no provider is `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
+| Calls go round robin over the providers; a method nobody provides is `not_found`, a target that is not connected `unavailable` | `bus::calls_go_round_robin_over_the_providers` |
 | `LAST_ACTIVE` goes to the provider that activated last, then to the next | `bus::last_active_goes_to_the_provider_that_activated_last` |
 | Methods in a reserved namespace cannot be provided, nor events emitted there | `bus::reserved_namespaces_cannot_be_provided` |
+| A Hello that provides more than 1024 methods is refused `bad_request`; 1024 are accepted | `bus::a_hello_provides_at_most_1024_methods` |
 | 1000 calls between two participants arrive in the order sent | `bus::calls_between_two_participants_keep_their_order` |
 | A stream is a call answered in chunks and End; a cancel reaches the provider; a reply to a stream is `bad_reply` | `bus::a_stream_is_a_call_answered_in_chunks` |
 | Events reach the subscribers connected now, by NATS patterns, once each, without history | `bus::events_reach_the_subscribers_connected_now` |
@@ -810,6 +812,286 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | The stub authorizer refuses every credential at Hello | `supervisor::bus::authz::tests::the_stub_refuses_every_credential_at_hello` |
 | Event patterns match subjects as NATS does | `supervisor::bus::events::tests::patterns_match_as_nats_subjects` |
 | An identity reads back from its text | `supervisor::bus::identity::tests::an_identity_reads_back_from_its_text` |
+
+## The terminal on the bus — `tests/bus_terminal.rs`
+
+The participant `tilrd` serves panes on `tilr.bus.v1` as on `tilr.v1`: `pane.*` calls
+create, list, close, resize and type into panes, `pane.output` streams a pane's frames as
+the pane process encoded them, `pane.read` reads it as text, and `pane.*` events with the
+scope `pane:<id>` tell what changed. `tilr.v1` clients see the same panes meanwhile.
+Helpers: `tests/common/bus_panes.rs`.
+
+| Use case | Test |
+|---|---|
+| A pane is created, listed and closed by calls; `created_by` names the caller; a `tilr.v1` client sees it; a missing pane is `not_found` | `bus_terminal::a_pane_is_created_listed_and_closed_by_calls` |
+| Pane changes are events in order (`pane.created`, `pane.title`, `pane.bell`, `pane.exited`, with `pane.changed`), scoped to the pane, from `tilrd` | `bus_terminal::pane_changes_are_events` |
+| Watching a pane is a stream of frames: a full frame first, the stream's caller a viewer until it cancels, `End` with the exit when the program exits | `bus_terminal::watching_a_pane_is_a_stream_of_frames` |
+| A watcher that reads nothing while its pane prints 7 MB gets the screen as it is then in a full frame and stays connected | `bus_terminal::a_lagging_watcher_skips_to_the_latest_screen` |
+| Input is acknowledged once the pane applied it, also to a program that does not echo; 100 inputs arrive in order; the seq is echoed in a frame | `bus_terminal::input_is_acknowledged_after_it_is_applied` |
+| Numbered input needs a stable client id, is applied once across reconnects, has counters per client id, and is refused after `pane.input_finalize` | `bus_terminal::numbered_input_is_applied_once_across_reconnects` |
+| A pane reads as text with its cursor and history; a read with `since_seq` waits for a change (typing after its call is in) or the end of `wait_ms`, answered before a shorter deadline | `bus_terminal::reading_a_pane_and_waiting_for_a_change` |
+| A pane is resized by a call, answered once applied: the list, the text and the program see the new size | `bus_terminal::a_pane_is_resized_by_a_call` |
+| Keys, a paste and a mouse press reach the program as it reads them; a scroll moves the viewport into history and back | `bus_terminal::keys_mouse_paste_and_scroll_reach_the_pane` |
+| A numbered input replayed while its bytes wait for the pty is written once, and both calls are answered after its last byte | `bus_terminal::a_replayed_input_still_pending_is_written_once` |
+| Fields used towards pane processes cannot be sent in `pane.input`, nor `created_by` in `pane.create` | `bus_terminal::internal_fields_cannot_be_forged` |
+| A read the pane process does not answer is `unavailable`; one waiting when the pane ends says it ended, with its exit code | `bus_terminal::a_read_the_pane_process_does_not_answer_ends` |
+| A watcher behind when the pane exits gets the last screen before `End` | `bus_terminal::a_watcher_behind_when_the_pane_exits_gets_its_last_screen` |
+| An input applied whose reply was lost with its connection is reported applied after reconnecting and not applied again | `bus_terminal::failpoints::an_input_whose_reply_was_lost_is_applied_once` |
+| `pane.applied` closes a pane it sent numbered input to that does not answer within 5 s and leaves panes it did not alone | `bus_terminal::failpoints::a_stuck_pane_is_closed_by_pane_applied` |
+| A reader of `pane.output` that stops reading holds up no other reader of its pane, no other pane and no input; reading again, it gets the screen as it is then | `bus_terminal::a_slow_reader_of_pane_output_holds_up_no_other_pane_or_reader` |
+| A pane call past its deadline is answered `timeout` and its handler stopped: an input that is never applied, a `pane.output` whose caller is then no viewer | `bus_terminal::a_pane_call_past_its_deadline_is_answered_timeout_and_cancelled` |
+| A finished foreground command is the event `pane.command_finished`, scoped to the pane, from `tilrd` | `bus_terminal::a_finished_command_is_a_pane_event` |
+| A frame over a reader's window goes whole while it is short of credit: each image once, in image chunks no larger than the window, then the frame that places them | `bus_terminal::a_frame_over_the_window_goes_whole_to_a_reader_short_of_credit` |
+| A pane the caller may not access is answered `not_found` `no such pane: <id>` by every pane call, as a missing pane is, and is not listed | `bus_terminal::failpoints::a_pane_the_caller_may_not_access_is_answered_as_a_missing_one` |
+| Payloads pass byte for byte, whatever their content type | `bus::payloads_pass_byte_for_byte` |
+| The core's methods answer JSON to JSON (proto3 JSON: lowerCamel names, 64-bit integers as strings) and protobuf to protobuf | `bus::core_methods_answer_json_to_json` |
+| Unit: a frame goes on the bus as the pane encoded it, only its wrapping tag changed | `supervisor::bus::core::panes::tests::a_frame_goes_on_the_bus_as_the_pane_encoded_it` |
+| Unit: the full frame after a lag carries the consumer's latest skipped seq | `supervisor::bus::core::panes::tests::a_frame_after_lag_carries_the_consumers_seq` |
+| Unit: a frame over the largest chunk sends its images first | `supervisor::bus::core::panes::tests::a_frame_over_max_frame_sends_its_images_first` |
+| Unit: a frame is split to the stream's window, images first; a frame of text over it is `too_large` | `supervisor::bus::core::panes::tests::a_frame_is_split_to_the_streams_window` |
+| Unit: a full frame queued before a frame that did not fit the stream's queue is sent but does not end the lag; every delta sent follows the frame before it | `supervisor::bus::core::panes::tests::a_full_frame_queued_before_a_missed_frame_does_not_end_the_lag` |
+| Unit: a `pane.read` reply over `max_frame` as JSON (control characters escaped) is `too_large`, though it fits as protobuf | `supervisor::bus::core::panes::tests::a_text_reply_over_max_frame_as_json_is_too_large` |
+| Unit: a consumer's own seqs are told apart by connection | `supervisor::bus::core::panes::tests::own_seqs_are_told_apart_by_connection` |
+| Unit: numbered input identities differ by identity and client id | `supervisor::bus::core::panes::tests::numbered_identities_differ_by_identity_and_client_id` |
+| Unit: bytes in proto3 JSON are written padded and read in any base64 form | `supervisor::bus::core::json::tests::bytes_are_written_padded_and_read_in_any_base64_form` |
+| Unit: the pane messages map to proto3 JSON and back | `supervisor::bus::core::json::tests::pane_messages_map_to_proto3_json_and_back` |
+| Unit: the screen reads as text with its history, cursor and title (`crates/tilr-screen`) | `ghostty::tests::the_screen_reads_as_text_with_its_history` |
+| Unit: the text of a screen is bounded: history past the bound left out, a viewport over it an error (`crates/tilr-screen`) | `ghostty::tests::the_text_of_a_screen_is_bounded` |
+
+## The bus's bounds — `tests/bus.rs`
+
+Why a call failed, deadlines and cancellation, credits per stream and per connection, the
+two lanes, `busy` instead of growth, events dropped for a lagging subscriber
+(`tilrd_bus_events_dropped_total`). Helpers in `tests/common/bus_streams.rs`.
+
+| Use case | Test |
+|---|---|
+| A failed call says why: `not_found` for a method nobody provides (a name only a participant that is gone provided is forgotten), `unavailable` for a method of windows with none open, also on a fresh server, and once its providers are gone, `timeout` at the deadline (the callee gets `Cancel`), `bad_request` for a window over 16 MiB; a call that names no deadline gets 10 s | `bus::a_failed_call_says_why` |
+| A connection superseded by the same client between its registration and its announcement stays ended: it is never announced up, nobody watching it is woken again | `supervisor::bus::broker::tests::a_connection_superseded_before_it_is_announced_is_never_up` |
+| A provider that is draining gets no call: `unavailable` | `supervisor::bus::broker::tests::a_draining_provider_is_unavailable` |
+| Draining a connection with a call it never answers ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::draining_a_connection_ends_at_its_deadline_without_spinning` |
+| Draining the broker with a call never answered ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::the_broker_drain_ends_at_its_deadline_without_spinning` |
+| tilrd's own call keeps the deadline it gives, over `call_timeout_ms`; without one it gets `call_timeout_ms` and the callee `Cancel` | `supervisor::bus::broker::tests::a_native_callers_own_deadline_is_kept` |
+| The broker sends a connection a `CredentialUpdate` and tells when a connection ends | `supervisor::bus::broker::tests::the_broker_sends_a_credential_update_and_tells_when_a_connection_ends` |
+| A call outside the caller's rights is `denied`, naming the method | `supervisor::bus::broker::tests::a_call_outside_its_rights_is_denied_naming_the_method` |
+| 256 calls stay pending per caller and more are `busy`; a callee whose queue is full gets no more calls (`busy`) and is not closed | `bus::a_full_queue_is_answered_busy` |
+| A nested call gets the time that is left; the callee is cancelled at the deadline and when the caller's connection ends | `bus::a_nested_call_gets_the_time_that_is_left_and_a_cancel` |
+| A late `Reply`, `Chunk` or `End` after a timeout or a cancel is dropped | `bus::late_answers_after_a_timeout_or_a_cancel_are_dropped` |
+| A native call past its deadline is answered `timeout` and its handler stopped | `supervisor::bus::broker::tests::a_native_call_past_its_deadline_is_answered_timeout_and_cancelled` |
+| A lagging subscriber loses events, counted in the metric, not its connection | `bus::a_lagging_subscriber_loses_events_not_its_connection` |
+| A participant that stops reading does not hold up calls between the others | `bus::a_slow_participant_does_not_hold_up_the_others` |
+| A stream sends its reader's window, then waits for credit; the connection keeps answering | `bus::streams_are_paced_by_the_readers_credit` |
+| A native stream sends no more than its credit; a chunk larger than its window ends it `too_large` | `supervisor::bus::broker::tests::a_native_stream_sends_no_more_than_its_credit` |
+| The end of a native stream needs no credit | `supervisor::bus::broker::tests::the_end_of_a_native_stream_needs_no_credit` |
+| A native bulk stream waits for the connection window, then goes on when credited | `supervisor::bus::broker::tests::a_native_bulk_stream_waits_for_the_connection_window` |
+| A chunk larger than the window ends a latest-wins stream `too_large`; `try_send` is `Closed`, not `Full` | `supervisor::bus::broker::tests::a_chunk_larger_than_the_window_ends_a_latest_wins_stream` |
+| A latest-wins producer waits for credit for its whole chunk, not a byte, and learns the window | `supervisor::bus::broker::tests::a_latest_wins_producer_waits_for_credit_for_its_chunk` |
+| `caught_up` waits for a spent connection window: a latest-wins bulk producer does not spin | `supervisor::bus::broker::tests::caught_up_waits_for_the_connection_window` |
+| A producer waiting in `caught_up` on a reader that does not read returns once the reader's connection ends, and its stream is closed | `supervisor::bus::broker::tests::a_producer_waiting_in_caught_up_returns_when_its_readers_connection_ends` |
+| A provider that overruns a stream's credit is cancelled and its reader gets `bad_reply`, on either lane | `bus::a_stream_that_overruns_its_credit_is_ended` |
+| An empty chunk is relayed like any other; empty chunks that pile up for a reader that does not read end their stream `bad_reply` (each counts as 1 KiB held), and the reader stays | `bus::an_empty_chunk_is_relayed_and_a_flood_of_tiny_ones_ends_the_stream` |
+| A chunk the broker cannot relay within the frame limit ends its stream `too_large`, the provider is cancelled | `bus::a_chunk_too_large_to_relay_ends_its_stream` |
+| Bulk data sent and not credited is at most 1 MiB per connection, across streams; interactive streams still flow | `bus::bulk_data_in_the_network_is_bounded_per_connection` |
+| A bulk stream that ends uncredited gives the connection window back | `bus::a_bulk_stream_that_ends_uncredited_gives_the_window_back` |
+| The end of a relayed bulk stream (End, an error, a timeout, its provider gone) waits behind the chunks the broker holds | `bus::the_end_of_a_relayed_bulk_stream_waits_behind_held_chunks` |
+| A reader that never credits cannot grow what the broker holds of its streams: past 16 MiB a new stream is `busy` | `bus::a_reader_that_never_credits_cannot_grow_the_relay` |
+| A reader that stops reading large interactive chunks is closed past 32 MiB queued, and sees code 4001 when it reads again before the close deadline | `bus::a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow` |
+| A reader that never reads large interactive chunks is closed past 32 MiB queued and sees its connection end without a close code once the 1 s close deadline passes | `bus::a_reader_that_never_reads_sees_its_too_slow_connection_end_without_a_code` |
+| Interactive traffic goes ahead of bulk traffic: an echo is answered before the next megabyte of a bulk stream | `bus::interactive_traffic_goes_ahead_of_bulk_traffic` |
+
+## Bus instances — `tests/bus.rs`
+
+Components run as instances `tilrd` starts and supervises from its own `bus.toml`: a
+process in a session of its own, its bus connection as descriptor 3 or on an instance
+socket, restarted with a pause when it ends. Tests start the real server with a `bus.toml`
+and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module; the
+`bus.*` control methods are called as the owner.
+
+| Use case | Test |
+|---|---|
+| An instance of `bus.toml` is started, listed `up`, answers calls and is `instance:<name>`; `autostart = false` is listed `stopped` until `bus.start` | `bus::an_instance_from_bus_toml_is_started_and_answers` |
+| A bad `bus.toml` at start (a misspelt key, the old `calls` key naming `rights`) is logged with the file, the server serves panes with no instances | `bus::a_bad_bus_toml_leaves_panes_working` |
+| A bad `bus.toml` on `bus.reload_config` is `bad_config` and changes nothing: the instance keeps its pid | `bus::reloading_a_bad_bus_toml_changes_nothing` |
+| A socket path over the platform limit is a configuration error, naming the file | `bus::a_socket_path_that_is_too_long_is_a_config_error` |
+| `bus.toml` is read with its defaults; an unknown key, a wrong type, an instance without its module, an empty command, a reserved or unusable name are refused naming the reason | `supervisor::bus::config::tests::bus_toml_is_read_with_its_defaults` |
+| A misspelt key is named, with its line | `supervisor::bus::config::tests::a_misspelt_key_is_named` |
+| The first round's `calls` key says `rights` replaced it | `supervisor::bus::config::tests::the_first_rounds_calls_key_names_rights` |
+| A wrong type is refused | `supervisor::bus::config::tests::a_wrong_type_is_refused` |
+| A `drain_ms` over 30000 is refused | `supervisor::bus::config::tests::a_drain_over_the_limit_is_refused` |
+| An instance needs a module and a module a command | `supervisor::bus::config::tests::an_instance_needs_a_module_and_a_module_a_command` |
+| `owner`, `tilrd`, `bus…` and unusable instance names are refused | `supervisor::bus::config::tests::reserved_and_unusable_instance_names_are_refused` |
+| A socket path over the platform limit is refused for a socket instance only | `supervisor::bus::config::tests::a_socket_path_over_the_platform_limit_is_refused` |
+| A changed file is compared instance by instance: added, removed, changed, kept (`autostart` aside) | `supervisor::bus::config::tests::a_changed_file_is_compared_instance_by_instance` |
+| A module's working directory defaults to the configuration directory | `supervisor::bus::config::tests::the_working_directory_defaults_to_the_configuration_directory` |
+| An instance gets descriptor 3 as `TILR_BUS_FD`, its name and the configuration directory; its `env` over the module's over the server's, without pane variables; no other descriptor | `bus::an_instance_gets_its_connection_and_names` |
+| A socket instance gets its socket (0600 in a 0700 directory) and a one-time token; the token is taken once, a second use or a wrong one is refused; a connection that says nothing is closed | `bus::a_socket_instance_connects_once_with_its_token` |
+| A crashed instance is started again after 200, 400, 800 ms (as logged), counting `restarts` | `bus::a_crashed_instance_is_restarted_with_backoff` |
+| An instance that closes its connection but keeps running is killed and started again | `bus::an_instance_that_loses_its_connection_is_restarted` |
+| An instance that never says Hello is killed and started again (the limit is 30 s, shortened by the test build) | `bus::an_instance_that_never_says_hello_is_restarted` |
+| A program that is not there is `spawn_failed`, one that exits before Hello `start_failed`; both are tried again | `bus::an_instance_that_cannot_start_is_reported` |
+| `bus.stop` drains (a call in flight is answered), stops and keeps the instance stopped until `bus.start`; stopping or starting twice is no error | `bus::an_instance_is_stopped_and_started` |
+| `bus.stop` ends an instance with SIGTERM: it starts with no signal blocked, though the supervisor's threads hold them | `bus::an_instance_is_stopped_with_sigterm` |
+| An instance that ignores SIGTERM is killed after 3 s | `bus::an_instance_that_ignores_sigterm_is_killed_after_3_s` |
+| A process an instance started ends with it, when the instance is stopped and when it exits by itself (its process group is killed before its leader is reaped) | `bus::an_instances_own_processes_end_with_it` |
+| `bus.reload` of an instance that cannot start again answers `start_failed`; the instance stays supervised and comes up once it can | `bus::a_reload_answers_a_start_error` |
+| `bus.reload` of a module or all takes the right over each instance it restarts (over every configured one for a module that does not exist): a caller without it is `denied` for a module that exists, one that does not and all alike, and nothing is restarted | `bus::reloading_a_module_takes_the_right_over_every_instance` |
+| Every control check names one instance, with the call's credential: `bus.instances` and `bus.methods` check `list` on each configured instance, `bus.reload_config` each instance the file adds, changes or removes (every configured one for a bad file); one denial is `denied` and nothing is done (with Biscuit rights: an instance's own token narrowed to `s-*` by an appended block) | `bus::control_rights_are_checked_for_each_instance` |
+| `bus.reload` of a module restarts its instances one at a time without a failed call; a caller that reloads itself has its reply first; the control right is checked | `bus::a_module_is_reloaded_one_instance_at_a_time` |
+| `bus.reload_config` starts the added, stops the removed, reloads the changed and leaves the others and the manually stopped alone | `bus::reloading_bus_toml_applies_the_difference` |
+| `bus.instances` lists instances and the outside participants, `bus.methods` the methods with their live providers; a draining instance is not offered | `bus::participants_and_methods_are_listed` |
+| An instance's stdout and stderr lines are in the server log as `bus <name>: <line>`; a line over 64 KiB is cut | `bus::an_instances_output_is_in_the_server_log` |
+| A line over the limit is cut and the next is whole | `supervisor::bus::runner::tests::an_instances_lines_are_cut_at_the_limit` |
+| Instance states are named `down`, `starting`, `up`, `draining`, `stopped` | `supervisor::bus::runner::tests::states_are_named_as_listed` |
+| The same call works over descriptor 3, an instance socket and a WebSocket | `bus::every_transport_speaks_the_same_envelopes` |
+| A length prefix over 16 MiB closes an instance's connection and the instance is restarted | `bus::a_frame_over_the_limit_closes_the_connection` |
+| An instance that provides a method of a reserved namespace is refused `reserved` and started again | `bus::reserved_namespaces_cannot_be_provided` |
+| A reload stops the instances before the exec and the successor starts them again from `bus.toml` | `bus::a_reload_stops_instances_and_the_successor_starts_them` |
+| A reload whose exec fails leaves the server running, and it starts the instances it stopped | `bus::a_failed_reload_starts_the_instances_again` |
+| A reload of the server does not wait for an instance's drain: a `bus.stop` draining a long call ends at once; `drain_ms` over 30000 is `bad_request` | `bus::a_reload_of_the_server_does_not_wait_for_a_long_drain` |
+| The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
+| `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
+| A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
+| `bus.start` answers once the broker entered the instance (held just before, failpoint `bus-registering:t-1`, it has not answered and the instance is `starting`); when it answers, the instance's methods are callable, listed by `bus.methods` and known (`unavailable` once it is stopped) | `bus::a_started_instance_is_callable_and_listed_when_bus_start_returns` |
+| A stopped instance is offered no new call by method before it is listed `draining`: held between the two (failpoint `bus-draining:t-1`), a call of its method is `unavailable` and `bus.methods` does not list it | `bus::a_draining_instance_is_offered_no_calls_before_it_is_listed_draining` |
+
+## The core's services on the bus — `tests/bus_terminal.rs`, `tests/reload.rs`, `tests/update.rs`
+
+Change `bus-core-services`: `server.*`, `fs.*`, `exec.*`, `clipboard.*` and `pane.copied`.
+
+| Use case | Test |
+|---|---|
+| `tilrd` is the provider of the pane and service methods; the streams among them are on the bulk lane | `bus_terminal::services::tilrd_provides_the_terminal_methods` |
+| `server.info` says what `tilr.v1`'s HelloAck says, in protobuf and JSON; a feature turned off is not listed and its methods are `not_found`, server commands still run | `bus_terminal::services::server_info_describes_the_server` |
+| Files are made, written in chunks (there only after the last), listed, looked at, renamed and deleted by calls; a watch emits `fs.changed.<id>` until `fs.unwatch`; a path outside the roots is refused with a message for the user; JSON for scripts | `bus_terminal::services::files_are_listed_changed_and_watched_on_the_bus` |
+| `fs.read` streams a 4 MiB file whole, each chunk within a 256 KiB window, or a part of it; a failed read ends the stream with the error; a refused upload gets the error for that chunk and each later one, the file stays | `bus_terminal::services::file_content_moves_in_chunks` |
+| `exec.run` streams `started`, stdout and stderr apart and the exit; `exec.input` answers what the program took; `exec.signal` signals it; another connection's program is `not_found`, a program that is not there `spawn_failed` | `bus_terminal::services::a_program_runs_on_the_bus_and_its_outputs_come_apart` |
+| Cancelling an `exec.run` stream kills the program's whole group (a child holding a FIFO open goes too) | `bus_terminal::services::a_cancelled_program_ends_with_its_group` |
+| `server.command` runs the server's own executable for the owner on the Unix socket; on TCP, even with the access token, it is `denied` and nothing runs | `bus_terminal::services::server_commands_are_taken_on_the_unix_socket_only` |
+| A copy made in a pane (OSC 52) is the event `pane.copied` with scope `pane:<id>`; `clipboard.get` streams it until a newer copy replaces it, then `not_found` | `bus_terminal::services::a_copy_in_a_pane_is_an_event_and_its_content_a_stream` |
+| `clipboard.put` takes content in chunks that a pane's `xclip` reads once the last is answered; over `clipboard_max_bytes` the transfer is refused, every chunk of it | `bus_terminal::services::the_shared_clipboard_takes_an_upload_in_chunks` |
+| `server.reload` is answered or its connection ends first, the connection ends with the exec, the server reloads and the pane keeps running with the same pid | `reload::a_reload_asked_on_the_bus_keeps_the_panes` |
+| `server.update` streams the output of `tilrd update` and ends with its exit | `update::an_update_asked_on_the_bus_streams_its_progress` |
+| An instance that may call `server.*` without a `control` right is `denied` `server.reload` and `server.update`, and `server.command` as not the owner; a method outside its `call` rights is `denied` before it runs | `bus_terminal::services::an_instance_without_the_rights_is_denied_the_server_methods` |
+| An instance whose only `control` right is `server.update` runs `server.update` and is `denied` `server.reload`: each server method needs the action of its own name | `bus_terminal::services::each_server_method_needs_its_own_control_action` |
+| A read-only server refuses `fs.write`, `fs.mkdir`, `fs.rename` and `fs.delete` on the bus, nothing changes, `fs.list` still answers | `bus_terminal::services::a_read_only_server_refuses_changes_on_the_bus` |
+| A link out of the home directory, `..`, and a rename out of it or through such a link are refused as outside the shared directories | `bus_terminal::services::a_path_out_of_the_roots_is_refused_on_the_bus` |
+| An upload over `fs_max_bytes`, or carrying more than its `total_size` across chunks, is refused; the file is not made and no temporary file is left | `bus_terminal::services::an_upload_is_held_to_its_size_and_the_servers_limit` |
+| `fs.unwatch` of another connection's watch is `not_found`; its own connection still unwatches it | `bus_terminal::services::a_watch_is_unwatched_only_by_its_connection` |
+| A connection has at most 16 uploads in progress and 32 watches: one more is `busy`, and is taken once one is gone | `bus_terminal::services::a_connection_has_at_most_16_uploads_and_32_watches` |
+| An upload that failed before its last chunk is no longer in progress: it leaves room for another, and its later chunks get its failure | `bus_terminal::services::a_failed_upload_is_no_longer_in_progress` |
+| A connection runs at most 64 programs: one more is `busy`; another connection has its own | `bus_terminal::services::a_connection_runs_at_most_64_programs` |
+| A connection's watch, upload and program (its group) go when it closes or a connection of the same client supersedes it | `bus_terminal::services::what_a_connection_made_goes_when_it_ends_or_is_superseded` |
+| A program writing 4 MiB to a reader with a 64 KiB window that takes nothing after `started` waits for the reader (logged) without finishing; taken, all of it comes | `bus_terminal::services::a_reader_that_credits_slowly_holds_the_program_back` |
+| `exec.input` to another connection's program, or none, is `not_found`; more than 4 MiB not taken kills the program (`input overrun`) and is `bad_request` | `bus_terminal::services::exec_input_is_the_callers_and_overrun_kills_the_program` |
+| A first `fs.write` chunk the server takes after its connection ended is refused and leaves no temporary file and no note (failpoint) | `bus_terminal::services::failpoints::a_first_chunk_taken_after_its_connection_ended_starts_no_upload` |
+| A program whose stream is cancelled after it started, before the stream's handler took up its start, is killed with its group (failpoint) | `bus_terminal::services::failpoints::a_program_cancelled_as_it_starts_ends_with_its_group` |
+| `clipboard.get` of a copy in a pane the caller may not access is `not_found` (failpoint) | `bus_terminal::services::failpoints::a_copy_of_a_pane_the_caller_may_not_access_is_not_found` |
+
+## Rights on the bus — `tests/bus_acl.rs`
+
+Biscuit tokens of the server (change `bus-rights`, design R1-R8): the owner mints them with
+`bus.token` during each test, outside participants (`tilr_bus` clients and the test runtime,
+`token:<name>`) use them; every key and token is made by the server under test. Instances
+(`instance:<name>`, rights from `bus.toml`) are socket instances whose process hands its
+socket token to the test, which then connects as the instance and holds the token the
+server minted for it.
+
+| Use case | Test |
+|---|---|
+| The root key is made once (0600) and kept across a restart; a token of the first start still verifies | `bus_acl::the_root_key_is_made_once` |
+| The owner holds every right and has no token; a participant with a token is not the owner, also on the Unix socket | `bus_acl::the_owner_holds_every_right` |
+| On TCP a participant needs the access token or a token of this server | `bus_acl::a_tcp_participant_needs_a_token` |
+| A participant may call what its token lists and nothing else; `from` is its token's participant | `bus_acl::a_participant_may_do_what_its_token_lists` |
+| A token without rights is allowed nothing but `bus.ping` | `bus_acl::a_token_without_rights_is_allowed_nothing` |
+| Providing, emitting and subscribing need rights; a forged core event reaches nobody | `bus_acl::providing_emitting_and_subscribing_need_rights` |
+| Control methods (`list`, per-instance actions, `token`, `revoke`, `rotate_key`, `server.reload`, `server.update`) need control rights; `call = ["*"]` reaches no control method; `reload:t-1` reloads t-1 and not t-2 or all, which keeps its pid; a narrow per-call credential on a wide connection is denied; a minter other than the owner mints only rights it holds | `bus_acl::control_methods_need_control_rights` |
+| A `bus.*` method that is not known is a plain call: `not_found` to the owner and to `call = ["bus.*"]`, `denied` to a token without a right over it; look-alikes of `bus.token` (case, trailing dot or space, a Cyrillic letter) never reach it | `bus_acl::an_unknown_bus_method_is_not_found_to_whom_may_call_it` |
+| With no instance configured, `bus.instances`, `bus.methods` and `bus.reload_config` need `list` or `reload_config` over every instance: a `call` right or rights over some instances are denied | `bus_acl::control_methods_need_their_right_with_no_instances` |
+| An instance gets a token of its `bus.toml` rights in `HelloAck.credential` and may do what they list (calls, `reload` of one instance) and nothing else; one without rights may do nothing; callees see `from=instance:<name>` | `bus_acl::an_instance_may_do_what_its_rights_list` |
+| An instance's token, handed out as text, is denied with `revoked` once the instance is stopped | `bus_acl::a_stopped_instances_token_is_revoked` |
+| `server.command` is the owner's on the Unix socket only (not on TCP, not for any token); `server.update` needs its control action, not `call` | `bus_acl::server_command_is_the_owners_on_the_unix_socket_only` |
+| A token minted by a participant is named under it (`token.<name>.…`), lives no longer than its token, is bound to its origin; revoked alone it leaves the minter working, the minter revoked ends it; an attenuated minter mints nothing | `bus_acl::a_minted_token_lives_within_its_minter` |
+| The children of the instance `a` and the token `a` are `token:instance.a.x` and `token:token.a.x`; neither minter may name the other's or a name without its kind; revoking the token `a` ends its child only | `bus_acl::children_of_an_instance_and_a_token_of_one_name_differ` |
+| A child's own name has no dot: the instance `a` is refused `instance.a.b.x` and mints `instance.a.x`; the instance `a.b` mints `instance.a.b.x` | `bus_acl::a_childs_own_name_has_no_dot` |
+| The owner is refused the names `instance.a.x` and `token.a.x` (prefixes reserved for children) and mints `a.x` and `my-instance.x` | `bus_acl::the_owner_mints_no_name_of_a_childs_form` |
+| A token of another server, or a malformed one, is denied at Hello and per call | `bus_acl::a_token_of_another_server_is_refused` |
+| A per-call credential authorizes its call alone, for a narrow caller and against a wide one; `from` stays the caller; the audit names both | `bus_acl::a_per_call_credential_is_a_bearer` |
+| `pane.*` is decided by `call` rights like every core method; a per-call credential decides it alone, the pane checks of `pane.create` and of a pane included | `bus_acl::pane_calls_follow_call_rights_and_a_per_call_credential` |
+| An appended check sees the call in each pane check made for it: a token narrowed to `check if method("pane.list")` lists the panes and creates none; a per-call credential narrowed to `pane.create` creates a pane and cannot close it | `bus_acl::pane_checks_see_the_call_they_are_made_for` |
+| `pane.create` with a profile is authorized before the profile is read: a token narrowed to `pane.list`, or one whose `PaneCreate` check refuses the profile, is `denied` without the file's error; that token creates a pane without a profile; the owner's call reads the file | `bus_acl::a_profile_is_read_only_after_pane_create_is_authorized` |
+| An appended block narrows (one target); one that adds a fact is denied; over 8 blocks or 16 KiB is denied | `bus_acl::an_attenuated_token_only_narrows` |
+| A block of facts and a 5-way join, or of a rule, is denied at once, per call and at Hello, also when its symbol names make it print as checks on `kind`; the token it came from still works | `bus_acl::authorization_that_runs_too_long_is_denied` |
+| A revocation and a key rotation take effect inside the decision cache's second | `bus_acl::a_revocation_clears_cached_decisions` |
+| A revoked token, and one attenuated from it, is denied at once and after a restart; its connection is closed with 4003 | `bus_acl::a_revoked_token_stops_working_at_once` |
+| A key rotation ends every token at once and closes their connections with 4003; tokens of the new key work; a running instance gets a token of the new key by `CredentialUpdate` and keeps its connection and pid | `bus_acl::rotating_the_root_key_ends_every_token` |
+| Denials, control calls, mints and revocations are audited without the token's bytes | `bus_acl::denied_and_control_calls_are_audited` |
+| An instance's token is renewed 12 h after its start and sent to it by `CredentialUpdate`; the old one is revoked; its calls pass past the first token's expiry (test clock) | `bus_acl::an_instance_token_is_renewed` (failpoints) |
+| An expired token is denied within a second of its expiry and its connection closed with 4003 (test clock) | `bus_acl::an_expired_token_is_refused` (failpoints) |
+| An outside participant renews its token with `bus.renew` and `CredentialUpdate` and stays connected past the first expiry; one that does not is closed with 4003; an attenuated token is not renewed; another participant's token is not an update (test clock) | `bus_acl::an_outside_token_is_renewed_on_its_connection` (failpoints) |
+| `bus.renew` is refused in the first half of a token's life, and for a token that already lives as long as its minter's (test clock) | `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (failpoints) |
+| An appended block narrows a credential and keeps its signature; a fact in it grants nothing | `credential::tests::an_attenuated_credential_keeps_the_signature_and_only_narrows` |
+| Attenuating refuses what is not a token or a block of Datalog | `credential::tests::attenuating_refuses_what_is_not_a_token_or_a_block` |
+| The root key file is 0600 and reused; one open to others is refused, not replaced | `supervisor::bus::acl::tests::the_root_key_file_is_private_and_kept` |
+| Each right allows its requests only; the reason names the missing right | `supervisor::bus::acl::tests::each_right_allows_its_requests_only` |
+| `<action>:*` is the unscoped `<action>` (`list:*` lists, `*:*` is `*`); a prefix stays some instances | `supervisor::bus::acl::tests::an_action_over_every_instance_is_the_unscoped_right` |
+| The root key's hex reads into wiped memory and gives the key the server holds | `supervisor::bus::acl::tests::the_root_key_reads_from_its_hex` |
+| `*` rights, reserved namespaces, a principal without a token and the owner | `supervisor::bus::acl::tests::stars_and_the_owner` |
+| A per-call credential decides alone and only for calls | `supervisor::bus::acl::tests::a_per_call_credential_decides_alone` |
+| Appended blocks narrow and never widen; block, size and run limits; another key | `supervisor::bus::acl::tests::appended_blocks_narrow_and_never_widen` |
+| An appended block holds bounded checks on the request's facts only: facts, rules, joins over the rights, closures, regexes and too many checks are refused before Datalog runs | `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only` |
+| An appended block is read from its signed bytes, not its printed source: names that carry source text (comments, quotes, newlines, a trailing space) cannot hide facts, a rule or a join, a `trusting` scope is refused, and the largest accepted blocks decide in milliseconds | `supervisor::bus::acl::tests::an_appended_block_is_read_from_its_data_not_its_printed_text` |
+| An appended block that is not its own canonical encoding (a required field left out, an unknown field of the same size in its place) is refused | `supervisor::bus::acl::tests::an_appended_block_that_is_not_its_own_encoding_is_refused` |
+| Only the exact names are control methods; any other `bus.*` name is authorized as a call by the owner and `call` rights over it | `supervisor::bus::acl::tests::only_exact_names_are_control_methods` |
+| Control and pane checks made for a call carry its `method`, `namespace` and `target` (one fact each), and a cached decision for one call is not reused for another | `supervisor::bus::acl::tests::follow_up_checks_carry_the_facts_of_their_call` |
+| A token is bound to its server id, also with a copied key, also at Hello, a credential update and `bus.renew` | `supervisor::bus::acl::tests::a_token_is_bound_to_its_server_id` |
+| Expiry, revocation (also through the cache and after a restart) and rotation | `supervisor::bus::acl::tests::expiry_revocation_and_rotation` |
+| An instance gets a token of its rights at Hello; per call by others it is denied when no broker can say its connection lives; revoked at its end; never in Hello | `supervisor::bus::acl::tests::an_instance_gets_a_token_of_its_rights_at_hello` |
+| Hello with a credential is its participant; origin binding; a credential update names the same participant | `supervisor::bus::acl::tests::hello_with_a_credential_is_its_participant` |
+| `bus.token` checks the rights it is given and what a non-owner minter holds | `supervisor::bus::acl::tests::minting_checks_rights` |
+| The revocation file reads back; a broken one refuses every token | `supervisor::bus::acl::tests::the_revocation_file_reads_back_and_a_broken_one_refuses_all` |
+| A per-call credential decides the per-instance control checks of its call, not the connection's token | `supervisor::bus::acl::tests::a_bearer_decides_the_control_checks_of_its_call` |
+| `server.command` is the owner's on the Unix socket only, for no token | `supervisor::bus::acl::tests::server_command_is_the_owners_on_the_unix_socket_only` |
+| `server.update` needs the control action `server.update` | `supervisor::bus::acl::tests::server_update_needs_its_control_action` |
+| Without an access token (`--no-auth`) a TCP connection without a credential is the owner, still without `server.command`; one with a credential is its participant | `supervisor::bus::acl::tests::without_an_access_token_tcp_is_the_owner` |
+| A non-owner minter mints under its name and origin, never past its own token, never when attenuated; the chain of minters is kept | `supervisor::bus::acl::tests::a_minter_mints_under_its_name_origin_and_life` |
+| A minted token dies with its minter and can be revoked alone, also after a restart | `supervisor::bus::acl::tests::a_child_dies_with_its_minter_and_alone` |
+| A token renewed by whoever holds it dies when the owner revokes the one it gave out (the token or its id), also after a restart; the old tokens are refused once renewed, the reply names the first id | `supervisor::bus::acl::tests::a_renewal_dies_with_the_token_it_renewed` |
+| Renewing a minter (`bus.renew`, an instance's 12 h renewal) keeps what it minted; revoking it, or an instance's end, ends them | `supervisor::bus::acl::tests::renewing_a_minter_keeps_its_children` |
+| `bus.renew` in the second half of a token's life only, never past its minter's expiry | `supervisor::bus::acl::tests::renewal_is_for_the_second_half_and_stops_at_the_minters_expiry` |
+| A decision the wall-clock backstop ends is denied and not cached; the limits are 1000 facts, 100 iterations, 50 ms | `supervisor::bus::acl::tests::a_timeout_is_denied_and_never_cached` |
+| Concurrent revocations all reach the file and survive a restart; no staged file is left | `supervisor::bus::acl::tests::concurrent_revocations_all_survive_a_restart` |
+| A revocation file that does not read is never overwritten, by a revocation or a rotation; a restart still refuses | `supervisor::bus::acl::tests::a_broken_revocation_file_is_never_overwritten` |
+| A call whose target is longer than any participant's name is denied unread and not cached; cache keys are length-prefixed hashes | `supervisor::bus::acl::tests::a_target_longer_than_a_name_is_denied_unread` |
+| A revocation drops the cached decisions of the tokens it ends only | `supervisor::bus::acl::tests::a_revocation_keeps_the_decisions_of_other_tokens` |
+| `bus.revoke` (and the other file methods) do nothing on the envelope path; the reply comes once it is revoked in memory and on disk | `supervisor::bus::acl::tests::the_file_methods_run_off_the_envelope_path` |
+| The sweeper closes an outside participant, and renews an instance, whose token is of an earlier key | `supervisor::bus::acl::tests::the_sweeper_ends_tokens_of_an_earlier_key` |
+| A request from an instance's own connection marks its seat open | `supervisor::bus::acl::tests::an_instance_acting_on_its_connection_is_seen` |
+| `mint` never makes a token `verify` refuses (over 16 KiB, too many rights) | `supervisor::bus::acl::tests::mint_never_makes_a_token_verify_refuses` |
+
+## Launch profiles (`pane-profiles`) - `tests/profiles.rs`, `src/profile.rs`, `src/bus/core/profiles.rs`
+
+| Use case | Test |
+|---|---|
+| A profile is the file `<name>.toml` in the configuration directory's `profiles/`; a pane created with it reports its name and command in the reply, in the `pane.created` event and in `pane.list`, a pane without one names none; tilrd provides `pane.profiles` | `profiles::a_pane_starts_with_the_profile_from_the_config_directory` |
+| `profiles_dir` in `server.toml` names another directory, and the default one is not read | `profiles::profiles_dir_names_another_directory` |
+| `profiles_dir` defaults to `profiles/` next to the configuration file in use, must be absolute or `~`, and is the key's value otherwise | `config::tests::profiles_dir_defaults_next_to_the_configuration_file` |
+| The default profiles directory next to a relative configuration file is made absolute | `config::tests::a_relative_configuration_file_gives_an_absolute_profiles_dir` |
+| A profile file or directory that group or others can write, or that another user owns, does not load, and the error names the file; root may own them | `profiles::a_profile_others_can_write_is_refused`, `profile::tests::a_profile_others_can_write_does_not_load`, `profile::tests::only_the_user_or_root_may_own_a_profile_or_a_directory_above_it` |
+| A symlinked profile is judged where it really is and must be a regular file; a group-writable directory of its target is refused | `profiles::a_symlinked_profile_in_a_group_writable_directory_is_refused`, `profile::tests::a_symlinked_profile_is_judged_where_it_lives` |
+| Every directory above the profiles directory is checked up to `/` or the home directory (the home itself included), as sshd does | `profiles::a_group_writable_directory_above_the_profiles_is_refused`, `profile::tests::the_directories_above_are_checked_up_to_the_home_directory` |
+| A profile larger than 64 KiB is refused, naming the file | `profiles::a_profile_larger_than_the_bound_is_refused`, `profile::tests::a_profile_is_read_up_to_its_bound` |
+| A FIFO in place of a profile is refused at once, without waiting for a writer | `profiles::a_fifo_in_place_of_a_profile_is_refused_without_hanging` |
+| A profile name is never a path: traversal, absolute and hidden names are refused before any file is read | `profiles::a_profile_name_is_never_a_path`, `profile::tests::names_never_are_paths`, `supervisor::bus::core::profiles::tests::a_bad_name_is_refused_before_any_file_is_touched` |
+| An unknown profile or a missing directory is `no such profile` and the connection stays open; a profiles directory that cannot be read is an error of `pane.profiles`, not an empty listing | `profiles::an_unknown_profile_is_an_error`, `profile::tests::a_missing_profile_or_directory_is_no_such_profile` |
+| A misspelt key makes the profile invalid; the error names the file and the key; strict TOML for every `[sandbox]` key | `profiles::a_misspelt_key_makes_the_profile_invalid`, `profile::tests::every_sandbox_key_is_parsed`, `supervisor::bus::core::profiles::tests::an_unknown_or_invalid_profile_is_bad_request_with_its_file` |
+| Paths in a profile are absolute or `~`; relative ones are refused; `~` is the home directory; `.` and `..` fold | `profile::tests::relative_paths_are_refused`, `profile::tests::tilde_is_the_home_directory` |
+| `[env]` and `[sandbox] env` names cannot be empty, contain `=`, or start with `TILR_` | `profile::tests::tilr_variables_cannot_be_set` |
+| The request's command and an existing directory win over the profile's, the profile's `[env]` stays and `TERM` is the server's | `profiles::request_fields_override_the_profile`, `supervisor::bus::core::profiles::tests::the_request_wins_and_the_profiles_environment_stays` |
+| Without a directory of its own a profile pane starts in the home directory, with the login shell | `supervisor::bus::core::profiles::tests::a_profile_without_a_directory_falls_back_to_home` |
+| A request that names no profile is left to `pane.create` | `supervisor::bus::core::profiles::tests::no_profile_is_left_to_pane_create` |
+| A profile is read on every create: an edit applies to the next pane only | `profiles::an_edited_profile_applies_to_the_next_pane_only` |
+| A profile with `[sandbox]` is refused where the server cannot enforce it, and its program never starts; the start path itself refuses a sandbox it does not apply | `profiles::a_sandboxed_profile_is_refused_where_it_cannot_be_enforced`, `supervisor::bus::core::profiles::tests::prepare_create_refuses_a_sandbox_it_cannot_enforce`, `supervisor::bus::core::panes::tests::the_start_path_refuses_a_sandbox_it_does_not_apply` |
+| `pane.profiles` lists the profiles sorted by name with their errors, skips other files, cuts long texts, answers in protobuf and JSON; `sandboxed` is said of an invalid profile with a `[sandbox]` table too | `profiles::profiles_are_listed_with_their_errors`, `profile::tests::the_listing_is_sorted_with_errors_and_skips_other_files`, `profile::tests::only_a_sandbox_table_counts_as_a_sandbox` |
 
 ## Sandboxed panes on Linux (`sandbox-linux`) - `src/sandbox/`
 

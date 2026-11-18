@@ -396,6 +396,9 @@ agent = true
 # Let clients run programs outside a pane (Exec). On when unset; false does
 # what --no-exec does.
 exec = true
+# Where launch profiles live (see "Launch profiles"): absolute or starting
+# with ~. Default: `profiles/` next to this file.
+profiles_dir = "~/.config/tilr/profiles"
 
 # The files protocol.
 [files]
@@ -409,6 +412,61 @@ readonly = false
 # size like "64MB". Default 64MB.
 max_bytes = "64MB"
 ```
+
+### Launch profiles
+
+A profile names how a pane starts: the program, the directory, extra environment
+variables and, in a `[sandbox]` table, what the pane may touch. A pane asks for one
+by name, `pane.create {profile: "demo"}`; a profile is the file `demo.toml` in
+`profiles_dir` (`profiles/` next to the `server.toml` in use, or the directory the
+`profiles_dir` key names; absolute or `~`). Without the directory the server has no
+profiles.
+
+```toml
+description = "Scripts I do not trust"   # optional; shown by pane.profiles
+command = ["/bin/sh"]                    # absent or empty: your login shell
+cwd = "~/work"                           # absolute or ~; never relative
+[env]                                    # set over the server's environment
+GREETING = "hi"                          # not TILR_*; TERM, COLORTERM, SHELL stay the server's
+[sandbox]                                # optional; the profile is refused until this server can enforce it
+read_only = ["~/docs"]
+read_write = ["~/work"]
+executables = ["/usr/bin/git"]
+env = ["LANG"]
+network = "none"                         # "none" (default), "client" or "server"
+```
+
+- **Names, never paths.** A profile name matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`;
+  anything else is refused before the server looks at a file.
+- **The files are yours alone**, checked as sshd checks `authorized_keys` (StrictModes):
+  the server opens the profile once without blocking and judges the opened file: a
+  regular file (a symlink to one is fine), owned by the server's user or root, not
+  writable by group or others, at most 64 KiB. Every directory of its real path (after
+  symlinks) and of the profiles directory, up to `/` or up to and including your home
+  directory, must be owned by you or root and not writable by group or others; `/tmp`
+  and other world-writable directories are refused, sticky or not. Else the profile does
+  not load (`... is writable by others`, `... is owned by uid N`, `... is not a regular
+  file`, `... is larger than 65536 bytes`). A sandbox profile anyone can edit would turn
+  the sandbox off.
+- **Strict.** An unknown key or a value of the wrong type makes the profile invalid;
+  `pane.create` with it says which file and why. Paths are absolute or start with `~`
+  (the home directory); `.` and `..` are folded. `[env]` names are not empty, have no
+  `=` and do not start with `TILR_`.
+- **Read on every create**, never cached: an edit applies to the next pane that uses
+  the profile, not to a pane that runs. The pane keeps what the profile said when it
+  was created.
+- **The request wins on the command and the directory**: a `command` in the request
+  replaces the profile's, a `cwd` that is an existing directory replaces the profile's
+  (else the profile's, else the home directory). Nothing in a request changes `[env]`
+  or `[sandbox]`.
+- **`pane.profiles`** lists the profiles, sorted by name, with their `description`,
+  whether they have a `[sandbox]` (said of an invalid one too, when its file was read
+  and is TOML) and, for one that does not load, the `error` `pane.create` would give.
+  Without the directory the list is empty; a directory that is there and cannot be
+  read is `handler_error` naming it.
+- A profile with a `[sandbox]` table is refused (`profile <name> asks for a sandbox,
+  which this server cannot enforce`) on a server that cannot enforce it, and nothing
+  starts.
 
 ## Starting at boot
 
@@ -981,23 +1039,366 @@ send events through it. Its envelope and payload schemas are in the crate
 
 The first envelope is `Hello` with `protocol_version` 1 and the methods the participant
 provides; anything else first, or a message that is not an envelope, is answered
-`expected_hello` and closed, another version `unsupported_version`. On the Unix socket the participant is the owner; on TCP the owner
-shows the access token. This build refuses credentials (`denied`), at Hello and in
-`CredentialUpdate`. The answer, `HelloAck`,
-is the first thing a participant hears: its identity (`owner`), the connection id, the
-server id and the frame limit. The broker sets `from` of every call and event to the
-sender's identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
-`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers `bus.ping`.
-A call goes to the provider named by `target`, else round robin over the providers, or to
-the one that activated last for a method declared `LAST_ACTIVE`; calls between two
-participants keep their order. A newer connection with the same `client_id` supersedes
-the older (close 4000).
+`expected_hello` and closed, another version `unsupported_version`. A `Hello` may provide
+at most 1024 methods; more is refused `bad_request`. On the Unix socket the participant
+is the owner; on TCP the owner shows the access token; a participant with a `credential`
+is the participant of that token (see Rights). The answer, `HelloAck`, is the first
+thing a participant hears: its identity (`owner`), the connection id, the server id and
+the frame limit. A participant is callable, and listed by `bus.methods`, from the moment
+it has its `HelloAck`. The broker sets `from` of every call and event to the sender's
+identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
+`clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
+`bus.ping`, the control methods of [Instances](#instances), the `pane.*` methods of
+[Panes](#panes) and the `server.*`, `fs.*`, `exec.*` and `clipboard.*` methods of
+[Services](#services). A call goes to the provider named by `target`, else round robin over the
+providers, or to the one that activated last for a method declared `LAST_ACTIVE`; calls
+between two participants keep their order. A newer connection with the same `client_id`
+supersedes the older (close 4000).
 
 ### Streams and events
 
+A call fails with a reason: `not_found` (a target that does not provide the method, or
+a method that is not known: known are those a connection provides now, those
+`bus.toml` names, and those of windows and clients such as `ui.notify` or `host.open`),
+`unavailable` (a target not connected, a known method with no provider connected now
+or only draining ones, or a provider that went away before answering), `timeout`,
+`denied`, `busy`, `bad_request`, `bad_reply`, `too_large`; the message names the method
+or the participant. A participant has at most 256 calls and streams pending
+(`HelloAck.max_in_flight`); more are answered `busy` at once, and so is a call to a
+participant whose queue is full (768 of its 1024 interactive envelopes, or 24 MiB
+unwritten), which is not closed for it. A call's deadline is `min(timeout_ms, 10 s)`
+(0: 10 s); a stream has one only when it names one. The callee gets the time that is
+left in `timeout_ms`; at the deadline the caller gets `timeout` and the callee `Cancel`,
+as it does when the caller cancels or its connection ends. A late answer is dropped.
+
+A stream is a call answered by chunks and `End` (or an error). Its provider sends at
+most the credit its reader gave: the window of the call (`Call.window`, 0: 1 MiB, at
+most 16 MiB) plus what the reader returned with `Credit` as it read; one that sends more
+gets `Cancel` and its reader `bad_reply`. A reader that stops crediting stalls only that
+stream. Credit counts `Chunk.payload` bytes as carried in the envelope (a payload its
+producer compressed counts compressed). Chunks and replies of a `BULK` method go in the
+reader connection's bulk lane, written only when its interactive lane (events, replies
+of other methods, credits, cancels) is empty; across all bulk streams to one connection
+at most 1 MiB is sent and not yet credited (`HelloAck.connection_window`). The rest
+waits in the server, at most 1 MiB per stream and 16 MiB over the streams one
+connection reads: a stream that would pass it is `busy`, each chunk counts as at least
+1 KiB there (an empty one too, which is relayed like any other), and a provider whose
+tiny chunks fill it gets its stream ended `bad_reply`. A connection's interactive lane
+holds at most 1024 envelopes or 32 MiB unwritten, its bulk lane 1024 envelopes or
+4 MiB; a full interactive lane closes the connection 4001. The end of a stream comes
+after its chunks and never waits for credit.
+
+Events go to the subscribers connected now, by NATS patterns, at most once each,
+without history. A subscriber whose connection lags (a packet queued over 250 ms, or
+768 envelopes or 24 MiB queued) does not get them: they are dropped and counted in
+`tilrd_bus_events_dropped_total`, and the connection stays.
+
+### Panes
+
+tilrd serves the panes of `tilr.v1` on the bus too (schemas in `tilr.pane.v1`): a pane made
+by either protocol is seen, typed into and closed by both.
+
+| method | takes | answers |
+|---|---|---|
+| `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (a name from [Launch profiles](#launch-profiles); empty: none) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
+| `pane.list` | nothing | the `PaneInfo` of every running pane the caller may access, oldest first; a pane whose program is still starting is not listed |
+| `pane.close` | `pane_id` | `{exit_code}` once the program ended |
+| `pane.input` | `pane_id`, one of `key`, `mouse`, `paste`, `raw`, `scroll`, `clear`; `seq`, `input_seq` | `InputAck{pane_id, seq}` once applied: the pty took its last byte, or the scroll or clear took effect |
+| `pane.resize` | `pane_id`, `cols`, `rows`, `cell_width_px`, `cell_height_px` (0: keep), `seq`, `input_seq` | `InputAck` once the resize took effect |
+| `pane.applied` | nothing | within 5 s, the caller's applied `input_seq` per running pane it sent numbered input to; a pane process that does not answer by then is closed |
+| `pane.input_finalize` | nothing | ends the caller's numbered input session |
+| `pane.output` | `pane_id`, the caller's cell in pixels | a stream of frames (below) |
+| `pane.read` | `pane_id`, `since_seq`, `wait_ms`, `history_lines` | the screen as text (below) |
+| `pane.profiles` | nothing | the launch profiles, sorted by name: `name`, `description`, `sandboxed`, `error` |
+
+A `pane_id` naming no pane, or one the caller may not access, is `not_found`
+`no such pane: <id as sent>`, and the connection stays. `PaneInfo.created_by` is the
+identity that created the pane on the bus (`owner`, `instance:<name>`, `token:<name>`);
+a pane of `tilr.v1`, or one from before a reload, is `owner`'s. `PaneInfo.profile` names the
+profile a pane was created with (empty without one, and after a reload until profiles
+cross it), `PaneInfo.sandboxed` whether that profile has a `[sandbox]`. `PaneInfo.viewed_by` lists
+the open `pane.output` streams.
+
+Input and resizes of a connection are applied in the order it sent them; past the call's
+deadline the answer is `timeout`. `seq` (`HelloAck.connection_id << 32` plus a count) comes
+back in `Frame.last_input_seq`. `input_seq` > 0 is numbered input, applied at most once per
+`client_id` and pane across reconnects, as in `tilr.v1`: it needs a `client_id` in `Hello`
+(else `bad_request`), and a session not finalized is forgotten an hour after its last
+connection.
+
+`pane.output` is an interactive stream: a full frame of the screen first, then each frame
+the pane process builds, as `PaneOutput{frame}` chunks; the caller is a viewer while it is
+open. No chunk passes the stream's window (`Call.window`) nor the 16 MiB frame limit: a
+frame over it goes as `PaneOutput{images}` chunks first, then the frame without them; a
+frame over it even without its images ends the stream `too_large`. A watcher that lags (its
+interactive lane held a packet over 250 ms, or its credit is spent) gets no deltas until it
+caught up, then the latest full screen, whose `last_input_seq` is its own latest seq a
+skipped frame echoed; it is not dropped and holds up no other watcher or pane. When the
+program exits the stream ends with `End{pane_id, exit_code}`, after a full frame of the
+last screen for a watcher that was behind.
+
+`pane.read` answers the viewport's rows as text (trailing blanks trimmed), `seq`, size,
+cursor, title, cwd, `alive`, `exit_code` and up to `history_lines` (at most 10000) rows of
+scrollback, oldest first. The text is at most 4 MiB: past it the oldest history rows are
+left out, and a screen alone over it is `too_large`. With `since_seq` the call waits for a
+`seq` after it or the exit, at most `min(wait_ms, 25 s)` (`wait_ms` 0: not at all) and
+100 ms short of the call's deadline; a call's deadline is at most 10 s, so a wait ends
+after about 9.9 s at most; when that runs out it answers its last text with its
+`seq`, not `timeout`. A pane process that does not give its text in the time the call has
+left (5 s for a call without a deadline) is `unavailable`.
+
+Events, each with scope `pane:<id>` (delivered only to subscribers that may access the
+pane): `pane.created`, `pane.changed` (size, title, directory or viewers) and `pane.title`,
+each with the `PaneInfo`; `pane.bell`; `pane.command_finished {pane_id, at_ms}`;
+`pane.exited {pane_id, exit_code}`.
+
+A `pane.*` call with `content_type` `application/json` is read and answered in the proto3
+JSON mapping, so scripts need no codec; stream chunks and events stay protobuf. Fields are
+written under their lowerCamelCase names, defaults too (an unset `optional` field is left
+out), and read under that name or the proto name; 64-bit integers are written as strings
+and read from strings or numbers; `bytes` are written as padded standard base64 and read
+with or without padding, in the standard or URL alphabet; enums are written by name and read
+by name or number; `null` is the default and unknown fields are ignored.
+
+### Services
+
+tilrd serves the files, programs and clipboard of `tilr.v1` on the bus too (schemas in
+`tilr.server.v1`, `tilr.fs.v1`, `tilr.exec.v1`, `tilr.clipboard.v1`), with the same
+limits, roots and options. A feature turned off (`--no-files`, `--no-exec`, `--no-clipboard`, `--no-agent`, or
+the [configuration file](#the-configuration-file)) is missing from `server.info`'s `features`, and its methods are not provided
+(`not_found`). Calls and stream openings take `application/json` as `pane.*` does; chunks
+and events stay protobuf.
+
+| method | takes | answers |
+|---|---|---|
+| `server.info` | nothing | `server_version`, `update_channel`, `server_id`, `features` (of `clipboard`, `files`, `host-events`, `agent`, `exec`, in that order), `clipboard_max_bytes` and `fs_max_bytes` (0 without their feature), as `tilr.v1`'s `HelloAck` |
+| `server.reload` | nothing | `{}`, then the server reloads as on SIGUSR1; the reply can be lost when the connection ends at the reload, so a caller takes either as done; the owner, or the `control` right `server.reload` |
+| `server.update` | nothing | a bulk stream of `tilrd update` run as `exec.run` runs a program (below); the owner, or the `control` right `server.update` |
+| `server.command` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream of the server's own executable run with `argv`, as `exec.run`; the owner on the Unix socket only, else `denied` |
+| `fs.list` | `path` | `FsEntries`: the directory's real path and its entries |
+| `fs.stat` | `path` | `FsInfo`: the real path and its entry |
+| `fs.read` | `path`, `offset`, `length` (0: to the end) | a bulk stream of `FsData` chunks (`total_size`, `file_size` on each), each at most 256 KiB and the stream's window |
+| `fs.write` | `transfer_id`, `path`, `total_size`, `create`, `truncate`, `data`, `last` | `FsAck` per chunk once written; the file is replaced after the `last` |
+| `fs.mkdir`, `fs.rename`, `fs.delete` | `path`; `from`, `to`; `path`, `recursive` | `FsAck` once done |
+| `fs.watch` | `path` | `{watch_id}`; then events `fs.changed.<watch_id>`, to any subscriber with the right to the subject, not only the watching connection |
+| `fs.unwatch` | `watch_id` | `FsAck`; a watch of another connection, or none, is `not_found` |
+| `exec.run` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream: `RunChunk{started{exec_id, pid}}`, then `RunChunk{output{stream, data}}` (1 stdout, 2 stderr), `End` with `ExecExit` |
+| `exec.input` | `exec_id`, `data`, `eof` | `{exec_id, taken}` once the program took the bytes; `bad_request` once its stdin is closed or overrun |
+| `exec.signal` | `exec_id`, `signal` | `{}` once its process group was signalled |
+| `clipboard.put` | `transfer_id`, `mime`, `total_size` (on the first chunk), `data`, `last` | `{transfer_id}` per chunk; the `last` once the panes' `xclip` and `wl-paste` read it |
+| `clipboard.get` | `transfer_id` of a `pane.copied` | a bulk stream of `ClipboardData` chunks, `pane_id`, `mime` and `total_size` on the first; `not_found` to a caller that may not access the pane |
+
+Paths are as in `tilr.v1`: `~` is the home directory, a path outside the shared roots is
+refused, `*_bytes` carry names that are not UTF-8, and a read-only server refuses changes.
+A chunk of `fs.write` or `clipboard.put` names its transfer by the caller's connection and
+`transfer_id`; once a transfer failed (the file exists without `create`, the content is over
+`fs_max_bytes` or `clipboard_max_bytes`, a disk error) the chunk and each later chunk of it
+are answered with the same error. Such refusals are `bad_request` with a message meant for
+the user (`<path>: outside the directories this server shares`, `<path>: already exists`,
+`too large: …`, `the write carries more data than it announced`); a program that did not
+start is `spawn_failed`, an `exec_id` of another connection or none `not_found` (for
+`exec.input` and `exec.signal` alike).
+
+A watch, an upload and a running program belong to the connection that made them: only it
+unwatches, feeds or signals them, and they go when it ends or a connection of the same
+client supersedes it (a program's group is killed, an upload's temporary file removed). A
+connection has at most 32 watches, 16 uploads in progress (first chunk sent, `last` not yet)
+and 64 programs running; one more is `busy` (`32 watches of this connection already`,
+`16 uploads in progress already`, `64 execs running already`).
+Cancelling an `exec.run` stream kills the program's process group; a reader that credits
+slowly holds the program's output back, and more than 4 MiB of `exec.input` sent and not
+answered kills it (`reason` `input overrun`).
+
+A copy made in a pane (OSC 52, or `xclip`/`wl-copy` there) is the event
+`pane.copied {pane_id, transfer_id, mime, total_size}` with scope `pane:<id>`;
+`clipboard.get` with its `transfer_id` streams the content until a newer copy replaces it,
+then answers `not_found`.
+
+`host.open` (for `tilr edit` and `tilr open` in a pane) and the SSH agent
+(`ssh_agent.request`, `ssh_agent.close`) are still served by `tilr.v1` only: they are
+calls tilrd makes to the clients watching a pane, which the bus cannot yet address one
+connection at a time.
+
 ### Instances
 
+Components (Deno, Python, any program that speaks the bus) run as instances `tilrd` starts and
+supervises from its own file, `bus.toml` in the configuration directory beside `server.toml`
+(`$TILR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/tilr`, else `~/.config/tilr`). No file means no
+instances. It is read at start and again on `bus.reload_config`, which applies the difference.
+
+```toml
+call_timeout_ms = 10000      # default 10000
+drain_ms = 3000              # default 3000, at most 30000: how long a stop or reload waits for calls in flight
+[modules.deno]
+command = ["deno", "run", "-A", "main.ts"]   # required, not empty
+cwd = "~/tilr/components"    # absolute; ~ or ~/… (the home directory); relative: under the configuration directory, also the default
+[modules.deno.env]
+LOG = "info"
+[instances.deno-1]
+module = "deno"              # required
+connect = "fd"               # "fd" (default) | "socket"
+autostart = true             # default true
+[instances.deno-1.rights]    # what the instance may do; call, provide, emit, subscribe, control, pane
+call = ["math.*"]
+provide = ["ui.*"]
+[instances.deno-1.env]
+WORKERS = "2"
+```
+
+The file is strict: an unknown key, a wrong type, an instance naming no module, an empty command,
+a reserved name (`owner`, `tilrd`, names starting with `bus`), a name with characters other
+than letters, digits, `.`, `_` and `-`, a socket path over the platform limit (104 bytes on
+macOS, 108 on Linux), and the first round's `calls` key (it says `rights` replaced it) are
+errors. A bad file at start is logged, naming the file and the reason, and the server serves
+panes with no instances; on `bus.reload_config` the answer is `bad_config` and nothing changes.
+
+An instance is started in a session of its own, so a signal to its process group reaches what
+it started, with standard input from `/dev/null`, the server's environment (without the
+pane's variables) plus the module's `env`, the instance's `env`, `TILR_INSTANCE` and
+`TILR_CONFIG_DIR`, and no descriptor of the server but its bus connection. `connect = "fd"`
+hands the connection over as descriptor 3 (`TILR_BUS_FD=3`). `connect = "socket"` binds
+`<runtime dir>/bus/<name>.sock` (0600, in a 0700 directory) and sets `TILR_BUS_SOCK` and
+`TILR_BUS_TOKEN`, 32 hex characters, new at each start: the first `Hello` with that token is
+the instance, any other connection is refused and closed, and one that says nothing within
+10 seconds is closed. Both carry the same envelopes, as a u32 big-endian length and one
+`Envelope`, up to 16 MiB. Each line the instance writes to stdout or stderr is in the server
+log as `bus <name>: <line>` (a line over 64 KiB is cut).
+
+An instance that exits, whose connection ends while its process lives, or that has not said
+`Hello` 30 seconds after its start has its process group killed and is started again after
+200 ms, doubling up to 5 s, back at 200 ms after it ran 10 s. Its identity is
+`instance:<name>` and survives that. `bus.stop` drains the instance (no new calls by method,
+the ones in flight answered), sends SIGTERM to its group, SIGKILL after 3 s, and keeps it
+stopped until `bus.start`. `bus.reload` restarts an instance, a module or all that run, one
+at a time, each drained and waited for until its `Hello`, so a method with two providers has
+no gap. When `bus.start` or `bus.reload` answers, the instance's methods are callable and
+listed by `bus.methods`; a draining instance is offered no new calls by method from the
+moment `bus.instances` shows it `draining`. A caller that stops or reloads itself has its reply first. Until the server hands its
+instances over a reload, a reload stops every instance and the successor starts them again.
+
+The control methods, called by the owner or by an instance with the matching `control`
+right (`list`, `start`, `stop`, `reload`, `reload_config`, each for one instance or all):
+
+| method | does |
+|---|---|
+| `bus.instances` | every configured instance: name, module, transport, state (`down`, `starting`, `up`, `draining`, `stopped`), pid, restarts, provided methods; and the outside participants connected now |
+| `bus.methods` | every method with its kind, lane, selection and the live providers that are not draining |
+| `bus.start {instance}` | start a stopped instance; answers its pid once it said `Hello` (`spawn_failed`, `start_failed`, `start_timeout`) |
+| `bus.stop {instance, drain_ms?}` | drain, stop and keep stopped |
+| `bus.reload {instance \| module \| all}` | restart one at a time; the old and new pids |
+| `bus.reload_config` | read `bus.toml` again: stop the removed, start the added, reload the instances whose module or entry changed (`rights` included), leave the others and the stopped ones alone |
+
+They are serialized in one queue; the listings answer at any time.
+
+`call_timeout_ms` is the deadline of a call that names none and the most one names (0: no
+default deadline); it is applied to new calls at start and on `bus.reload_config`. The
+methods an instance provided, and those its `provide` rights name exactly (without `*`), stay
+known: a call of one while no provider is up is `unavailable`, not `not_found`.
+
 ### Rights
+
+Every participant but the owner and tilrd itself acts with a Biscuit token of this server
+and may do only what its token lists (least privilege; design R1-R9 in
+`openspec/design/unified-bus.md`).
+
+- **Root key.** Ed25519, made on the first start in `<state dir>/bus-root.key` (mode 0600)
+  and kept across restarts and reloads. A key file that does not read, is not the user's or
+  is open to others makes the server refuse every token (and mint none) until it is fixed.
+- **Who holds what.** The owner (the Unix socket, or TCP with the access token, and no
+  credential) holds every right. An instance gets a token minted from its
+  `[instances.<name>.rights]` at each start, in `HelloAck.credential`; an instance without
+  `rights` may do nothing. An outside participant says `Hello` with `credential`, a token
+  the owner minted with `bus.token`, and is `token:<name>`. On TCP, a participant with
+  neither the access token nor a credential is refused.
+- **Rights** (`bus.token` takes the same lists as `bus.toml`):
+
+  | key | allows | forms |
+  |---|---|---|
+  | `call` | calls and streams | `m.x`, `m.*`, `*` (`*` reaches no control method) |
+  | `provide` | methods in `Hello.provides` | as `call` |
+  | `emit` | events (never in `bus`, `pane`, `server`, `fs`, `exec`, `clipboard`) | as `call` |
+  | `subscribe` | subscription patterns inside the right | `pane.*` (also `pane.bell`, `pane.>`), `*` |
+  | `control` | `bus.instances`/`bus.methods` (`list`), `bus.start`, `bus.stop`, `bus.reload` (per instance), `bus.reload_config`, `bus.token`, `bus.revoke`, `bus.rotate_key`, `server.reload`, `server.update` | `list`, `reload:t-1`, `reload:t-*`, `*:t-1`, `server.reload`, `server.update`, `*` |
+  | `pane` | pane creation and access (`bus-pane-rights`) | `profile:agent`, `profile:*`, `unrestricted`, `override`, `access:own`, `access:any` |
+
+  `bus.start`, `bus.stop` and `bus.reload` pass with the action on some instance and are
+  checked for each instance they act on; `list` (`bus.instances`, `bus.methods`) and
+  `reload_config` are over every instance: `list:t-*` or `*:t-1` does not reach them, also
+  while no instance is configured. An instance part of `*` is every instance: `reload:*` is
+  `reload`, `list:*` is `list`, `*:*` is `*`.
+
+  `server.command` is no right: only the owner on the Unix socket may call it (not on TCP, not
+  with any token). A participant other than the owner with `control = ["token"]` mints only
+  rights it holds itself, with a token without appended blocks, named
+  `<its kind>.<its name>.<name>` (`instance:a` mints `token:instance.a.x`, `token:a`
+  `token:token.a.x`), where `<name>` has no dot (`instance:a` may not mint
+  `instance.a.b.x`: that is the child `x` of `instance:a.b`; the owner names any token but
+  one starting with `instance.` or `token.`, which are reserved for these children),
+  bound to its own origin if it has one, for no longer than its own token lives (renewals
+  included); revoking the minter's token (any token of its chain of renewals) ends the
+  tokens it minted, renewing it does not; an instance's end ends what it minted, its 12 h
+  renewal does not.
+- **A token is bound** to this server (`check if server(<id>)`, and the server id in its
+  signed metadata, checked also where no Datalog runs: `Hello`, `CredentialUpdate`,
+  `bus.renew`), to its expiry and, when
+  minted with `origin`, to the WebSocket `Origin`. A token of another server, a malformed
+  one, one over 16 KiB or 8 blocks, or one with a third-party block is `denied`.
+- **Per-call credential.** `Call.credential` authorizes that call alone, and the checks
+  its method makes for it (the per-instance checks of a control method, the pane checks of
+  a `pane.*` call), whatever the caller's own token allows; `from` stays the caller, and
+  audit lines name both (`from=… bearer=…`). A `bus.*` name that is not a control method is
+  a plain call: `not_found` to whom `call` rights cover it, `denied` to others.
+- **Attenuation.** A holder appends a block of checks without the server
+  (`Credential::attenuate` in `tilr-bus`, its feature `attenuate`), e.g.
+  `check if target("token:t-2");`. An appended block holds checks only (`check if`,
+  `check all`, `reject if`; a fact or a rule makes the token `denied`), at most 16 of them
+  (each `or` alternative counts) with at most 16 predicates each and 64 expression
+  operations in the block, and they read only the request's facts: `kind`, `method`,
+  `namespace`, `target`, `subject`, `pattern`, `action`, `instance`, `scope`, `caller`,
+  `origin`, `server`, `time` and the pane facts (`pane_profile_requested`,
+  `pane_overrides`, `pane`, `pane_creator`), one fact each per request; `.all`, `.any`,
+  `.matches` and extern functions are refused, and so is a `trusting` scope or a public key.
+  The server reads a block from its signed bytes (the facts, rules and checks the
+  authorizer runs), never from its printed source, and refuses one it cannot read whole. So
+  a check costs the same whatever it joins, and every block is enforced; none adds a right.
+  An appended check applies to every check made for a call: the call's own and those its
+  method makes (the per-instance checks of a control method, the pane checks of `pane.*`),
+  each with the facts available to it, the call's `method`, `namespace` and `target`
+  among them. So `check if method("pane.list")` lets `pane.list` list the panes and
+  nothing else, and `reject if instance($i), !$i.starts_with("s-");` narrows the control
+  methods to the instances `s-*` (a check that needs `instance` fails the call's own
+  check, which has none).
+- **Expiry and renewal.** A token lives at most 24 h (`bus.token` `ttl_ms`, 0 = 24 h). The
+  server renews an instance's token 12 h after minting it and sends the new one to the
+  instance in a `CredentialUpdate` (as after a rotation). An outside participant calls
+  `bus.renew` in the second half of its token's life (an unattenuated token; an attenuated
+  one, or one called earlier, is `bad_request`) and presents the new one with
+  `CredentialUpdate`; the old one is refused from then on (it alone: what its holder
+  minted keeps working). The renewal belongs to the token it renews: `RenewReply`'s
+  `revocation_id` is the one `bus.token` answered, and revoking any token of the chain ends
+  them all. A
+  connection whose token expires is closed with close code **4003** `credential`.
+- **Revocation and rotation.** `bus.revoke` (a token, or the `revocation_id` that
+  `bus.token` answered) refuses it, its renewals (also one its holder made before) and every
+  token attenuated from or minted with them from the next call on (revoking an attenuated
+  token refuses it and what is attenuated from it only),
+  also after a restart (`<state dir>/bus-revoked`, 0600, kept until the token's expiry), and
+  closes connections that said `Hello` with it (4003). An instance's token is revoked when
+  its connection ends. A `bus-revoked` that does not read makes the server refuse every token
+  and is never written over: fix or remove it and restart. `bus.rotate_key` makes a new root key: every earlier token is refused
+  at once, instances get new tokens, outside participants are closed with 4003.
+- **Limits.** A token's blocks are checked when it is first verified (above), so no token
+  makes a decision costly; a decision makes at most 1000 facts in 100 iterations (and stops
+  after 50 ms of wall clock as a backstop), else it is `denied` with `authorization limit
+  reached`; any error
+  is a denial. A call whose `target` is over 512 bytes is `denied` unread (no participant has
+  such a name); audit lines show at most 128 bytes of a target. Decisions are cached for 1 s,
+  keyed by a SHA-256 of the request (a revocation drops those of the tokens it ends, a
+  rotation all; a denial by the wall clock is not cached), parsed tokens (1024) until rotation.
+- **Audit.** `bus audit:` lines on the log target `tilrd::bus::audit`: every denial (who, the
+  first 16 hex digits of the token's revocation id, the kind, the method or subject, the
+  target, the reason), every control call allowed, and every mint, renewal, revocation and
+  rotation. Token bytes never appear in the log.
 
 ### Tilr Web
 
@@ -1264,6 +1665,7 @@ curl -H "Authorization: Bearer $(tilr token)" http://127.0.0.1:7890/metrics
 | `tilrd_client_drops_total{reason}` | counter | Clients the server let go: `superseded` by a newer connection of the same client, `too_slow`, `silent`, `no_pong` (sent, but did not answer pings), `no_hello` (no Hello before the handshake deadline) |
 | `tilrd_pane_input_total{pane}` | counter | Input packets (key, mouse, paste, raw, scroll) passed to the pane |
 | `tilrd_pane_input_bytes_total{pane}` | counter | Their bytes |
+| `tilrd_bus_events_dropped_total{subject}` | counter | Bus events not delivered to a subscriber whose connection lagged, by subject (past 1000 subjects, the rest as `other`) |
 | `tilrd_route_seconds` | histogram | A pane's packet, from the supervisor reading it off the pane process's pipe to the WebSocket write to the client returning (the client's queue included) |
 | `tilrd_route_input_seconds` | histogram | A client's input packet, from the supervisor reading it off the WebSocket to the write to the pane process's pipe returning |
 | `tilrd_supervisor_loop_lag_seconds` | histogram | How late the supervisor's event loop gets to a once-a-second tick. The tick comes from tokio's timer, which works in whole milliseconds: up to about 1 ms of every observation is the timer's, so the buckets under 1 ms say little |

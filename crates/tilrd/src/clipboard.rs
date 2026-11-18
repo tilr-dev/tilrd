@@ -230,8 +230,33 @@ enum Transfer {
         total: usize,
         data: Vec<u8>,
     },
-    /// Refused; the rest of its chunks are dropped.
-    Refused(u64),
+    /// Refused, and why; the rest of its chunks are dropped.
+    Refused(u64, String),
+}
+
+/// One chunk of an upload, whatever the protocol (`ClipboardPut`,
+/// `clipboard.put`).
+#[derive(Clone, Debug, Default)]
+pub struct Put {
+    pub transfer_id: u64,
+    /// First chunk only, as is `total_size`.
+    pub mime: String,
+    pub total_size: u64,
+    pub data: bytes::Bytes,
+    pub last: bool,
+}
+
+/// What became of a chunk ([`Receiver::put`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Taken {
+    /// Kept; more is to come.
+    Partial,
+    /// The last chunk: the content is the clipboard's now.
+    Done,
+    /// The transfer is refused, for this reason; told once.
+    Refused(String),
+    /// A later chunk of a transfer refused before, and why it was.
+    StillRefused(String),
 }
 
 /// Assembles the chunks of each client's transfer and publishes the result.
@@ -285,11 +310,39 @@ impl Receiver {
     /// Take one chunk from `client`. Returns the ack to send, once the
     /// transfer is complete or refused.
     pub fn on_chunk(&mut self, client: u64, put: ClipboardPut) -> Option<ClipboardAck> {
+        let transfer_id = put.transfer_id;
+        let put = Put {
+            transfer_id,
+            mime: put.mime,
+            total_size: put.total_size,
+            data: put.data,
+            last: put.last,
+        };
+        match self.put(client, put) {
+            Taken::Partial | Taken::StillRefused(_) => None,
+            Taken::Done => Some(ClipboardAck {
+                transfer_id,
+                ok: true,
+                error: String::new(),
+            }),
+            Taken::Refused(error) => Some(ClipboardAck {
+                transfer_id,
+                ok: false,
+                error,
+            }),
+        }
+    }
+
+    /// Take one chunk from `client` (a `tilr.v1` client or a bus connection,
+    /// whose ids do not overlap). A chunk of a transfer other than the one in
+    /// progress starts a new one: the clipboard is emptied first.
+    pub fn put(&mut self, client: u64, put: Put) -> Taken {
         let id = put.transfer_id;
         let outcome = match self.transfers.remove(&client) {
-            Some(Transfer::Refused(refused)) if refused == id => {
-                self.transfers.insert(client, Transfer::Refused(id));
-                return None;
+            Some(Transfer::Refused(refused, why)) if refused == id => {
+                self.transfers
+                    .insert(client, Transfer::Refused(id, why.clone()));
+                return Taken::StillRefused(why);
             }
             Some(Transfer::Receiving {
                 id: current,
@@ -315,28 +368,21 @@ impl Receiver {
                         data,
                     },
                 );
-                None
+                Taken::Partial
             }
-            Ok(None) => Some(ClipboardAck {
-                transfer_id: id,
-                ok: true,
-                error: String::new(),
-            }),
+            Ok(None) => Taken::Done,
             Err(error) => {
                 if !put.last {
-                    self.transfers.insert(client, Transfer::Refused(id));
+                    self.transfers
+                        .insert(client, Transfer::Refused(id, error.clone()));
                 }
-                Some(ClipboardAck {
-                    transfer_id: id,
-                    ok: false,
-                    error,
-                })
+                Taken::Refused(error)
             }
         }
     }
 
     /// Check the first chunk of a transfer.
-    fn begin(&self, put: &ClipboardPut) -> Result<(String, usize), String> {
+    fn begin(&self, put: &Put) -> Result<(String, usize), String> {
         let mime = put.mime.trim();
         if !valid_mime(mime) {
             return Err("clipboard content has no valid MIME type".into());
@@ -361,7 +407,7 @@ impl Receiver {
         mime: String,
         total: usize,
         mut data: Vec<u8>,
-        put: &ClipboardPut,
+        put: &Put,
     ) -> Result<Option<(String, usize, Vec<u8>)>, String> {
         if data.len() + put.data.len() > total {
             return Err("clipboard transfer carries more data than it announced".into());
