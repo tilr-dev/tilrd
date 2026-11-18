@@ -150,6 +150,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 | change | commit |
 |---|---|
 | bus-greet-order | [PR #143](https://github.com/tilr-dev/tilrd/pull/143) |
+| slow-reader-close-code | [PR #146](https://github.com/tilr-dev/tilrd/pull/146) |
 | pane-profiles | [PR #144](https://github.com/tilr-dev/tilrd/pull/144) |
 | bus-core-panes | [PR #141](https://github.com/tilr-dev/tilrd/pull/141) |
 | bus-drain-deadline | [PR #140](https://github.com/tilr-dev/tilrd/pull/140) |

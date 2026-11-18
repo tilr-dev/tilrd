@@ -895,7 +895,8 @@ two lanes, `busy` instead of growth, events dropped for a lagging subscriber
 | A bulk stream that ends uncredited gives the connection window back | `bus::a_bulk_stream_that_ends_uncredited_gives_the_window_back` |
 | The end of a relayed bulk stream (End, an error, a timeout, its provider gone) waits behind the chunks the broker holds | `bus::the_end_of_a_relayed_bulk_stream_waits_behind_held_chunks` |
 | A reader that never credits cannot grow what the broker holds of its streams: past 16 MiB a new stream is `busy` | `bus::a_reader_that_never_credits_cannot_grow_the_relay` |
-| A reader that stops reading large interactive chunks is closed 4001 past 32 MiB queued | `bus::a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow` |
+| A reader that stops reading large interactive chunks is closed past 32 MiB queued, and sees code 4001 when it reads again before the close deadline | `bus::a_reader_that_stops_reading_large_interactive_chunks_is_closed_too_slow` |
+| A reader that never reads large interactive chunks is closed past 32 MiB queued and sees its connection end without a close code once the 1 s close deadline passes | `bus::a_reader_that_never_reads_sees_its_too_slow_connection_end_without_a_code` |
 | Interactive traffic goes ahead of bulk traffic: an echo is answered before the next megabyte of a bulk stream | `bus::interactive_traffic_goes_ahead_of_bulk_traffic` |
 
 ## Bus instances — `tests/bus.rs`
