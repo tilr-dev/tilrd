@@ -1782,6 +1782,7 @@ impl Supervisor {
         // outlives it. One still there after PANE_STOP is killed with its
         // handle.
         tracing::info!("shutting down, closing {} pane(s)", self.panes.len());
+        bus::runner::stop_for_exit(&self).await;
         self.stop_panes().await;
         // Asked to exit, so it signs off at Cloudflare, and reaped.
         self.tunnel.hold().await;
@@ -2186,14 +2187,16 @@ impl Supervisor {
             }
         }
 
-        // It is not carried over: the successor starts its own.
-        self.tunnel.hold().await;
+        // It is not carried over: the successor starts its own. Nor are the bus instances
+        // (until `bus-reload`): the successor starts them again. Both stop at once.
+        tokio::join!(self.tunnel.hold(), bus::runner::stop_for_exit(self));
         let err = match crate::fail::point("reload-before-exec") {
             Ok(()) => self.exec_successor(&handed_over, hand_over_socket),
             Err(err) => err,
         };
         tracing::error!("reload failed: {err:#}");
         self.tunnel.release();
+        bus::runner::resume_after_failed_exit(self);
         // Carry on as before.
         for (pane_id, to_pane, reader) in handed_over {
             let (sender, link) = attach(
@@ -2406,6 +2409,10 @@ impl Supervisor {
                 self.send(id, server_message::Msg::InputAck(applied.clone()));
             }
         }
+        // Hook of `bus-core-panes`: the replies of `pane.input`, `pane.applied`.
+        if self.bus.observing() {
+            bus::core::panes::input_ack(self, pane_id, &ack);
+        }
     }
 
     async fn on_client_packet(&mut self, client_id: ClientId, packet: Bytes, received: Instant) {
@@ -2594,7 +2601,7 @@ impl Supervisor {
                 self.forget_input(&identity);
             }
             Msg::CreatePane(create) => {
-                if let Err(err) = self.create_pane(client_id, &create) {
+                if let Err(err) = self.create_pane(client_id, &create, &[]) {
                     self.send_error(client_id, &format!("create pane: {err:#}"));
                 }
             }
@@ -2878,11 +2885,16 @@ impl Supervisor {
     /// copies, in chunks on its bulk lane, ending a copy still being sent to
     /// it. Returns how many clients it goes to.
     fn send_copy(&mut self, pane_id: PaneId, mime: String, data: Bytes) -> usize {
+        if !self.panes.contains_key(&pane_id) {
+            return 0;
+        }
+        self.last_copy += 1;
+        let transfer_id = self.last_copy;
+        // Hook of `bus-core-services`: `pane.copied` and `clipboard.get`.
+        bus::core::clipboard::copied(self, pane_id, transfer_id, &mime, &data);
         let Some(pane) = self.panes.get(&pane_id) else {
             return 0;
         };
-        self.last_copy += 1;
-        let transfer_id = self.last_copy;
         let mut sent = 0;
         for &client_id in &pane.subscribers {
             let Some(client) = self.clients.get(&client_id) else {
@@ -2974,14 +2986,21 @@ impl Supervisor {
         }
     }
 
-    /// Start a pane process for the request. The client hears back once the
-    /// process reports that the shell is running, or that it could not start.
-    fn create_pane(&mut self, client_id: ClientId, create: &CreatePane) -> Result<()> {
+    /// Start a pane process for the request, `extra_env` added to the
+    /// environment of every pane (a bus profile's). The client hears back once
+    /// the process reports that the shell is running, or that it could not start.
+    fn create_pane(
+        &mut self,
+        client_id: ClientId,
+        create: &CreatePane,
+        extra_env: &[(OsString, OsString)],
+    ) -> Result<()> {
         let cols = create.cols.clamp(1, u32::from(u16::MAX)) as u16;
         let rows = create.rows.clamp(1, u32::from(u16::MAX)) as u16;
         let pane_id = PaneId::new_v4();
         let cwd = start_dir(&create.cwd);
         let mut env = self.pane_env.clone();
+        env.extend_from_slice(extra_env);
         if let Some(path) = self.agent.as_mut().and_then(|agent| agent.listen(pane_id)) {
             env.push((OsString::from(agent::SOCK_ENV), path.into_os_string()));
         }
@@ -3252,6 +3271,10 @@ impl Supervisor {
         }
         if let Some(starting) = self.starting.remove(&pane_id) {
             let reason = error.unwrap_or_else(|| "pane process died during startup".into());
+            // Hook of `bus-core-panes`: the reply of `pane.create`.
+            if self.bus.observing() {
+                bus::core::panes::create_failed(self, pane_id, &reason);
+            }
             return self.send_error(starting.client_id, &format!("create pane: {reason}"));
         }
         if !self.panes.contains_key(&pane_id) {
@@ -3518,6 +3541,10 @@ impl Supervisor {
     /// out: the first thing it hears is the answer to its hello.
     fn broadcast_pane_list(&mut self) {
         self.broadcast_to_greeted(server_message::Msg::PaneList(self.pane_list(0)));
+        // Hook of `bus-core-panes`: `pane.created`, `pane.changed`, `pane.title`.
+        if self.bus.observing() {
+            bus::core::panes::panes_changed(self);
+        }
     }
 
     fn broadcast_activity(&mut self, activity: tilr_proto::PaneActivity) {
@@ -3813,6 +3840,8 @@ async fn read_pane(
                     }
                 }
                 link::kind::STARTED => Event::PaneStarted { pane_id },
+                // Hook of `bus-core-panes`: the answer to `pane.read`.
+                link::kind::TEXT => Event::Core(bus::core::panes::text_reply(pane_id, packet)),
                 link::kind::EXITED => {
                     exit_code = tilr_proto::decode::<PaneExited>(&packet)
                         .ok()

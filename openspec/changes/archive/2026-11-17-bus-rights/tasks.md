@@ -1,0 +1,17 @@
+# Tasks
+
+Shared design: `openspec/design/unified-bus.md`. Numbers in brackets are the tasks of the
+former single change `unified-bus` (shared design, O3).
+
+## 1. Rights
+
+- [x] 1.1 [3.1] Add `biscuit-auth` (exact version, `--locked`) to `tilrd` and `tilr-bus`; `Credential::attenuate` in `tilr-bus` [from 1.3]; verify `cargo deny check` and the MSRV check (`cargo +1.99 check --workspace --all-targets --features tilrd/failpoints --locked`) green locally, `deny.toml` changed only if a license must be allowed (named in the commit), a unit test of `Credential::attenuate`
+- [x] 1.2 [3.2] `crates/tilrd/src/bus/acl.rs`: root key, minting from `rights` (R2, R3), `HelloAck.credential`, `calls` refused with the hint, provide/emit/subscribe/control checks, origin fact, parsed-token and decision caches, run and size limits (R6, R7); `default_authorizer` returns it; verify `bus_acl::the_root_key_is_made_once`, `bus_acl::the_owner_holds_every_right`, `bus_acl::a_tcp_participant_needs_a_token`, `bus_acl::an_instance_may_do_what_its_rights_list`, `bus_acl::providing_emitting_and_subscribing_need_rights`, `bus_acl::control_methods_need_control_rights`, `bus_acl::a_token_of_another_server_is_refused`, `bus_acl::a_per_call_credential_is_a_bearer`, `bus_acl::an_attenuated_token_only_narrows`, `bus_acl::authorization_that_runs_too_long_is_denied`, `bus_acl::a_revocation_clears_cached_decisions`, `bus_acl::server_command_is_the_owners_on_the_unix_socket_only`, `bus_acl::a_minted_token_lives_within_its_minter`; the cost measured by the ignored unit test `supervisor::bus::acl::tests::authorize_cost` and recorded in the PR (tilrd has no library target, so a criterion benchmark in `benches/` cannot reach the authorizer; design "Decisions")
+  - The `calls` hint is `bus-instances`' `bus.toml` parser (merged); also `bus_acl::control_methods_need_their_right_with_no_instances` (`list` and `reload_config` over every instance, design "Decisions")
+- [x] 1.3 [3.3] Expiry, renewal (`CredentialUpdate` both ways, `bus.renew`), revocation file, rotation, close code 4003, audit (R5, R8), the methods `bus.token`, `bus.revoke`, `bus.rotate_key`; verify `bus_acl::an_expired_token_is_refused`, `bus_acl::an_instance_token_is_renewed`, `bus_acl::an_outside_token_is_renewed_on_its_connection` (controlled time), `bus_acl::a_revoked_token_stops_working_at_once`, `bus_acl::a_stopped_instances_token_is_revoked`, `bus_acl::rotating_the_root_key_ends_every_token`, `bus_acl::denied_and_control_calls_are_audited`, `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (controlled time); README "The bus" rights subsection (with close code 4003); USE_CASES.md entries (own section)
+  - `CredentialUpdate` to an instance through `BrokerHandle::send_credential_update` (renewal and rotation)
+
+## 2. Checks and archive
+
+- [x] 2.1 [12.1] Run the checks from AGENTS.md: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the same with `--features tilrd/failpoints`, `cargo nextest run --workspace --features tilrd/failpoints --locked`, `cargo deny check`, `gitleaks git --redact --no-banner --exit-code 1 --log-opts=HEAD .`; on macOS also the Linux run via `scripts/linux.sh`; verify all green and every existing test passes under its name
+- [x] 2.2 [12.2] Archive the change and list it under Done in `openspec/ROADMAP.md`; verify `openspec validate --all --strict`

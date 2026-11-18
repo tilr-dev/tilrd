@@ -32,6 +32,9 @@
 
 pub mod client;
 pub mod codec;
+/// `Credential::attenuate` (`bus-rights`; feature `attenuate`).
+#[cfg(feature = "attenuate")]
+mod credential;
 pub mod methods;
 pub mod names;
 

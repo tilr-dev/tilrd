@@ -30,6 +30,8 @@
 pub mod agent;
 /// `clipboard.*` (`bus-core-services`).
 pub mod clipboard;
+/// What `server`, `fs`, `exec` and `clipboard` share (`bus-core-services`).
+pub mod common;
 /// `exec.*` (`bus-core-services`).
 pub mod exec;
 /// `fs.*` (`bus-core-services`).

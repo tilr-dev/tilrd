@@ -136,6 +136,9 @@ struct Shared {
     ready: watch::Sender<bool>,
     /// Woken each time the state's lock is let go: what a drain waits on.
     changed: Notify,
+    /// Times [`BrokerHandle::wait_state`] looked at the state.
+    #[cfg(test)]
+    wait_rounds: AtomicU64,
     /// `call_timeout_ms` (bus.toml); 0: no default deadline.
     call_timeout_ms: AtomicU32,
     timers: Arc<Timers>,
@@ -686,6 +689,18 @@ impl ConnState {
             true
         });
     }
+
+    /// Set `Up` if it still awaits `Hello`: a connection that ended before it was
+    /// announced (superseded) stays ended. Returns whether it is up.
+    pub(super) fn up(state: &watch::Sender<ConnState>) -> bool {
+        state.send_if_modified(|current| {
+            if *current != ConnState::AwaitingHello {
+                return false;
+            }
+            *current = ConnState::Up;
+            true
+        })
+    }
 }
 
 /// What [`BrokerHandle::attach_stream`] gives the runner of an instance.
@@ -788,6 +803,8 @@ impl BrokerHandle {
             native: OnceLock::new(),
             ready: watch::channel(false).0,
             changed: Notify::new(),
+            #[cfg(test)]
+            wait_rounds: AtomicU64::new(0),
             call_timeout_ms: AtomicU32::new(limits::CALL_TIMEOUT_MS),
             timers: Arc::new(Timers::default()),
         }))
@@ -873,6 +890,15 @@ impl BrokerHandle {
         }
     }
 
+    /// The state's lock that wakes nobody when let go: for a look that changes
+    /// nothing, where [`lock`](Self::lock)'s wake would wake the looker itself.
+    fn peek(&self) -> MutexGuard<'_, State> {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Wait until `done` holds of the state, woken by each change of it (no
     /// polling), or until `deadline`; whether it holds.
     async fn wait_state(
@@ -884,11 +910,15 @@ impl BrokerHandle {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if done(&self.lock()) {
+            #[cfg(test)]
+            self.0.wait_rounds.fetch_add(1, Ordering::Relaxed);
+            // Not `lock`: its wake on letting go would end this wait at once,
+            // and the deadline would never win (a busy loop).
+            if done(&self.peek()) {
                 return true;
             }
             if tokio::time::timeout_at(deadline, changed).await.is_err() {
-                return done(&self.lock());
+                return done(&self.peek());
             }
         }
     }
@@ -960,13 +990,32 @@ impl BrokerHandle {
     // Connections
     // -----------------------------------------------------------------------
 
-    /// Take a greeted connection in: its `HelloAck` is queued already, so nothing
-    /// reaches it before. A connection of the same principal and `client_id`
-    /// still open is closed 4000 (B12).
-    pub(super) fn register(
+    /// Take a greeted connection in: it is entered as a connection and as the
+    /// provider of its methods, and `ack` (its `HelloAck`) is queued under the same
+    /// lock, so nothing the broker routes to it comes before and its methods are
+    /// there once it has it. Only then is it announced [`ConnState::Up`], unless a
+    /// newer connection superseded it in between: returns whether it is up. A
+    /// connection of the same principal and `client_id` still open is closed 4000
+    /// (B12).
+    pub(super) async fn register(
         &self,
         principal: Principal,
         provides: Vec<MethodSpec>,
+        ack: Msg,
+        out: Out,
+        state: watch::Sender<ConnState>,
+    ) -> bool {
+        let announce = state.clone();
+        self.enter(principal, provides, ack, out, state).await;
+        ConnState::up(&announce)
+    }
+
+    /// [`register`](Self::register) up to the announcement.
+    async fn enter(
+        &self,
+        principal: Principal,
+        provides: Vec<MethodSpec>,
+        ack: Msg,
         out: Out,
         state: watch::Sender<ConnState>,
     ) {
@@ -997,11 +1046,16 @@ impl BrokerHandle {
             .into_iter()
             .map(|spec| (spec.method.clone(), spec))
             .collect();
-        state.send_replace(ConnState::Up);
+        // Held here by a test: a greeted connection the broker is about to enter, of
+        // which nothing may be observable yet (no `HelloAck`, not up, not logged).
+        #[cfg(feature = "failpoints")]
+        crate::fail::point_async(format!("bus-registering:{}", principal.client_name)).await;
         let mut st = self.lock();
         for method in provides.keys() {
             st.providers.entry(method.clone()).or_default().push(id);
         }
+        // Queued first: nothing the broker routes to the connection comes before it.
+        out.send(ack, Lane::Interactive);
         st.conns.insert(
             id,
             Conn {
@@ -3463,6 +3517,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_connection_superseded_before_it_is_announced_is_never_up() {
+        use super::super::transport::{Framing, out};
+        let broker = broker();
+        let principal = |connection_id| Principal {
+            identity: Identity::Instance("t-1".into()),
+            rights: None,
+            credential: None,
+            origin: String::new(),
+            transport: Transport::InstanceFd,
+            client_id: "c-1".into(),
+            client_name: "t-1".into(),
+            connection_id,
+        };
+        let ack = || Msg::HelloAck(tilr_bus::bus::HelloAck::default());
+        let (out_a, _outbox_a, _closing_a) = out(1, Framing::Stream);
+        let (out_b, _outbox_b, _closing_b) = out(2, Framing::Stream);
+        let (state_a, mut watched_a) = watch::channel(ConnState::AwaitingHello);
+        let (state_b, watched_b) = watch::channel(ConnState::AwaitingHello);
+        // A is in the table and not yet announced when B, the same client, comes.
+        broker
+            .enter(principal(1), Vec::new(), ack(), out_a, state_a.clone())
+            .await;
+        assert!(
+            broker
+                .register(principal(2), Vec::new(), ack(), out_b, state_b)
+                .await
+        );
+        assert!(matches!(
+            *watched_a.borrow_and_update(),
+            ConnState::Ended(_)
+        ));
+        assert_eq!(*watched_b.borrow(), ConnState::Up);
+        // A's announcement comes after its end: it stays ended, nobody is woken.
+        let up = ConnState::up(&state_a);
+        assert!(!watched_a.has_changed().unwrap(), "A was announced again");
+        assert!(matches!(*watched_a.borrow(), ConnState::Ended(_)));
+        assert!(!up);
+    }
+
+    #[tokio::test]
     async fn a_draining_provider_is_unavailable() {
         let broker = broker();
         let (mut provider, provider_id) =
@@ -3540,6 +3634,88 @@ mod tests {
             codes::TIMEOUT
         );
         assert!(matches!(provider.recv().await, Msg::Cancel(cancel) if cancel.id == forwarded.id));
+    }
+
+    /// `drain` on a thread of its own, with the time it took: a drain that spins
+    /// holds that thread, not the test's, so the test fails within [`WAIT`].
+    fn drain_on_own_thread<T: Send + 'static>(
+        drain: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> tokio::sync::oneshot::Receiver<(T, Duration)> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let started = std::time::Instant::now();
+            let done = runtime.block_on(drain);
+            let _ = tx.send((done, started.elapsed()));
+        });
+        rx
+    }
+
+    /// A provider `p-1` of `test.never` with a call from `c-1` in flight that it
+    /// never answers.
+    async fn a_call_in_flight(broker: &BrokerHandle) -> (Peer0, ConnId, Peer0) {
+        let (mut provider, provider_id) =
+            Peer0::attach_as(broker, "p-1", vec![MethodSpec::unary("test.never")]).await;
+        let mut caller = Peer0::attach_as(broker, "c-1", Vec::new()).await.0;
+        caller
+            .send(Msg::Call(Call {
+                id: 1,
+                method: "test.never".into(),
+                ..Call::default()
+            }))
+            .await;
+        assert!(matches!(provider.recv().await, Msg::Call(call) if call.method == "test.never"));
+        (provider, provider_id, caller)
+    }
+
+    /// Times a drain may look at the state while nothing changes it: once
+    /// before the wait, once at the deadline, and a few spare.
+    const QUIET_WAIT_ROUNDS: u64 = 4;
+
+    #[tokio::test]
+    async fn draining_a_connection_ends_at_its_deadline_without_spinning() {
+        let broker = broker();
+        let (mut provider, provider_id, mut caller) = a_call_in_flight(&broker).await;
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        let drained = drain_on_own_thread({
+            let broker = broker.clone();
+            async move { broker.drain_connection(provider_id, TIMEOUT).await }
+        });
+        let (answered, took) = within(drained).await.unwrap();
+        assert!(!answered, "the call was never answered");
+        assert!(took >= TIMEOUT, "returned before its deadline: {took:?}");
+        let rounds = broker.0.wait_rounds.load(Ordering::Relaxed);
+        assert!(
+            rounds <= QUIET_WAIT_ROUNDS,
+            "the drain spun: {rounds} rounds"
+        );
+        let (id, code, _) = error_code(&caller.recv().await).expect("an error");
+        assert_eq!((id, code.as_str()), (1, codes::UNAVAILABLE));
+        assert!(matches!(provider.recv().await, Msg::Cancel(_)));
+    }
+
+    #[tokio::test]
+    async fn the_broker_drain_ends_at_its_deadline_without_spinning() {
+        let broker = broker();
+        let (mut provider, _, mut caller) = a_call_in_flight(&broker).await;
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        let drained = drain_on_own_thread({
+            let broker = broker.clone();
+            async move { broker.drain(TIMEOUT).await }
+        });
+        let ((), took) = within(drained).await.unwrap();
+        assert!(took >= TIMEOUT, "returned before its deadline: {took:?}");
+        let rounds = broker.0.wait_rounds.load(Ordering::Relaxed);
+        assert!(
+            rounds <= QUIET_WAIT_ROUNDS,
+            "the drain spun: {rounds} rounds"
+        );
+        let (id, code, _) = error_code(&caller.recv().await).expect("an error");
+        assert_eq!((id, code.as_str()), (1, codes::UNAVAILABLE));
+        assert!(matches!(provider.recv().await, Msg::Cancel(_)));
     }
 
     #[tokio::test]
