@@ -1066,8 +1066,8 @@ and events stay protobuf.
 | method | takes | answers |
 |---|---|---|
 | `server.info` | nothing | `server_version`, `update_channel`, `server_id`, `features` (of `clipboard`, `files`, `host-events`, `agent`, `exec`, in that order), `clipboard_max_bytes` and `fs_max_bytes` (0 without their feature), as `tilr.v1`'s `HelloAck` |
-| `server.reload` | nothing | `{}`, then the server reloads as on SIGUSR1; the reply can be lost when the connection ends at the reload, so a caller takes either as done; the owner, or the `control` right `reload` |
-| `server.update` | nothing | a bulk stream of `tilrd update` run as `exec.run` runs a program (below); the owner, or the `control` right `reload` |
+| `server.reload` | nothing | `{}`, then the server reloads as on SIGUSR1; the reply can be lost when the connection ends at the reload, so a caller takes either as done; the owner, or the `control` right `server.reload` |
+| `server.update` | nothing | a bulk stream of `tilrd update` run as `exec.run` runs a program (below); the owner, or the `control` right `server.update` |
 | `server.command` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream of the server's own executable run with `argv`, as `exec.run`; the owner on the Unix socket only, else `denied` |
 | `fs.list` | `path` | `FsEntries`: the directory's real path and its entries |
 | `fs.stat` | `path` | `FsInfo`: the real path and its entry |
