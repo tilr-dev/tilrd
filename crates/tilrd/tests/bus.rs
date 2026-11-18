@@ -1663,6 +1663,19 @@ async fn a_reader_of_large_interactive_chunks(
     (reader, sending)
 }
 
+/// Whether the server's log has `message` for `reader`'s connection.
+fn logged_for<'a>(reader: &common::bus::Raw, message: &'a str) -> impl Fn(&[String]) -> bool + 'a {
+    let connection = format!(
+        "connection={}",
+        reader.ack.as_ref().expect("greeted").connection_id
+    );
+    move |lines: &[String]| {
+        lines.iter().any(|line| {
+            line.contains(message) && line.split_whitespace().any(|field| field == connection)
+        })
+    }
+}
+
 /// Wait for the server to log `message` for `reader`'s connection while the
 /// provider sends: until [`TIMEOUT`] after it has sent all at the latest, so a
 /// slow machine stretches the wait and a server that never logs it fails.
@@ -1673,15 +1686,7 @@ async fn logged_while_sending(
     sending: &mut tokio::task::JoinHandle<()>,
     message: &str,
 ) -> Option<Result<(), tokio::task::JoinError>> {
-    let connection = format!(
-        "connection={}",
-        reader.ack.as_ref().expect("greeted").connection_id
-    );
-    let logged = |lines: &[String]| {
-        lines.iter().any(|line| {
-            line.contains(message) && line.split_whitespace().any(|field| field == connection)
-        })
-    };
+    let logged = logged_for(reader, message);
     let sent = tokio::select! {
         () = server.logged_event(&logged) => None,
         sent = &mut *sending => Some(sent),
@@ -3587,18 +3592,10 @@ async fn a_reader_that_never_reads_sees_its_too_slow_connection_end_without_a_co
     // Read only once the server has let the connection go: the Close frame
     // could not get past what the reader left unread before the close deadline.
     let sent = logged_while_sending(&server, &reader, &mut sending, "bus participant gone").await;
-    let lines = server.log_lines();
-    let reader_id = format!(
-        "connection={}",
-        reader.ack.as_ref().expect("greeted").connection_id
-    );
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("participant too slow, closing")
-                && line.split_whitespace().any(|field| field == reader_id)),
+        logged_for(&reader, "participant too slow, closing")(&server.log_lines()),
         "not closed too slow:\n{}",
-        lines.join("\n")
+        server.log_lines().join("\n")
     );
     let got = read_to_the_end(&mut reader).await;
     assert!(
