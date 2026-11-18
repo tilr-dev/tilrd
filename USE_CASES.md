@@ -793,6 +793,7 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 |---|---|
 | Hello comes first (a bad first message is `expected_hello` too) and names version 1; a wrong token or a credential is denied; tilr.v1 is served as before | `bus::hello_comes_first_and_names_a_version` |
 | The first thing a participant hears is its HelloAck, nothing from before it | `bus::the_first_thing_a_participant_hears_is_its_hello_ack` |
+| A participant is callable once it has its HelloAck: held just before the broker enters it (failpoint `bus-registering:<name>`), it has no HelloAck and is not logged greeted; once it has its HelloAck, a call of its method reaches it, not `not_found` | `bus::a_participant_is_callable_once_it_has_its_hello_ack` |
 | The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
 | A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
 | `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
@@ -866,6 +867,7 @@ two lanes, `busy` instead of growth, events dropped for a lagging subscriber
 | Use case | Test |
 |---|---|
 | A failed call says why: `not_found` for a method nobody provides (a name only a participant that is gone provided is forgotten), `unavailable` for a method of windows with none open, also on a fresh server, and once its providers are gone, `timeout` at the deadline (the callee gets `Cancel`), `bad_request` for a window over 16 MiB; a call that names no deadline gets 10 s | `bus::a_failed_call_says_why` |
+| A connection superseded by the same client between its registration and its announcement stays ended: it is never announced up, nobody watching it is woken again | `supervisor::bus::broker::tests::a_connection_superseded_before_it_is_announced_is_never_up` |
 | A provider that is draining gets no call: `unavailable` | `supervisor::bus::broker::tests::a_draining_provider_is_unavailable` |
 | Draining a connection with a call it never answers ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::draining_a_connection_ends_at_its_deadline_without_spinning` |
 | Draining the broker with a call never answered ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::the_broker_drain_ends_at_its_deadline_without_spinning` |
@@ -949,6 +951,41 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
 | `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
 | A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
+| `bus.start` answers once the broker entered the instance (held just before, failpoint `bus-registering:t-1`, it has not answered and the instance is `starting`); when it answers, the instance's methods are callable, listed by `bus.methods` and known (`unavailable` once it is stopped) | `bus::a_started_instance_is_callable_and_listed_when_bus_start_returns` |
+| A stopped instance is offered no new call by method before it is listed `draining`: held between the two (failpoint `bus-draining:t-1`), a call of its method is `unavailable` and `bus.methods` does not list it | `bus::a_draining_instance_is_offered_no_calls_before_it_is_listed_draining` |
+
+## The core's services on the bus — `tests/bus_terminal.rs`, `tests/reload.rs`, `tests/update.rs`
+
+Change `bus-core-services`: `server.*`, `fs.*`, `exec.*`, `clipboard.*` and `pane.copied`.
+
+| Use case | Test |
+|---|---|
+| `tilrd` is the provider of the pane and service methods; the streams among them are on the bulk lane | `bus_terminal::services::tilrd_provides_the_terminal_methods` |
+| `server.info` says what `tilr.v1`'s HelloAck says, in protobuf and JSON; a feature turned off is not listed and its methods are `not_found`, server commands still run | `bus_terminal::services::server_info_describes_the_server` |
+| Files are made, written in chunks (there only after the last), listed, looked at, renamed and deleted by calls; a watch emits `fs.changed.<id>` until `fs.unwatch`; a path outside the roots is refused with a message for the user; JSON for scripts | `bus_terminal::services::files_are_listed_changed_and_watched_on_the_bus` |
+| `fs.read` streams a 4 MiB file whole, each chunk within a 256 KiB window, or a part of it; a failed read ends the stream with the error; a refused upload gets the error for that chunk and each later one, the file stays | `bus_terminal::services::file_content_moves_in_chunks` |
+| `exec.run` streams `started`, stdout and stderr apart and the exit; `exec.input` answers what the program took; `exec.signal` signals it; another connection's program is `not_found`, a program that is not there `spawn_failed` | `bus_terminal::services::a_program_runs_on_the_bus_and_its_outputs_come_apart` |
+| Cancelling an `exec.run` stream kills the program's whole group (a child holding a FIFO open goes too) | `bus_terminal::services::a_cancelled_program_ends_with_its_group` |
+| `server.command` runs the server's own executable for the owner on the Unix socket; on TCP, even with the access token, it is `denied` and nothing runs | `bus_terminal::services::server_commands_are_taken_on_the_unix_socket_only` |
+| A copy made in a pane (OSC 52) is the event `pane.copied` with scope `pane:<id>`; `clipboard.get` streams it until a newer copy replaces it, then `not_found` | `bus_terminal::services::a_copy_in_a_pane_is_an_event_and_its_content_a_stream` |
+| `clipboard.put` takes content in chunks that a pane's `xclip` reads once the last is answered; over `clipboard_max_bytes` the transfer is refused, every chunk of it | `bus_terminal::services::the_shared_clipboard_takes_an_upload_in_chunks` |
+| `server.reload` is answered or its connection ends first, the connection ends with the exec, the server reloads and the pane keeps running with the same pid | `reload::a_reload_asked_on_the_bus_keeps_the_panes` |
+| `server.update` streams the output of `tilrd update` and ends with its exit | `update::an_update_asked_on_the_bus_streams_its_progress` |
+| An instance that may call `server.*` without a `control` right is `denied` `server.reload` and `server.update`, and `server.command` as not the owner; a method outside its `call` rights is `denied` before it runs | `bus_terminal::services::an_instance_without_the_rights_is_denied_the_server_methods` |
+| An instance whose only `control` right is `server.update` runs `server.update` and is `denied` `server.reload`: each server method needs the action of its own name | `bus_terminal::services::each_server_method_needs_its_own_control_action` |
+| A read-only server refuses `fs.write`, `fs.mkdir`, `fs.rename` and `fs.delete` on the bus, nothing changes, `fs.list` still answers | `bus_terminal::services::a_read_only_server_refuses_changes_on_the_bus` |
+| A link out of the home directory, `..`, and a rename out of it or through such a link are refused as outside the shared directories | `bus_terminal::services::a_path_out_of_the_roots_is_refused_on_the_bus` |
+| An upload over `fs_max_bytes`, or carrying more than its `total_size` across chunks, is refused; the file is not made and no temporary file is left | `bus_terminal::services::an_upload_is_held_to_its_size_and_the_servers_limit` |
+| `fs.unwatch` of another connection's watch is `not_found`; its own connection still unwatches it | `bus_terminal::services::a_watch_is_unwatched_only_by_its_connection` |
+| A connection has at most 16 uploads in progress and 32 watches: one more is `busy`, and is taken once one is gone | `bus_terminal::services::a_connection_has_at_most_16_uploads_and_32_watches` |
+| An upload that failed before its last chunk is no longer in progress: it leaves room for another, and its later chunks get its failure | `bus_terminal::services::a_failed_upload_is_no_longer_in_progress` |
+| A connection runs at most 64 programs: one more is `busy`; another connection has its own | `bus_terminal::services::a_connection_runs_at_most_64_programs` |
+| A connection's watch, upload and program (its group) go when it closes or a connection of the same client supersedes it | `bus_terminal::services::what_a_connection_made_goes_when_it_ends_or_is_superseded` |
+| A program writing 4 MiB to a reader with a 64 KiB window that takes nothing after `started` waits for the reader (logged) without finishing; taken, all of it comes | `bus_terminal::services::a_reader_that_credits_slowly_holds_the_program_back` |
+| `exec.input` to another connection's program, or none, is `not_found`; more than 4 MiB not taken kills the program (`input overrun`) and is `bad_request` | `bus_terminal::services::exec_input_is_the_callers_and_overrun_kills_the_program` |
+| A first `fs.write` chunk the server takes after its connection ended is refused and leaves no temporary file and no note (failpoint) | `bus_terminal::services::failpoints::a_first_chunk_taken_after_its_connection_ended_starts_no_upload` |
+| A program whose stream is cancelled after it started, before the stream's handler took up its start, is killed with its group (failpoint) | `bus_terminal::services::failpoints::a_program_cancelled_as_it_starts_ends_with_its_group` |
+| `clipboard.get` of a copy in a pane the caller may not access is `not_found` (failpoint) | `bus_terminal::services::failpoints::a_copy_of_a_pane_the_caller_may_not_access_is_not_found` |
 
 ## Rights on the bus — `tests/bus_acl.rs`
 

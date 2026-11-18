@@ -244,7 +244,7 @@ struct Probe {
 
 /// Who calls, as the handlers need it on the supervisor's task.
 #[derive(Clone)]
-struct Caller {
+pub(super) struct Caller {
     principal: Arc<Principal>,
     credential: Option<Bytes>,
     from: Identity,
@@ -254,7 +254,7 @@ struct Caller {
 }
 
 impl Caller {
-    fn of(ctx: &CallCtx) -> Self {
+    pub(super) fn of(ctx: &CallCtx) -> Self {
         Self {
             principal: Arc::clone(&ctx.principal),
             credential: ctx.call_credential.clone(),
@@ -324,7 +324,7 @@ fn authorize(s: &Supervisor, caller: &Caller, request: &AuthzRequest<'_>) -> Res
 
 /// Whether the caller may access the pane (T7: `AuthzRequest::PaneAccess` with
 /// its creator; the policy is the authorizer's).
-fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Result<(), BusError> {
+pub(super) fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Result<(), BusError> {
     // The authorizer of this build refuses no `PaneAccess` a call can reach (its
     // policy allows every pane check until `bus-pane-rights`): a test stands in for
     // one that does.

@@ -2885,11 +2885,16 @@ impl Supervisor {
     /// copies, in chunks on its bulk lane, ending a copy still being sent to
     /// it. Returns how many clients it goes to.
     fn send_copy(&mut self, pane_id: PaneId, mime: String, data: Bytes) -> usize {
+        if !self.panes.contains_key(&pane_id) {
+            return 0;
+        }
+        self.last_copy += 1;
+        let transfer_id = self.last_copy;
+        // Hook of `bus-core-services`: `pane.copied` and `clipboard.get`.
+        bus::core::clipboard::copied(self, pane_id, transfer_id, &mime, &data);
         let Some(pane) = self.panes.get(&pane_id) else {
             return 0;
         };
-        self.last_copy += 1;
-        let transfer_id = self.last_copy;
         let mut sent = 0;
         for &client_id in &pane.subscribers {
             let Some(client) = self.clients.get(&client_id) else {

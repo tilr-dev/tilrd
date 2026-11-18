@@ -946,3 +946,37 @@ fn check_help_describes_exit_codes() {
         assert!(help.contains(text), "{help}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// bus-core-services
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_update_asked_on_the_bus_streams_its_progress() {
+    use common::bus::{BusOptions, BusServer};
+    use common::bus_services::{ran, stream_all};
+    use tilr_bus::server::UpdateRequest;
+
+    let (version, platform) = version_and_platform();
+    let cdn = Server::scratch_dir().join("cdn");
+    // Authenticated metadata naming this build: nothing to download.
+    manifest::write_manifest(&cdn, &platform, &version, "latest", &"0".repeat(64));
+    std::fs::write(
+        cdn.join("releases").join(&platform).join("latest"),
+        &version,
+    )
+    .unwrap();
+    let cdn = serve_files(cdn);
+    let server = BusServer::start(BusOptions {
+        env: vec![
+            ("TILR_CDN".into(), cdn),
+            ("TILR_UPDATE_PUBLIC_KEY".into(), "00".repeat(32)),
+        ],
+        ..Default::default()
+    });
+    let owner = server.owner().await;
+    let update = ran(stream_all(&owner, "server.update", &UpdateRequest {}, 0).await);
+    let said = String::from_utf8_lossy(&update.stdout);
+    assert!(said.contains("is the latest release"), "{said:?}");
+    assert_eq!(update.exit.code, 0, "{said:?}");
+}
