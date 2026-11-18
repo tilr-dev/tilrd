@@ -127,9 +127,21 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-def _write_config(dir: str, files: dict[str, str]) -> None:
+def config_dir(scope: Scope) -> str:
+    """A new configuration directory, in a tree that passes the server's check of the
+    directories above a launch profile (owned by the user or root, not writable by group
+    or others): under the Cargo target's `tmp/`, as the Rust tests keep theirs, not
+    `/tmp`, which is writable by all and refused as sshd refuses it."""
+    base = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target") / "tmp"
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = tempfile.mkdtemp(dir=base, prefix="sdk-config-")
+    scope.callback(shutil.rmtree, path, True)
+    return path
+
+
+def _write_config(config: str, files: dict[str, str]) -> None:
     for name, content in files.items():
-        path = Path(f"{dir}/config/{name}")
+        path = Path(f"{config}/{name}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
@@ -160,9 +172,10 @@ class Tilrd:
     @staticmethod
     async def start(scope: Scope, files: dict[str, str] | None = None) -> Tilrd:
         dir = temp_dir(scope)
-        for sub in ("config", "state", "runtime"):
+        for sub in ("state", "runtime"):
             os.mkdir(f"{dir}/{sub}", 0o700)
-        _write_config(dir, files or {})
+        config = config_dir(scope)
+        _write_config(config, files or {})
         process = await asyncio.create_subprocess_exec(
             tilrd_path(),
             "--listen",
@@ -170,7 +183,7 @@ class Tilrd:
             env={
                 "TILR_RUNTIME_DIR": f"{dir}/runtime",
                 "TILR_STATE_DIR": f"{dir}/state",
-                "TILR_CONFIG_DIR": f"{dir}/config",
+                "TILR_CONFIG_DIR": config,
                 "HOME": dir,
                 "PATH": "/usr/bin:/bin",
                 "SHELL": "/bin/sh",

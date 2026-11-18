@@ -1096,15 +1096,14 @@ server minted for it.
 ## The bus SDKs — `sdk/deno`, `sdk/python`
 
 The Deno (and browser) library and the Python library, each against a real tilrd in
-temporary directories, its own test runtime and, for what the server does not do yet or a
-broker that misbehaves, a fake broker; the Python tests also run the Deno runtime. Run by
-`scripts/sdk-check.sh` (CI's job `sdk`). A test marked "skipped" waits for the server side
-of the changes it names.
+temporary directories, its own test runtime and, for a broker that a real server cannot be
+made to act as (one that misbehaves, or holds a reply back), a fake broker; the Python tests also run the Deno runtime. Run by
+`scripts/sdk-check.sh` (CI's job `sdk`).
 
 | Use case | Test |
 |---|---|
 | The libraries connect over an inherited descriptor and an instance socket (fake brokers), a WebSocket with a credential (a fake broker) and as the owner over tilrd's Unix socket and its TCP port with the access token; a wrong token is denied; arguments beat the environment, in which `TILR_BUS_FD` beats `TILR_BUS_SOCK` beats `TILR_BUS_URL`; with nothing set, `unavailable` names the variables; a failed connect leaves the Bus to connect again | `sdk/deno/test/bus_test.ts::connects_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_connects_over_fd_socket_and_websocket` |
-| Instances of `bus.toml` and a token participant answer `whoami` with their identities (skipped: bus-instances, bus-rights) | `sdk/deno/test/bus_test.ts::instances_and_a_token_participant_connect_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_instances_and_a_token_participant_connect_over_fd_socket_and_websocket` |
+| Instances of `bus.toml` (descriptor and instance socket, started with `bus.start`) and a token participant over WebSocket answer `whoami` with their identities | `sdk/deno/test/bus_test.ts::instances_and_a_token_participant_connect_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_instances_and_a_token_participant_connect_over_fd_socket_and_websocket` |
 | Calls and replies carry bytes and content type unchanged, compressed or not; a 64-bit nonce past 2^53 comes back from `bus.ping` with every bit | `sdk/deno/test/bus_test.ts::bytes_pass_unchanged`, `sdk/python/tests/test_bus.py::test_bytes_pass_unchanged` |
 | A thrown `BusError` keeps its code, another error is `handler_error` without a traceback, the broker's errors come with its code (`not_found` for a method nobody provides or knows), a call for a method not provided is `not_supported` | `sdk/deno/test/bus_test.ts::errors_keep_their_codes`, `sdk/python/tests/test_bus.py::test_errors_keep_their_codes` |
 | A handler awaiting a nested call holds up no other call; a chain back into the same participant completes, also from Python to Deno and back | `sdk/deno/test/bus_test.ts::nested_and_crossing_calls_complete`, `sdk/python/tests/test_bus.py::test_nested_and_crossing_calls_complete`, `sdk/python/tests/test_bus.py::test_python_calls_deno_and_back` |
@@ -1112,7 +1111,7 @@ of the changes it names.
 | A subscription whose handler is behind holds 1024 events and drops the rest, counted in `dropped`; it and the connection stay and the events held arrive in order (fake broker) | `sdk/deno/test/bus_test.ts::a_subscriber_that_is_behind_drops_events`, `sdk/python/tests/test_bus.py::test_a_subscriber_that_is_behind_drops_events` |
 | A reader that takes one chunk and stops holds the provider to its window: `test.flood` waits for credit having sent no more than the window beyond its credit; then the reader gets 64 MiB in order and the provider was never more than the window ahead (Deno's provider, and Python's for Python); leaving the loop (Deno) or `async with` (Python) early cancels the stream; a provided stream is paced by the reader's credit | `sdk/deno/test/bus_test.ts::streams_are_read_and_served_with_credit`, `sdk/python/tests/test_bus.py::test_streams_are_read_and_served_with_credit` |
 | Leaving `async with bus.stream(...)` cancels at once, the stream still held: the broker gets the `Cancel`, then the next call in the freed slot (fake broker, `max_in_flight` 1) | `sdk/python/tests/test_bus.py::test_leaving_async_with_cancels_the_stream` |
-| A script creates a pane of a profile, types a line, reads it back and hears `pane.exited` (skipped: bus-core-panes, pane-profiles) | `sdk/deno/test/bus_test.ts::a_script_drives_a_terminal`, `sdk/python/tests/test_bus.py::test_a_script_drives_a_terminal` |
+| A script with a minted token (pane calls, `pane.exited`, `pane = ["profile:demo", "access:own"]`) over WebSocket creates a pane of a profile, types a line, reads it back and hears `pane.exited` | `sdk/deno/test/bus_test.ts::a_script_drives_a_terminal`, `sdk/python/tests/test_bus.py::test_a_script_drives_a_terminal` |
 | The pane helpers send and decode `tilr.pane.v1` (create, typed line, read, events; fake broker); a 64-bit `seq` keeps every bit | `sdk/deno/test/bus_test.ts::pane_helpers_speak_the_pane_schema`, `sdk/python/tests/test_bus.py::test_pane_helpers_speak_the_pane_schema` |
 | A caller's timeout cancels the handler; a handler sees its deadline; `ctx.call` passes the time left and the trace id on | `sdk/deno/test/bus_test.ts::a_cancel_aborts_the_handler`, `sdk/python/tests/test_bus.py::test_a_cancel_aborts_the_handler` |
 | A call the broker cancelled gets no reply, whether its handler stops or answers anyway: the next envelope out is a later call's reply (fake broker) | `sdk/deno/test/bus_test.ts::a_cancelled_call_gets_no_reply`, `sdk/python/tests/test_bus.py::test_a_cancelled_call_gets_no_reply` |

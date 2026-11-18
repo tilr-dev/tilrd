@@ -1,6 +1,7 @@
 // The Deno library against a real tilrd (temporary directories, the TCP port and the
-// Unix socket) and, where the server side is not there yet or a case needs a broker
-// that misbehaves, against a fake broker. Use cases: USE_CASES.md, "The bus SDKs".
+// Unix socket) and, where a case needs a broker that a real server cannot be made to
+// act as (one that misbehaves, or holds a reply back), against a fake broker.
+// Use cases: USE_CASES.md, "The bus SDKs".
 
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
@@ -190,17 +191,24 @@ scenario(
     const runtime = `["${Deno.execPath()}", "run", "--quiet", "-A", "${
       new URL("./runtime.ts", import.meta.url).pathname
     }"]`;
+    // Not autostarted: bus.start answers once the instance said Hello, so the calls
+    // below need no wait for it to come up.
+    const instance = (name: string, connect: string) =>
+      `[instances.${name}]\nmodule = "deno"\nconnect = "${connect}"\nautostart = false\n` +
+      `[instances.${name}.rights]\nprovide = ["test.*"]\n`;
     const server = await Tilrd.start(scope, {
-      "bus.toml":
-        `[modules.deno]\ncommand = ${runtime}\n[instances.d-fd]\nmodule = "deno"\nconnect = "fd"\n` +
-        `[instances.d-sock]\nmodule = "deno"\nconnect = "socket"\n`,
+      "bus.toml": `[modules.deno]\ncommand = ${runtime}\n` + instance("d-fd", "fd") +
+        instance("d-sock", "socket"),
     });
     const bus = await owner(server, scope);
+    for (const name of ["d-fd", "d-sock"]) {
+      await bus.call("bus.start", busSchema.StartRequest.encode({ instance: name }));
+    }
     const token = await bus.call(
       "bus.token",
-      (await import("../mod.ts")).bus.TokenRequest.encode({ name: "d-ws", provide: ["test.*"] }),
+      busSchema.TokenRequest.encode({ name: "d-ws", provide: ["test.*"] }),
     );
-    const credential = (await import("../mod.ts")).bus.TokenReply.decode(token.payload).credential!;
+    const credential = busSchema.TokenReply.decode(token.payload).credential!;
     const b64 = btoa(String.fromCharCode(...credential)).replace(/\+/g, "-").replace(/\//g, "_")
       .replace(/=+$/, "");
     await Runtime.start(scope, { TILR_BUS_URL: server.url, TILR_BUS_CREDENTIAL: b64 });
@@ -208,7 +216,6 @@ scenario(
       assertEquals((await bus.call("test.whoami", "", { target })).text(), target);
     }
   },
-  { ignore: true }, // needs the server side of bus-instances (bus.toml) and bus-rights (bus.token)
 );
 
 scenario("bytes_pass_unchanged", 30_000, async (scope) => {
@@ -421,7 +428,24 @@ scenario("a_script_drives_a_terminal", 60_000, async (scope) => {
   const server = await Tilrd.start(scope, {
     "profiles/demo.toml": 'description = "demo"\ncommand = ["/bin/sh"]\n',
   });
-  const bus = await owner(server, scope);
+  // The script holds only what it needs: the pane calls, pane.exited, panes of profile
+  // demo and its own panes.
+  const minted = await (await owner(server, scope)).call(
+    "bus.token",
+    busSchema.TokenRequest.encode({
+      name: "d-script",
+      call: ["pane.*"],
+      subscribe: ["pane.exited"],
+      pane: ["profile:demo", "access:own"],
+    }),
+  );
+  const bus = await Bus.connect({
+    url: server.url,
+    credential: busSchema.TokenReply.decode(minted.payload).credential!,
+    clientName: "d-script",
+  });
+  scope.defer(() => bus.close());
+  assertEquals(bus.identity, "token:d-script");
   const info = await bus.pane.create({ cols: 80, rows: 24, profile: "demo" });
   let exited!: (event: pane.PaneExited) => void;
   const exitedEvent = new Promise<pane.PaneExited>((resolve) => (exited = resolve));
@@ -435,7 +459,7 @@ scenario("a_script_drives_a_terminal", 60_000, async (scope) => {
   );
   await bus.pane.close(info.paneId!);
   assertEquals((await exitedEvent).paneId, info.paneId);
-}, { ignore: true }); // needs the server side of bus-core-panes and pane-profiles
+});
 
 scenario("pane_helpers_speak_the_pane_schema", 30_000, async (scope) => {
   const path = `${Deno.makeTempDirSync({ dir: "/tmp", prefix: "tb" })}/p.sock`;

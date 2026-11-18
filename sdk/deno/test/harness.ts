@@ -13,6 +13,18 @@ export const REPO = new URL("../../../", import.meta.url).pathname.replace(/\/$/
 export const RUNTIME = new URL("./runtime.ts", import.meta.url).pathname;
 
 /** The tilrd to test: `TILRD`, else the workspace's debug build. */
+/**
+ * A new configuration directory, in a tree that passes the server's check of the
+ * directories above a launch profile (owned by the user or root, not writable by group
+ * or others): under the Cargo target's `tmp/`, as the Rust tests keep theirs, not
+ * `/tmp`, which is writable by all and refused as sshd refuses it.
+ */
+function configDir(): string {
+  const base = `${Deno.env.get("CARGO_TARGET_DIR") || `${REPO}/target`}/tmp`;
+  Deno.mkdirSync(base, { recursive: true, mode: 0o700 });
+  return Deno.makeTempDirSync({ dir: base, prefix: "sdk-config-" });
+}
+
 export function tilrdPath(): string {
   const path = Deno.env.get("TILRD") || `${REPO}/target/debug/tilrd`;
   try {
@@ -153,11 +165,15 @@ export class Tilrd {
     // Short: the Unix socket's path must fit sun_path (104 bytes on macOS).
     const dir = Deno.makeTempDirSync({ dir: "/tmp", prefix: "tb" });
     scope.defer(() => Deno.removeSync(dir, { recursive: true }));
-    for (const sub of ["config", "state", "runtime"]) {
+    for (const sub of ["state", "runtime"]) {
       Deno.mkdirSync(`${dir}/${sub}`, { mode: 0o700 });
     }
+    const config = configDir();
+    scope.defer(() => Deno.removeSync(config, { recursive: true }));
     for (const [name, text] of Object.entries(files)) {
-      Deno.writeTextFileSync(`${dir}/config/${name}`, text);
+      const path = `${config}/${name}`;
+      Deno.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true, mode: 0o700 });
+      Deno.writeTextFileSync(path, text);
     }
     const child = new Deno.Command(tilrdPath(), {
       args: ["--listen", "127.0.0.1:0"],
@@ -165,7 +181,7 @@ export class Tilrd {
       env: {
         TILR_RUNTIME_DIR: `${dir}/runtime`,
         TILR_STATE_DIR: `${dir}/state`,
-        TILR_CONFIG_DIR: `${dir}/config`,
+        TILR_CONFIG_DIR: config,
         HOME: dir,
         PATH: "/usr/bin:/bin",
         SHELL: "/bin/sh",

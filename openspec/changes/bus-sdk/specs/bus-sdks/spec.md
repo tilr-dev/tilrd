@@ -3,7 +3,7 @@
 ### Requirement: The libraries connect on every transport
 `Bus.connect()` in the Deno library (`sdk/deno`, also used in browser pages) and the Python library (`sdk/python`) SHALL connect over an inherited descriptor, an instance socket with its token, or a WebSocket URL with a credential or the access token, as the next requirement picks one. It SHALL send `Hello` with every method provided before it and expose `HelloAck.identity` as `identity`; with no transport named it SHALL fail with `unavailable` naming the variables.
 
-**Verified by**: `sdk/deno/test/bus_test.ts::connects_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_connects_over_fd_socket_and_websocket` (scenario "Each transport"); "Three transports" waits for the server side of `bus-instances` and `bus-rights`: `sdk/deno/test/bus_test.ts::instances_and_a_token_participant_connect_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_instances_and_a_token_participant_connect_over_fd_socket_and_websocket`, skipped until then.
+**Verified by**: `sdk/deno/test/bus_test.ts::connects_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_connects_over_fd_socket_and_websocket` (scenario "Each transport"); `sdk/deno/test/bus_test.ts::instances_and_a_token_participant_connect_over_fd_socket_and_websocket`, `sdk/python/tests/test_bus.py::test_instances_and_a_token_participant_connect_over_fd_socket_and_websocket` (scenario "Three transports").
 
 #### Scenario: Each transport
 - **WHEN** the library connects over a descriptor, an instance socket and a WebSocket with a credential, each to a fake broker, and as the owner to a real tilrd over its Unix socket and over TCP with the access token
@@ -100,14 +100,14 @@ In Deno, a `for await` loop over a stream left by `break`, `return` or an except
 ### Requirement: The core's methods have typed helpers
 The libraries SHALL include the generated types of `crates/tilr-bus/proto/tilr/` and helpers for the core's methods and events (`pane.create`, `pane.input`, `pane.read`, `pane.output`, `pane.*` events), so a script can create a pane, type into it and read its screen without encoding protobuf by hand.
 
-**Verified by**: `sdk/deno/test/bus_test.ts::pane_helpers_speak_the_pane_schema`, `sdk/python/tests/test_bus.py::test_pane_helpers_speak_the_pane_schema` (the helpers' requests and decoded replies and events against a fake broker). The scenario "Python drives a terminal" waits for the server side of `bus-core-panes` and `pane-profiles`: `sdk/deno/test/bus_test.ts::a_script_drives_a_terminal`, `sdk/python/tests/test_bus.py::test_a_script_drives_a_terminal`, skipped until then.
+**Verified by**: `sdk/deno/test/bus_test.ts::pane_helpers_speak_the_pane_schema`, `sdk/python/tests/test_bus.py::test_pane_helpers_speak_the_pane_schema` (the helpers' requests and decoded replies and events against a fake broker); `sdk/deno/test/bus_test.ts::a_script_drives_a_terminal`, `sdk/python/tests/test_bus.py::test_a_script_drives_a_terminal` (scenario "Python drives a terminal").
 
 #### Scenario: The helpers speak the pane schema
 - **WHEN** a script calls `pane.create` with profile `demo`, types a line and reads the screen through a fake broker
 - **THEN** the broker gets a `CreateRequest` with profile `demo`, the line as `RawInput` and then the Enter key, and the script gets the `PaneInfo`, the `ReadReply` lines and the decoded `pane.exited` event
 
 #### Scenario: Python drives a terminal
-- **WHEN** a Python instance with `pane = ["profile:demo", "access:own"]` creates a pane with profile `demo`, inputs `echo sum $((6*7))` and Enter, and reads with `pane.read` until a line is `sum 42`
+- **WHEN** a Python script whose token holds `call = ["pane.*"]`, `subscribe = ["pane.exited"]` and `pane = ["profile:demo", "access:own"]` connects over WebSocket, creates a pane with profile `demo`, inputs `echo sum $((6*7))` and Enter, and reads with `pane.read` until a line is `sum 42`
 - **THEN** it finds that line and `pane.exited` arrives after it closes the pane
 
 ### Requirement: Deadlines and cancellation reach the handler

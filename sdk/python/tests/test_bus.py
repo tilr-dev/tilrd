@@ -1,7 +1,7 @@
 """The Python library against a real tilrd (temporary directories, the TCP port and the
-Unix socket), against the Deno library (cross-language) and, where the server side is
-not there yet or a case needs a broker that misbehaves, against a fake broker. Use
-cases: USE_CASES.md, "The bus SDKs"."""
+Unix socket), against the Deno library (cross-language) and, where a case needs a
+broker that a real server cannot be made to act as (one that misbehaves, or holds a
+reply back), against a fake broker. Use cases: USE_CASES.md, "The bus SDKs"."""
 
 from __future__ import annotations
 
@@ -160,22 +160,31 @@ async def test_connects_over_fd_socket_and_websocket(scope: Scope) -> None:
     assert "TILR_BUS_CREDENTIAL" in error.message
 
 
-@pytest.mark.skip(
-    reason="needs the server side of bus-instances (bus.toml) and bus-rights (bus.token)"
-)
 @scenario(60)
 async def test_instances_and_a_token_participant_connect_over_fd_socket_and_websocket(
     scope: Scope,
 ) -> None:
     command = f'["{sys.executable}", "{os.path.dirname(__file__)}/runtime.py"]'
+
+    # Not autostarted: bus.start answers once the instance said Hello, so the calls
+    # below need no wait for it to come up.
+    def instance(name: str, connect: str) -> str:
+        return (
+            f'[instances.{name}]\nmodule = "py"\nconnect = "{connect}"\nautostart = false\n'
+            f'[instances.{name}.rights]\nprovide = ["test.*"]\n'
+        )
+
     server = await Tilrd.start(
         scope,
         {
-            "bus.toml": f'[modules.py]\ncommand = {command}\n[instances.py-fd]\nmodule = "py"\n'
-            'connect = "fd"\n[instances.py-sock]\nmodule = "py"\nconnect = "socket"\n'
+            "bus.toml": f"[modules.py]\ncommand = {command}\n"
+            + instance("py-fd", "fd")
+            + instance("py-sock", "socket")
         },
     )
     bus = await owner(server, scope)
+    for name in ("py-fd", "py-sock"):
+        await bus.call("bus.start", wire.StartRequest(instance=name).SerializeToString())
     request = wire.TokenRequest(name="py-ws", provide=["test.*"])
     reply = await bus.call("bus.token", request.SerializeToString())
     credential = wire.TokenReply.FromString(reply.payload).credential
@@ -407,13 +416,24 @@ async def test_streams_are_read_and_served_with_credit(scope: Scope) -> None:
     assert all(0 <= credit <= 16 for credit in credits), credits
 
 
-@pytest.mark.skip(reason="needs the server side of bus-core-panes and pane-profiles")
 @scenario(60)
 async def test_a_script_drives_a_terminal(scope: Scope) -> None:
     server = await Tilrd.start(
         scope, {"profiles/demo.toml": 'description = "demo"\ncommand = ["/bin/sh"]\n'}
     )
-    bus = await owner(server, scope)
+    # The script holds only what it needs: the pane calls, pane.exited, panes of profile
+    # demo and its own panes.
+    request = wire.TokenRequest(
+        name="py-script",
+        call=["pane.*"],
+        subscribe=["pane.exited"],
+        pane=["profile:demo", "access:own"],
+    )
+    minted = await (await owner(server, scope)).call("bus.token", request.SerializeToString())
+    credential = wire.TokenReply.FromString(minted.payload).credential
+    bus = await Bus.connect(url=server.url, credential=credential, client_name="py-script")
+    scope.callback(bus.close)
+    assert bus.identity == "token:py-script"
     info = await bus.pane.create(cols=80, rows=24, profile="demo")
     exited: asyncio.Future = asyncio.get_running_loop().create_future()
 
