@@ -16,4 +16,4 @@ former single change `unified-bus` (shared design, O3).
 ## 2. Checks and archive
 
 - [x] 2.1 [12.1] Run the checks from AGENTS.md in Linux (`scripts/linux.sh`): fmt, both clippy runs, the bus and service tests; on macOS the new tests and `cargo deny check`
-- [ ] 2.2 [12.2] Archive the change and list it under Done in `openspec/ROADMAP.md`; verify `openspec validate --all --strict`
+- [x] 2.2 [12.2] Archive the change and list it under Done in `openspec/ROADMAP.md`; verify `openspec validate --all --strict`

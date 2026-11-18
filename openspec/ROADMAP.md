@@ -121,7 +121,6 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 | change | goal | size | starts after | merges after (depends on) | blocker | status |
 |---|---|---|---|---|---|---|
 | bus-rights | Biscuit: root key, tokens, bearer credentials, expiry and renewal, revocation, rotation, limits, audit, close code 4003 | L | bus-broker-core (contract: `Authorizer`, `Rights`) | bus-instances | no | ready |
-| bus-core-services | `server.*`, `fs.*`, `exec.*`, `clipboard.*`, `host.open`, `ssh_agent.*` | L | bus-broker-core (contract) | bus-core-panes | no | ready |
 | bus-pane-rights | pane rights (T7): profile and override rights, `own`/`any` access, scoped events | M | bus-broker-core (contract: `AuthzRequest::PaneCreate`/`PaneAccess`) | bus-core-panes, bus-rights | no | ready |
 | bus-sdk | Deno/browser and Python SDKs, generated schema, CI job `sdk` | L | bus-wire (schemas, test runtime); its server tests need the later changes | bus-streams-events, bus-rights, pane-profiles | no | ready |
 | sandbox-linux | sandboxed panes on Linux (Landlock + seccomp), the common sandbox module | L | bus-broker-core (the snapshot type of `pane-profiles` task 1.1 as designed) | pane-profiles, bus-core-services | no | ready |
@@ -149,6 +148,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
+| bus-core-services | [PR #145](https://github.com/tilr-dev/tilrd/pull/145) |
 | pane-profiles | [PR #144](https://github.com/tilr-dev/tilrd/pull/144) |
 | bus-core-panes | [PR #141](https://github.com/tilr-dev/tilrd/pull/141) |
 | bus-drain-deadline | [PR #140](https://github.com/tilr-dev/tilrd/pull/140) |
