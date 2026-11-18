@@ -768,6 +768,10 @@ fn rights_within(wanted: &RightsText, held: &RightsText) -> bool {
         && wanted.pane.iter().all(|right| held.pane.contains(right))
 }
 
+/// The name prefixes of the tokens participants other than the owner mint
+/// ([`child_lineage`]): the owner mints no name under them.
+const CHILD_PREFIXES: [&str; 2] = ["instance.", "token."];
+
 /// What a token minted by `minter`, a participant other than the owner, inherits
 /// (its [`Lineage`]). Refused: a minter with appended blocks (its narrowing would
 /// not reach the child), a name outside the minter's own (`<minter kind>.<minter
@@ -2066,6 +2070,15 @@ impl Acl {
                     "a token may be minted only with rights its minter holds",
                 ));
             }
+        } else if CHILD_PREFIXES.iter().any(|prefix| name.starts_with(prefix)) {
+            // The owner names any token but a child's: `instance.a.x` is the child
+            // `x` of `instance:a` only (as Kubernetes reserves `system:`).
+            return Err(BusError::new(
+                codes::DENIED,
+                format!(
+                    "{name:?}: the prefixes `instance.` and `token.` are reserved for tokens minted by instances and tokens"
+                ),
+            ));
         }
         let identity = Identity::Token(name.to_owned());
         let token = self

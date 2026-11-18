@@ -109,6 +109,15 @@ A participant other than the owner with `control = ["token"]` SHALL mint only ri
 - **WHEN** `instance:a` and `token:a` each mint a child `x`
 - **THEN** they are `token:instance.a.x` and `token:token.a.x`, two participants
 
+### Requirement: The owner mints no name of a child's form
+The owner SHALL name a token it mints with `bus.token` as it likes, except that a name starting with `instance.` or `token.`, the prefixes of the tokens instances and tokens mint, MUST be `denied` (as Kubernetes reserves `system:`), so a child's name is never a second participant's.
+
+**Verified by**: `bus_acl::the_owner_mints_no_name_of_a_childs_form`.
+
+#### Scenario: A child's name asked by the owner
+- **WHEN** the owner mints a token named `instance.a.x` or `token.a.x`
+- **THEN** it is `denied`, saying the prefix is reserved; one named `a.x` or `my-instance.x` is minted
+
 ### Requirement: A minted token lives within its minter
 A token minted by a participant other than the owner SHALL NOT live, also through renewals, past the minter's token, and SHALL be refused once the minter's token, or any token of the minter's chain of renewals, is revoked (for an instance: once its connection ends); renewing the minter's token (`bus.renew`, or an instance's renewal by the server) SHALL leave it working; revoking the minted token alone SHALL leave the minter's working.
 

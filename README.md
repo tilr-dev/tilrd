@@ -1101,7 +1101,8 @@ and may do only what its token lists (least privilege; design R1-R9 in
   rights it holds itself, with a token without appended blocks, named
   `<its kind>.<its name>.<name>` (`instance:a` mints `token:instance.a.x`, `token:a`
   `token:token.a.x`), where `<name>` has no dot (`instance:a` may not mint
-  `instance.a.b.x`: that is the child `x` of `instance:a.b`),
+  `instance.a.b.x`: that is the child `x` of `instance:a.b`; the owner names any token but
+  one starting with `instance.` or `token.`, which are reserved for these children),
   bound to its own origin if it has one, for no longer than its own token lives (renewals
   included); revoking the minter's token (any token of its chain of renewals) ends the
   tokens it minted, renewing it does not; an instance's end ends what it minted, its 12 h

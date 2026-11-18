@@ -987,6 +987,30 @@ async fn a_childs_own_name_has_no_dot() {
     );
 }
 
+/// The owner names any token but a child's: `instance.` and `token.` are the
+/// prefixes of what instances and tokens mint, so the owner cannot make a second
+/// participant of a child's name.
+#[tokio::test]
+async fn the_owner_mints_no_name_of_a_childs_form() {
+    let server = start();
+    let owner = server.owner().await;
+    let wanted = || Rights::default().call(&["test.*"]);
+    for name in ["instance.a.x", "token.a.x"] {
+        let error = try_mint(&owner, name, wanted()).await.unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{name}: {error}");
+        assert!(error.message.contains("reserved"), "{name}: {error}");
+    }
+    for name in ["a.x", "my-instance.x", "tokens.x", "instance-a"] {
+        let (token, _) = try_mint(&owner, name, wanted())
+            .await
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+        assert_eq!(
+            participant(&server, &token, name).await.identity(),
+            format!("token:{name}")
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_token_of_another_server_is_refused() {
     let a = start();

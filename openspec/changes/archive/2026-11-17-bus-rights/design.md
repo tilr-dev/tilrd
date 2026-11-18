@@ -123,6 +123,10 @@ is the contract.
   parts of `system:serviceaccount:<ns>:<name>`): instance names may hold dots, so without it
   `instance:a` could mint `instance.a.b.x`, the name of the child `x` of `instance:a.b`; with
   it the last component is the child and the rest its minter. Instance names are unchanged.
+  The owner, who names any token, may not take the prefixes `instance.` and `token.` (owner's
+  decision, as Kubernetes reserves `system:`): a token of the owner named `instance.a.x`
+  would share the child's identity, by which the broker routes calls and supersedes
+  connections.
   Revocation does not read names (a child's minters are revocation ids in its signed
   metadata), so the rule keeps names unambiguous for people and for what routes by name. A
   minter
