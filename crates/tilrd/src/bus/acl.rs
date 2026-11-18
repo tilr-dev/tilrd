@@ -1903,7 +1903,7 @@ impl Acl {
         let family = token_of(principal).map_or("", |token| token.parsed.family());
         match self.mint_instance(&principal.identity, &rights, conn, true, family) {
             Ok(token) => {
-                tracing::info!(target: AUDIT, "bus audit: renew from={} rid={} reason=instance token", principal.identity, token.parsed.rid16());
+                let rid = token.parsed.rid16().to_owned();
                 let bytes = token.bytes.clone();
                 broker.update_principal(
                     conn,
@@ -1912,11 +1912,16 @@ impl Acl {
                         ..principal.clone()
                     },
                 );
+                #[cfg(feature = "failpoints")]
+                let _ = crate::fail::point("bus-renew-instance");
                 // After the principal: a call the instance makes with the new token
                 // once it has it is decided by the new token.
                 if !broker.send_credential_update(conn, bytes) {
                     tracing::info!(target: "tilrd::bus", identity = %principal.identity, "the instance's connection ended before its new token was sent");
                 }
+                // After the update is queued: whatever the instance is answered
+                // after this line comes after its new token.
+                tracing::info!(target: AUDIT, "bus audit: renew from={} rid={rid} reason=instance token", principal.identity);
                 if let Some(old) = old {
                     self.supersede_instance_token(&old);
                 }

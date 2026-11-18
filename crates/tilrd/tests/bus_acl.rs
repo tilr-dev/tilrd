@@ -1719,8 +1719,16 @@ async fn an_instance_token_is_renewed() {
         .unwrap();
 
     // 13 h in: the server renewed it and sent the new token (CredentialUpdate).
+    // The renewal is held a while before its update goes out: the audit line
+    // comes after it, so a reply the instance gets after the line is behind it.
+    std::fs::write(
+        server.dir.join("failpoints"),
+        "bus-renew-instance=sleep:300",
+    )
+    .unwrap();
     clock.set(START_US + 13 * HOUR_US);
     wait_logged(&server, &["bus audit: renew", "from=instance:s-1"]).await;
+    std::fs::write(server.dir.join("failpoints"), "").unwrap();
     // The reply to bus.ping comes after the update on the same connection.
     calls(&s1, "bus.ping", "", CallOptions::default())
         .await
