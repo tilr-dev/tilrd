@@ -2623,6 +2623,53 @@ mod services {
     }
 
     #[tokio::test]
+    async fn a_failed_upload_is_no_longer_in_progress() {
+        let server = start();
+        let owner = server.owner().await;
+        let outside = Path::new("/nonexistent-root");
+        let mut first = None;
+        for n in 0..16 {
+            let error = bus_services::call::<_, FsAck>(
+                &owner,
+                "fs.write",
+                &chunk(n, &outside.join(format!("f{n}")), 2, b"a", false),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, codes::BAD_REQUEST, "{error}");
+            first.get_or_insert(error.message);
+        }
+        let home = std::fs::canonicalize(&server.dir).unwrap();
+        let _: FsAck = bus_services::call(
+            &owner,
+            "fs.write",
+            &chunk(16, &home.join("f16"), 2, b"a", false),
+        )
+        .await
+        .unwrap();
+        // A later chunk of a failed upload gets its failure.
+        let later = WriteRequest {
+            transfer_id: 0,
+            data: Bytes::from_static(b"b"),
+            last: true,
+            ..Default::default()
+        };
+        let error = bus_services::call::<_, FsAck>(&owner, "fs.write", &later)
+            .await
+            .unwrap_err();
+        assert_eq!(Some(error.message), first);
+        // A first chunk, with its path, starts the transfer afresh.
+        let _: FsAck = bus_services::call(
+            &owner,
+            "fs.write",
+            &chunk(1, &home.join("f1"), 1, b"a", true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(home.join("f1")).unwrap(), "a");
+    }
+
+    #[tokio::test]
     async fn a_watch_is_unwatched_only_by_its_connection() {
         let server = start();
         let owner = server.owner().await;

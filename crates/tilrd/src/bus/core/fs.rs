@@ -27,7 +27,8 @@ use tilr_bus::{BusError, codes, methods};
 use tokio::sync::{mpsc, oneshot};
 
 use super::common::{
-    asked, conn_of, json_message, limit, on_connection_end, queue, refused, room, split, unary,
+    asked, conn_of, handle, json_message, limit, on_connection_end, queue, refused, room, split,
+    unary,
 };
 use super::json;
 use super::{Core, Registry, SupervisorHandle};
@@ -124,6 +125,10 @@ struct FsState {
     watches: HashMap<u64, (u64, Watch)>,
     /// Uploads in progress, by connection and transfer.
     writes: HashMap<(u64, u64), mpsc::UnboundedSender<Piece>>,
+    /// Uploads that failed before their `last` chunk, and why: their later
+    /// chunks get that failure. Not in progress, so not counted against
+    /// [`MAX_UPLOADS_PER_CONNECTION`]; at most that many per connection kept.
+    failed: HashMap<(u64, u64), String>,
 }
 
 fn state(s: &mut Supervisor) -> &mut FsState {
@@ -397,6 +402,17 @@ fn write_now(
     };
     let key = (conn, chunk.transfer_id);
     let last = chunk.last;
+    // A chunk with a path starts an upload: one of a failed transfer does not.
+    let starts = !chunk.path.is_empty() || !chunk.path_bytes.is_empty();
+    if let Some(why) = state(s).failed.remove(&key)
+        && !starts
+    {
+        if !last {
+            state(s).failed.insert(key, why.clone());
+        }
+        let _ = reply.send(Err(refused(why)));
+        return;
+    }
     if !state(s).writes.contains_key(&key) {
         if !on_connection_end(s, "fs", conn, forget_connection) {
             tracing::info!(conn, "fs.write refused: the connection ended");
@@ -420,12 +436,17 @@ fn write_now(
                 let (tx, rx) = mpsc::unbounded_channel();
                 let _ = tx.send((chunk, reply));
                 drop(tx);
-                upload(access, rx).await;
+                upload(access, rx, None).await;
             });
             return;
         }
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(upload(access, rx));
+        let failed = Failed {
+            supervisor: handle(s),
+            key,
+            pieces: tx.downgrade(),
+        };
+        tokio::spawn(upload(access, rx, Some(failed)));
         state(s).writes.insert(key, tx);
     }
     let st = state(s);
@@ -437,11 +458,60 @@ fn write_now(
     }
 }
 
+/// Where an upload of several chunks tells the supervisor it failed.
+struct Failed {
+    supervisor: SupervisorHandle,
+    key: (u64, u64),
+    /// Its entry in [`FsState::writes`]: a newer upload of the same transfer
+    /// is not this one.
+    pieces: mpsc::WeakUnboundedSender<Piece>,
+}
+
+impl Failed {
+    /// Before the failure is answered, so that the caller's next chunk finds
+    /// the upload no longer in progress.
+    fn tell(self, why: &str) {
+        let why = why.to_owned();
+        let _ = self.supervisor.with(move |s| {
+            let st = state(s);
+            let ours = st.writes.get(&self.key).is_some_and(|current| {
+                self.pieces
+                    .upgrade()
+                    .is_some_and(|pieces| pieces.same_channel(current))
+            });
+            if !ours {
+                return;
+            }
+            // The chunks queued behind the failing one are answered with it;
+            // later ones find it here.
+            st.writes.remove(&self.key);
+            let (conn, _) = self.key;
+            let kept = st.failed.keys().filter(|(owner, _)| *owner == conn).count();
+            if kept >= MAX_UPLOADS_PER_CONNECTION
+                && let Some(&dropped) = st
+                    .failed
+                    .keys()
+                    .filter(|(owner, _)| *owner == conn)
+                    .min_by_key(|(_, transfer)| *transfer)
+            {
+                // Its later chunks, without a path, are refused as a start.
+                st.failed.remove(&dropped);
+            }
+            st.failed.insert(self.key, why);
+        });
+    }
+}
+
 /// One upload: each chunk answered once written; once one failed, it and
 /// every later one are answered with that failure, and the file stays as it
-/// was (its temporary file removed before the failure is answered). Ends
-/// after the last chunk, or when the caller's connection ends.
-async fn upload(access: Access, mut pieces: mpsc::UnboundedReceiver<Piece>) {
+/// was (its temporary file removed before the failure is answered); one of
+/// several chunks ([`Failed`]) is no longer in progress then. Ends after the
+/// last chunk, or when the caller's connection ends.
+async fn upload(
+    access: Access,
+    mut pieces: mpsc::UnboundedReceiver<Piece>,
+    mut failed: Option<Failed>,
+) {
     let mut upload: Result<Option<Upload>, String> = Ok(None);
     while let Some((chunk, reply)) = pieces.recv().await {
         let last = chunk.last;
@@ -453,6 +523,12 @@ async fn upload(access: Access, mut pieces: mpsc::UnboundedReceiver<Piece>) {
             && let Ok(Some(open)) = std::mem::replace(&mut upload, Err(failed.clone()))
         {
             open.abandon().await;
+        }
+        if let Err(why) = &result
+            && !last
+            && let Some(failed) = failed.take()
+        {
+            failed.tell(why);
         }
         let _ = reply.send(result.map_err(refused));
         if last {
@@ -497,6 +573,7 @@ fn forget_connection(s: &mut Supervisor, conn: u64) {
     let st = state(s);
     let (uploads, watches) = (st.writes.len(), st.watches.len());
     st.writes.retain(|&(owner, _), _| owner != conn);
+    st.failed.retain(|&(owner, _), _| owner != conn);
     st.watches.retain(|_, (owner, _)| *owner != conn);
     let (uploads, watches) = (uploads - st.writes.len(), watches - st.watches.len());
     tracing::info!(

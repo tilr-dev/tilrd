@@ -152,7 +152,7 @@ pub(super) fn on_connection_end(
     let Some(broker) = s.bus.broker().cloned() else {
         return false;
     };
-    let supervisor = SupervisorHandle::new(s.events.clone());
+    let supervisor = handle(s);
     if s.bus
         .slot::<Ends>()
         .0
@@ -179,6 +179,11 @@ pub(super) fn on_connection_end(
         });
     });
     true
+}
+
+/// The supervisor's handle, for what runs on its task and queues more there.
+pub(super) fn handle(s: &Supervisor) -> SupervisorHandle {
+    SupervisorHandle::new(s.events.clone())
 }
 
 /// A connection's share of something limited is used up: `busy`.

@@ -972,6 +972,7 @@ Change `bus-core-services`: `server.*`, `fs.*`, `exec.*`, `clipboard.*` and `pan
 | An upload over `fs_max_bytes`, or carrying more than its `total_size` across chunks, is refused; the file is not made and no temporary file is left | `bus_terminal::services::an_upload_is_held_to_its_size_and_the_servers_limit` |
 | `fs.unwatch` of another connection's watch is `not_found`; its own connection still unwatches it | `bus_terminal::services::a_watch_is_unwatched_only_by_its_connection` |
 | A connection has at most 16 uploads in progress and 32 watches: one more is `busy`, and is taken once one is gone | `bus_terminal::services::a_connection_has_at_most_16_uploads_and_32_watches` |
+| An upload that failed before its last chunk is no longer in progress: it leaves room for another, and its later chunks get its failure | `bus_terminal::services::a_failed_upload_is_no_longer_in_progress` |
 | A connection runs at most 64 programs: one more is `busy`; another connection has its own | `bus_terminal::services::a_connection_runs_at_most_64_programs` |
 | A connection's watch, upload and program (its group) go when it closes or a connection of the same client supersedes it | `bus_terminal::services::what_a_connection_made_goes_when_it_ends_or_is_superseded` |
 | A program writing 4 MiB to a reader with a 64 KiB window that takes nothing after `started` waits for the reader (logged) without finishing; taken, all of it comes | `bus_terminal::services::a_reader_that_credits_slowly_holds_the_program_back` |

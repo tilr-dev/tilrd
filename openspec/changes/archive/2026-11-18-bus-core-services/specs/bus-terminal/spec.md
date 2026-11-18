@@ -153,11 +153,15 @@ A copy made in a pane SHALL emit `pane.copied {pane_id, transfer_id, mime, total
 ### Requirement: What a connection made is limited and goes with it
 A connection SHALL have at most 32 watches, 16 `fs.write` uploads in progress and 64 programs running; one more SHALL be `busy`, and taken again once one of them is gone. Its watches, uploads and programs SHALL go when the connection ends or another connection supersedes it (a program's group killed, an upload's temporary file removed); a call the server takes after its connection ended SHALL keep nothing.
 
-**Verified by**: `bus_terminal::services::a_connection_has_at_most_16_uploads_and_32_watches`, `bus_terminal::services::a_connection_runs_at_most_64_programs`, `bus_terminal::services::what_a_connection_made_goes_when_it_ends_or_is_superseded`, `bus_terminal::services::failpoints::a_first_chunk_taken_after_its_connection_ended_starts_no_upload`.
+**Verified by**: `bus_terminal::services::a_connection_has_at_most_16_uploads_and_32_watches`, `bus_terminal::services::a_failed_upload_is_no_longer_in_progress`, `bus_terminal::services::a_connection_runs_at_most_64_programs`, `bus_terminal::services::what_a_connection_made_goes_when_it_ends_or_is_superseded`, `bus_terminal::services::failpoints::a_first_chunk_taken_after_its_connection_ended_starts_no_upload`.
 
 #### Scenario: One upload too many
 - **WHEN** a connection has started 16 uploads with a first chunk each and starts a 17th
 - **THEN** the reply is `busy`; once one of them got its `last` chunk, a new one is taken
+
+#### Scenario: A failed upload is not in progress
+- **WHEN** 16 uploads of a connection failed on their first chunk, before their `last` one, and it starts another
+- **THEN** the new one is taken; a later chunk of a failed one gets that failure, and a first chunk with a path starts its transfer afresh
 
 #### Scenario: Gone with the connection
 - **WHEN** a connection with a watch, an upload in progress and a running program whose child holds a FIFO open ends, or is superseded by a connection of the same client
