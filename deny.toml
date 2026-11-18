@@ -7,14 +7,17 @@ all-features = true
 # Every advisory (vulnerability, unmaintained, unsound, notice) fails; yanked versions too.
 yanked = "deny"
 ignore = [
-    # crypto-bigint 0.5 (non-constant-time arithmetic) comes only through p256 in biscuit-auth
-    # 6.0.0, which cannot be built without it. tilrd mints and signs with Ed25519 only; P-256
-    # code runs at most to verify a holder's public signature on an appended block, on public
-    # values, so no secret goes through it. Drop with biscuit-auth 7 (crypto-bigint 0.7).
+    # On 2026-11-18: crypto-bigint 0.5 (non-constant-time arithmetic) comes only through p256,
+    # a non-optional dependency of biscuit-auth 6.0.0 (recheck: `cargo tree -p tilrd -i
+    # crypto-bigint@0.5 -e normal`). tilrd mints and signs with Ed25519 only; P-256 code runs at
+    # most to verify a holder's public signature on an appended block, on public values, so no
+    # secret goes through it. Drop when a stable biscuit-auth 7.x is in (on 2026-11-18 only
+    # 7.0.0-alpha.4: https://crates.io/crates/biscuit-auth/versions) and the tree command is empty.
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via biscuit-auth 6's p256; no secret goes through P-256 in tilrd (bus rights sign with Ed25519)" },
-    # proc-macro-error2 (unmaintained, no successor release) is a build-time dependency of the
-    # proc macro biscuit-quote, which biscuit-auth 6.0.0 needs to build at all (its
-    # `datalog-macro` feature); nothing of it is in tilrd's binary. Drop with biscuit-auth 7.
+    # On 2026-11-18: proc-macro-error2 (unmaintained, no successor release) is a build-time
+    # dependency of the proc macro biscuit-quote, which biscuit-auth 6.0.0 needs to build at all
+    # (its `datalog-macro` feature; see crates/tilrd/Cargo.toml); nothing of it is in tilrd's
+    # binary (recheck: `cargo tree -p tilrd -i proc-macro-error2`). Drop with the pin there.
     { id = "RUSTSEC-2026-0173", reason = "build-time only, via biscuit-quote of biscuit-auth 6.0.0, which does not build without it" },
 ]
 

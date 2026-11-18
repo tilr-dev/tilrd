@@ -193,10 +193,9 @@ is the contract.
   token (`allow if kind("event")`; an appended block's checks still apply), also for an event
   with a `scope` (`pane:<id>`): who may receive a pane-scoped event (`pane_access`, shared
   design "pane-scoped events") is `bus-pane-rights`'s, handed over with the pane rules.
-- **Dependency.** `biscuit-auth` 6.0.0 builds only with its `datalog-macro` feature; it brings
-  two advisories ignored in `deny.toml` with their reasons (crypto-bigint 0.5 through p256,
-  which tilrd never signs with; proc-macro-error2, build time only). biscuit-auth 7 drops both
-  (only alphas exist yet).
+- **Dependency.** `biscuit-auth` is pinned to an exact version; its feature set, the advisories
+  it brings and when to lift the pin are recorded with dates beside the pin
+  (`crates/tilrd/Cargo.toml`) and in `deny.toml`.
 
 ## The control contract
 
