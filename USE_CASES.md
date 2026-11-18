@@ -1180,4 +1180,5 @@ reads what their programs did from a FIFO in a granted directory (helpers:
 | A sandbox that cannot be installed (failpoint `sandbox-apply`) is `bad_request` `create pane: sandbox: …`; the program does not run, no pane is listed | `sandbox::a_sandbox_that_cannot_be_applied_starts_nothing` |
 | Raw mode, job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) and `pane.command_finished` work in a sandboxed pane, on `pane.output` | `sandbox::raw_mode_and_job_control_work_in_a_sandboxed_pane` |
 | `less` pages a file and `vi` edits one in a sandboxed pane, on `pane.output` | `sandbox::a_pager_and_an_editor_work_in_a_sandboxed_pane` |
+| A sandboxed profile's `[env]` goes in the request only, not into the pane process's environment; an unsandboxed one's goes there | `supervisor::bus::core::panes::tests::a_sandboxed_profiles_env_stays_out_of_the_pane_process` |
 | A sandboxed pane's directory and request go when the pane is closed; those of a pane killed with its server go when the server starts again | `sandbox::a_sandboxed_panes_leftovers_are_removed` |

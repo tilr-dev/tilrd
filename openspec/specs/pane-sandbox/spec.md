@@ -193,7 +193,7 @@ A sandboxed pane's environment SHALL hold only `HOME`, `USER`, `LOGNAME`, `SHELL
 ### Requirement: The request reaches the pane process privately
 The pane process of a sandboxed pane SHALL get its sandbox request and the server's protected directories in a file of mode 0600 in the runtime directory, `<runtime dir>/sandbox/<pane id>.request`, named by its command line (`--sandbox <file>`); no value of the profile's `[env]` SHALL be on its command line. A reload execs it with the same arguments and the file SHALL stay until the pane ends.
 
-**Verified by**: unit test `sandbox::tests::a_request_reaches_the_pane_process_in_a_private_file`.
+**Verified by**: unit tests `sandbox::tests::a_request_reaches_the_pane_process_in_a_private_file`, `supervisor::bus::core::panes::tests::a_sandboxed_profiles_env_stays_out_of_the_pane_process`; `sandbox::a_sandboxed_profile_starts_a_sandboxed_pane`.
 
 #### Scenario: A value in `[env]`
 - **WHEN** a request whose `[env]` holds `API_TOKEN` is handed to a pane process
