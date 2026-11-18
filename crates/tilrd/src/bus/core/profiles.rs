@@ -52,10 +52,10 @@ pub(crate) fn forget(s: &mut Supervisor, pane_id: PaneId) {
 }
 
 /// Whether this server can enforce a profile's `[sandbox]` (S7, B14: the `sandbox`
-/// feature). `sandbox-linux` and `sandbox-macos` replace this with their platform
-/// check; until then no profile with a `[sandbox]` table starts.
+/// feature): the start-up check of `sandbox::features`, which `server.info` lists
+/// `sandbox` by too.
 fn sandbox_enforceable() -> bool {
-    false
+    crate::sandbox::features().is_ok()
 }
 
 /// Add `pane.profiles`.
@@ -166,15 +166,22 @@ pub fn prepare_create(
             },
         },
     )?;
-    resolve_in(profile::dir(), profile::home().as_deref(), request)
+    resolve_in(
+        profile::dir(),
+        profile::home().as_deref(),
+        request,
+        sandbox_enforceable(),
+    )
 }
 
 /// [`prepare_create`] without the authorizer, over the directory `dir`, for the user
-/// whose home directory is `home`.
+/// whose home directory is `home`, on a server that can enforce a sandbox when
+/// `enforceable`.
 fn resolve_in(
     dir: Option<&std::path::Path>,
     home: Option<&std::path::Path>,
     request: &CreateRequest,
+    enforceable: bool,
 ) -> Result<Option<Resolved>, BusError> {
     if request.profile.is_empty() {
         return Ok(None);
@@ -188,7 +195,7 @@ fn resolve_in(
         None => Err(Error::NoSuch(name.clone())),
     }
     .map_err(|err| refused(name, &err))?;
-    if snapshot.sandbox.is_some() && !sandbox_enforceable() {
+    if snapshot.sandbox.is_some() && !enforceable {
         return Err(BusError::bad_request(format!(
             "create pane: profile {name} asks for a sandbox, which this server cannot enforce"
         )));
@@ -256,7 +263,7 @@ mod tests {
         dir: &Path,
         request: &CreateRequest,
     ) -> Result<Option<Resolved>, BusError> {
-        resolve_in(Some(dir), tree.home(), request)
+        resolve_in(Some(dir), tree.home(), request, false)
     }
 
     fn err(tree: &Scratch, dir: &Path, request: &CreateRequest) -> String {
@@ -368,9 +375,15 @@ mod tests {
                 "command = [\"/bin/sh\"]\n[sandbox]\nread_write = [\"~/w\"]",
             )],
         );
+        let boxed = request("box", &["/bin/sh", "-c", "true"], "");
         assert_eq!(
-            err(&tree, &dir, &request("box", &["/bin/sh", "-c", "true"], "")),
+            err(&tree, &dir, &boxed),
             "create pane: profile box asks for a sandbox, which this server cannot enforce"
         );
+        // A server that can enforce it resolves the profile, its sandbox kept.
+        let resolved = resolve_in(Some(&dir), tree.home(), &boxed, true)
+            .unwrap()
+            .unwrap();
+        assert!(resolved.snapshot.sandbox.is_some());
     }
 }

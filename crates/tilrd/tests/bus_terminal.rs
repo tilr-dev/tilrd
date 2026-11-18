@@ -1608,10 +1608,12 @@ mod services {
         assert_eq!(info.server_id, ack.server_id);
         assert_eq!(info.server_id, owner.hello_ack().server_id);
         assert_eq!(info.update_channel, "stable");
-        assert_eq!(
-            info.features,
-            ["clipboard", "files", "host-events", "agent", "exec"]
-        );
+        // `sandbox` where the start-up check passes (tests/sandbox.rs).
+        let mut features = vec!["clipboard", "files", "host-events", "agent", "exec"];
+        if cfg!(target_os = "linux") {
+            features.push("sandbox");
+        }
+        assert_eq!(info.features, features);
         assert!(info.clipboard_max_bytes > 0 && info.fs_max_bytes > 0);
         assert_eq!(info.clipboard_max_bytes, ack.clipboard_max_bytes);
         assert_eq!(info.fs_max_bytes, ack.fs_max_bytes);
@@ -1636,7 +1638,11 @@ mod services {
         let info: InfoReply = bus_services::call(&owner, "server.info", &InfoRequest {})
             .await
             .unwrap();
-        assert_eq!(info.features, ["clipboard", "host-events", "agent"]);
+        let mut features = vec!["clipboard", "host-events", "agent"];
+        if cfg!(target_os = "linux") {
+            features.push("sandbox");
+        }
+        assert_eq!(info.features, features);
         assert_eq!(info.fs_max_bytes, 0);
         for method in ["exec.run", "fs.list"] {
             let error = stream_all(&owner, method, &RunRequest::default(), 0)

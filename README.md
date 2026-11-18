@@ -428,7 +428,7 @@ command = ["/bin/sh"]                    # absent or empty: your login shell
 cwd = "~/work"                           # absolute or ~; never relative
 [env]                                    # set over the server's environment
 GREETING = "hi"                          # not TILR_*; TERM, COLORTERM, SHELL stay the server's
-[sandbox]                                # optional; the profile is refused until this server can enforce it
+[sandbox]                                # optional; refused where the server cannot enforce it
 read_only = ["~/docs"]
 read_write = ["~/work"]
 executables = ["/usr/bin/git"]
@@ -914,6 +914,112 @@ What to know:
   ignored again: a write to a pipe nobody reads any more fails instead of ending it.
 - A pane process that cannot take its queued input within 5 seconds is closed rather than
   carried over.
+
+## Sandboxed panes
+
+A launch profile with a `[sandbox]` table starts a sandboxed pane: its program and every
+process it starts can touch only what the table grants. It is still a normal terminal: raw
+mode, `stty`, full-screen programs (vim, less, Claude Code), job control, Ctrl+C and window
+size changes work as in any pane, and scripts and binaries made in a `read_write`
+directory run there. A caller asks for a sandbox only by naming such a profile.
+
+```toml
+[sandbox]
+read_only = ["~/docs"]            # read and execute
+read_write = ["~/work"]           # read, write and execute
+executables = ["git", "/opt/x/y"] # also these programs: a name is looked up in PATH
+env = ["LANG"]                    # the server's values of these variables
+network = "none"                  # none (default) | client | server
+```
+
+The server offers it where it can enforce it: on Linux on x86_64 or aarch64 with Landlock
+ABI 4 (kernel 6.7) or later and seccomp, as the feature `sandbox` (`server.info.features`);
+at start it logs `sandbox: offered` or `sandbox: not offered: <reason>`. Elsewhere a
+sandboxed profile is refused and nothing starts.
+
+What every sandboxed pane gets:
+
+- read and execute on `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`; read on `/etc`,
+  `/proc` and `/sys` (and, with `client` or `server`, on the file `/etc/resolv.conf` links to);
+  read and write on `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`,
+  `/dev/tty`, `/dev/ptmx` and the pane's own terminal (`/dev/pts/N`), but no other terminal
+  of the user: another pane's typing cannot be read or written to;
+- the program it runs (the command, or the login shell) and the `executables`, to read and
+  run; `PATH`, unless the profile's `[env]` sets it, is their directories followed by
+  `/usr/bin:/bin:/usr/sbin:/sbin`;
+- a private `TMPDIR`, `<runtime dir>/sandbox/<pane id>/` (0700), removed when the pane ends
+  (and at the next start of a server killed while the pane ran);
+- an environment made from scratch: `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`,
+  `TILR_PANE`, `TMPDIR`, `PATH`, the `env` names with the server's values, then the
+  profile's `[env]`. No `TILR_*`, `SSH_AUTH_SOCK` or `SSH_AGENT_PID`, from `env` or from
+  `[env]`, no shims and no login wrappers (the login shell starts as `-<shell>`);
+- no descriptor of the server: every one but 0, 1 and 2 is closed at the exec.
+
+The pane process gets the request in a file, `<runtime dir>/sandbox/<pane id>.request`
+(0600), that its command line names: the values of `[env]` are not on a command line `ps`
+shows. The file goes when the pane ends.
+
+What it never gets:
+
+- a Unix-domain socket of its own: `socket(AF_UNIX, ...)` fails with `EACCES` whatever the
+  network setting, and `socketpair` makes only connected streams and sequenced packets, no
+  datagrams, so neither the server's socket, its host-events and agent sockets nor any other
+  Unix socket of the user, named or abstract, can be reached;
+- a grant over the state directory (token, root key), the runtime directory (sockets) or the
+  configuration directory (profiles, `bus.toml`; the `--config` file's directory and the
+  profiles directory where they are elsewhere), read-only included: such a profile is
+  refused with `create pane: sandbox: <path> would expose <what> <dir>`, and so is a grant
+  inside one of them, and a `read_write` grant over the server's executable (a reload runs
+  it outside the sandbox). `read_only = ["~"]` is refused when the state directory is under
+  the home directory, its default. Each grant is checked again by what is opened for it, so
+  a path made a link afterwards is caught;
+- io_uring (its socket operations would bypass the socket rules): `EACCES`;
+- a namespace: `unshare` and `clone` with a namespace flag fail with `EPERM`, `clone3` with
+  `ENOSYS` (glibc then uses `clone`), as in Docker and Flatpak; forks, threads and
+  `subprocess` work, rootless podman, bubblewrap, `unshare -r` and Chrome's own sandbox do
+  not (run Chrome with `--no-sandbox` there);
+- the keyrings (`keyctl`, `add_key`, `request_key`), `bpf`, `perf_event_open`,
+  `userfaultfd` and `setns`: `EPERM`;
+- netlink other than `NETLINK_ROUTE` (which name lookups read);
+- a syscall of another ABI: an x32 one fails with `ENOSYS`, a 32-bit one kills the process;
+- with `none`: any socket but netlink; with `client`: listening (`listen`, also on a socket
+  never bound) and any IPv4 or IPv6 socket but TCP streams and datagrams.
+
+If the restriction cannot be installed the program does not run and the pane is refused
+with `create pane: sandbox: <reason>`; a grant path that does not exist is skipped with a
+log line. The server never falls back to an unrestricted pane.
+
+Terminals inside a sandboxed pane: by default the pane opens only its own terminal, so a
+terminal made inside it cannot be opened (its slave is another `/dev/pts/M`): `script`,
+tmux, screen, `vim`'s `:terminal` and Python's `pty` fail there. Two ways around it: run
+the pane without a profile, or grant `/dev/pts` in `read_write` (`/dev/ptmx` is already
+granted). The second has a price: the pane can then open every terminal of the same user,
+read what is typed there and write output there; the sandbox no longer isolates terminals.
+The server logs `sandbox: the grant <path> covers /dev/pts: pane <id> can open every
+terminal of the user, ...` for each pane whose grant covers `/dev/pts`.
+
+Limits:
+
+- `client` does not restrict UDP on Linux (Landlock has no UDP rules): a `client` pane can
+  send and receive datagrams, DNS included.
+- On Landlock ABI 4 and 5 (before Linux 6.12) a sandboxed pane can signal the user's other
+  processes; the server starts it all the same and logs `sandbox: kernel lacks signal scoping
+  (Landlock ABI N < 6); pane <id> can signal the user's other processes`. Nothing else is
+  weaker there: the Unix socket rules are the seccomp filter's, on every ABI.
+- Names and metadata are not hidden: a sandboxed pane can `stat` any path, read `/proc`
+  (other processes' command lines included) and, with an inotify watch, learn the names
+  made in a directory it cannot list; it cannot list or read files outside its grants.
+- Metadata can be changed: Landlock has no right for it, so a sandboxed pane can `chmod`,
+  `chgrp`, `touch` and set extended attributes on any file of the user, the server's token
+  and state directory included (not read or write them). A pane could, say, make the token
+  readable by other users of the machine.
+- Readable means runnable: what the pane can read it can run (copied into its `TMPDIR`,
+  from memory with `memfd_create`, or with `ld.so`). `executables` grants a program to read
+  and run; it is not an allow list of programs.
+- A `read_write` grant can hold what runs later, outside the sandbox: a pane can write
+  `.git/hooks`, `.envrc`, shell startup files or editor configuration there, and the user's
+  next unsandboxed `git commit`, `cd` or shell runs it. Grant `read_write` only to what you
+  would let the pane's program change, and do not grant your home directory.
 
 ## The bus
 

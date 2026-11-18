@@ -13,7 +13,7 @@
 //! cwd = "~/work"                                  # absolute or `~`
 //! [env]
 //! GREETING = "hi"                                 # not TILR_*
-//! [sandbox]                                       # optional; refused until enforced (sandbox-linux/-macos)
+//! [sandbox]                                       # optional; refused where it cannot be enforced
 //! read_only = ["~/docs"]
 //! read_write = ["~/work"]
 //! executables = ["/usr/bin/git"]

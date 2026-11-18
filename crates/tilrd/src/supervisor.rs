@@ -718,6 +718,11 @@ pub fn run(options: Options) -> Result<()> {
             if let Some(state) = state {
                 supervisor.resume(state);
             }
+            // What sandboxed panes of a server killed with them left (S8).
+            crate::sandbox::at_server_start(&clipboard::runtime_dir(), |id| {
+                id.parse::<PaneId>()
+                    .is_ok_and(|id| supervisor.panes.contains_key(&id))
+            });
             crate::notify::ready();
             let local = supervisor.run(events_rx).await;
             // A reload does not get here: the successor binds the socket anew.
@@ -2601,7 +2606,7 @@ impl Supervisor {
                 self.forget_input(&identity);
             }
             Msg::CreatePane(create) => {
-                if let Err(err) = self.create_pane(client_id, &create, &[]) {
+                if let Err(err) = self.create_pane(client_id, &create, &[], None) {
                     self.send_error(client_id, &format!("create pane: {err:#}"));
                 }
             }
@@ -2987,17 +2992,28 @@ impl Supervisor {
     }
 
     /// Start a pane process for the request, `extra_env` added to the
-    /// environment of every pane (a bus profile's). The client hears back once
-    /// the process reports that the shell is running, or that it could not start.
+    /// environment of every pane (a bus profile's), inside `sandbox` when it
+    /// is given (a sandboxed profile's: handed over in a file, the pane
+    /// process's arguments name it). The client hears back once the process
+    /// reports that the shell is running, or that it could not start. An error
+    /// of the handover starts with `sandbox: `.
     fn create_pane(
         &mut self,
         client_id: ClientId,
         create: &CreatePane,
         extra_env: &[(OsString, OsString)],
+        sandbox: Option<&crate::sandbox::Handover>,
     ) -> Result<()> {
         let cols = create.cols.clamp(1, u32::from(u16::MAX)) as u16;
         let rows = create.rows.clamp(1, u32::from(u16::MAX)) as u16;
         let pane_id = PaneId::new_v4();
+        let sandbox_args = match sandbox {
+            Some(handover) => handover
+                .write(&pane_id.to_string())
+                .map_err(anyhow::Error::msg)?
+                .to_vec(),
+            None => Vec::new(),
+        };
         let cwd = start_dir(&create.cwd);
         let mut env = self.pane_env.clone();
         env.extend_from_slice(extra_env);
@@ -3010,6 +3026,7 @@ impl Supervisor {
             &cwd,
             cols,
             rows,
+            &sandbox_args,
             &env,
             self.events.clone(),
             Arc::clone(&self.metrics),
@@ -3019,6 +3036,9 @@ impl Supervisor {
             Err(err) => {
                 if let Some(agent) = &mut self.agent {
                     agent.close_pane(pane_id);
+                }
+                if let Some(handover) = sandbox {
+                    crate::sandbox::remove_pane_dir(&handover.dirs.runtime, &pane_id.to_string());
                 }
                 return Err(err);
             }
@@ -3684,6 +3704,7 @@ fn start_pane_process(
     cwd: &str,
     cols: u16,
     rows: u16,
+    sandbox_args: &[OsString],
     env: &[(OsString, OsString)],
     events: mpsc::UnboundedSender<Event>,
     shared_metrics: Arc<metrics::Shared>,
@@ -3701,6 +3722,8 @@ fn start_pane_process(
     if !cwd.is_empty() {
         cmd.args(["--cwd", cwd]);
     }
+    // A sandboxed pane's `--sandbox <file>`: the request is in the file.
+    cmd.args(sandbox_args);
     if !create.command.is_empty() {
         cmd.arg("--").args(&create.command);
     }

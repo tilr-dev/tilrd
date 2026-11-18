@@ -54,5 +54,10 @@ uuid = { version = "1", features = ["v4"] }
 # The root key's text is wiped from memory (already in the tree through biscuit-auth's ed25519-dalek).
 zeroize = "1.9"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The pane sandbox (src/sandbox/linux.rs): Landlock rulesets. The seccomp filter is
+# assembled by hand on libc's definitions.
+landlock = "0.4.7"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

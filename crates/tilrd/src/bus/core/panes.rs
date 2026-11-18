@@ -748,9 +748,7 @@ pub(crate) fn create_failed(s: &mut Supervisor, pane_id: PaneId, reason: &str) {
     let st = state(s);
     st.creators.remove(&pane_id);
     if let Some(reply) = st.creating.remove(&pane_id) {
-        let _ = reply.send(Err(BusError::handler_error(format!(
-            "create pane: {reason}"
-        ))));
+        let _ = reply.send(Err(create_error(reason)));
     }
 }
 
@@ -871,9 +869,7 @@ fn create(
         cwd,
         request_id: 0,
     };
-    let sandbox = snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.sandbox.as_ref());
+    let (env, sandbox) = env_and_sandbox(snapshot.as_ref(), env);
     match start_pane(s, &create, caller.from.to_string(), &env, sandbox) {
         Ok((pane_id, rx)) => {
             if let Some(snapshot) = snapshot {
@@ -887,17 +883,18 @@ fn create(
 
 /// Start a pane on the supervisor's path for `create` (its `request_id` is the
 /// core's), created by `creator`, with `env` added to the environment every
-/// pane gets, inside `sandbox` when its profile has one; answered with its
-/// `PaneInfo` once its program runs, or with `handler_error` `create pane:
-/// <reason>`.
+/// pane gets, inside the sandbox `sandbox` asks for when its profile has one;
+/// answered with its `PaneInfo` once its program runs, or with `handler_error`
+/// `create pane: <reason>` (`bad_request` `create pane: sandbox: <reason>` when
+/// the sandbox is refused or cannot be applied).
 pub(crate) fn start_pane(
     s: &mut Supervisor,
     create: &tilr_proto::CreatePane,
     creator: String,
     env: &[(OsString, OsString)],
-    sandbox: Option<&crate::profile::SandboxSpec>,
+    sandbox: Option<crate::sandbox::Request>,
 ) -> Result<(PaneId, oneshot::Receiver<Result<pane::PaneInfo, BusError>>), BusError> {
-    applies(sandbox)?;
+    let handover = applies(sandbox, crate::sandbox::features())?;
     let st = state(s);
     st.next_create += 1;
     let token = st.next_create;
@@ -905,8 +902,8 @@ pub(crate) fn start_pane(
         request_id: token,
         ..create.clone()
     };
-    s.create_pane(NO_CLIENT, &create, env)
-        .map_err(|err| BusError::handler_error(format!("create pane: {err:#}")))?;
+    s.create_pane(NO_CLIENT, &create, env, handover.as_ref())
+        .map_err(|err| create_error(&format!("{err:#}")))?;
     let pane_id = s
         .starting
         .iter()
@@ -920,16 +917,78 @@ pub(crate) fn start_pane(
     Ok((pane_id, rx))
 }
 
-/// Fail closed: nothing on the start path applies a sandbox yet (`sandbox-linux`,
-/// `sandbox-macos` do), so a pane asked to run in one does not start, whatever
-/// `profiles::sandbox_enforceable` says; it never runs unconfined while its
-/// `PaneInfo.sandboxed` says otherwise.
-fn applies(sandbox: Option<&crate::profile::SandboxSpec>) -> Result<(), BusError> {
-    match sandbox {
-        None => Ok(()),
-        Some(_) => Err(BusError::handler_error(
+/// Fail closed: the start path applies a sandbox only where the start-up check
+/// (`sandbox::features`, the same `profiles::sandbox_enforceable` asks) says it
+/// can be enforced, so a pane asked to run in one never runs unconfined while its
+/// `PaneInfo.sandboxed` says otherwise. `Ok(Some)`: what the pane process gets.
+fn applies(
+    sandbox: Option<crate::sandbox::Request>,
+    features: Result<crate::sandbox::Features, String>,
+) -> Result<Option<crate::sandbox::Handover>, BusError> {
+    let Some(request) = sandbox else {
+        return Ok(None);
+    };
+    if features.is_err() {
+        return Err(BusError::handler_error(
             "create pane: this server cannot apply a sandbox",
-        )),
+        ));
+    }
+    Ok(Some(crate::sandbox::Handover {
+        request,
+        dirs: crate::sandbox::server_dirs(),
+    }))
+}
+
+/// What the pane process of a pane of `snapshot` gets: `env` (the profile's `[env]`)
+/// in its environment for an unsandboxed pane; for a sandboxed one nothing there and
+/// the sandbox request, whose `[env]` is set over an environment made from scratch
+/// (S6), so no value of it stays in the pane process's environment.
+fn env_and_sandbox(
+    snapshot: Option<&crate::profile::Snapshot>,
+    env: Vec<(OsString, OsString)>,
+) -> (Vec<(OsString, OsString)>, Option<crate::sandbox::Request>) {
+    let sandbox = snapshot.and_then(|snapshot| {
+        let spec = snapshot.sandbox.as_ref()?;
+        Some(sandbox_request(spec, &snapshot.env))
+    });
+    let env = if sandbox.is_some() { Vec::new() } else { env };
+    (env, sandbox)
+}
+
+/// The sandbox of a pane of a profile: its `[sandbox]` table and `[env]` as the
+/// sandbox takes them (`sandbox::Request`).
+fn sandbox_request(
+    spec: &crate::profile::SandboxSpec,
+    env: &std::collections::BTreeMap<String, String>,
+) -> crate::sandbox::Request {
+    use crate::profile::Network as From;
+    use crate::sandbox::Network as To;
+    crate::sandbox::Request {
+        read_only: spec.read_only.clone(),
+        read_write: spec.read_write.clone(),
+        executables: spec.executables.clone(),
+        pass_env: spec.env.clone(),
+        network: match spec.network {
+            From::None => To::None,
+            From::Client => To::Client,
+            From::Server => To::Server,
+        },
+        env: env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect(),
+    }
+}
+
+/// The error of a `pane.create` whose pane did not start for `reason`: a refused
+/// sandbox or one that could not be applied is the request's (`bad_request`,
+/// `create pane: sandbox: …`), anything else the handler's.
+fn create_error(reason: &str) -> BusError {
+    let message = format!("create pane: {reason}");
+    if reason.starts_with("sandbox: ") {
+        BusError::bad_request(message)
+    } else {
+        BusError::handler_error(message)
     }
 }
 
@@ -2434,9 +2493,45 @@ mod tests {
     }
 
     #[test]
+    fn a_sandboxed_profiles_env_stays_out_of_the_pane_process() {
+        let mut snapshot = crate::profile::Snapshot::default();
+        snapshot.env.insert("API_TOKEN".into(), "tok-123".into());
+        let env = || vec![(OsString::from("API_TOKEN"), OsString::from("tok-123"))];
+        // Unsandboxed: the profile's [env] is the pane process's.
+        let (plain, none) = env_and_sandbox(Some(&snapshot), env());
+        assert_eq!(plain, env());
+        assert!(none.is_none());
+        // Sandboxed: only in the request.
+        snapshot.sandbox = Some(crate::profile::SandboxSpec {
+            network: crate::profile::Network::Client,
+            ..crate::profile::SandboxSpec::default()
+        });
+        let (boxed, request) = env_and_sandbox(Some(&snapshot), env());
+        assert!(boxed.is_empty(), "{boxed:?}");
+        let request = request.expect("a sandbox request");
+        assert_eq!(
+            request.env,
+            [("API_TOKEN".to_owned(), "tok-123".to_owned())]
+        );
+        assert_eq!(request.network, crate::sandbox::Network::Client);
+    }
+
+    #[test]
     fn the_start_path_refuses_a_sandbox_it_does_not_apply() {
-        assert_eq!(applies(None), Ok(()));
-        let refused = applies(Some(&crate::profile::SandboxSpec::default())).unwrap_err();
+        let features = crate::sandbox::Features { landlock_abi: 6 };
+        assert_eq!(applies(None, Ok(features)), Ok(None));
+        assert_eq!(applies(None, Err("none".into())), Ok(None));
+        // Where the start-up check says it can be enforced, the pane process gets it.
+        let request = crate::sandbox::Request {
+            read_write: vec!["/w".into()],
+            ..crate::sandbox::Request::default()
+        };
+        let handover = applies(Some(request.clone()), Ok(features))
+            .unwrap()
+            .expect("a handover");
+        assert_eq!(handover.request, request);
+        // Elsewhere it does not start.
+        let refused = applies(Some(request), Err("no sandbox here".into())).unwrap_err();
         assert_eq!(refused.code, tilr_bus::codes::HANDLER_ERROR);
         assert_eq!(
             refused.message,

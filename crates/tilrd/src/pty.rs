@@ -251,17 +251,41 @@ pub fn login_plan(
 /// with no command, the user's login shell as a login shell, so that it reads
 /// the user's profile whatever environment the server itself was started in
 /// (a launchd agent gets the bare system PATH).
+///
+/// With `sandbox`, the program and all it starts are restricted to its grants
+/// (`crate::sandbox`): its environment is made from scratch, it gets no login
+/// wrappers or shims, and if the restriction cannot be installed nothing runs and
+/// the error starts with `sandbox: `.
 pub fn spawn_shell(
     pane_id: &str,
     command: &[String],
     cwd: &str,
     cols: u16,
     rows: u16,
+    sandbox: Option<&crate::sandbox::Handover>,
+) -> Result<Spawned> {
+    let sandbox = sandbox.map(|handover| (&handover.request, &handover.dirs));
+    spawn_with(pane_id, command, cwd, cols, rows, sandbox)
+}
+
+/// [`spawn_shell`], with the server's directories given for a sandboxed pane.
+pub(crate) fn spawn_with(
+    pane_id: &str,
+    command: &[String],
+    cwd: &str,
+    cols: u16,
+    rows: u16,
+    sandbox: Option<(&crate::sandbox::Request, &crate::sandbox::Dirs)>,
 ) -> Result<Spawned> {
     let (master, slave) = open_pty(cols, rows).context("openpty")?;
 
     let user = User::current();
     let shell = login_shell(&user);
+    if let Some((request, dirs)) = sandbox {
+        return spawn_sandboxed(
+            pane_id, command, cwd, &user, &shell, request, dirs, master, slave,
+        );
+    }
     let mut cmd = match command.split_first() {
         Some((program, args)) => {
             let mut cmd = Command::new(program);
@@ -334,7 +358,108 @@ pub fn spawn_shell(
     Ok(Spawned { master, child })
 }
 
-fn open_pty(cols: u16, rows: u16) -> io::Result<(OwnedFd, OwnedFd)> {
+/// Start a sandboxed pane's program (S5-S8): the plan is made here, before the fork;
+/// the child installs it after it took the terminal, then execs.
+#[allow(clippy::too_many_arguments)] // the halves of `spawn`, split for reading
+fn spawn_sandboxed(
+    pane_id: &str,
+    command: &[String],
+    cwd: &str,
+    user: &User,
+    shell: &str,
+    request: &crate::sandbox::Request,
+    dirs: &crate::sandbox::Dirs,
+    master: OwnedFd,
+    slave: OwnedFd,
+) -> Result<Spawned> {
+    let program = command.first().map_or(shell, String::as_str);
+    let mut base_env: Vec<(String, std::ffi::OsString)> = Vec::new();
+    for (name, value) in [
+        ("HOME", &user.home),
+        ("USER", &user.name),
+        ("LOGNAME", &user.name),
+    ] {
+        if let Some(value) = value {
+            base_env.push((name.into(), value.into()));
+        }
+    }
+    base_env.extend([
+        ("SHELL".into(), shell.into()),
+        ("TERM".into(), "xterm-256color".into()),
+        ("COLORTERM".into(), "truecolor".into()),
+        (PANE_ENV.into(), pane_id.into()),
+    ]);
+    let server_env = |name: &str| std::env::var_os(name);
+    let start = crate::sandbox::Start {
+        pane_id,
+        program,
+        base_env,
+        server_env: &server_env,
+        terminal: Some(tty_name(&slave)?),
+    };
+    let plan = crate::sandbox::plan(request, &start, dirs).map_err(anyhow::Error::msg)?;
+    for warning in &plan.warnings {
+        tracing::warn!(pane = pane_id, "{warning}");
+    }
+    let mut cmd = Command::new(&plan.program);
+    match command.split_first() {
+        Some((program, args)) => {
+            cmd.arg0(program).args(args);
+        }
+        // A login shell, without the server's wrappers: they would need the
+        // runtime directory, and the shims are not the pane's.
+        None => {
+            cmd.arg0(login_arg0(shell));
+        }
+    }
+    cmd.env_clear()
+        .envs(plan.env.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::from(slave.try_clone()?))
+        .stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave));
+    if !cwd.is_empty() {
+        cmd.current_dir(cwd);
+    }
+    let tmpdir = plan.tmpdir.clone();
+    // SAFETY: only async-signal-safe calls between fork and exec: setsid, ioctl and
+    // `Plan::apply_in_child`'s raw syscalls.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            plan.apply_in_child()
+        });
+    }
+    match cmd.spawn() {
+        Ok(child) => Ok(Spawned { master, child }),
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&tmpdir);
+            Err(anyhow::anyhow!(
+                "sandbox: cannot start {program} restricted: {err}"
+            ))
+        }
+    }
+}
+
+/// The path of the terminal device `fd` is (`/dev/pts/N`).
+fn tty_name(fd: &OwnedFd) -> Result<std::path::PathBuf> {
+    let mut buf = vec![0u8; 256];
+    // SAFETY: `buf` is valid for writes of its length; ttyname_r NUL-terminates.
+    let rc = unsafe { libc::ttyname_r(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return Err(io::Error::from_raw_os_error(rc)).context("ttyname");
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    buf.truncate(len);
+    use std::os::unix::ffi::OsStringExt;
+    Ok(std::ffi::OsString::from_vec(buf).into())
+}
+
+pub(crate) fn open_pty(cols: u16, rows: u16) -> io::Result<(OwnedFd, OwnedFd)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
     let mut size = winsize(cols, rows);

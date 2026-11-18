@@ -1118,3 +1118,67 @@ made to act as (one that misbehaves, or holds a reply back), a fake broker; the 
 | 1000 calls at once to tilrd, which answers `busy` past 256 pending, all complete within `max_in_flight`; a fake broker's `max_in_flight` 3 holds the fourth call back; a call over `max_frame` is `too_large` unsent and the connection stays | `sdk/deno/test/bus_test.ts::limits_are_respected`, `sdk/python/tests/test_bus.py::test_limits_are_respected` |
 | Writes that wait for a stream socket to drain share one wait: no `close` or `drain` listener is left per write | `sdk/deno/test/bus_test.ts::backpressured_writes_add_no_listeners` |
 | A closed connection fails every pending call and stream `unavailable` and completes the closed signal; the latest `CredentialUpdate` is the credential; a `ConnectionError` and then the close keep both the error and the close code | `sdk/deno/test/bus_test.ts::a_closed_connection_ends_pending_calls`, `sdk/python/tests/test_bus.py::test_a_closed_connection_ends_pending_calls` |
+
+## Sandboxed panes on Linux (`sandbox-linux`) - `src/sandbox/`
+
+The sandbox below the bus: `src/sandbox/tests.rs` makes the restriction of a pane and,
+on Linux, starts real programs under it on a pty (`pty::spawn_with`, as the pane process
+does) and checks what they can and cannot do. Landlock ABI 4 or later is required. Over
+the bus, `tests/sandbox.rs` creates panes from sandboxed profiles on a real server and
+reads what their programs did from a FIFO in a granted directory (helpers:
+`tests/common/bus_sandbox.rs`); its tests but the feature check run on Linux only.
+
+| Use case | Test |
+|---|---|
+| A grant over the state, runtime or configuration directory, inside one, or through `..` or a link to one, is refused naming it | `sandbox::tests::a_grant_covering_a_server_directory_is_refused` |
+| A sandboxed pane's environment is made from scratch: the base variables, `TMPDIR`, `PATH`, the passed names, then `[env]`; never `TILR_*` or `SSH_AUTH_SOCK`, from the server or from `[env]` | `sandbox::tests::a_sandboxed_pane_gets_only_its_variables` |
+| The server's executable is protected from `read_write` grants (not `read_only`); a `--config` file's directory and a profiles directory elsewhere are protected too | `sandbox::tests::the_servers_executable_and_configuration_are_protected` |
+| A grant of `/dev/pts` (or a path over or in it) is warned about, naming the pane | `sandbox::tests::a_grant_of_the_users_terminals_is_warned_about` |
+| A pane's private directory is 0700; it is removed when the pane ends, and those of panes that no longer run at start | `sandbox::tests::a_sandboxed_panes_directory_is_private_and_removed` |
+| The request reaches the pane process whole in a 0600 file its command line names, with no `[env]` value on the command line; the file goes with the pane | `sandbox::tests::a_request_reaches_the_pane_process_in_a_private_file` |
+| A kernel without signal scoping is named in a warning with the pane | `sandbox::tests::a_kernel_without_signal_scoping_is_named_in_a_warning` |
+| Each network mode has a seccomp filter, for x86_64 and aarch64, whose jumps stay inside it and whose every path returns | `sandbox::linux::tests::every_network_mode_has_a_filter_that_assembles` |
+| The filter of each architecture answers each refused syscall as the sandbox says (another ABI, x32, io_uring, namespaces, keyrings, sockets, netlink, `listen`) | `sandbox::linux::tests::the_filter_refuses_what_the_sandbox_does_not_allow` |
+| The filter's syscall numbers are the host's | `sandbox::linux::tests::the_filters_syscall_numbers_are_the_hosts` |
+| A sandboxed program writes only under `read_write`, reads `read_only`, neither reads nor lists elsewhere | `sandbox::tests::linux::a_sandboxed_program_writes_only_where_it_may` |
+| A grandchild of the sandboxed program is restricted too | `sandbox::tests::linux::a_child_of_the_sandboxed_program_is_restricted_too` |
+| Only granted programs run: a program of the user's elsewhere is refused, an `executables` path or name (looked up in `PATH`) runs | `sandbox::tests::linux::only_granted_programs_run_in_a_sandbox` |
+| A script and a binary made in a `read_write` directory run there | `sandbox::tests::linux::a_script_and_a_binary_made_inside_run_inside` |
+| `none` opens no socket, `client` connects out and cannot listen (UDP free, SCTP refused), `server` accepts | `sandbox::tests::linux::network_follows_the_request` |
+| No Unix-domain socket (a stream `socketpair` works), no state file, and a grant over the server's directories starts nothing | `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server` |
+| A sandboxed program sees only its variables | `sandbox::tests::linux::a_sandboxed_program_has_only_its_variables` |
+| A sandboxed pane opens its own terminal and `/dev/tty`, not another terminal of the user | `sandbox::tests::linux::a_sandboxed_pane_cannot_open_another_terminal` |
+| With `/dev/pts` granted a terminal made inside works, and another terminal of the user opens too (the documented risk) | `sandbox::tests::linux::a_profile_granting_dev_pts_can_make_terminals` |
+| `socketpair` makes no Unix datagram socket (on ABI 4 too), only connected streams and sequenced packets; nothing reaches a named or abstract datagram socket | `sandbox::tests::linux::a_unix_datagram_socket_cannot_be_made_with_socketpair` |
+| Netlink opens only as `NETLINK_ROUTE`; `getaddrinfo` with `AI_ADDRCONFIG` works | `sandbox::tests::linux::only_routing_netlink_opens_in_a_sandbox` |
+| No user or other namespace (`unshare`, `clone`: `EPERM`; `clone3`: `ENOSYS`); fork, threads and `subprocess` work | `sandbox::tests::linux::no_namespace_can_be_made_in_a_sandbox` |
+| io_uring (`EACCES`), the keyrings, `bpf`, `perf_event_open`, `userfaultfd` and `setns` (`EPERM`) are refused | `sandbox::tests::linux::kernel_interfaces_a_pane_does_not_need_are_refused` |
+| A descriptor of the pane process without close-on-exec does not reach the program | `sandbox::tests::linux::no_descriptor_of_the_pane_process_reaches_the_program` |
+| A grant that became a link to a server directory (or a `read_write` one to the server's executable) is refused by what is opened for it | `sandbox::tests::linux::a_grant_that_became_a_link_to_a_server_directory_is_refused` |
+| Metadata outside the grants can be changed (the token's mode, a file's times), contents not read (a limit) | `sandbox::tests::linux::metadata_outside_the_grants_can_be_changed` |
+| A directory not granted cannot be listed, but an inotify watch on it learns the names made there (a limit) | `sandbox::tests::linux::names_in_a_directory_not_granted_can_be_watched` |
+| A readable program runs from memory too: readable implies runnable (a limit) | `sandbox::tests::linux::a_readable_program_runs_from_memory_too` |
+| A terminal made inside a sandbox opens its master, not its slave (a limit) | `sandbox::tests::linux::a_terminal_made_inside_a_sandbox_cannot_be_opened` |
+| The private `TMPDIR` is writable | `sandbox::tests::linux::the_private_tmpdir_is_writable` |
+| A restriction that cannot be installed runs nothing and leaves no directory | `sandbox::tests::linux::a_sandbox_that_cannot_be_applied_starts_nothing` |
+| Signals to the user's other processes are refused where the kernel scopes them; on ABI 4 the pane starts without | `sandbox::tests::linux::signals_follow_the_kernels_scoping` |
+| Raw mode and window size changes work in a sandbox | `sandbox::tests::linux::raw_mode_and_window_size_work_in_a_sandbox` |
+| Job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) works in a sandbox | `sandbox::tests::linux::job_control_works_in_a_sandbox` |
+| A full-screen editor (`vi`) edits a file in a sandbox | `sandbox::tests::linux::a_full_screen_editor_works_in_a_sandbox` |
+| `server.info` lists `sandbox` where the start-up check passes (Linux), not with the failpoint `sandbox-unavailable`; on Landlock ABI 4 (failpoint `sandbox-abi-4`) a pane starts with the warning naming it | `sandbox::sandbox_is_offered_where_it_can_be_enforced` |
+| A sandboxed profile starts a pane with `sandboxed` true (a plain pane false); `[env]` reaches the program, the pane process gets it in a 0600 file, not on its command line or in its environment | `sandbox::a_sandboxed_profile_starts_a_sandboxed_pane` |
+| A sandboxed pane writes only under `read_write`, reads `read_only`, neither reads nor lists elsewhere | `sandbox::a_sandboxed_pane_writes_only_where_it_may` |
+| A grandchild of the pane's shell is restricted too | `sandbox::a_child_of_the_shell_is_restricted_too` |
+| A program of the user's elsewhere does not run; an `executables` path does | `sandbox::only_granted_programs_run` |
+| A script and a binary made in a `read_write` directory run there | `sandbox::a_script_and_a_binary_made_inside_run_inside` |
+| `none` connects nowhere, `client` connects out and neither listens nor opens SCTP, `server` accepts | `sandbox::network_follows_the_profile` |
+| The request's command runs in the profile's sandbox, instead of the profile's command | `sandbox::a_command_from_the_request_runs_in_the_profiles_sandbox` |
+| A sandboxed pane has only its variables: the base ones, `[sandbox] env` with the server's values, `[env]`; no other variable of the server, `SSH_AUTH_SOCK` or `TILR_*` but `TILR_PANE` | `sandbox::a_sandboxed_pane_has_only_its_variables` |
+| A sandboxed pane reaches neither the server's socket nor its token, and the server sees no connection | `sandbox::a_sandboxed_pane_cannot_reach_the_server` |
+| A grant over the state directory is `bad_request` `create pane: sandbox: …` naming it; nothing starts | `sandbox::a_grant_over_the_state_directory_is_refused` |
+| A grant over the directory of a `--config` file elsewhere, or over a profiles directory elsewhere, is refused naming it | `sandbox::a_grant_over_a_configuration_elsewhere_is_refused` |
+| A sandbox that cannot be installed (failpoint `sandbox-apply`) is `bad_request` `create pane: sandbox: …`; the program does not run, no pane is listed | `sandbox::a_sandbox_that_cannot_be_applied_starts_nothing` |
+| Raw mode, job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) and `pane.command_finished` work in a sandboxed pane, on `pane.output` | `sandbox::raw_mode_and_job_control_work_in_a_sandboxed_pane` |
+| `less` pages a file and `vi` edits one in a sandboxed pane, on `pane.output` | `sandbox::a_pager_and_an_editor_work_in_a_sandboxed_pane` |
+| A sandboxed profile's `[env]` goes in the request only, not into the pane process's environment; an unsandboxed one's goes there | `supervisor::bus::core::panes::tests::a_sandboxed_profiles_env_stays_out_of_the_pane_process` |
+| A sandboxed pane's directory and request go when the pane is closed; those of a pane killed with its server go when the server starts again | `sandbox::a_sandboxed_panes_leftovers_are_removed` |
