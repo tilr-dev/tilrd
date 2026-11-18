@@ -1140,17 +1140,18 @@ reads what their programs did from a FIFO in a granted directory (helpers:
 | Job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) works in a sandbox | `sandbox::tests::linux::job_control_works_in_a_sandbox` |
 | A full-screen editor (`vi`) edits a file in a sandbox | `sandbox::tests::linux::a_full_screen_editor_works_in_a_sandbox` |
 | `server.info` lists `sandbox` where the start-up check passes (Linux), not with the failpoint `sandbox-unavailable`; on Landlock ABI 4 (failpoint `sandbox-abi-4`) a pane starts with the warning naming it | `sandbox::sandbox_is_offered_where_it_can_be_enforced` |
-| A sandboxed profile starts a pane with `sandboxed` true (a plain pane false); `[env]` reaches the program, the pane process gets it in a 0600 file, not on its command line or in its environment | `sandbox::linux::a_sandboxed_profile_starts_a_sandboxed_pane` |
-| A sandboxed pane writes only under `read_write`, reads `read_only`, neither reads nor lists elsewhere | `sandbox::linux::a_sandboxed_pane_writes_only_where_it_may` |
-| A grandchild of the pane's shell is restricted too | `sandbox::linux::a_child_of_the_shell_is_restricted_too` |
-| A program of the user's elsewhere does not run; an `executables` path does | `sandbox::linux::only_granted_programs_run` |
-| A script and a binary made in a `read_write` directory run there | `sandbox::linux::a_script_and_a_binary_made_inside_run_inside` |
-| `none` connects nowhere, `client` connects out and neither listens nor opens SCTP, `server` accepts | `sandbox::linux::network_follows_the_profile` |
-| The request's command runs in the profile's sandbox, instead of the profile's command | `sandbox::linux::a_command_from_the_request_runs_in_the_profiles_sandbox` |
-| A sandboxed pane has only its variables: the base ones, `[sandbox] env` with the server's values, `[env]`; no other variable of the server, `SSH_AUTH_SOCK` or `TILR_*` but `TILR_PANE` | `sandbox::linux::a_sandboxed_pane_has_only_its_variables` |
-| A sandboxed pane reaches neither the server's socket nor its token, and the server sees no connection | `sandbox::linux::a_sandboxed_pane_cannot_reach_the_server` |
-| A grant over the state directory is `bad_request` `create pane: sandbox: …` naming it; nothing starts | `sandbox::linux::a_grant_over_the_state_directory_is_refused` |
-| A grant over the directory of a `--config` file elsewhere, or over a profiles directory elsewhere, is refused naming it | `sandbox::linux::a_grant_over_a_configuration_elsewhere_is_refused` |
-| A sandbox that cannot be installed (failpoint `sandbox-apply`) is `bad_request` `create pane: sandbox: …`; the program does not run, no pane is listed | `sandbox::linux::a_sandbox_that_cannot_be_applied_starts_nothing` |
-| Raw mode, job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) and `pane.command_finished` work in a sandboxed pane, on `pane.output` | `sandbox::linux::raw_mode_and_job_control_work_in_a_sandboxed_pane` |
-| A sandboxed pane's directory and request go when the pane is closed; those of a pane killed with its server go when the server starts again | `sandbox::linux::a_sandboxed_panes_leftovers_are_removed` |
+| A sandboxed profile starts a pane with `sandboxed` true (a plain pane false); `[env]` reaches the program, the pane process gets it in a 0600 file, not on its command line or in its environment | `sandbox::a_sandboxed_profile_starts_a_sandboxed_pane` |
+| A sandboxed pane writes only under `read_write`, reads `read_only`, neither reads nor lists elsewhere | `sandbox::a_sandboxed_pane_writes_only_where_it_may` |
+| A grandchild of the pane's shell is restricted too | `sandbox::a_child_of_the_shell_is_restricted_too` |
+| A program of the user's elsewhere does not run; an `executables` path does | `sandbox::only_granted_programs_run` |
+| A script and a binary made in a `read_write` directory run there | `sandbox::a_script_and_a_binary_made_inside_run_inside` |
+| `none` connects nowhere, `client` connects out and neither listens nor opens SCTP, `server` accepts | `sandbox::network_follows_the_profile` |
+| The request's command runs in the profile's sandbox, instead of the profile's command | `sandbox::a_command_from_the_request_runs_in_the_profiles_sandbox` |
+| A sandboxed pane has only its variables: the base ones, `[sandbox] env` with the server's values, `[env]`; no other variable of the server, `SSH_AUTH_SOCK` or `TILR_*` but `TILR_PANE` | `sandbox::a_sandboxed_pane_has_only_its_variables` |
+| A sandboxed pane reaches neither the server's socket nor its token, and the server sees no connection | `sandbox::a_sandboxed_pane_cannot_reach_the_server` |
+| A grant over the state directory is `bad_request` `create pane: sandbox: …` naming it; nothing starts | `sandbox::a_grant_over_the_state_directory_is_refused` |
+| A grant over the directory of a `--config` file elsewhere, or over a profiles directory elsewhere, is refused naming it | `sandbox::a_grant_over_a_configuration_elsewhere_is_refused` |
+| A sandbox that cannot be installed (failpoint `sandbox-apply`) is `bad_request` `create pane: sandbox: …`; the program does not run, no pane is listed | `sandbox::a_sandbox_that_cannot_be_applied_starts_nothing` |
+| Raw mode, job control (Ctrl+Z, `jobs`, `fg`, Ctrl+C) and `pane.command_finished` work in a sandboxed pane, on `pane.output` | `sandbox::raw_mode_and_job_control_work_in_a_sandboxed_pane` |
+| `less` pages a file and `vi` edits one in a sandboxed pane, on `pane.output` | `sandbox::a_pager_and_an_editor_work_in_a_sandboxed_pane` |
+| A sandboxed pane's directory and request go when the pane is closed; those of a pane killed with its server go when the server starts again | `sandbox::a_sandboxed_panes_leftovers_are_removed` |
