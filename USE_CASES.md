@@ -935,7 +935,7 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | A process an instance started ends with it, when the instance is stopped and when it exits by itself (its process group is killed before its leader is reaped) | `bus::an_instances_own_processes_end_with_it` |
 | `bus.reload` of an instance that cannot start again answers `start_failed`; the instance stays supervised and comes up once it can | `bus::a_reload_answers_a_start_error` |
 | `bus.reload` of a module or all takes the right over each instance it restarts (over every configured one for a module that does not exist): a caller without it is `denied` for a module that exists, one that does not and all alike, and nothing is restarted | `bus::reloading_a_module_takes_the_right_over_every_instance` |
-| Every control check names one instance, with the call's credential: `bus.instances` and `bus.methods` check `list` on each configured instance, `bus.reload_config` each instance the file adds, changes or removes (every configured one for a bad file); one denial is `denied` and nothing is done | `bus::control_rights_are_checked_for_each_instance` |
+| Every control check names one instance, with the call's credential: `bus.instances` and `bus.methods` check `list` on each configured instance, `bus.reload_config` each instance the file adds, changes or removes (every configured one for a bad file); one denial is `denied` and nothing is done (with Biscuit rights: an instance's own token narrowed to `s-*` by an appended block) | `bus::control_rights_are_checked_for_each_instance` |
 | `bus.reload` of a module restarts its instances one at a time without a failed call; a caller that reloads itself has its reply first; the control right is checked | `bus::a_module_is_reloaded_one_instance_at_a_time` |
 | `bus.reload_config` starts the added, stops the removed, reloads the changed and leaves the others and the manually stopped alone | `bus::reloading_bus_toml_applies_the_difference` |
 | `bus.instances` lists instances and the outside participants, `bus.methods` the methods with their live providers; a draining instance is not offered | `bus::participants_and_methods_are_listed` |
@@ -971,7 +971,8 @@ Change `bus-core-services`: `server.*`, `fs.*`, `exec.*`, `clipboard.*` and `pan
 | `clipboard.put` takes content in chunks that a pane's `xclip` reads once the last is answered; over `clipboard_max_bytes` the transfer is refused, every chunk of it | `bus_terminal::services::the_shared_clipboard_takes_an_upload_in_chunks` |
 | `server.reload` is answered or its connection ends first, the connection ends with the exec, the server reloads and the pane keeps running with the same pid | `reload::a_reload_asked_on_the_bus_keeps_the_panes` |
 | `server.update` streams the output of `tilrd update` and ends with its exit | `update::an_update_asked_on_the_bus_streams_its_progress` |
-| An instance that may call `server.*` without the `control` right `reload` is `denied` `server.reload` and `server.update`, and `server.command` as not the owner; a method outside its `call` rights is `denied` before it runs | `bus_terminal::services::an_instance_without_the_rights_is_denied_the_server_methods` |
+| An instance that may call `server.*` without a `control` right is `denied` `server.reload` and `server.update`, and `server.command` as not the owner; a method outside its `call` rights is `denied` before it runs | `bus_terminal::services::an_instance_without_the_rights_is_denied_the_server_methods` |
+| An instance whose only `control` right is `server.update` runs `server.update` and is `denied` `server.reload`: each server method needs the action of its own name | `bus_terminal::services::each_server_method_needs_its_own_control_action` |
 | A read-only server refuses `fs.write`, `fs.mkdir`, `fs.rename` and `fs.delete` on the bus, nothing changes, `fs.list` still answers | `bus_terminal::services::a_read_only_server_refuses_changes_on_the_bus` |
 | A link out of the home directory, `..`, and a rename out of it or through such a link are refused as outside the shared directories | `bus_terminal::services::a_path_out_of_the_roots_is_refused_on_the_bus` |
 | An upload over `fs_max_bytes`, or carrying more than its `total_size` across chunks, is refused; the file is not made and no temporary file is left | `bus_terminal::services::an_upload_is_held_to_its_size_and_the_servers_limit` |
@@ -985,6 +986,87 @@ Change `bus-core-services`: `server.*`, `fs.*`, `exec.*`, `clipboard.*` and `pan
 | A first `fs.write` chunk the server takes after its connection ended is refused and leaves no temporary file and no note (failpoint) | `bus_terminal::services::failpoints::a_first_chunk_taken_after_its_connection_ended_starts_no_upload` |
 | A program whose stream is cancelled after it started, before the stream's handler took up its start, is killed with its group (failpoint) | `bus_terminal::services::failpoints::a_program_cancelled_as_it_starts_ends_with_its_group` |
 | `clipboard.get` of a copy in a pane the caller may not access is `not_found` (failpoint) | `bus_terminal::services::failpoints::a_copy_of_a_pane_the_caller_may_not_access_is_not_found` |
+
+## Rights on the bus — `tests/bus_acl.rs`
+
+Biscuit tokens of the server (change `bus-rights`, design R1-R8): the owner mints them with
+`bus.token` during each test, outside participants (`tilr_bus` clients and the test runtime,
+`token:<name>`) use them; every key and token is made by the server under test. Instances
+(`instance:<name>`, rights from `bus.toml`) are socket instances whose process hands its
+socket token to the test, which then connects as the instance and holds the token the
+server minted for it.
+
+| Use case | Test |
+|---|---|
+| The root key is made once (0600) and kept across a restart; a token of the first start still verifies | `bus_acl::the_root_key_is_made_once` |
+| The owner holds every right and has no token; a participant with a token is not the owner, also on the Unix socket | `bus_acl::the_owner_holds_every_right` |
+| On TCP a participant needs the access token or a token of this server | `bus_acl::a_tcp_participant_needs_a_token` |
+| A participant may call what its token lists and nothing else; `from` is its token's participant | `bus_acl::a_participant_may_do_what_its_token_lists` |
+| A token without rights is allowed nothing but `bus.ping` | `bus_acl::a_token_without_rights_is_allowed_nothing` |
+| Providing, emitting and subscribing need rights; a forged core event reaches nobody | `bus_acl::providing_emitting_and_subscribing_need_rights` |
+| Control methods (`list`, per-instance actions, `token`, `revoke`, `rotate_key`, `server.reload`, `server.update`) need control rights; `call = ["*"]` reaches no control method; `reload:t-1` reloads t-1 and not t-2 or all, which keeps its pid; a narrow per-call credential on a wide connection is denied; a minter other than the owner mints only rights it holds | `bus_acl::control_methods_need_control_rights` |
+| A `bus.*` method that is not known is a plain call: `not_found` to the owner and to `call = ["bus.*"]`, `denied` to a token without a right over it; look-alikes of `bus.token` (case, trailing dot or space, a Cyrillic letter) never reach it | `bus_acl::an_unknown_bus_method_is_not_found_to_whom_may_call_it` |
+| With no instance configured, `bus.instances`, `bus.methods` and `bus.reload_config` need `list` or `reload_config` over every instance: a `call` right or rights over some instances are denied | `bus_acl::control_methods_need_their_right_with_no_instances` |
+| An instance gets a token of its `bus.toml` rights in `HelloAck.credential` and may do what they list (calls, `reload` of one instance) and nothing else; one without rights may do nothing; callees see `from=instance:<name>` | `bus_acl::an_instance_may_do_what_its_rights_list` |
+| An instance's token, handed out as text, is denied with `revoked` once the instance is stopped | `bus_acl::a_stopped_instances_token_is_revoked` |
+| `server.command` is the owner's on the Unix socket only (not on TCP, not for any token); `server.update` needs its control action, not `call` | `bus_acl::server_command_is_the_owners_on_the_unix_socket_only` |
+| A token minted by a participant is named under it (`token.<name>.…`), lives no longer than its token, is bound to its origin; revoked alone it leaves the minter working, the minter revoked ends it; an attenuated minter mints nothing | `bus_acl::a_minted_token_lives_within_its_minter` |
+| The children of the instance `a` and the token `a` are `token:instance.a.x` and `token:token.a.x`; neither minter may name the other's or a name without its kind; revoking the token `a` ends its child only | `bus_acl::children_of_an_instance_and_a_token_of_one_name_differ` |
+| A child's own name has no dot: the instance `a` is refused `instance.a.b.x` and mints `instance.a.x`; the instance `a.b` mints `instance.a.b.x` | `bus_acl::a_childs_own_name_has_no_dot` |
+| The owner is refused the names `instance.a.x` and `token.a.x` (prefixes reserved for children) and mints `a.x` and `my-instance.x` | `bus_acl::the_owner_mints_no_name_of_a_childs_form` |
+| A token of another server, or a malformed one, is denied at Hello and per call | `bus_acl::a_token_of_another_server_is_refused` |
+| A per-call credential authorizes its call alone, for a narrow caller and against a wide one; `from` stays the caller; the audit names both | `bus_acl::a_per_call_credential_is_a_bearer` |
+| `pane.*` is decided by `call` rights like every core method; a per-call credential decides it alone, the pane checks of `pane.create` and of a pane included | `bus_acl::pane_calls_follow_call_rights_and_a_per_call_credential` |
+| An appended check sees the call in each pane check made for it: a token narrowed to `check if method("pane.list")` lists the panes and creates none; a per-call credential narrowed to `pane.create` creates a pane and cannot close it | `bus_acl::pane_checks_see_the_call_they_are_made_for` |
+| `pane.create` with a profile is authorized before the profile is read: a token narrowed to `pane.list`, or one whose `PaneCreate` check refuses the profile, is `denied` without the file's error; that token creates a pane without a profile; the owner's call reads the file | `bus_acl::a_profile_is_read_only_after_pane_create_is_authorized` |
+| An appended block narrows (one target); one that adds a fact is denied; over 8 blocks or 16 KiB is denied | `bus_acl::an_attenuated_token_only_narrows` |
+| A block of facts and a 5-way join, or of a rule, is denied at once, per call and at Hello, also when its symbol names make it print as checks on `kind`; the token it came from still works | `bus_acl::authorization_that_runs_too_long_is_denied` |
+| A revocation and a key rotation take effect inside the decision cache's second | `bus_acl::a_revocation_clears_cached_decisions` |
+| A revoked token, and one attenuated from it, is denied at once and after a restart; its connection is closed with 4003 | `bus_acl::a_revoked_token_stops_working_at_once` |
+| A key rotation ends every token at once and closes their connections with 4003; tokens of the new key work; a running instance gets a token of the new key by `CredentialUpdate` and keeps its connection and pid | `bus_acl::rotating_the_root_key_ends_every_token` |
+| Denials, control calls, mints and revocations are audited without the token's bytes | `bus_acl::denied_and_control_calls_are_audited` |
+| An instance's token is renewed 12 h after its start and sent to it by `CredentialUpdate`; the old one is revoked; its calls pass past the first token's expiry (test clock) | `bus_acl::an_instance_token_is_renewed` (failpoints) |
+| An expired token is denied within a second of its expiry and its connection closed with 4003 (test clock) | `bus_acl::an_expired_token_is_refused` (failpoints) |
+| An outside participant renews its token with `bus.renew` and `CredentialUpdate` and stays connected past the first expiry; one that does not is closed with 4003; an attenuated token is not renewed; another participant's token is not an update (test clock) | `bus_acl::an_outside_token_is_renewed_on_its_connection` (failpoints) |
+| `bus.renew` is refused in the first half of a token's life, and for a token that already lives as long as its minter's (test clock) | `bus_acl::a_renewal_comes_in_the_second_half_and_stops_at_the_minters_expiry` (failpoints) |
+| An appended block narrows a credential and keeps its signature; a fact in it grants nothing | `credential::tests::an_attenuated_credential_keeps_the_signature_and_only_narrows` |
+| Attenuating refuses what is not a token or a block of Datalog | `credential::tests::attenuating_refuses_what_is_not_a_token_or_a_block` |
+| The root key file is 0600 and reused; one open to others is refused, not replaced | `supervisor::bus::acl::tests::the_root_key_file_is_private_and_kept` |
+| Each right allows its requests only; the reason names the missing right | `supervisor::bus::acl::tests::each_right_allows_its_requests_only` |
+| `<action>:*` is the unscoped `<action>` (`list:*` lists, `*:*` is `*`); a prefix stays some instances | `supervisor::bus::acl::tests::an_action_over_every_instance_is_the_unscoped_right` |
+| The root key's hex reads into wiped memory and gives the key the server holds | `supervisor::bus::acl::tests::the_root_key_reads_from_its_hex` |
+| `*` rights, reserved namespaces, a principal without a token and the owner | `supervisor::bus::acl::tests::stars_and_the_owner` |
+| A per-call credential decides alone and only for calls | `supervisor::bus::acl::tests::a_per_call_credential_decides_alone` |
+| Appended blocks narrow and never widen; block, size and run limits; another key | `supervisor::bus::acl::tests::appended_blocks_narrow_and_never_widen` |
+| An appended block holds bounded checks on the request's facts only: facts, rules, joins over the rights, closures, regexes and too many checks are refused before Datalog runs | `supervisor::bus::acl::tests::an_appended_block_holds_bounded_checks_only` |
+| An appended block is read from its signed bytes, not its printed source: names that carry source text (comments, quotes, newlines, a trailing space) cannot hide facts, a rule or a join, a `trusting` scope is refused, and the largest accepted blocks decide in milliseconds | `supervisor::bus::acl::tests::an_appended_block_is_read_from_its_data_not_its_printed_text` |
+| An appended block that is not its own canonical encoding (a required field left out, an unknown field of the same size in its place) is refused | `supervisor::bus::acl::tests::an_appended_block_that_is_not_its_own_encoding_is_refused` |
+| Only the exact names are control methods; any other `bus.*` name is authorized as a call by the owner and `call` rights over it | `supervisor::bus::acl::tests::only_exact_names_are_control_methods` |
+| Control and pane checks made for a call carry its `method`, `namespace` and `target` (one fact each), and a cached decision for one call is not reused for another | `supervisor::bus::acl::tests::follow_up_checks_carry_the_facts_of_their_call` |
+| A token is bound to its server id, also with a copied key, also at Hello, a credential update and `bus.renew` | `supervisor::bus::acl::tests::a_token_is_bound_to_its_server_id` |
+| Expiry, revocation (also through the cache and after a restart) and rotation | `supervisor::bus::acl::tests::expiry_revocation_and_rotation` |
+| An instance gets a token of its rights at Hello; per call by others it is denied when no broker can say its connection lives; revoked at its end; never in Hello | `supervisor::bus::acl::tests::an_instance_gets_a_token_of_its_rights_at_hello` |
+| Hello with a credential is its participant; origin binding; a credential update names the same participant | `supervisor::bus::acl::tests::hello_with_a_credential_is_its_participant` |
+| `bus.token` checks the rights it is given and what a non-owner minter holds | `supervisor::bus::acl::tests::minting_checks_rights` |
+| The revocation file reads back; a broken one refuses every token | `supervisor::bus::acl::tests::the_revocation_file_reads_back_and_a_broken_one_refuses_all` |
+| A per-call credential decides the per-instance control checks of its call, not the connection's token | `supervisor::bus::acl::tests::a_bearer_decides_the_control_checks_of_its_call` |
+| `server.command` is the owner's on the Unix socket only, for no token | `supervisor::bus::acl::tests::server_command_is_the_owners_on_the_unix_socket_only` |
+| `server.update` needs the control action `server.update` | `supervisor::bus::acl::tests::server_update_needs_its_control_action` |
+| Without an access token (`--no-auth`) a TCP connection without a credential is the owner, still without `server.command`; one with a credential is its participant | `supervisor::bus::acl::tests::without_an_access_token_tcp_is_the_owner` |
+| A non-owner minter mints under its name and origin, never past its own token, never when attenuated; the chain of minters is kept | `supervisor::bus::acl::tests::a_minter_mints_under_its_name_origin_and_life` |
+| A minted token dies with its minter and can be revoked alone, also after a restart | `supervisor::bus::acl::tests::a_child_dies_with_its_minter_and_alone` |
+| A token renewed by whoever holds it dies when the owner revokes the one it gave out (the token or its id), also after a restart; the old tokens are refused once renewed, the reply names the first id | `supervisor::bus::acl::tests::a_renewal_dies_with_the_token_it_renewed` |
+| Renewing a minter (`bus.renew`, an instance's 12 h renewal) keeps what it minted; revoking it, or an instance's end, ends them | `supervisor::bus::acl::tests::renewing_a_minter_keeps_its_children` |
+| `bus.renew` in the second half of a token's life only, never past its minter's expiry | `supervisor::bus::acl::tests::renewal_is_for_the_second_half_and_stops_at_the_minters_expiry` |
+| A decision the wall-clock backstop ends is denied and not cached; the limits are 1000 facts, 100 iterations, 50 ms | `supervisor::bus::acl::tests::a_timeout_is_denied_and_never_cached` |
+| Concurrent revocations all reach the file and survive a restart; no staged file is left | `supervisor::bus::acl::tests::concurrent_revocations_all_survive_a_restart` |
+| A revocation file that does not read is never overwritten, by a revocation or a rotation; a restart still refuses | `supervisor::bus::acl::tests::a_broken_revocation_file_is_never_overwritten` |
+| A call whose target is longer than any participant's name is denied unread and not cached; cache keys are length-prefixed hashes | `supervisor::bus::acl::tests::a_target_longer_than_a_name_is_denied_unread` |
+| A revocation drops the cached decisions of the tokens it ends only | `supervisor::bus::acl::tests::a_revocation_keeps_the_decisions_of_other_tokens` |
+| `bus.revoke` (and the other file methods) do nothing on the envelope path; the reply comes once it is revoked in memory and on disk | `supervisor::bus::acl::tests::the_file_methods_run_off_the_envelope_path` |
+| The sweeper closes an outside participant, and renews an instance, whose token is of an earlier key | `supervisor::bus::acl::tests::the_sweeper_ends_tokens_of_an_earlier_key` |
+| A request from an instance's own connection marks its seat open | `supervisor::bus::acl::tests::an_instance_acting_on_its_connection_is_seen` |
+| `mint` never makes a token `verify` refuses (over 16 KiB, too many rights) | `supervisor::bus::acl::tests::mint_never_makes_a_token_verify_refuses` |
 
 ## Launch profiles (`pane-profiles`) - `tests/profiles.rs`, `src/profile.rs`, `src/bus/core/profiles.rs`
 

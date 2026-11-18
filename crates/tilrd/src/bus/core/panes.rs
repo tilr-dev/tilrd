@@ -62,7 +62,7 @@ use tokio::time::Instant;
 
 use super::json::{self, Json};
 use super::{BusObserver, Core, CoreCmd, PaneEvent, Registry};
-use crate::bus::authz::AuthzRequest;
+use crate::bus::authz::{AuthzRequest, ForCall};
 use crate::bus::broker::ConnState;
 use crate::bus::identity::{CallCtx, Identity, Principal, Transport};
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut, TrySendError};
@@ -248,6 +248,9 @@ pub(super) struct Caller {
     principal: Arc<Principal>,
     credential: Option<Bytes>,
     from: Identity,
+    /// The call's method and target: the pane checks are made for that call.
+    method: String,
+    target: String,
 }
 
 impl Caller {
@@ -256,6 +259,16 @@ impl Caller {
             principal: Arc::clone(&ctx.principal),
             credential: ctx.call_credential.clone(),
             from: ctx.from.clone(),
+            method: ctx.method.clone(),
+            target: ctx.target.clone(),
+        }
+    }
+
+    /// The call a pane check is made for.
+    fn call(&self) -> ForCall<'_> {
+        ForCall {
+            method: &self.method,
+            target: &self.target,
         }
     }
 
@@ -312,9 +325,9 @@ fn authorize(s: &Supervisor, caller: &Caller, request: &AuthzRequest<'_>) -> Res
 /// Whether the caller may access the pane (T7: `AuthzRequest::PaneAccess` with
 /// its creator; the policy is the authorizer's).
 pub(super) fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Result<(), BusError> {
-    // The authorizer of this build refuses no `PaneAccess` a call can reach (a
-    // call with a credential is refused before its method runs): a test stands
-    // in for one that does.
+    // The authorizer of this build refuses no `PaneAccess` a call can reach (its
+    // policy allows every pane check until `bus-pane-rights`): a test stands in for
+    // one that does.
     #[cfg(feature = "failpoints")]
     if crate::fail::point("bus-pane-access").is_err() {
         return Err(crate::bus::authz::Denied::new("failpoint bus-pane-access").into());
@@ -327,6 +340,7 @@ pub(super) fn may_access(s: &Supervisor, caller: &Caller, pane_id: PaneId) -> Re
         &AuthzRequest::PaneAccess {
             pane_id: &id,
             creator: &creator,
+            call: caller.call(),
         },
     )
 }

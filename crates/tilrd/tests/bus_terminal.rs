@@ -2728,7 +2728,7 @@ mod services {
         ))
         .await
         .expect("the instance's own connection");
-        // No `control` right `reload`: neither reload nor update.
+        // No `control` right: neither reload nor update.
         let error = bus_services::call::<_, tilr_bus::server::ReloadReply>(
             &me,
             "server.reload",
@@ -2770,6 +2770,54 @@ mod services {
                 .iter()
                 .any(|line| line.contains("reload asked on the bus"))
         );
+    }
+
+    #[tokio::test]
+    async fn each_server_method_needs_its_own_control_action() {
+        use common::bus_instances::{instance_socket, instance_with, token_module, wait_tokens};
+
+        let tokens =
+            std::env::temp_dir().join(format!("tilr-bus-services-own-{}", std::process::id()));
+        let _ = std::fs::remove_file(&tokens);
+        let server = BusServer::start(BusOptions {
+            bus_toml: Some(format!(
+                "{}{}",
+                token_module("s", &tokens),
+                instance_with(
+                    "s-1",
+                    "s",
+                    "connect = \"socket\"\n",
+                    &[("control", &["server.update"])],
+                    &[]
+                )
+            )),
+            // A CDN that refuses the connection: the update runs and fails, offline.
+            env: vec![("TILR_CDN".into(), "http://127.0.0.1:9".into())],
+            ..Default::default()
+        });
+        let token = wait_tokens(&server, "s-1", &tokens, 1).await[0].clone();
+        let _ = std::fs::remove_file(&tokens);
+        let me = within(Bus::connect(
+            tilr_bus::Transport::Socket {
+                path: instance_socket(&server, "s-1"),
+                token,
+            },
+            ConnectOptions::new("s-1-driver"),
+        ))
+        .await
+        .expect("the instance's own connection");
+        // `server.update` runs: its stream ends with the program's exit, not `denied`.
+        let update = stream_all(&me, "server.update", &tilr_bus::server::UpdateRequest {}, 0).await;
+        assert!(update.end.is_ok(), "{:?}", update.end);
+        // `server.update` is no right to `server.reload`.
+        let error = bus_services::call::<_, tilr_bus::server::ReloadReply>(
+            &me,
+            "server.reload",
+            &tilr_bus::server::ReloadRequest {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, codes::DENIED, "{error}");
     }
 
     #[cfg(feature = "failpoints")]

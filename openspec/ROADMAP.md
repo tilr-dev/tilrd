@@ -121,7 +121,6 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | goal | size | starts after | merges after (depends on) | blocker | status |
 |---|---|---|---|---|---|---|
-| bus-rights | Biscuit: root key, tokens, bearer credentials, expiry and renewal, revocation, rotation, limits, audit, close code 4003 | L | bus-broker-core (contract: `Authorizer`, `Rights`) | bus-instances | no | ready |
 | bus-connection-calls | the core calls one connection, not an identity (as D-Bus unique names); on it `host.open` and `ssh_agent.request`/`ssh_agent.close`, as in `tilr.v1`. No change directory yet | M | bus-broker-core (the broker gains a connection address) | bus-core-services | no | design first |
 | bus-pane-rights | pane rights (T7): profile and override rights, `own`/`any` access, scoped events | M | bus-broker-core (contract: `AuthzRequest::PaneCreate`/`PaneAccess`) | bus-core-panes, bus-rights | no | ready |
 | bus-sdk | Deno/browser and Python SDKs, generated schema, CI job `sdk` | L | bus-wire (schemas, test runtime); its server tests need the later changes | bus-streams-events, bus-rights, pane-profiles | no | ready |
@@ -150,6 +149,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
+| bus-rights | [PR #142](https://github.com/tilr-dev/tilrd/pull/142) |
 | bus-core-services | [PR #145](https://github.com/tilr-dev/tilrd/pull/145) |
 | bus-greet-order | [PR #143](https://github.com/tilr-dev/tilrd/pull/143) |
 | slow-reader-close-code | [PR #146](https://github.com/tilr-dev/tilrd/pull/146) |

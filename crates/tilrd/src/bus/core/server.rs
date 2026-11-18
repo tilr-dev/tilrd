@@ -17,7 +17,7 @@ use tilr_bus::{BusError, methods};
 use super::common::{asked, json_message, queue, unary};
 use super::json;
 use super::{Core, Registry};
-use crate::bus::authz::AuthzRequest;
+use crate::bus::authz::{AuthzRequest, ForCall};
 use crate::bus::identity::{CallCtx, Identity, Transport};
 use crate::bus::streams::NativeMethod;
 use crate::exec::Program;
@@ -139,8 +139,8 @@ fn exe() -> String {
     crate::exe().to_string_lossy().into_owned()
 }
 
-/// `server.reload` and `server.update`: the owner, or the `control` right
-/// `reload`.
+/// `server.reload` and `server.update`: the owner, or the `control` action of
+/// the same name (`server.reload`, `server.update`).
 fn may_reload(broker: &crate::bus::BrokerHandle, ctx: &CallCtx) -> Result<(), BusError> {
     tracing::info!(target: "tilrd::bus::audit", identity = %ctx.from, method = ctx.method, "control");
     broker
@@ -149,8 +149,12 @@ fn may_reload(broker: &crate::bus::BrokerHandle, ctx: &CallCtx) -> Result<(), Bu
             &ctx.principal,
             ctx.call_credential.as_deref(),
             &AuthzRequest::Control {
-                action: "reload",
+                action: &ctx.method,
                 instance: None,
+                call: ForCall {
+                    method: &ctx.method,
+                    target: &ctx.target,
+                },
             },
         )
         .map_err(BusError::from)

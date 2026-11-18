@@ -26,7 +26,7 @@ use tilr_bus::bus::{
 };
 use tilr_bus::{BusError, CONTENT_TYPE_JSON, Reply, methods};
 
-use super::authz::AuthzRequest;
+use super::authz::{AuthzRequest, ForCall};
 use super::broker::BrokerHandle;
 use super::config::MAX_DRAIN_MS;
 use super::core::{Core, Registry};
@@ -116,6 +116,10 @@ fn allow(
             &AuthzRequest::Control {
                 action,
                 instance: Some(instance),
+                call: ForCall {
+                    method: &ctx.method,
+                    target: &ctx.target,
+                },
             },
         )
         .map_err(BusError::from)
@@ -461,6 +465,8 @@ async fn reload_config(
         move |name: &str| allow(&broker, &ctx, "reload_config", name)
     };
     let done = runner.reload_config(check).await?;
+    // The file was applied: no decision of before it is reused (`bus-rights`, R7).
+    super::acl::config_reloaded(broker);
     let message = ReloadConfigReply {
         started: done.started,
         stopped: done.stopped,

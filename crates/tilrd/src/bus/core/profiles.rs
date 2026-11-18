@@ -20,7 +20,7 @@ use prost::Message;
 use tilr_bus::pane::{CreateRequest, ProfileInfo, ProfilesReply, ProfilesRequest};
 use tilr_bus::{BusError, CONTENT_TYPE_JSON, Reply};
 
-use crate::bus::authz::{Authorizer, AuthzRequest};
+use crate::bus::authz::{Authorizer, AuthzRequest, ForCall};
 use crate::bus::core::{Core, Registry};
 use crate::bus::identity::CallCtx;
 use crate::bus::streams::NativeMethod;
@@ -160,6 +160,10 @@ pub fn prepare_create(
         &AuthzRequest::PaneCreate {
             profile: &request.profile,
             overrides,
+            call: ForCall {
+                method: &ctx.method,
+                target: &ctx.target,
+            },
         },
     )?;
     resolve_in(profile::dir(), profile::home().as_deref(), request)
