@@ -1,0 +1,30 @@
+{
+  "name": "@tilr/bus",
+  "version": "0.0.0",
+  "exports": "./mod.ts",
+  "imports": {
+    "@bufbuild/protobuf": "npm:@bufbuild/protobuf@2.17.0",
+    "@bufbuild/protobuf/": "npm:/@bufbuild/protobuf@2.17.0/",
+    "@bufbuild/protoc-gen-es/plugin": "npm:@bufbuild/protoc-gen-es@2.17.0/dist/cjs/src/protoc-gen-es-plugin.js",
+    "fzstd": "npm:fzstd@0.1.1",
+    "@std/assert": "jsr:@std/assert@1.0.19"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "exclude": [
+      "gen/"
+    ]
+  },
+  "lint": {
+    "exclude": [
+      "gen/"
+    ]
+  },
+  "tasks": {
+    "check": "deno check mod.ts test/ tools/",
+    "test": "deno test -A test/"
+  }
+}
