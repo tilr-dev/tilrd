@@ -396,6 +396,9 @@ agent = true
 # Let clients run programs outside a pane (Exec). On when unset; false does
 # what --no-exec does.
 exec = true
+# Where launch profiles live (see "Launch profiles"): absolute or starting
+# with ~. Default: `profiles/` next to this file.
+profiles_dir = "~/.config/tilr/profiles"
 
 # The files protocol.
 [files]
@@ -409,6 +412,61 @@ readonly = false
 # size like "64MB". Default 64MB.
 max_bytes = "64MB"
 ```
+
+### Launch profiles
+
+A profile names how a pane starts: the program, the directory, extra environment
+variables and, in a `[sandbox]` table, what the pane may touch. A pane asks for one
+by name, `pane.create {profile: "demo"}`; a profile is the file `demo.toml` in
+`profiles_dir` (`profiles/` next to the `server.toml` in use, or the directory the
+`profiles_dir` key names; absolute or `~`). Without the directory the server has no
+profiles.
+
+```toml
+description = "Scripts I do not trust"   # optional; shown by pane.profiles
+command = ["/bin/sh"]                    # absent or empty: your login shell
+cwd = "~/work"                           # absolute or ~; never relative
+[env]                                    # set over the server's environment
+GREETING = "hi"                          # not TILR_*; TERM, COLORTERM, SHELL stay the server's
+[sandbox]                                # optional; the profile is refused until this server can enforce it
+read_only = ["~/docs"]
+read_write = ["~/work"]
+executables = ["/usr/bin/git"]
+env = ["LANG"]
+network = "none"                         # "none" (default), "client" or "server"
+```
+
+- **Names, never paths.** A profile name matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`;
+  anything else is refused before the server looks at a file.
+- **The files are yours alone**, checked as sshd checks `authorized_keys` (StrictModes):
+  the server opens the profile once without blocking and judges the opened file: a
+  regular file (a symlink to one is fine), owned by the server's user or root, not
+  writable by group or others, at most 64 KiB. Every directory of its real path (after
+  symlinks) and of the profiles directory, up to `/` or up to and including your home
+  directory, must be owned by you or root and not writable by group or others; `/tmp`
+  and other world-writable directories are refused, sticky or not. Else the profile does
+  not load (`... is writable by others`, `... is owned by uid N`, `... is not a regular
+  file`, `... is larger than 65536 bytes`). A sandbox profile anyone can edit would turn
+  the sandbox off.
+- **Strict.** An unknown key or a value of the wrong type makes the profile invalid;
+  `pane.create` with it says which file and why. Paths are absolute or start with `~`
+  (the home directory); `.` and `..` are folded. `[env]` names are not empty, have no
+  `=` and do not start with `TILR_`.
+- **Read on every create**, never cached: an edit applies to the next pane that uses
+  the profile, not to a pane that runs. The pane keeps what the profile said when it
+  was created.
+- **The request wins on the command and the directory**: a `command` in the request
+  replaces the profile's, a `cwd` that is an existing directory replaces the profile's
+  (else the profile's, else the home directory). Nothing in a request changes `[env]`
+  or `[sandbox]`.
+- **`pane.profiles`** lists the profiles, sorted by name, with their `description`,
+  whether they have a `[sandbox]` (said of an invalid one too, when its file was read
+  and is TOML) and, for one that does not load, the `error` `pane.create` would give.
+  Without the directory the list is empty; a directory that is there and cannot be
+  read is `handler_error` naming it.
+- A profile with a `[sandbox]` table is refused (`profile <name> asks for a sandbox,
+  which this server cannot enforce`) on a server that cannot enforce it, and nothing
+  starts.
 
 ## Starting at boot
 
@@ -934,7 +992,7 @@ by either protocol is seen, typed into and closed by both.
 
 | method | takes | answers |
 |---|---|---|
-| `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (none exists in this build: `bad_request`) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
+| `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (a name from [Launch profiles](#launch-profiles); empty: none) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
 | `pane.list` | nothing | the `PaneInfo` of every pane, oldest first |
 | `pane.close` | `pane_id` | `{exit_code}` once the program ended |
 | `pane.input` | `pane_id`, one of `key`, `mouse`, `paste`, `raw`, `scroll`, `clear`; `seq`, `input_seq` | `InputAck{pane_id, seq}` once applied: the pty took its last byte, or the scroll or clear took effect |
@@ -943,11 +1001,14 @@ by either protocol is seen, typed into and closed by both.
 | `pane.input_finalize` | nothing | ends the caller's numbered input session |
 | `pane.output` | `pane_id`, the caller's cell in pixels | a stream of frames (below) |
 | `pane.read` | `pane_id`, `since_seq`, `wait_ms`, `history_lines` | the screen as text (below) |
+| `pane.profiles` | nothing | the launch profiles, sorted by name: `name`, `description`, `sandboxed`, `error` |
 
 A `pane_id` naming no pane, or one the caller may not access, is `not_found`
 `no such pane: <id as sent>`, and the connection stays. `PaneInfo.created_by` is the
 identity that created the pane on the bus (`owner`, `instance:<name>`, `token:<name>`);
-a pane of `tilr.v1`, or one from before a reload, is `owner`'s. `PaneInfo.viewed_by` lists
+a pane of `tilr.v1`, or one from before a reload, is `owner`'s. `PaneInfo.profile` names the
+profile a pane was created with (empty without one, and after a reload until profiles
+cross it), `PaneInfo.sandboxed` whether that profile has a `[sandbox]`. `PaneInfo.viewed_by` lists
 the open `pane.output` streams.
 
 Input and resizes of a connection are applied in the order it sent them; past the call's

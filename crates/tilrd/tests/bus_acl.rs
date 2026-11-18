@@ -1191,6 +1191,69 @@ async fn pane_checks_see_the_call_they_are_made_for() {
     );
 }
 
+/// `pane.create` with a profile is authorized before the profile is read: a token
+/// narrowed to `pane.list`, or one whose `PaneCreate` check refuses the profile, is
+/// `denied` and never sees what the file says. The file is one that reads as
+/// invalid, which the owner's call shows: a read would answer `bad_request` naming it.
+#[tokio::test]
+async fn a_profile_is_read_only_after_pane_create_is_authorized() {
+    use tilr_bus::pane::{CreateRequest, PaneInfo};
+    let server = common::bus_profiles::start_with("");
+    let file = common::bus_profiles::write_profile(&server, "demo", "comand = [\"/bin/sh\"]");
+    let owner = server.owner().await;
+    let create = CreateRequest {
+        cols: 80,
+        rows: 24,
+        profile: "demo".to_owned(),
+        ..Default::default()
+    };
+    let (panes, _) = mint(&owner, "panes", Rights::default().call(&["pane.*"])).await;
+
+    // Narrowed to `pane.list`: denied at the call.
+    let lister = panes.attenuate(r#"check if method("pane.list");"#).unwrap();
+    let bus = participant(&server, &lister, "lister").await;
+    let error = bus
+        .call_typed::<_, PaneInfo>("pane.create", &create, CallOptions::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert!(!error.message.contains("comand"), "{error}");
+
+    // The call passes, the `PaneCreate` check refuses the profile: denied too, so
+    // that check comes before the read.
+    let plain = panes
+        .attenuate(r#"check if kind("call") or pane_profile_requested("");"#)
+        .unwrap();
+    let bus = participant(&server, &plain, "plain").await;
+    let error = bus
+        .call_typed::<_, PaneInfo>("pane.create", &create, CallOptions::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::DENIED, "{error}");
+    assert!(!error.message.contains("comand"), "{error}");
+    // The same token creates a pane that names no profile: the refusal was the
+    // `PaneCreate` check's, not the call's.
+    let without = CreateRequest {
+        profile: String::new(),
+        command: common::bus_panes::shell(),
+        ..create.clone()
+    };
+    bus.call_typed::<_, PaneInfo>("pane.create", &without, CallOptions::default())
+        .await
+        .expect("pane.create without a profile");
+
+    // The owner's call reads the file, which is invalid.
+    let error = owner
+        .call_typed::<_, PaneInfo>("pane.create", &create, CallOptions::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, codes::BAD_REQUEST, "{error}");
+    assert!(
+        error.message.contains(&file.display().to_string()),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn an_attenuated_token_only_narrows() {
     let server = start_for_runtime();

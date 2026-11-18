@@ -41,7 +41,8 @@
 //! dropped by a guard made before the supervisor's part runs.
 //!
 //! **Reload.** Panes cross as today; what this module keeps does not
-//! (`created_by` is `owner` afterwards until `bus-reload` carries it).
+//! (`created_by` is `owner` and `profile` empty afterwards until `bus-reload`
+//! carries them; the pane keeps running what its profile said).
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -401,8 +402,10 @@ pub fn pane_info(s: &Supervisor, pane_id: PaneId) -> Option<pane::PaneInfo> {
         viewed_by,
         used_at_ms: p.used_at_ms,
         created_by: creator(s, pane_id),
-        sandboxed: false,
-        profile: String::new(),
+        sandboxed: super::profiles::of(s, pane_id).is_some_and(|p| p.sandbox.is_some()),
+        profile: super::profiles::of(s, pane_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -474,17 +477,21 @@ pub fn register(registry: &mut Registry, core: &Core) {
     ));
 }
 
-/// `pane.create`: a method of its own, given the call (`CallCtx`), so the
-/// resolution of `profile` (`pane-profiles`) can run before the supervisor's
-/// part and hand it the environment the profile adds.
+/// `pane.create`: a method of its own, given the call (`CallCtx`): the
+/// authorizer and the resolution of `profile` (`profiles::prepare_create`) run
+/// before the supervisor's part and hand it what the profile gives.
 fn create_method(core: &Core) -> NativeMethod {
     let supervisor = core.supervisor.clone();
+    let broker = core.broker.clone();
     NativeMethod::unary(methods::PANE_CREATE.name, move |ctx: CallCtx, payload| {
         let caller = Caller::of(&ctx);
+        // The authorizer's answer and the profile, read now (P4), before the
+        // supervisor's part is queued: the call keeps its place in the order of
+        // its connection's calls (B5).
         let asked = json::decode::<pane::CreateRequest>(&ctx, &payload).and_then(|request| {
-            queue(&supervisor, move |s| {
-                create(s, &caller, request, Vec::new())
-            })
+            let resolved =
+                super::profiles::prepare_create(broker.authorizer().as_ref(), &ctx, &request)?;
+            queue(&supervisor, move |s| create(s, &caller, request, resolved))
         });
         answered(ctx, asked)
     })
@@ -641,6 +648,8 @@ fn on_exited(s: &mut Supervisor, pane_id: PaneId, exit_code: i32) {
     st.watchers.remove(&pane_id);
     st.creators.remove(&pane_id);
     st.listed.remove(&pane_id);
+    super::profiles::forget(s, pane_id);
+    let st = state(s);
     st.changes.remove(&pane_id);
     // A text request the pane process did not answer before it ended: the
     // pane's program ended (T9: `alive` false with its exit code).
@@ -735,6 +744,7 @@ pub(crate) fn panes_changed(s: &mut Supervisor) {
 /// Hook in `on_pane_link_closed`: the pane's process ended before its program
 /// ran; its `pane.create` fails.
 pub(crate) fn create_failed(s: &mut Supervisor, pane_id: PaneId, reason: &str) {
+    super::profiles::forget(s, pane_id);
     let st = state(s);
     st.creators.remove(&pane_id);
     if let Some(reply) = st.creating.remove(&pane_id) {
@@ -827,57 +837,67 @@ pub(crate) fn text_reply(pane_id: PaneId, packet: Bytes) -> CoreCmd {
 // pane.create, pane.list, pane.close
 // ---------------------------------------------------------------------------
 
-/// `pane.create`, with `env` added to the pane's environment (what a profile
-/// adds; none until `pane-profiles`).
+/// `pane.create`, authorized and its profile resolved by
+/// `profiles::prepare_create`: `resolved` (a request with a profile) gives the
+/// command, the directory and the variables the pane starts with, and the
+/// snapshot it keeps.
 fn create(
     s: &mut Supervisor,
     caller: &Caller,
     request: pane::CreateRequest,
-    env: Vec<(OsString, OsString)>,
+    resolved: Option<super::profiles::Resolved>,
 ) -> Answer<pane::PaneInfo> {
-    let overrides = !request.command.is_empty() || !request.cwd.is_empty();
-    if let Err(denied) = authorize(
-        s,
-        caller,
-        &AuthzRequest::PaneCreate {
-            profile: &request.profile,
-            overrides,
-            call: caller.call(),
-        },
-    ) {
-        return Answer::Now(Err(denied));
-    }
-    // Profiles are resolved by `pane-profiles`; until then none exists.
-    if !request.profile.is_empty() {
-        return Answer::Now(Err(BusError::bad_request(format!(
-            "create pane: no such profile: {}",
-            request.profile
-        ))));
-    }
     let size = |n: u32, default: u16| if n == 0 { u32::from(default) } else { n };
+    let (command, cwd, env, snapshot) = match resolved {
+        None => (request.command, request.cwd, Vec::new(), None),
+        Some(resolved) => (
+            resolved.command,
+            resolved
+                .cwd
+                .map(|cwd| cwd.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            resolved
+                .env
+                .into_iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect(),
+            Some(resolved.snapshot),
+        ),
+    };
     let create = tilr_proto::CreatePane {
         cols: size(request.cols, crate::pane::DEFAULT_COLS),
         rows: size(request.rows, crate::pane::DEFAULT_ROWS),
-        command: request.command,
-        cwd: request.cwd,
+        command,
+        cwd,
         request_id: 0,
     };
-    match start_pane(s, &create, caller.from.to_string(), &env) {
-        Ok(rx) => Answer::Later(rx),
+    let sandbox = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.sandbox.as_ref());
+    match start_pane(s, &create, caller.from.to_string(), &env, sandbox) {
+        Ok((pane_id, rx)) => {
+            if let Some(snapshot) = snapshot {
+                super::profiles::remember(s, pane_id, snapshot);
+            }
+            Answer::Later(rx)
+        }
         Err(err) => Answer::Now(Err(err)),
     }
 }
 
 /// Start a pane on the supervisor's path for `create` (its `request_id` is the
 /// core's), created by `creator`, with `env` added to the environment every
-/// pane gets; answered with its `PaneInfo` once its program runs, or with
-/// `handler_error` `create pane: <reason>`.
+/// pane gets, inside `sandbox` when its profile has one; answered with its
+/// `PaneInfo` once its program runs, or with `handler_error` `create pane:
+/// <reason>`.
 pub(crate) fn start_pane(
     s: &mut Supervisor,
     create: &tilr_proto::CreatePane,
     creator: String,
     env: &[(OsString, OsString)],
-) -> Result<oneshot::Receiver<Result<pane::PaneInfo, BusError>>, BusError> {
+    sandbox: Option<&crate::profile::SandboxSpec>,
+) -> Result<(PaneId, oneshot::Receiver<Result<pane::PaneInfo, BusError>>), BusError> {
+    applies(sandbox)?;
     let st = state(s);
     st.next_create += 1;
     let token = st.next_create;
@@ -897,7 +917,20 @@ pub(crate) fn start_pane(
     let st = state(s);
     st.creating.insert(pane_id, tx);
     st.creators.insert(pane_id, creator);
-    Ok(rx)
+    Ok((pane_id, rx))
+}
+
+/// Fail closed: nothing on the start path applies a sandbox yet (`sandbox-linux`,
+/// `sandbox-macos` do), so a pane asked to run in one does not start, whatever
+/// `profiles::sandbox_enforceable` says; it never runs unconfined while its
+/// `PaneInfo.sandboxed` says otherwise.
+fn applies(sandbox: Option<&crate::profile::SandboxSpec>) -> Result<(), BusError> {
+    match sandbox {
+        None => Ok(()),
+        Some(_) => Err(BusError::handler_error(
+            "create pane: this server cannot apply a sandbox",
+        )),
+    }
 }
 
 fn list(s: &mut Supervisor, caller: &Caller, _: pane::ListRequest) -> Answer<pane::ListReply> {
@@ -2398,5 +2431,16 @@ mod tests {
         );
         assert_ne!(owner, numbered_identity(&Identity::Owner, "d"));
         assert_eq!(numbered_identity(&Identity::Owner, ""), "");
+    }
+
+    #[test]
+    fn the_start_path_refuses_a_sandbox_it_does_not_apply() {
+        assert_eq!(applies(None), Ok(()));
+        let refused = applies(Some(&crate::profile::SandboxSpec::default())).unwrap_err();
+        assert_eq!(refused.code, tilr_bus::codes::HANDLER_ERROR);
+        assert_eq!(
+            refused.message,
+            "create pane: this server cannot apply a sandbox"
+        );
     }
 }

@@ -980,6 +980,7 @@ server minted for it.
 | A per-call credential authorizes its call alone, for a narrow caller and against a wide one; `from` stays the caller; the audit names both | `bus_acl::a_per_call_credential_is_a_bearer` |
 | `pane.*` is decided by `call` rights like every core method; a per-call credential decides it alone, the pane checks of `pane.create` and of a pane included | `bus_acl::pane_calls_follow_call_rights_and_a_per_call_credential` |
 | An appended check sees the call in each pane check made for it: a token narrowed to `check if method("pane.list")` lists the panes and creates none; a per-call credential narrowed to `pane.create` creates a pane and cannot close it | `bus_acl::pane_checks_see_the_call_they_are_made_for` |
+| `pane.create` with a profile is authorized before the profile is read: a token narrowed to `pane.list`, or one whose `PaneCreate` check refuses the profile, is `denied` without the file's error; that token creates a pane without a profile; the owner's call reads the file | `bus_acl::a_profile_is_read_only_after_pane_create_is_authorized` |
 | An appended block narrows (one target); one that adds a fact is denied; over 8 blocks or 16 KiB is denied | `bus_acl::an_attenuated_token_only_narrows` |
 | A block of facts and a 5-way join, or of a rule, is denied at once, per call and at Hello, also when its symbol names make it print as checks on `kind`; the token it came from still works | `bus_acl::authorization_that_runs_too_long_is_denied` |
 | A revocation and a key rotation take effect inside the decision cache's second | `bus_acl::a_revocation_clears_cached_decisions` |
@@ -1028,3 +1029,28 @@ server minted for it.
 | The sweeper closes an outside participant, and renews an instance, whose token is of an earlier key | `supervisor::bus::acl::tests::the_sweeper_ends_tokens_of_an_earlier_key` |
 | A request from an instance's own connection marks its seat open | `supervisor::bus::acl::tests::an_instance_acting_on_its_connection_is_seen` |
 | `mint` never makes a token `verify` refuses (over 16 KiB, too many rights) | `supervisor::bus::acl::tests::mint_never_makes_a_token_verify_refuses` |
+
+## Launch profiles (`pane-profiles`) - `tests/profiles.rs`, `src/profile.rs`, `src/bus/core/profiles.rs`
+
+| Use case | Test |
+|---|---|
+| A profile is the file `<name>.toml` in the configuration directory's `profiles/`; a pane created with it reports its name and command in the reply, in the `pane.created` event and in `pane.list`, a pane without one names none; tilrd provides `pane.profiles` | `profiles::a_pane_starts_with_the_profile_from_the_config_directory` |
+| `profiles_dir` in `server.toml` names another directory, and the default one is not read | `profiles::profiles_dir_names_another_directory` |
+| `profiles_dir` defaults to `profiles/` next to the configuration file in use, must be absolute or `~`, and is the key's value otherwise | `config::tests::profiles_dir_defaults_next_to_the_configuration_file` |
+| The default profiles directory next to a relative configuration file is made absolute | `config::tests::a_relative_configuration_file_gives_an_absolute_profiles_dir` |
+| A profile file or directory that group or others can write, or that another user owns, does not load, and the error names the file; root may own them | `profiles::a_profile_others_can_write_is_refused`, `profile::tests::a_profile_others_can_write_does_not_load`, `profile::tests::only_the_user_or_root_may_own_a_profile_or_a_directory_above_it` |
+| A symlinked profile is judged where it really is and must be a regular file; a group-writable directory of its target is refused | `profiles::a_symlinked_profile_in_a_group_writable_directory_is_refused`, `profile::tests::a_symlinked_profile_is_judged_where_it_lives` |
+| Every directory above the profiles directory is checked up to `/` or the home directory (the home itself included), as sshd does | `profiles::a_group_writable_directory_above_the_profiles_is_refused`, `profile::tests::the_directories_above_are_checked_up_to_the_home_directory` |
+| A profile larger than 64 KiB is refused, naming the file | `profiles::a_profile_larger_than_the_bound_is_refused`, `profile::tests::a_profile_is_read_up_to_its_bound` |
+| A FIFO in place of a profile is refused at once, without waiting for a writer | `profiles::a_fifo_in_place_of_a_profile_is_refused_without_hanging` |
+| A profile name is never a path: traversal, absolute and hidden names are refused before any file is read | `profiles::a_profile_name_is_never_a_path`, `profile::tests::names_never_are_paths`, `supervisor::bus::core::profiles::tests::a_bad_name_is_refused_before_any_file_is_touched` |
+| An unknown profile or a missing directory is `no such profile` and the connection stays open; a profiles directory that cannot be read is an error of `pane.profiles`, not an empty listing | `profiles::an_unknown_profile_is_an_error`, `profile::tests::a_missing_profile_or_directory_is_no_such_profile` |
+| A misspelt key makes the profile invalid; the error names the file and the key; strict TOML for every `[sandbox]` key | `profiles::a_misspelt_key_makes_the_profile_invalid`, `profile::tests::every_sandbox_key_is_parsed`, `supervisor::bus::core::profiles::tests::an_unknown_or_invalid_profile_is_bad_request_with_its_file` |
+| Paths in a profile are absolute or `~`; relative ones are refused; `~` is the home directory; `.` and `..` fold | `profile::tests::relative_paths_are_refused`, `profile::tests::tilde_is_the_home_directory` |
+| `[env]` and `[sandbox] env` names cannot be empty, contain `=`, or start with `TILR_` | `profile::tests::tilr_variables_cannot_be_set` |
+| The request's command and an existing directory win over the profile's, the profile's `[env]` stays and `TERM` is the server's | `profiles::request_fields_override_the_profile`, `supervisor::bus::core::profiles::tests::the_request_wins_and_the_profiles_environment_stays` |
+| Without a directory of its own a profile pane starts in the home directory, with the login shell | `supervisor::bus::core::profiles::tests::a_profile_without_a_directory_falls_back_to_home` |
+| A request that names no profile is left to `pane.create` | `supervisor::bus::core::profiles::tests::no_profile_is_left_to_pane_create` |
+| A profile is read on every create: an edit applies to the next pane only | `profiles::an_edited_profile_applies_to_the_next_pane_only` |
+| A profile with `[sandbox]` is refused where the server cannot enforce it, and its program never starts; the start path itself refuses a sandbox it does not apply | `profiles::a_sandboxed_profile_is_refused_where_it_cannot_be_enforced`, `supervisor::bus::core::profiles::tests::prepare_create_refuses_a_sandbox_it_cannot_enforce`, `supervisor::bus::core::panes::tests::the_start_path_refuses_a_sandbox_it_does_not_apply` |
+| `pane.profiles` lists the profiles sorted by name with their errors, skips other files, cuts long texts, answers in protobuf and JSON; `sandboxed` is said of an invalid profile with a `[sandbox]` table too | `profiles::profiles_are_listed_with_their_errors`, `profile::tests::the_listing_is_sorted_with_errors_and_skips_other_files`, `profile::tests::only_a_sandbox_table_counts_as_a_sandbox` |
