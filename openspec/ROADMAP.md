@@ -115,12 +115,14 @@ Two orders: **starts after** is when an agent can begin (most changes right afte
 Merge waves: Wave 0: `bus-wire` → `bus-broker-core` (the frozen contract). Wave 1:
 `bus-streams-events`, `bus-instances`, then `bus-core-panes` and `bus-rights`. Wave 2, as
 dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus-web`,
-`bus-sdk`, `sandbox-linux`, `sandbox-macos`, `bus-test-clients`, `bus-tilr-client`. Wave 3:
+`bus-sdk`, `sandbox-linux`, `sandbox-macos`, `bus-test-clients`, `bus-tilr-client`,
+`bus-connection-calls`. Wave 3:
 `bus-reload` → `remove-tilr-v1`.
 
 | change | goal | size | starts after | merges after (depends on) | blocker | status |
 |---|---|---|---|---|---|---|
 | bus-rights | Biscuit: root key, tokens, bearer credentials, expiry and renewal, revocation, rotation, limits, audit, close code 4003 | L | bus-broker-core (contract: `Authorizer`, `Rights`) | bus-instances | no | ready |
+| bus-connection-calls | the core calls one connection, not an identity (as D-Bus unique names); on it `host.open` and `ssh_agent.request`/`ssh_agent.close`, as in `tilr.v1`. No change directory yet | M | bus-broker-core (the broker gains a connection address) | bus-core-services | no | design first |
 | bus-pane-rights | pane rights (T7): profile and override rights, `own`/`any` access, scoped events | M | bus-broker-core (contract: `AuthzRequest::PaneCreate`/`PaneAccess`) | bus-core-panes, bus-rights | no | ready |
 | bus-sdk | Deno/browser and Python SDKs, generated schema, CI job `sdk` | L | bus-wire (schemas, test runtime); its server tests need the later changes | bus-streams-events, bus-rights, pane-profiles | no | ready |
 | sandbox-linux | sandboxed panes on Linux (Landlock + seccomp), the common sandbox module | L | bus-broker-core (the snapshot type of `pane-profiles` task 1.1 as designed) | pane-profiles, bus-core-services | no | ready |
