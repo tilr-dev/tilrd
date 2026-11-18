@@ -13,7 +13,7 @@ close code.
 ## What Changes
 
 - The requirement «Interactive traffic goes ahead of bulk traffic» says that the code 4001
-  is seen only by a reader that reads within the close deadline.
+  is seen by a reader that reads within the close deadline, and not by one that does not.
 - Its scenario «A reader of large interactive chunks stops reading» reads again when the
   server decides to close it; a new scenario «A reader of large interactive chunks never
   reads» sees its connection end without a code.
