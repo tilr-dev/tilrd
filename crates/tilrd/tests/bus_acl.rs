@@ -8,6 +8,8 @@ mod common;
 use std::os::unix::fs::PermissionsExt;
 
 use bytes::Bytes;
+#[cfg(feature = "failpoints")]
+use common::PauseController;
 use common::TIMEOUT;
 use common::bus::{BusOptions, BusServer, text};
 use common::bus_instances::{
@@ -1719,16 +1721,25 @@ async fn an_instance_token_is_renewed() {
         .unwrap();
 
     // 13 h in: the server renewed it and sent the new token (CredentialUpdate).
-    // The renewal is held a while before its update goes out: the audit line
-    // comes after it, so a reply the instance gets after the line is behind it.
-    std::fs::write(
-        server.dir.join("failpoints"),
-        "bus-renew-instance=sleep:300",
-    )
-    .unwrap();
+    // Held before its update goes out, the renewal is not in the audit yet: a
+    // reply the instance gets after the line is behind its new token.
+    let pauses = PauseController::bind(&server.dir);
+    std::fs::write(server.dir.join("failpoints"), "bus-renew-instance=pause").unwrap();
     clock.set(START_US + 13 * HOUR_US);
-    wait_logged(&server, &["bus audit: renew", "from=instance:s-1"]).await;
+    let held = pauses.wait("bus-renew-instance").await;
+    // The server's log is one stream: once a line written now is read, every
+    // line written before it is too.
+    let _marker = server.raw_greeted("renew-marker", Vec::new()).await;
+    wait_logged(&server, &["participant greeted", "name=\"renew-marker\""]).await;
+    assert!(
+        !audit_lines(&server)
+            .iter()
+            .any(|line| line.contains("bus audit: renew")),
+        "the renewal was audited before its update was sent"
+    );
     std::fs::write(server.dir.join("failpoints"), "").unwrap();
+    held.release().await;
+    wait_logged(&server, &["bus audit: renew", "from=instance:s-1"]).await;
     // The reply to bus.ping comes after the update on the same connection.
     calls(&s1, "bus.ping", "", CallOptions::default())
         .await

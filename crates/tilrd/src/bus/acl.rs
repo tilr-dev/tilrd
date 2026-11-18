@@ -1912,8 +1912,21 @@ impl Acl {
                         ..principal.clone()
                     },
                 );
+                // The sweeper is a task of the runtime: a pause here must leave
+                // the rest of the server running.
                 #[cfg(feature = "failpoints")]
-                let _ = crate::fail::point("bus-renew-instance");
+                {
+                    let hit = || crate::fail::point("bus-renew-instance");
+                    let _ = match tokio::runtime::Handle::try_current() {
+                        Ok(runtime)
+                            if runtime.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(hit)
+                        }
+                        _ => hit(),
+                    };
+                }
                 // After the principal: a call the instance makes with the new token
                 // once it has it is decided by the new token.
                 if !broker.send_credential_update(conn, bytes) {
