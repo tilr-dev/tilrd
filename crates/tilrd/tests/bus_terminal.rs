@@ -1512,8 +1512,8 @@ mod services {
 
     use common::bus::TcpAuth;
     use common::bus_services::{
-        self, Streamed, fifo_closed, fifo_held, methods, ran, ran_after, read_all, real, run,
-        started, stream_all,
+        self, Streamed, fifo_held, methods, ran, ran_after, read_all, real, run, started,
+        stream_all,
     };
     use tilr_bus::bus::{Kind, Lane};
     use tilr_bus::clipboard::{ClipboardData, GetRequest, PutReply, PutRequest};
@@ -1970,7 +1970,7 @@ mod services {
         let server = start();
         let owner = server.owner().await;
         let fifo = server.dir.join("held");
-        let closed = fifo_closed(&fifo);
+        let (_, closed) = fifo_held(&fifo);
         // A child of the program holds the FIFO open, and says so: it goes with
         // the group.
         let script = format!(

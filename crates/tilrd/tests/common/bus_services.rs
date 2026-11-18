@@ -80,34 +80,13 @@ pub async fn methods(bus: &Bus) -> Vec<MethodInfo> {
     .methods
 }
 
-/// A call with protobuf messages, bounded.
+/// [`super::bus_panes::call`], bounded.
 pub async fn call<Req: Message, Resp: Message + Default>(
     bus: &Bus,
     method: &str,
     request: &Req,
 ) -> Result<Resp, BusError> {
-    within(bus.call_typed(method, request, CallOptions::default())).await
-}
-
-/// A FIFO at `path`; the receiver hears once every writer closed it after the
-/// first opened it: a program that held it open has ended.
-pub fn fifo_closed(path: &Path) -> oneshot::Receiver<Vec<u8>> {
-    let made = std::process::Command::new("mkfifo")
-        .arg(path)
-        .status()
-        .expect("mkfifo");
-    assert!(made.success(), "mkfifo {}", path.display());
-    let (tx, rx) = oneshot::channel();
-    let fifo = path.to_owned();
-    // A thread of its own: the open waits for the writer, the read for its end.
-    std::thread::spawn(move || {
-        let mut read = Vec::new();
-        if let Ok(mut file) = std::fs::File::open(&fifo) {
-            let _ = file.read_to_end(&mut read);
-        }
-        let _ = tx.send(read);
-    });
-    rx
+    within(super::bus_panes::call(bus, method, request)).await
 }
 
 /// A FIFO at `path` a program is to hold open: the first receiver hears once
@@ -122,6 +101,7 @@ pub fn fifo_held(path: &Path) -> (oneshot::Receiver<()>, oneshot::Receiver<()>) 
     let (opened_tx, opened) = oneshot::channel();
     let (closed_tx, closed) = oneshot::channel();
     let fifo = path.to_owned();
+    // A thread of its own: the open waits for the writer, the read for its end.
     std::thread::spawn(move || {
         if let Ok(mut file) = std::fs::File::open(&fifo) {
             let _ = opened_tx.send(());
