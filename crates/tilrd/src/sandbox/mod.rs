@@ -85,13 +85,6 @@ impl Handover {
     /// line, which any process of the user can read (`ps`, `/proc/<pid>/cmdline`). A
     /// reload execs the pane process with the same arguments; the file stays until the
     /// pane ends ([`remove_pane_dir`]).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pane.create (bus-core-panes) starts sandboxed panes with it"
-        )
-    )]
     pub fn write(&self, pane_id: &str) -> Result<[OsString; 2], String> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -306,13 +299,6 @@ impl Dirs {
     ///
     /// [`protect_config_file`]: Dirs::protect_config_file
     /// [`protect_profiles_dir`]: Dirs::protect_profiles_dir
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pane.create (bus-core-panes) hands them to the pane process"
-        )
-    )]
     pub fn current() -> Self {
         let runtime = crate::clipboard::runtime_dir();
         let mut dirs = Dirs {
@@ -366,13 +352,6 @@ impl Dirs {
     /// The server's configuration file, given with `--config`: its directory holds
     /// `server.toml`, `bus.toml` and the profiles beside it. A relative path is taken
     /// from the current directory.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pane.create (pane-profiles) passes the server's --config"
-        )
-    )]
     pub fn protect_config_file(&mut self, file: &Path) {
         let file = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
         if let Some(dir) = file.parent() {
@@ -382,17 +361,37 @@ impl Dirs {
 
     /// The directory the server reads launch profiles from, where it is not the
     /// configuration directory.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pane.create (pane-profiles) passes the profiles directory"
-        )
-    )]
     pub fn protect_profiles_dir(&mut self, dir: &Path) {
         let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
         self.protect(dir, "the profiles directory");
     }
+}
+
+/// The server's [`Dirs`], set once at start ([`set_server_dirs`]); a reload execs a new
+/// process, which sets them again from its own arguments.
+static SERVER_DIRS: OnceLock<Dirs> = OnceLock::new();
+
+/// Remember the server's directories for the sandboxed panes it starts: those of
+/// [`Dirs::current`], with the file `--config` names (`config_file`) and the profiles
+/// directory where they are not the defaults, which the pane process cannot know.
+pub fn set_server_dirs(config_file: Option<&Path>, profiles_dir: Option<&Path>) {
+    let mut dirs = Dirs::current();
+    if let Some(file) = config_file {
+        dirs.protect_config_file(file);
+    }
+    if let Some(dir) = profiles_dir {
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+        if !dirs.protected.iter().any(|p| dir.starts_with(&p.path)) {
+            dirs.protect_profiles_dir(&dir);
+        }
+    }
+    let _ = SERVER_DIRS.set(dirs);
+}
+
+/// The server's directories for the [`Handover`] of a sandboxed pane: those
+/// [`set_server_dirs`] made, or [`Dirs::current`] before it.
+pub fn server_dirs() -> Dirs {
+    SERVER_DIRS.get().cloned().unwrap_or_else(Dirs::current)
 }
 
 /// This process's executable, with links resolved: the server's (the pane process is

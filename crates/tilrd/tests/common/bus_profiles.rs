@@ -50,13 +50,29 @@ impl std::ops::Deref for ProfileServer {
 
 /// Start a [`ProfileServer`] with `server_toml` as its configuration file.
 pub fn start_with(server_toml: &str) -> ProfileServer {
+    start_failing(server_toml, "")
+}
+
+/// [`start_with`], with `TILR_FAILPOINTS` set to `failpoints` (src/fail.rs).
+pub fn start_failing(server_toml: &str, failpoints: &str) -> ProfileServer {
+    start_full(server_toml, failpoints, &[])
+}
+
+/// [`start_failing`], with more environment `env` of the server.
+pub fn start_full(server_toml: &str, failpoints: &str, env: &[(&str, &str)]) -> ProfileServer {
     let config = secure_dir();
     std::fs::write(config.join("server.toml"), server_toml).unwrap();
+    let mut env: Vec<(String, String)> = env
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect();
+    env.push((
+        "TILR_CONFIG_DIR".to_owned(),
+        config.to_str().unwrap().to_owned(),
+    ));
     let server = BusServer::start(BusOptions {
-        env: vec![(
-            "TILR_CONFIG_DIR".to_owned(),
-            config.to_str().unwrap().to_owned(),
-        )],
+        env,
+        failpoints: failpoints.to_owned(),
         ..BusOptions::default()
     });
     ProfileServer { server, config }

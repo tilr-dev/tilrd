@@ -221,9 +221,12 @@ async fn an_edited_profile_applies_to_the_next_pane_only() {
     first.holds("11").await;
 }
 
+/// Where the start-up check fails (the failpoint `sandbox-unavailable`, as on a
+/// host without Landlock).
+#[cfg(feature = "failpoints")]
 #[tokio::test]
 async fn a_sandboxed_profile_is_refused_where_it_cannot_be_enforced() {
-    let server = start();
+    let server = common::bus_profiles::start_failing("", "sandbox-unavailable=error");
     let marker = server.dir.join("marker");
     write_profile(
         &server,

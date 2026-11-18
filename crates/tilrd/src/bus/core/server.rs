@@ -160,6 +160,9 @@ fn may_reload(broker: &crate::bus::BrokerHandle, ctx: &CallCtx) -> Result<(), Bu
         .map_err(BusError::from)
 }
 
+/// The `server.info` feature of a server that enforces a profile's `[sandbox]`.
+const FEATURE_SANDBOX: &str = "sandbox";
+
 /// `server.info`: as `tilr.v1`'s `HelloAck`.
 fn info(s: &mut Supervisor) -> Result<InfoReply, BusError> {
     let clipboard_max_bytes = s.clipboard.as_ref().map(|c| c.max_bytes());
@@ -170,6 +173,8 @@ fn info(s: &mut Supervisor) -> Result<InfoReply, BusError> {
         (FEATURE_HOST_EVENTS, s.host_events),
         (FEATURE_AGENT, s.agent.is_some()),
         (FEATURE_EXEC, s.exec),
+        // Sandboxed profiles start (S9): the start-up check passed.
+        (FEATURE_SANDBOX, crate::sandbox::features().is_ok()),
     ];
     Ok(InfoReply {
         server_version: crate::VERSION.into(),

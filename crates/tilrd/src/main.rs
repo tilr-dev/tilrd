@@ -386,6 +386,7 @@ fn server_options(cli: Cli) -> anyhow::Result<supervisor::Options> {
     if let Some(dir) = config::profiles_dir(cli.config.as_deref(), &config)? {
         profile::set_dir(dir);
     }
+    sandbox::set_server_dirs(cli.config.as_deref(), profile::dir());
     Ok(supervisor::Options {
         listen,
         local,
