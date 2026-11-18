@@ -793,6 +793,7 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 |---|---|
 | Hello comes first (a bad first message is `expected_hello` too) and names version 1; a wrong token or a credential is denied; tilr.v1 is served as before | `bus::hello_comes_first_and_names_a_version` |
 | The first thing a participant hears is its HelloAck, nothing from before it | `bus::the_first_thing_a_participant_hears_is_its_hello_ack` |
+| A participant is callable once it has its HelloAck: held just before the broker enters it (failpoint `bus-registering:<name>`), it has no HelloAck and is not logged greeted; once it has its HelloAck, a call of its method reaches it, not `not_found` | `bus::a_participant_is_callable_once_it_has_its_hello_ack` |
 | The broker answers `bus.ping` in protobuf and in JSON | `bus::the_broker_answers_bus_ping` |
 | A bad frame is reported and the connection stays; an unknown envelope or field is ignored | `bus::unknown_envelopes_are_ignored_and_bad_ones_reported` |
 | `from` is always the caller's identity; a reply from another connection is dropped | `bus::from_is_always_the_callers_identity` |
@@ -866,6 +867,7 @@ two lanes, `busy` instead of growth, events dropped for a lagging subscriber
 | Use case | Test |
 |---|---|
 | A failed call says why: `not_found` for a method nobody provides (a name only a participant that is gone provided is forgotten), `unavailable` for a method of windows with none open, also on a fresh server, and once its providers are gone, `timeout` at the deadline (the callee gets `Cancel`), `bad_request` for a window over 16 MiB; a call that names no deadline gets 10 s | `bus::a_failed_call_says_why` |
+| A connection superseded by the same client between its registration and its announcement stays ended: it is never announced up, nobody watching it is woken again | `supervisor::bus::broker::tests::a_connection_superseded_before_it_is_announced_is_never_up` |
 | A provider that is draining gets no call: `unavailable` | `supervisor::bus::broker::tests::a_draining_provider_is_unavailable` |
 | Draining a connection with a call it never answers ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::draining_a_connection_ends_at_its_deadline_without_spinning` |
 | Draining the broker with a call never answered ends at the timeout without spinning; the caller gets `unavailable`, the provider `Cancel` | `supervisor::bus::broker::tests::the_broker_drain_ends_at_its_deadline_without_spinning` |
@@ -949,6 +951,8 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | The control methods take and answer proto3 JSON | `bus::the_control_methods_answer_json` |
 | `call_timeout_ms` of `bus.toml` bounds every call, read at start and applied on `bus.reload_config`: a call without a deadline gets it, a longer one is held to it, 0 is none and a call keeps a shorter one it names | `bus::call_timeout_ms_of_bus_toml_bounds_every_call` |
 | A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
+| `bus.start` answers once the broker entered the instance (held just before, failpoint `bus-registering:t-1`, it has not answered and the instance is `starting`); when it answers, the instance's methods are callable, listed by `bus.methods` and known (`unavailable` once it is stopped) | `bus::a_started_instance_is_callable_and_listed_when_bus_start_returns` |
+| A stopped instance is offered no new call by method before it is listed `draining`: held between the two (failpoint `bus-draining:t-1`), a call of its method is `unavailable` and `bus.methods` does not list it | `bus::a_draining_instance_is_offered_no_calls_before_it_is_listed_draining` |
 
 ## The core's services on the bus — `tests/bus_terminal.rs`, `tests/reload.rs`, `tests/update.rs`
 

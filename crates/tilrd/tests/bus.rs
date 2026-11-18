@@ -635,8 +635,15 @@ async fn events_reach_the_subscribers_connected_now() {
     .collect();
     assert_eq!(subjects, ["test.a", "test.a.b", "test.end"]);
 
-    // No history: a later subscriber gets only later events.
+    // No history: a later subscriber gets only later events. `old` is emitted on
+    // another connection than t4 subscribes on: an earlier subscriber having it is
+    // what puts it before the subscription.
     within(t1.emit("test.a", "old")).await.unwrap();
+    let event = within(star.next()).await.unwrap();
+    assert_eq!(
+        (event.subject.as_str(), text(&event.payload).as_str()),
+        ("test.a", "old")
+    );
     let t4 = server.owner().await;
     let mut late = within(t4.subscribe("test.*")).await.unwrap();
     within(t1.emit("test.b", "new")).await.unwrap();
@@ -2349,13 +2356,15 @@ async fn an_instance_is_stopped_and_started() {
     stop_instance(&owner, "t-1", None).await.unwrap();
     let still = info(&owner, "t-1").await;
     assert_eq!((still.state.as_str(), still.restarts), ("stopped", 0));
+    // The log reaches the test behind the replies: waited for, then looked at whole.
+    server
+        .wait_logged_event("instance t-1 is stopped", |lines| {
+            lines
+                .iter()
+                .any(|line| line.contains("instance t-1 is stopped"))
+        })
+        .await;
     let lines = server.log_lines();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("instance t-1 is stopped")),
-        "{lines:?}"
-    );
     assert!(
         !lines
             .iter()
@@ -3435,6 +3444,200 @@ async fn a_method_of_a_configured_instance_is_unavailable_while_it_is_down() {
     // And again once it is up.
     start_instance(&owner, "t-1").await.unwrap();
     assert_eq!(calls(&owner, "test.echo", "back").await.unwrap(), "back");
+}
+
+// ---------------------------------------------------------------------------
+// bus-greet-order
+// ---------------------------------------------------------------------------
+
+/// A server whose failpoint `bus-registering:<name>` pauses: it holds a greeted
+/// connection of client `name` just before the broker enters it in its tables, where
+/// nothing of the connection may be observable yet.
+#[cfg(feature = "failpoints")]
+fn register_paused(name: &str, bus_toml: Option<String>) -> (BusServer, common::PauseController) {
+    let server = BusServer::start(BusOptions {
+        bus_toml,
+        failpoints: format!("bus-registering:{name}=pause"),
+        ..BusOptions::default()
+    });
+    let controller = common::PauseController::bind(&server.dir);
+    (server, controller)
+}
+
+/// The clock a held greeting is measured by: a participant that is not held greets
+/// and the owner calls it, several hops through the broker each way. Whatever the
+/// greeting let out before it was held reaches the test before this ends.
+#[cfg(feature = "failpoints")]
+async fn round_trip(server: &BusServer, owner: &tilr_bus::Bus) {
+    let mut clock = server
+        .raw_greeted("clock", vec![MethodSpec::unary("test.clock")])
+        .await;
+    let answer = async {
+        let hop = clock
+            .wait_for(|msg| match msg {
+                Msg::Call(call) if call.method == "test.clock" => Some(call.id),
+                _ => None,
+            })
+            .await;
+        clock
+            .send(Msg::Reply(WireReply {
+                id: hop,
+                result: Some(reply::Result::Payload(Bytes::from_static(b"tick"))),
+                content_type: String::new(),
+            }))
+            .await;
+    };
+    let (reply, ()) = tokio::join!(owner_calls(owner, "test.clock", "tick"), answer);
+    assert_eq!(reply.unwrap(), "tick");
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_participant_is_callable_once_it_has_its_hello_ack() {
+    let (server, controller) = register_paused("late", None);
+    let owner = server.owner().await;
+    let mut late = server.raw().await;
+    late.send(Msg::Hello(Hello {
+        protocol_version: tilr_bus::PROTOCOL_VERSION,
+        client_name: "late".into(),
+        provides: vec![MethodSpec::unary("test.late")],
+        ..Hello::default()
+    }))
+    .await;
+    let point = controller.wait("bus-registering:late").await;
+
+    // Held before the broker enters it: it has no HelloAck yet and is not logged
+    // greeted, so nobody can call it too early.
+    tokio::select! {
+        biased;
+        msg = late.recv() => panic!("late heard {msg:?} before the broker entered it"),
+        () = round_trip(&server, &owner) => {}
+    }
+    assert_eq!(
+        server.greeted("late"),
+        0,
+        "late was logged greeted before the broker entered it"
+    );
+    point.release().await;
+
+    // Once it has its HelloAck, it is the provider: a call reaches it instead of
+    // being answered `not_found`.
+    let Some(Msg::HelloAck(_)) = late.recv().await else {
+        panic!("the first envelope is not HelloAck");
+    };
+    let mut call = Box::pin(owner.call("test.late", "x", CallOptions::default()));
+    let hop = within(async {
+        tokio::select! {
+            reply = &mut call => panic!(
+                "test.late was answered before its provider had the call: {:?}",
+                reply.map(|reply| text(&reply.payload))
+            ),
+            hop = late.wait_for(|msg| match msg {
+                Msg::Call(call) if call.method == "test.late" => Some(call.id),
+                _ => None,
+            }) => hop,
+        }
+    })
+    .await;
+    late.send(Msg::Reply(WireReply {
+        id: hop,
+        result: Some(reply::Result::Payload(Bytes::from_static(b"late"))),
+        content_type: String::new(),
+    }))
+    .await;
+    assert_eq!(text(&within(call).await.unwrap().payload), "late");
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_started_instance_is_callable_and_listed_when_bus_start_returns() {
+    let (server, controller) = register_paused(
+        "t-1",
+        Some(format!(
+            "{}{}",
+            test_module("t", &[]),
+            instance_with(
+                "t-1",
+                "t",
+                "autostart = false\n",
+                &[("provide", &["test.*"])],
+                &[]
+            )
+        )),
+    );
+    let owner = server.owner().await;
+    let mut starting = Box::pin(start_instance(&owner, "t-1"));
+    // Polled once, so the call is sent.
+    let _ = starting.as_mut().now_or_never();
+    let point = controller.wait("bus-registering:t-1").await;
+
+    // Held before the broker enters it: bus.start has not answered and t-1 is not
+    // listed up.
+    tokio::select! {
+        biased;
+        started = &mut starting => panic!("bus.start answered before the broker entered t-1: {started:?}"),
+        () = round_trip(&server, &owner) => {}
+    }
+    assert_eq!(info(&owner, "t-1").await.state, "starting");
+    point.release().await;
+
+    // When bus.start answers, t-1 is listed as the provider and answers a call.
+    let started = starting.await.unwrap();
+    assert!(started.pid > 0);
+    let methods = method_list(&owner).await;
+    let listed = methods
+        .methods
+        .iter()
+        .find(|info| info.method == "test.echo")
+        .map(|info| info.providers.clone());
+    assert_eq!(listed, Some(vec!["instance:t-1".to_owned()]), "{methods:?}");
+    assert_eq!(calls(&owner, "test.echo", "back").await.unwrap(), "back");
+
+    // What it provided is known once it is stopped: unavailable, not not_found.
+    stop_instance(&owner, "t-1", None).await.unwrap();
+    let error = calls(&owner, "test.echo", "x").await.unwrap_err();
+    assert_eq!(error.code, codes::UNAVAILABLE, "{error}");
+}
+
+#[cfg(feature = "failpoints")]
+#[tokio::test]
+async fn a_draining_instance_is_offered_no_calls_before_it_is_listed_draining() {
+    let server = BusServer::start(BusOptions {
+        bus_toml: Some(format!("{}{}", test_module("t", &[]), instance("t-1", "t"))),
+        failpoints: "bus-draining:t-1=pause".into(),
+        ..BusOptions::default()
+    });
+    let controller = common::PauseController::bind(&server.dir);
+    let owner = server.owner().await;
+    wait_up(&server, &owner, "t-1").await;
+    assert_eq!(calls(&owner, "test.echo", "back").await.unwrap(), "back");
+
+    let mut stopping = Box::pin(stop_instance(&owner, "t-1", None));
+    // Polled once, so the call is sent.
+    let _ = stopping.as_mut().now_or_never();
+    let point = controller.wait("bus-draining:t-1").await;
+
+    // Held between the broker's drain and its listing as draining: the broker
+    // offers it no new call by method already.
+    assert_eq!(info(&owner, "t-1").await.state, "up");
+    let echoed = calls(&owner, "test.echo", "x").await;
+    assert!(
+        matches!(&echoed, Err(error) if error.code == codes::UNAVAILABLE),
+        "a call of test.echo while t-1 drains: {echoed:?}"
+    );
+    let methods = method_list(&owner).await;
+    assert!(
+        methods
+            .methods
+            .iter()
+            .filter(|info| info.method == "test.echo")
+            .all(|info| !info.providers.iter().any(|p| p == "instance:t-1")),
+        "{methods:?}"
+    );
+    point.release().await;
+
+    stopping.await.unwrap();
+    assert_eq!(info(&owner, "t-1").await.state, "stopped");
 }
 
 // ---------------------------------------------------------------------------

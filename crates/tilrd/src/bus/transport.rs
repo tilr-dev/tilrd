@@ -400,7 +400,10 @@ impl Written {
 }
 
 /// A connection's writer end and the queue it takes from.
-fn out(id: ConnId, framing: Framing) -> (Out, outbox::Outbox, mpsc::UnboundedReceiver<Closing>) {
+pub(super) fn out(
+    id: ConnId,
+    framing: Framing,
+) -> (Out, outbox::Outbox, mpsc::UnboundedReceiver<Closing>) {
     let (tx, outbox) = outbox::channel();
     let (close, closing) = mpsc::unbounded_channel();
     (
@@ -482,7 +485,7 @@ fn accept_hello(
     clippy::too_many_arguments,
     reason = "the parts of a connection both transports pass"
 )]
-fn greet(
+async fn greet(
     broker: &BrokerHandle,
     out: &Out,
     state: &watch::Sender<ConnState>,
@@ -548,19 +551,45 @@ fn greet(
             .unwrap_or_default(),
         server_id: broker.server_id().to_owned(),
     };
-    tracing::info!(
-        target: "tilrd::bus",
-        connection = id,
-        %peer,
-        identity = ack.identity,
-        client_id = principal.client_id,
-        name = principal.client_name,
-        provides = provides.len(),
-        "participant greeted"
-    );
-    // Queued first: nothing the broker routes to the connection comes before it.
-    out.send(Msg::HelloAck(ack), Lane::Interactive);
-    broker.register(principal, provides, out.clone(), state.clone());
+    let identity = ack.identity.clone();
+    let (client_id, name) = (principal.client_id.clone(), principal.client_name.clone());
+    let count = provides.len();
+    // Registered before it is announced: once a participant has its HelloAck, or
+    // anybody saw the connection up, its methods are routed and listed.
+    let up = broker
+        .register(
+            principal,
+            provides,
+            Msg::HelloAck(ack),
+            out.clone(),
+            state.clone(),
+        )
+        .await;
+    if up {
+        tracing::info!(
+            target: "tilrd::bus",
+            connection = id,
+            %peer,
+            identity,
+            client_id,
+            name,
+            provides = count,
+            "participant greeted"
+        );
+    } else {
+        // A newer connection of the same client superseded it between its
+        // registration and its announcement: it was never up, so it is not
+        // logged greeted (the tests wait on that line to use a participant).
+        tracing::info!(
+            target: "tilrd::bus",
+            connection = id,
+            %peer,
+            identity,
+            client_id,
+            name,
+            "participant superseded before it was up"
+        );
+    }
     true
 }
 
@@ -750,7 +779,8 @@ where
                     broker.ready().await;
                     greeted = greet(
                         &broker, &out, &state, envelope, transport, peer, &origin, None,
-                    );
+                    )
+                    .await;
                     refused = !greeted;
                 }
             }
@@ -864,7 +894,8 @@ pub(super) fn spawn_stream(
                     peer,
                     "",
                     seat.take(),
-                );
+                )
+                .await;
                 if !greeted {
                     // Let the ConnectionError go out.
                     let _ = tokio::time::timeout(CLOSE_TIMEOUT, &mut write).await;
