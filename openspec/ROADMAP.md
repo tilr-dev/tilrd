@@ -147,7 +147,7 @@ dependencies land: `bus-core-services`, `pane-profiles`, `bus-pane-rights`, `bus
 
 | change | commit |
 |---|---|
-| sandbox-linux | - |
+| sandbox-linux | [PR #149](https://github.com/tilr-dev/tilrd/pull/149) |
 | bus-sdk | [PR #148](https://github.com/tilr-dev/tilrd/pull/148) |
 | bus-rights | [PR #142](https://github.com/tilr-dev/tilrd/pull/142) |
 | bus-core-services | [PR #145](https://github.com/tilr-dev/tilrd/pull/145) |
