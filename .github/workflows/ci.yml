@@ -171,6 +171,61 @@ jobs:
             "target/debug/$exe" --help >/dev/null
           done
 
+  # The bus SDKs (sdk/deno, sdk/python): the generated schema code matches
+  # crates/tilr-bus/proto/, then each library's lint, type check and tests against the
+  # tilrd built here (scripts/sdk-check.sh). Two tiers as `test`: a pull request runs it on
+  # Linux only; every other event on Linux and macOS.
+  sdk:
+    name: sdk
+    runs-on: ${{ github.event_name == 'pull_request' && matrix.os == 'macos-15' && 'ubuntu-latest' || matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    env:
+      SKIP: ${{ github.event_name == 'pull_request' && matrix.os == 'macos-15' }}
+    steps:
+      - name: Skip macOS on a pull request (the merge queue runs it)
+        if: env.SKIP == 'true'
+        run: echo "sdk (macos-15) runs in the merge queue, on release branches and nightly"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.SKIP != 'true'
+        with:
+          persist-credentials: false
+      - name: Install Rust (stable)
+        if: env.SKIP != 'true'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      # As in `test`: the macOS 15.4 SDK for Zig; remove with the Zig SDK pin.
+      - name: Select macOS 15.4 SDK
+        if: env.SKIP != 'true' && runner.os == 'macOS'
+        run: |
+          echo 'DEVELOPER_DIR=/Applications/Xcode_16.3.app/Contents/Developer' >> "$GITHUB_ENV"
+          echo 'SDKROOT=/Applications/Xcode_16.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.4.sdk' >> "$GITHUB_ENV"
+      # Its own cache key: this job installs deno and uv besides Zig and protoc.
+      - name: Restore Zig, protoc, deno and uv
+        id: tools
+        if: env.SKIP != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tools
+          key: sdk-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tools.sh') }}
+      - name: Install Zig, protoc, deno and uv
+        if: env.SKIP != 'true' && steps.tools.outputs.cache-hit != 'true'
+        run: scripts/install-tools.sh "$RUNNER_TEMP/tools" zig protoc deno uv
+      - if: env.SKIP != 'true'
+        run: echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: env.SKIP != 'true'
+      - run: cargo build -p tilrd --locked
+        if: env.SKIP != 'true'
+      - run: scripts/sdk-check.sh
+        if: env.SKIP != 'true'
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest

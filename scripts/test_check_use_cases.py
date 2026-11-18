@@ -36,6 +36,18 @@ mod tests { #[test] fn title_follows_pane() {} }
 mod bundled_tls_tests { #[test] fn trusts_roots() {} }
 ''')
         self.write('itests/scenarios/uc_123.py', 'async def reconnects():\n    pass\n')
+        self.write('sdk/deno/test/bus_test.ts', '''
+scenario("bytes_pass_unchanged", 30_000, async () => {});
+Deno.test("plain_test", () => {});
+// a_comment("not_a_test")
+// scenario("commented_out", 30_000, async () => {});
+/* Deno.test("in_a_block_comment", () => {});
+   scenario("in_a_block_comment_too", 30_000, async () => {}); */
+const url = "http://example.test/", none = ""; scenario("after_a_url_string", 1, async () => {});
+''')
+        self.write('sdk/python/tests/test_bus.py',
+                   'async def test_bytes_pass_unchanged():\n    pass\n'
+                   'def helper():\n    pass\n')
 
     def write(self, name, contents):
         path = self.root / name
@@ -57,6 +69,7 @@ mod bundled_tls_tests { #[test] fn trusts_roots() {} }
 | Gated | `reconnect::nested::gated` (Linux) |
 | Unit | `title::tests::title_follows_pane`, `conn::bundled_tls_tests::trusts_roots` |
 | Python | `uc_123.py::reconnects` |
+| SDKs | `sdk/deno/test/bus_test.ts::bytes_pass_unchanged`, `sdk/deno/test/bus_test.ts::plain_test`, `sdk/deno/test/bus_test.ts::after_a_url_string`, `sdk/python/tests/test_bus.py::test_bytes_pass_unchanged` |
 
 | Case | Check |
 | --- | --- |
@@ -69,7 +82,13 @@ mod bundled_tls_tests { #[test] fn trusts_roots() {} }
                      'wrong::tests::title_follows_pane', 'title::tests::missing',
                      'uc_123.py::missing', 'uc_999.py::reconnects',
                      'only_in_a_comment', 'only_in_a_nested_comment',
-                     'only_in_a_string']:
+                     'only_in_a_string', 'sdk/deno/test/bus_test.ts::not_a_test',
+                     'sdk/deno/test/bus_test.ts::missing',
+                     'sdk/deno/test/bus_test.ts::commented_out',
+                     'sdk/deno/test/bus_test.ts::in_a_block_comment',
+                     'sdk/deno/test/bus_test.ts::in_a_block_comment_too', 'bus_test.ts::bytes_pass_unchanged',
+                     'sdk/python/tests/test_bus.py::helper',
+                     'sdk/python/tests/test_bus.py::test_missing']:
             with self.subTest(name=name):
                 result = self.run_checker(
                     f'| Use case | Test |\n| --- | --- |\n| Missing | `{name}` |\n'
