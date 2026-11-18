@@ -49,10 +49,10 @@ pub const PANE_COPIED: &str = "pane.copied";
 
 /// The latest copy made in a pane (`CoreState::slot`).
 #[derive(Default)]
-struct Latest(Option<Copy>);
+struct Latest(Option<PaneCopy>);
 
 #[derive(Clone)]
-struct Copy {
+struct PaneCopy {
     transfer_id: u64,
     pane_id: String,
     mime: String,
@@ -78,7 +78,7 @@ pub(crate) fn copied(
         mime: mime.to_owned(),
         total_size: data.len() as u64,
     };
-    s.bus.slot::<Latest>().0 = Some(Copy {
+    s.bus.slot::<Latest>().0 = Some(PaneCopy {
         transfer_id,
         pane_id: event.pane_id.clone(),
         mime: event.mime.clone(),
