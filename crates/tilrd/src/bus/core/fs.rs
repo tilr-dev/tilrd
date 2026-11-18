@@ -26,10 +26,10 @@ use tilr_bus::fs::{
 use tilr_bus::{BusError, codes, methods};
 use tokio::sync::{mpsc, oneshot};
 
-use super::json;
-use super::server::{
-    asked, conn_of, json_message, limit, on_connection_end, queue, refused, unary,
+use super::common::{
+    asked, conn_of, json_message, limit, on_connection_end, queue, refused, room, split, unary,
 };
+use super::json;
 use super::{Core, Registry, SupervisorHandle};
 use crate::bus::identity::{CallCtx, Identity};
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut};
@@ -312,17 +312,6 @@ fn entry(entry: Entry) -> FsEntry {
     }
 }
 
-/// The payload room a chunk leaves in the stream's window once `empty` (the
-/// chunk's message without its data) is encoded: what the data may take.
-pub(super) fn room(window: u64, empty: usize) -> usize {
-    // The data's tag and length.
-    let overhead = empty + 6;
-    usize::try_from(window)
-        .unwrap_or(usize::MAX)
-        .saturating_sub(overhead)
-        .max(1)
-}
-
 /// `fs.read`: the file's part in chunks of at most 256 KiB, split further to
 /// the stream's window; a failure ends the stream with it.
 async fn read(supervisor: SupervisorHandle, ctx: CallCtx, payload: Bytes, out: StreamOut) {
@@ -358,17 +347,6 @@ async fn read(supervisor: SupervisorHandle, ctx: CallCtx, payload: Bytes, out: S
         Ok(()) => out.end(Bytes::new()),
         Err(err) => out.fail(err),
     }
-}
-
-/// `data` in pieces of at most `room` bytes; one empty piece for no data.
-pub(super) fn split(data: Bytes, room: usize) -> Vec<Bytes> {
-    if data.len() <= room {
-        return vec![data];
-    }
-    (0..data.len())
-        .step_by(room)
-        .map(|at| data.slice(at..data.len().min(at + room)))
-        .collect()
 }
 
 /// A chunk of `fs.write`, on the supervisor's task: to the upload of its

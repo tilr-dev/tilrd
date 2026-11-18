@@ -21,9 +21,10 @@ use tilr_bus::clipboard::{ClipboardData, GetRequest, PutReply, PutRequest};
 use tilr_bus::pane::Copied;
 use tilr_bus::{BusError, codes, methods};
 
-use super::fs::{room, split};
+use super::common::{
+    asked, conn_of, json_message, on_connection_end, queue, refused, room, split, unary,
+};
 use super::json;
-use super::server::{asked, conn_of, json_message, on_connection_end, queue, refused, unary};
 use super::{Core, Registry, SupervisorHandle};
 use crate::bus::identity::{CallCtx, Identity};
 use crate::bus::streams::{Chunk, NativeMethod, StreamOut};

@@ -35,7 +35,7 @@ follows.
   open; `exec::MAX_EXECS_PER_CLIENT` (64) programs, as on `tilr.v1`. One more is `busy`, the
   code the broker gives a caller over its share of calls in flight.
 - **Streams split to the window.** `fs.read`, `exec.run` output and `clipboard.get` cut their
-  data so that no chunk passes the stream's window (`fs::room`, `fs::split`), besides the
+  data so that no chunk passes the stream's window (`common::room`, `common::split`), besides the
   256 KiB of `tilr.v1`. A cancelled `exec.run` stream cancels the program (its group is
   killed), as `ExecCancel` does; so does a stream whose reader is gone. The cancel guard is
   made before the start is queued, and its cancel is queued behind the start, so a handler
