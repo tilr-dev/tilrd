@@ -56,18 +56,32 @@ pub fn point(_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// What the test set for the point `name`, if anything.
 #[cfg(feature = "failpoints")]
-pub fn point(name: &str) -> Result<()> {
+fn action(name: &str) -> Option<String> {
     let mut points = std::env::var("TILR_FAILPOINTS").unwrap_or_default();
     if let Some(file) = std::env::var_os("TILR_FAILPOINTS_FILE") {
         points.push(';');
         points.push_str(std::fs::read_to_string(file).unwrap_or_default().trim());
     }
-    let action = points
+    points
         .split(';')
         .filter_map(|point| point.split_once('='))
-        .find_map(|(point, action)| (point == name).then_some(action));
-    match action {
+        .find_map(|(point, action)| (point == name).then(|| action.to_owned()))
+}
+
+/// Whether a test set an action for the point `name`, without passing it: for a
+/// caller that must not block where it is and takes a detour to the point (a
+/// task of its own) only when a test asks for it.
+#[cfg(feature = "failpoints")]
+pub fn armed(name: &str) -> bool {
+    action(name).is_some()
+}
+
+#[cfg(feature = "failpoints")]
+pub fn point(name: &str) -> Result<()> {
+    let action = action(name);
+    match action.as_deref() {
         None => Ok(()),
         Some("error") => anyhow::bail!("failpoint {name}"),
         Some("pause") => pause(name),

@@ -1,7 +1,13 @@
 //! Exec: a client runs a program on the server's machine without a pane or
 //! a shell (`ExecStart`), and gets its stdout and stderr apart
 //! (`ExecOutput`) and how it ended (`ExecExit`); it can feed its stdin
-//! (`ExecInput`), signal it (`ExecSignal`) or kill it (`ExecCancel`).
+//! (`ExecInput`), signal it (`ExecSignal`) or kill it (`ExecCancel`). On the
+//! bus the same is `exec.run`, `exec.input`, `exec.signal` (`bus/core/exec.rs`).
+//!
+//! [`Execs`] knows no protocol: a [`Program`] is started for a caller, and
+//! what it does goes to the [`Report`] it was started with (the `tilr.v1`
+//! client's queue here, a stream on the bus). [`Execs::on_message`] is the
+//! `tilr.v1` side on top of it.
 //!
 //! The program is started from `argv` as it is, with no shell, as the leader
 //! of a process group of its own. Nothing of it outlives the exec: when it
@@ -11,9 +17,10 @@
 //! are not handed over in a reload: a client that is still connected gets
 //! `ExecExit` with the reason.
 //!
-//! Output goes by the client's bulk lane ([`ToClient::send_bulk`]): a pipe
-//! is read only as fast as the lane has room, so a slow client holds the
-//! program up (it blocks writing) rather than the server's memory growing.
+//! Output goes by the client's bulk lane ([`ToClient::send_bulk`], or the
+//! bus stream's credit): a pipe is read only as fast as the lane has room, so
+//! a slow client holds the program up (it blocks writing) rather than the
+//! server's memory growing.
 //! `ExecExit` goes the same way, after the last of the output, and is always
 //! the exec's last message. Stdin the
 //! other way is held to [`INPUT_WINDOW`] bytes not yet taken by the
@@ -24,8 +31,10 @@
 //! [`Sink`].
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,13 +42,13 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tilr_proto::{
-    ExecExit, ExecInput, ExecInputAck, ExecOutput, ExecStart, ExecStarted, ServerMessage,
-    client_message::Msg, server_message,
+    ExecExit, ExecInputAck, ExecOutput, ExecStarted, ServerMessage, client_message::Msg,
+    server_message,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::signal::unix::{Signal, SignalKind, signal};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::outbox::ToClient;
@@ -50,7 +59,7 @@ const CHUNK: usize = 64 * 1024;
 /// taken; more is an overrun, and the exec is killed.
 pub const INPUT_WINDOW: usize = 4 << 20;
 /// Execs one client may have running at once.
-const MAX_EXECS_PER_CLIENT: usize = 64;
+pub const MAX_EXECS_PER_CLIENT: usize = 64;
 /// How long after the program's group is gone its output is still waited
 /// for: a process that left the group (`setsid`) may hold the pipes open.
 /// Only the time spent waiting on the pipe counts, not waiting for room on
@@ -77,6 +86,74 @@ pub enum Output {
 
 /// Where the tasks' outputs go: to the supervisor's actor.
 pub type Sink = Arc<dyn Fn(Output) + Send + Sync>;
+
+/// A boxed, sendable future of a [`Report`].
+pub type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// What to run: the program and its arguments as they are, no shell.
+#[derive(Clone, Debug, Default)]
+pub struct Program {
+    pub argv: Vec<String>,
+    /// Empty: the home directory.
+    pub cwd: String,
+    /// `NAME=value`, added to the server's environment.
+    pub env: Vec<String>,
+    /// Its stdin is fed by [`Execs::input`]; without, it reads end of file.
+    pub stdin: bool,
+    /// 0: no limit.
+    pub timeout_ms: u32,
+}
+
+/// How an exec ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Exit {
+    pub exec_id: u64,
+    /// Its exit status, if it exited; 0 if a signal killed it.
+    pub code: i32,
+    /// The signal that killed it, 0 if none.
+    pub signal: i32,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    /// Why the server killed it on its own; empty otherwise.
+    pub reason: String,
+}
+
+/// Where what an exec does goes: a `tilr.v1` client's queue or a bus stream.
+/// Called from the exec's tasks, never from the actor except
+/// [`started`](Self::started) and [`exit_now`](Self::exit_now).
+pub trait Report: Send + Sync + 'static {
+    /// The program started, before any of its output. `false`: the caller
+    /// cannot take it (stuck), and the exec is dropped.
+    fn started(&self, exec_id: u64, pid: u32) -> bool;
+    /// Output of stream 1 (stdout) or 2 (stderr), at most 64 KiB; waits for
+    /// room. `Err` once nobody takes it.
+    fn output(&self, exec_id: u64, stream: u32, data: Bytes) -> Pending<'_, Result<(), ()>>;
+    /// The program took stdin, `taken` bytes in all, and none is queued
+    /// behind. `false`: the caller cannot take it (stuck).
+    fn input_taken(&self, exec_id: u64, taken: u64) -> bool;
+    /// The end, after the last of the output; waits for room.
+    fn exit(&self, exit: Exit) -> Pending<'_, ()>;
+    /// The end, without waiting: a stop that gave up on the exec.
+    fn exit_now(&self, exit: Exit);
+}
+
+/// Why [`Execs`] did not do what it was asked; its text is for the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// No exec of that id is the client's.
+    NoExec(String),
+    /// The client has [`MAX_EXECS_PER_CLIENT`] running.
+    Limit(String),
+    /// The program did not start, its stdin is closed, or it was overrun.
+    Refused(String),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::NoExec(text) | Self::Limit(text) | Self::Refused(text)) = self;
+        f.write_str(text)
+    }
+}
 
 /// Why the server killed a program on its own (or as asked).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -136,7 +213,7 @@ struct Run {
     /// `Hello.client_id` of the client, for the log.
     client_id: String,
     control: mpsc::UnboundedSender<Control>,
-    to_client: ToClient,
+    report: Arc<dyn Report>,
     /// `None` once stdin is closed, or if it was never asked for.
     stdin: Option<Stdin>,
     task: JoinHandle<()>,
@@ -145,10 +222,13 @@ struct Run {
     helpers: Vec<AbortHandle>,
 }
 
+/// Stdin for a program, and who waits to hear it was taken (`taken` in all).
+type Feed = (Bytes, Option<oneshot::Sender<u64>>);
+
 /// The way to a program's stdin.
 struct Stdin {
     /// Dropping it closes the pipe once what is queued has been written.
-    tx: mpsc::UnboundedSender<Bytes>,
+    tx: mpsc::UnboundedSender<Feed>,
     /// Bytes sent and not yet written to the pipe.
     queued: Arc<AtomicUsize>,
 }
@@ -171,87 +251,94 @@ impl Execs {
         msg: Msg,
     ) -> Option<server_message::Msg> {
         match msg {
-            Msg::ExecStart(start) => self
-                .start(client, client_id, to_client, start)
-                .map(server_message::Msg::ExecStarted),
+            Msg::ExecStart(start) => {
+                let report = Arc::new(ClientReport {
+                    request_id: start.request_id,
+                    to_client: to_client.clone(),
+                });
+                let program = Program {
+                    argv: start.argv,
+                    cwd: start.cwd,
+                    env: start.env,
+                    stdin: start.stdin,
+                    timeout_ms: start.timeout_ms,
+                };
+                self.start(client, client_id, program, report)
+                    .err()
+                    .map(|error| {
+                        tracing::info!(
+                            client,
+                            client_id,
+                            request = start.request_id,
+                            "exec refused: {error}"
+                        );
+                        server_message::Msg::ExecStarted(ExecStarted {
+                            request_id: start.request_id,
+                            error: error.to_string(),
+                            ..ExecStarted::default()
+                        })
+                    })
+            }
             Msg::ExecInput(input) => {
-                self.on_input(client, input);
+                if let Err(error) = self.input(client, input.exec_id, input.data, input.eof, None) {
+                    tracing::debug!(client, exec = input.exec_id, "exec input: {error}");
+                }
                 None
             }
             Msg::ExecSignal(signal) => {
-                if let Some(run) = self.owned(client, signal.exec_id) {
-                    let _ = run.control.send(Control::Signal(signal.signal));
+                if let Err(error) = self.signal(client, signal.exec_id, signal.signal) {
+                    tracing::debug!(client, exec = signal.exec_id, "exec signal: {error}");
                 }
                 None
             }
             Msg::ExecCancel(cancel) => {
-                if let Some(run) = self.owned(client, cancel.exec_id) {
-                    let _ = run.control.send(Control::Kill(End::Cancelled));
-                }
+                self.cancel(client, cancel.exec_id);
                 None
             }
             _ => None,
         }
     }
 
-    /// Start a program for a client. Its `ExecStarted` is queued for the
-    /// client here, ahead of any output; returned is a refusal.
-    fn start(
+    /// Start a program for `client` (a `tilr.v1` client or a bus connection,
+    /// whose ids do not overlap). Its [`Report::started`] is told here, ahead
+    /// of any output; `Ok` is its exec id, `Err` says why it did not start
+    /// (the caller logs it).
+    pub fn start(
         &mut self,
         client: u64,
         client_id: &str,
-        to_client: &ToClient,
-        start: ExecStart,
-    ) -> Option<ExecStarted> {
-        let refused = |error: String| {
-            tracing::info!(
-                client,
-                client_id,
-                request = start.request_id,
-                "exec refused: {error}"
-            );
-            Some(ExecStarted {
-                request_id: start.request_id,
-                error,
-                ..ExecStarted::default()
-            })
-        };
+        program: Program,
+        report: Arc<dyn Report>,
+    ) -> Result<u64, Refusal> {
         let running = self
             .runs
             .values()
             .filter(|run| run.client == client)
             .count();
         if running >= MAX_EXECS_PER_CLIENT {
-            return refused(format!("{MAX_EXECS_PER_CLIENT} execs running already"));
+            return Err(Refusal::Limit(format!(
+                "{MAX_EXECS_PER_CLIENT} execs running already"
+            )));
         }
-        let mut child = match spawn(&start) {
-            Ok(child) => child,
-            Err(err) => return refused(err),
-        };
+        let mut child = spawn(&program).map_err(Refusal::Refused)?;
         let Some(pid) = child.id() else {
-            return refused("the program is gone".into());
+            return Err(Refusal::Refused("the program is gone".into()));
         };
         let exec_id = self.next_exec;
         self.next_exec += 1;
-        let started = encode(server_message::Msg::ExecStarted(ExecStarted {
-            request_id: start.request_id,
-            exec_id,
-            pid,
-            error: String::new(),
-        }));
-        if to_client.try_send(started.into()).is_err() {
+        if !report.started(exec_id, pid) {
             tracing::debug!(client, "exec dropped: the client is not taking packets");
             kill_group(pid, libc::SIGKILL);
             (self.sink)(Output::Stuck { client });
-            return None;
+            return Ok(exec_id);
         }
         tracing::info!(
             client,
             client_id,
             exec = exec_id,
             pid,
-            program = start.argv[0],
-            args = start.argv.len() - 1,
+            program = program.argv[0],
+            args = program.argv.len() - 1,
             "exec started"
         );
 
@@ -259,11 +346,11 @@ impl Execs {
         let output = tokio::spawn({
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
-            let to_client = to_client.clone();
+            let report = Arc::clone(&report);
             async move {
                 tokio::join!(
-                    pump(exec_id, 1, stdout, to_client.clone(), over.clone()),
-                    pump(exec_id, 2, stderr, to_client, over),
+                    pump(exec_id, 1, stdout, &*report, over.clone()),
+                    pump(exec_id, 2, stderr, &*report, over),
                 );
             }
         });
@@ -277,7 +364,7 @@ impl Execs {
                     pipe,
                     rx,
                     Arc::clone(&queued),
-                    to_client.clone(),
+                    Arc::clone(&report),
                     Arc::clone(&self.sink),
                 ));
                 (Some(Stdin { tx, queued }), Some(feed))
@@ -293,12 +380,13 @@ impl Execs {
             client_id: client_id.to_owned(),
             child,
             pid,
-            limit: (start.timeout_ms > 0).then(|| Duration::from_millis(start.timeout_ms.into())),
+            limit: (program.timeout_ms > 0)
+                .then(|| Duration::from_millis(program.timeout_ms.into())),
             control: control_rx,
             output,
             over: over_tx,
             feed,
-            to_client: to_client.clone(),
+            report: Arc::clone(&report),
             sink: Arc::clone(&self.sink),
         }));
         self.runs.insert(
@@ -307,50 +395,74 @@ impl Execs {
                 client,
                 client_id: client_id.to_owned(),
                 control,
-                to_client: to_client.clone(),
+                report,
                 stdin,
                 task,
                 helpers,
             },
         );
-        None
+        Ok(exec_id)
     }
 
-    /// Stdin for a program: queued for it, or the end of it.
-    fn on_input(&mut self, client: u64, input: ExecInput) {
+    /// Stdin for a program of `client`: queued for it, then the end of it if
+    /// `eof`. `taken` hears how many bytes the program took in all once it
+    /// took these. `Err` says why not (the exec killed if it was an overrun).
+    pub fn input(
+        &mut self,
+        client: u64,
+        exec_id: u64,
+        data: Bytes,
+        eof: bool,
+        taken: Option<oneshot::Sender<u64>>,
+    ) -> Result<(), Refusal> {
         let Some(run) = self
             .runs
-            .get_mut(&input.exec_id)
+            .get_mut(&exec_id)
             .filter(|run| run.client == client)
         else {
-            tracing::debug!(
-                client,
-                exec = input.exec_id,
-                "input for an exec not the client's"
-            );
-            return;
+            return Err(Refusal::NoExec(format!("no exec {exec_id} of this client")));
         };
         let Some(stdin) = &run.stdin else {
-            tracing::debug!(client, exec = input.exec_id, "input after the end of stdin");
-            return;
+            return Err(Refusal::Refused(format!(
+                "exec {exec_id}: its stdin is closed"
+            )));
         };
-        if !input.data.is_empty() {
-            let len = input.data.len();
-            if stdin.queued.fetch_add(len, Ordering::Relaxed) + len > INPUT_WINDOW {
-                tracing::warn!(
-                    client,
-                    exec = input.exec_id,
-                    "exec killed: the client sent stdin {INPUT_WINDOW} bytes ahead of the program"
-                );
-                run.stdin = None;
-                let _ = run.control.send(Control::Kill(End::InputOverrun));
-                return;
-            }
-            let _ = stdin.tx.send(input.data);
+        let len = data.len();
+        if len > 0 && stdin.queued.fetch_add(len, Ordering::Relaxed) + len > INPUT_WINDOW {
+            tracing::warn!(
+                client,
+                exec = exec_id,
+                "exec killed: the client sent stdin {INPUT_WINDOW} bytes ahead of the program"
+            );
+            run.stdin = None;
+            let _ = run.control.send(Control::Kill(End::InputOverrun));
+            return Err(Refusal::Refused(format!(
+                "exec {exec_id}: more than {INPUT_WINDOW} bytes of stdin not taken yet: killed"
+            )));
         }
-        if input.eof {
+        if len > 0 || taken.is_some() {
+            let _ = stdin.tx.send((data, taken));
+        }
+        if eof {
             // The pipe closes once what is queued is written.
             run.stdin = None;
+        }
+        Ok(())
+    }
+
+    /// Signal the process group of a program of `client`.
+    pub fn signal(&mut self, client: u64, exec_id: u64, signal: i32) -> Result<(), Refusal> {
+        let run = self
+            .owned(client, exec_id)
+            .ok_or_else(|| Refusal::NoExec(format!("no exec {exec_id} of this client")))?;
+        let _ = run.control.send(Control::Signal(signal));
+        Ok(())
+    }
+
+    /// Kill a program of `client` as cancelled.
+    pub fn cancel(&mut self, client: u64, exec_id: u64) {
+        if let Some(run) = self.owned(client, exec_id) {
+            let _ = run.control.send(Control::Kill(End::Cancelled));
         }
     }
 
@@ -402,14 +514,11 @@ impl Execs {
                 reason = why.reason(),
                 "exec ended without its status"
             );
-            let exit = encode(server_message::Msg::ExecExit(ExecExit {
+            run.report.exit_now(Exit {
                 exec_id,
                 reason: why.reason().into(),
-                ..ExecExit::default()
-            }));
-            // Behind the output already queued on the bulk lane, without
-            // waiting for room: one small packet over the bound.
-            let _ = run.to_client.queue_bulk_now(exit);
+                ..Exit::default()
+            });
         }
         true
     }
@@ -423,8 +532,8 @@ impl Execs {
     }
 }
 
-/// Start the program of an `ExecStart`, or say why it cannot be.
-fn spawn(start: &ExecStart) -> Result<Child, String> {
+/// Start a program, or say why it cannot be.
+fn spawn(start: &Program) -> Result<Child, String> {
     let Some(program) = start.argv.first() else {
         return Err("no program".into());
     };
@@ -503,7 +612,7 @@ struct Running {
     over: watch::Sender<bool>,
     /// The task writing stdin.
     feed: Option<JoinHandle<()>>,
-    to_client: ToClient,
+    report: Arc<dyn Report>,
     sink: Sink,
 }
 
@@ -589,16 +698,17 @@ async fn run(mut r: Running) {
         ms = started.elapsed().as_millis() as u64,
         "exec ended"
     );
-    let exit = encode(server_message::Msg::ExecExit(ExecExit {
-        exec_id: r.exec_id,
-        code,
-        signal,
-        timed_out: end == Some(End::TimedOut),
-        cancelled: end == Some(End::Cancelled),
-        reason: reason.into(),
-    }));
-    // By the bulk lane: after the last of the output.
-    let _ = r.to_client.send_bulk(exit).await;
+    // After the last of the output.
+    r.report
+        .exit(Exit {
+            exec_id: r.exec_id,
+            code,
+            signal,
+            timed_out: end == Some(End::TimedOut),
+            cancelled: end == Some(End::Cancelled),
+            reason: reason.into(),
+        })
+        .await;
     (r.sink)(Output::Ended { exec_id: r.exec_id });
 }
 
@@ -661,7 +771,7 @@ async fn pump(
     exec_id: u64,
     stream: u32,
     pipe: Option<impl AsyncRead + Unpin + Send>,
-    to_client: ToClient,
+    report: &dyn Report,
     mut over: watch::Receiver<bool>,
 ) {
     let Some(mut pipe) = pipe else {
@@ -709,12 +819,8 @@ async fn pump(
             Ok(0) | Err(_) => return,
             Ok(n) => n,
         };
-        let packet = encode(server_message::Msg::ExecOutput(ExecOutput {
-            exec_id,
-            stream,
-            data: Bytes::copy_from_slice(&buf[..n]),
-        }));
-        if to_client.send_bulk(packet).await.is_err() {
+        let data = Bytes::copy_from_slice(&buf[..n]);
+        if report.output(exec_id, stream, data).await.is_err() {
             return;
         }
     }
@@ -735,31 +841,28 @@ async fn feed(
     exec_id: u64,
     client: u64,
     mut pipe: ChildStdin,
-    mut from: mpsc::UnboundedReceiver<Bytes>,
+    mut from: mpsc::UnboundedReceiver<Feed>,
     queued: Arc<AtomicUsize>,
-    to_client: ToClient,
+    report: Arc<dyn Report>,
     sink: Sink,
 ) {
     let mut taken = 0u64;
     let mut open = true;
-    while let Some(data) = from.recv().await {
+    while let Some((data, waiting)) = from.recv().await {
         if open && pipe.write_all(&data).await.is_err() {
             open = false;
         }
         queued.fetch_sub(data.len(), Ordering::Relaxed);
         taken += data.len() as u64;
+        if let Some(waiting) = waiting {
+            let _ = waiting.send(taken);
+        }
         // Unless more is queued already, which acknowledges it too.
-        if from.is_empty() {
-            let ack = encode(server_message::Msg::ExecInputAck(ExecInputAck {
-                exec_id,
-                taken,
-            }));
-            if to_client.try_send(ack.into()).is_err() {
-                // A client left without its last ack would wait for room
-                // for ever.
-                sink(Output::Stuck { client });
-                return;
-            }
+        if from.is_empty() && !report.input_taken(exec_id, taken) {
+            // A client left without its last ack would wait for room for
+            // ever.
+            sink(Output::Stuck { client });
+            return;
         }
     }
     // Dropping the pipe closes it: the program reads end of file.
@@ -769,9 +872,76 @@ fn encode(msg: server_message::Msg) -> Bytes {
     tilr_proto::encode(&ServerMessage::from(msg))
 }
 
+/// What an exec of a `tilr.v1` client does goes to its queue: replies by the
+/// interactive lane, output and the exit by the bulk lane.
+struct ClientReport {
+    request_id: u64,
+    to_client: ToClient,
+}
+
+impl Report for ClientReport {
+    fn started(&self, exec_id: u64, pid: u32) -> bool {
+        let started = encode(server_message::Msg::ExecStarted(ExecStarted {
+            request_id: self.request_id,
+            exec_id,
+            pid,
+            error: String::new(),
+        }));
+        self.to_client.try_send(started.into()).is_ok()
+    }
+
+    fn output(&self, exec_id: u64, stream: u32, data: Bytes) -> Pending<'_, Result<(), ()>> {
+        let packet = encode(server_message::Msg::ExecOutput(ExecOutput {
+            exec_id,
+            stream,
+            data,
+        }));
+        Box::pin(async move { self.to_client.send_bulk(packet).await.map_err(|_| ()) })
+    }
+
+    fn input_taken(&self, exec_id: u64, taken: u64) -> bool {
+        let ack = encode(server_message::Msg::ExecInputAck(ExecInputAck {
+            exec_id,
+            taken,
+        }));
+        self.to_client.try_send(ack.into()).is_ok()
+    }
+
+    fn exit(&self, exit: Exit) -> Pending<'_, ()> {
+        let packet = encode(server_message::Msg::ExecExit(exit.into()));
+        // By the bulk lane: after the last of the output.
+        Box::pin(async move {
+            let _ = self.to_client.send_bulk(packet).await;
+        })
+    }
+
+    fn exit_now(&self, exit: Exit) {
+        // Behind the output already queued on the bulk lane, without waiting
+        // for room: one small packet over the bound.
+        let _ = self
+            .to_client
+            .queue_bulk_now(encode(server_message::Msg::ExecExit(exit.into())));
+    }
+}
+
+impl From<Exit> for ExecExit {
+    fn from(exit: Exit) -> Self {
+        Self {
+            exec_id: exit.exec_id,
+            code: exit.code,
+            signal: exit.signal,
+            timed_out: exit.timed_out,
+            cancelled: exit.cancelled,
+            reason: exit.reason,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+
+    use tilr_proto::ExecStart;
 
     use super::*;
 

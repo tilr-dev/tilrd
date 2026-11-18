@@ -942,8 +942,9 @@ the frame limit. A participant is callable, and listed by `bus.methods`, from th
 it has its `HelloAck`. The broker sets `from` of every call and event to the sender's
 identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
 `clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
-`bus.ping`, the control methods of [Instances](#instances) and the `pane.*` methods of
-[Panes](#panes). A call goes to the provider named by `target`, else round robin over the
+`bus.ping`, the control methods of [Instances](#instances), the `pane.*` methods of
+[Panes](#panes) and the `server.*`, `fs.*`, `exec.*` and `clipboard.*` methods of
+[Services](#services). A call goes to the provider named by `target`, else round robin over the
 providers, or to the one that activated last for a method declared `LAST_ACTIVE`; calls
 between two participants keep their order. A newer connection with the same `client_id`
 supersedes the older (close 4000).
@@ -994,7 +995,7 @@ by either protocol is seen, typed into and closed by both.
 | method | takes | answers |
 |---|---|---|
 | `pane.create` | `cols`, `rows` (0: 80x24), `command` (empty: the login shell), `cwd`, `profile` (a name from [Launch profiles](#launch-profiles); empty: none) | its `PaneInfo` once the program runs; cancelled before then, the pane is closed once it runs |
-| `pane.list` | nothing | the `PaneInfo` of every pane, oldest first |
+| `pane.list` | nothing | the `PaneInfo` of every running pane the caller may access, oldest first; a pane whose program is still starting is not listed |
 | `pane.close` | `pane_id` | `{exit_code}` once the program ended |
 | `pane.input` | `pane_id`, one of `key`, `mouse`, `paste`, `raw`, `scroll`, `clear`; `seq`, `input_seq` | `InputAck{pane_id, seq}` once applied: the pty took its last byte, or the scroll or clear took effect |
 | `pane.resize` | `pane_id`, `cols`, `rows`, `cell_width_px`, `cell_height_px` (0: keep), `seq`, `input_seq` | `InputAck` once the resize took effect |
@@ -1035,7 +1036,8 @@ cursor, title, cwd, `alive`, `exit_code` and up to `history_lines` (at most 1000
 scrollback, oldest first. The text is at most 4 MiB: past it the oldest history rows are
 left out, and a screen alone over it is `too_large`. With `since_seq` the call waits for a
 `seq` after it or the exit, at most `min(wait_ms, 25 s)` (`wait_ms` 0: not at all) and
-100 ms short of the call's deadline; when that runs out it answers its last text with its
+100 ms short of the call's deadline; a call's deadline is at most 10 s, so a wait ends
+after about 9.9 s at most; when that runs out it answers its last text with its
 `seq`, not `timeout`. A pane process that does not give its text in the time the call has
 left (5 s for a call without a deadline) is `unavailable`.
 
@@ -1051,6 +1053,65 @@ out), and read under that name or the proto name; 64-bit integers are written as
 and read from strings or numbers; `bytes` are written as padded standard base64 and read
 with or without padding, in the standard or URL alphabet; enums are written by name and read
 by name or number; `null` is the default and unknown fields are ignored.
+
+### Services
+
+tilrd serves the files, programs and clipboard of `tilr.v1` on the bus too (schemas in
+`tilr.server.v1`, `tilr.fs.v1`, `tilr.exec.v1`, `tilr.clipboard.v1`), with the same
+limits, roots and options. A feature turned off (`--no-files`, `--no-exec`, `--no-clipboard`, `--no-agent`, or
+the [configuration file](#the-configuration-file)) is missing from `server.info`'s `features`, and its methods are not provided
+(`not_found`). Calls and stream openings take `application/json` as `pane.*` does; chunks
+and events stay protobuf.
+
+| method | takes | answers |
+|---|---|---|
+| `server.info` | nothing | `server_version`, `update_channel`, `server_id`, `features` (of `clipboard`, `files`, `host-events`, `agent`, `exec`, in that order), `clipboard_max_bytes` and `fs_max_bytes` (0 without their feature), as `tilr.v1`'s `HelloAck` |
+| `server.reload` | nothing | `{}`, then the server reloads as on SIGUSR1; the reply can be lost when the connection ends at the reload, so a caller takes either as done; the owner, or the `control` right `reload` |
+| `server.update` | nothing | a bulk stream of `tilrd update` run as `exec.run` runs a program (below); the owner, or the `control` right `reload` |
+| `server.command` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream of the server's own executable run with `argv`, as `exec.run`; the owner on the Unix socket only, else `denied` |
+| `fs.list` | `path` | `FsEntries`: the directory's real path and its entries |
+| `fs.stat` | `path` | `FsInfo`: the real path and its entry |
+| `fs.read` | `path`, `offset`, `length` (0: to the end) | a bulk stream of `FsData` chunks (`total_size`, `file_size` on each), each at most 256 KiB and the stream's window |
+| `fs.write` | `transfer_id`, `path`, `total_size`, `create`, `truncate`, `data`, `last` | `FsAck` per chunk once written; the file is replaced after the `last` |
+| `fs.mkdir`, `fs.rename`, `fs.delete` | `path`; `from`, `to`; `path`, `recursive` | `FsAck` once done |
+| `fs.watch` | `path` | `{watch_id}`; then events `fs.changed.<watch_id>`, to any subscriber with the right to the subject, not only the watching connection |
+| `fs.unwatch` | `watch_id` | `FsAck`; a watch of another connection, or none, is `not_found` |
+| `exec.run` | `argv`, `cwd`, `env`, `stdin`, `timeout_ms` | a bulk stream: `RunChunk{started{exec_id, pid}}`, then `RunChunk{output{stream, data}}` (1 stdout, 2 stderr), `End` with `ExecExit` |
+| `exec.input` | `exec_id`, `data`, `eof` | `{exec_id, taken}` once the program took the bytes; `bad_request` once its stdin is closed or overrun |
+| `exec.signal` | `exec_id`, `signal` | `{}` once its process group was signalled |
+| `clipboard.put` | `transfer_id`, `mime`, `total_size` (on the first chunk), `data`, `last` | `{transfer_id}` per chunk; the `last` once the panes' `xclip` and `wl-paste` read it |
+| `clipboard.get` | `transfer_id` of a `pane.copied` | a bulk stream of `ClipboardData` chunks, `pane_id`, `mime` and `total_size` on the first; `not_found` to a caller that may not access the pane |
+
+Paths are as in `tilr.v1`: `~` is the home directory, a path outside the shared roots is
+refused, `*_bytes` carry names that are not UTF-8, and a read-only server refuses changes.
+A chunk of `fs.write` or `clipboard.put` names its transfer by the caller's connection and
+`transfer_id`; once a transfer failed (the file exists without `create`, the content is over
+`fs_max_bytes` or `clipboard_max_bytes`, a disk error) the chunk and each later chunk of it
+are answered with the same error. Such refusals are `bad_request` with a message meant for
+the user (`<path>: outside the directories this server shares`, `<path>: already exists`,
+`too large: …`, `the write carries more data than it announced`); a program that did not
+start is `spawn_failed`, an `exec_id` of another connection or none `not_found` (for
+`exec.input` and `exec.signal` alike).
+
+A watch, an upload and a running program belong to the connection that made them: only it
+unwatches, feeds or signals them, and they go when it ends or a connection of the same
+client supersedes it (a program's group is killed, an upload's temporary file removed). A
+connection has at most 32 watches, 16 uploads in progress (first chunk sent, `last` not yet)
+and 64 programs running; one more is `busy` (`32 watches of this connection already`,
+`16 uploads in progress already`, `64 execs running already`).
+Cancelling an `exec.run` stream kills the program's process group; a reader that credits
+slowly holds the program's output back, and more than 4 MiB of `exec.input` sent and not
+answered kills it (`reason` `input overrun`).
+
+A copy made in a pane (OSC 52, or `xclip`/`wl-copy` there) is the event
+`pane.copied {pane_id, transfer_id, mime, total_size}` with scope `pane:<id>`;
+`clipboard.get` with its `transfer_id` streams the content until a newer copy replaces it,
+then answers `not_found`.
+
+`host.open` (for `tilr edit` and `tilr open` in a pane) and the SSH agent
+(`ssh_agent.request`, `ssh_agent.close`) are still served by `tilr.v1` only: they are
+calls tilrd makes to the clients watching a pane, which the bus cannot yet address one
+connection at a time.
 
 ### Instances
 
