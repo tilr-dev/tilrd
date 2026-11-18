@@ -908,11 +908,8 @@ impl Shared {
             };
             entries.push(entry_of(item.file_name(), &item.path(), &meta));
         }
-        entries.sort_by(|a, b| {
-            let (a, a_bytes) = name_of(&a.name);
-            let (b, b_bytes) = name_of(&b.name);
-            a.cmp(&b).then(a_bytes.cmp(&b_bytes))
-        });
+        // As `tilr.v1` sorted its entries: by the name, then its bytes.
+        entries.sort_by_cached_key(|entry| name_of(&entry.name));
         Ok((dir, entries))
     }
 
