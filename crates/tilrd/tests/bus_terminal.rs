@@ -1638,7 +1638,11 @@ mod services {
         let info: InfoReply = bus_services::call(&owner, "server.info", &InfoRequest {})
             .await
             .unwrap();
-        assert_eq!(info.features, ["clipboard", "host-events", "agent"]);
+        let mut features = vec!["clipboard", "host-events", "agent"];
+        if cfg!(target_os = "linux") {
+            features.push("sandbox");
+        }
+        assert_eq!(info.features, features);
         assert_eq!(info.fs_max_bytes, 0);
         for method in ["exec.run", "fs.list"] {
             let error = stream_all(&owner, method, &RunRequest::default(), 0)
