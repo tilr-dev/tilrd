@@ -689,6 +689,18 @@ impl ConnState {
             true
         });
     }
+
+    /// Set `Up` if it still awaits `Hello`: a connection that ended before it was
+    /// announced (superseded) stays ended. Returns whether it is up.
+    pub(super) fn up(state: &watch::Sender<ConnState>) -> bool {
+        state.send_if_modified(|current| {
+            if *current != ConnState::AwaitingHello {
+                return false;
+            }
+            *current = ConnState::Up;
+            true
+        })
+    }
 }
 
 /// What [`BrokerHandle::attach_stream`] gives the runner of an instance.
@@ -978,13 +990,32 @@ impl BrokerHandle {
     // Connections
     // -----------------------------------------------------------------------
 
-    /// Take a greeted connection in: its `HelloAck` is queued already, so nothing
-    /// reaches it before. A connection of the same principal and `client_id`
-    /// still open is closed 4000 (B12).
-    pub(super) fn register(
+    /// Take a greeted connection in: it is entered as a connection and as the
+    /// provider of its methods, and `ack` (its `HelloAck`) is queued under the same
+    /// lock, so nothing the broker routes to it comes before and its methods are
+    /// there once it has it. Only then is it announced [`ConnState::Up`], unless a
+    /// newer connection superseded it in between: returns whether it is up. A
+    /// connection of the same principal and `client_id` still open is closed 4000
+    /// (B12).
+    pub(super) async fn register(
         &self,
         principal: Principal,
         provides: Vec<MethodSpec>,
+        ack: Msg,
+        out: Out,
+        state: watch::Sender<ConnState>,
+    ) -> bool {
+        let announce = state.clone();
+        self.enter(principal, provides, ack, out, state).await;
+        ConnState::up(&announce)
+    }
+
+    /// [`register`](Self::register) up to the announcement.
+    async fn enter(
+        &self,
+        principal: Principal,
+        provides: Vec<MethodSpec>,
+        ack: Msg,
         out: Out,
         state: watch::Sender<ConnState>,
     ) {
@@ -1015,11 +1046,16 @@ impl BrokerHandle {
             .into_iter()
             .map(|spec| (spec.method.clone(), spec))
             .collect();
-        state.send_replace(ConnState::Up);
+        // Held here by a test: a greeted connection the broker is about to enter, of
+        // which nothing may be observable yet (no `HelloAck`, not up, not logged).
+        #[cfg(feature = "failpoints")]
+        crate::fail::point_async(format!("bus-registering:{}", principal.client_name)).await;
         let mut st = self.lock();
         for method in provides.keys() {
             st.providers.entry(method.clone()).or_default().push(id);
         }
+        // Queued first: nothing the broker routes to the connection comes before it.
+        out.send(ack, Lane::Interactive);
         st.conns.insert(
             id,
             Conn {
@@ -3478,6 +3514,46 @@ mod tests {
             within(returned_rx).await.unwrap(),
             "the stream is not closed once caught_up returned"
         );
+    }
+
+    #[tokio::test]
+    async fn a_connection_superseded_before_it_is_announced_is_never_up() {
+        use super::super::transport::{Framing, out};
+        let broker = broker();
+        let principal = |connection_id| Principal {
+            identity: Identity::Instance("t-1".into()),
+            rights: None,
+            credential: None,
+            origin: String::new(),
+            transport: Transport::InstanceFd,
+            client_id: "c-1".into(),
+            client_name: "t-1".into(),
+            connection_id,
+        };
+        let ack = || Msg::HelloAck(tilr_bus::bus::HelloAck::default());
+        let (out_a, _outbox_a, _closing_a) = out(1, Framing::Stream);
+        let (out_b, _outbox_b, _closing_b) = out(2, Framing::Stream);
+        let (state_a, mut watched_a) = watch::channel(ConnState::AwaitingHello);
+        let (state_b, watched_b) = watch::channel(ConnState::AwaitingHello);
+        // A is in the table and not yet announced when B, the same client, comes.
+        broker
+            .enter(principal(1), Vec::new(), ack(), out_a, state_a.clone())
+            .await;
+        assert!(
+            broker
+                .register(principal(2), Vec::new(), ack(), out_b, state_b)
+                .await
+        );
+        assert!(matches!(
+            *watched_a.borrow_and_update(),
+            ConnState::Ended(_)
+        ));
+        assert_eq!(*watched_b.borrow(), ConnState::Up);
+        // A's announcement comes after its end: it stays ended, nobody is woken.
+        let up = ConnState::up(&state_a);
+        assert!(!watched_a.has_changed().unwrap(), "A was announced again");
+        assert!(matches!(*watched_a.borrow(), ConnState::Ended(_)));
+        assert!(!up);
     }
 
     #[tokio::test]

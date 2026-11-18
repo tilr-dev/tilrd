@@ -938,7 +938,8 @@ at most 1024 methods; more is refused `bad_request`. On the Unix socket the part
 is the owner; on TCP the owner shows the access token. This build refuses credentials
 (`denied`), at Hello and in `CredentialUpdate`. The answer, `HelloAck`, is the first
 thing a participant hears: its identity (`owner`), the connection id, the server id and
-the frame limit. The broker sets `from` of every call and event to the sender's
+the frame limit. A participant is callable, and listed by `bus.methods`, from the moment
+it has its `HelloAck`. The broker sets `from` of every call and event to the sender's
 identity. Methods in the namespaces `bus`, `pane`, `server`, `fs`, `exec` and
 `clipboard` are tilrd's own and cannot be provided (`reserved`); tilrd answers
 `bus.ping`, the control methods of [Instances](#instances) and the `pane.*` methods of
@@ -1103,7 +1104,9 @@ An instance that exits, whose connection ends while its process lives, or that h
 the ones in flight answered), sends SIGTERM to its group, SIGKILL after 3 s, and keeps it
 stopped until `bus.start`. `bus.reload` restarts an instance, a module or all that run, one
 at a time, each drained and waited for until its `Hello`, so a method with two providers has
-no gap. A caller that stops or reloads itself has its reply first. Until the server hands its
+no gap. When `bus.start` or `bus.reload` answers, the instance's methods are callable and
+listed by `bus.methods`; a draining instance is offered no new calls by method from the
+moment `bus.instances` shows it `draining`. A caller that stops or reloads itself has its reply first. Until the server hands its
 instances over a reload, a reload stops every instance and the successor starts them again.
 
 The control methods, called by the owner or by an instance with the matching `control`

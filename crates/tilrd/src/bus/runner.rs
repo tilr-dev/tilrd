@@ -927,7 +927,13 @@ impl Life {
             .with_entry(&self.name, |entry| f(&mut entry.snap));
     }
 
-    fn draining(&self) {
+    /// Draining in the broker before it is told: whoever sees the instance
+    /// `draining` sees it offered no new calls.
+    async fn draining(&self, conn: ConnId) {
+        self.runner.0.broker.set_draining(conn, true);
+        // Held here by a test: drained in the broker, not yet told.
+        #[cfg(feature = "failpoints")]
+        crate::fail::point_async(format!("bus-draining:{}", self.name)).await;
         self.set(|snap| snap.state = State::Draining);
         tracing::info!(target: "tilrd::bus", "instance {} is draining", self.name);
     }
@@ -1136,13 +1142,13 @@ impl Life {
                         let _ = tx.send(Ok(pid));
                     }
                     Some(Cmd::Stop { drain, done }) => {
-                        self.draining();
+                        self.draining(conn.id).await;
                         wind_down(&self.runner, &mut running, &mut conn, drain).await;
                         self.finish(Some(done));
                         return Outcome::Stopped;
                     }
                     Some(Cmd::Reload { drain, done }) => {
-                        self.draining();
+                        self.draining(conn.id).await;
                         wind_down(&self.runner, &mut running, &mut conn, drain).await;
                         self.reload = Some(ReloadWait { old_pid: pid, done });
                         return Outcome::Reload;
