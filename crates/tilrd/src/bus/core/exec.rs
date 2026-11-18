@@ -8,9 +8,11 @@
 //! cancel, when its caller's connection ends, at a reload or a stop. What it
 //! does reaches the stream through a [`BusReport`]: a short queue to the
 //! stream's handler, which sends each chunk within the reader's credit, so a
-//! reader that credits slowly holds the program back. `server.update` and
+//! reader that credits slowly holds the program back (logged once per exec,
+//! the first time its output waits). `server.update` and
 //! `server.command` stream through [`stream_exec`] too.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -158,6 +160,8 @@ struct BusReport {
     items: mpsc::Sender<Item>,
     /// The end of an exec a stop gave up on: not behind its output.
     now: mpsc::UnboundedSender<Exit>,
+    /// Whether its output has waited for the reader yet (logged once).
+    waited: AtomicBool,
 }
 
 impl Report for BusReport {
@@ -168,14 +172,21 @@ impl Report for BusReport {
 
     fn output(&self, exec_id: u64, stream: u32, data: Bytes) -> Pending<'_, Result<(), ()>> {
         Box::pin(async move {
-            self.items
-                .send(Item::Output(ExecOutput {
-                    exec_id,
-                    stream,
-                    data,
-                }))
-                .await
-                .map_err(|_| ())
+            let item = Item::Output(ExecOutput {
+                exec_id,
+                stream,
+                data,
+            });
+            let item = match self.items.try_send(item) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(()),
+                Err(mpsc::error::TrySendError::Full(item)) => item,
+            };
+            // The queue is full: the program waits for the reader's credit.
+            if !self.waited.swap(true, Ordering::Relaxed) {
+                tracing::info!(exec_id, "exec output waits for the reader");
+            }
+            self.items.send(item).await.map_err(|_| ())
         })
     }
 
@@ -265,6 +276,7 @@ pub(super) async fn stream_exec(core: Core, ctx: CallCtx, program: Program, out:
     let report = Arc::new(BusReport {
         items: items_tx,
         now: now_tx,
+        waited: AtomicBool::new(false),
     });
     let mut guard = CancelOnDrop {
         supervisor: core.supervisor.clone(),

@@ -2243,14 +2243,15 @@ mod services {
 
     #[tokio::test]
     async fn a_reader_that_credits_slowly_holds_the_program_back() {
-        const TOTAL: u64 = 16 << 20;
-        // What may be ahead of the reader: the pipe, the chunk read off it, the
-        // stream's queue and its window, with room to spare.
-        const AHEAD: u64 = 1 << 20;
+        // Far more than may be ahead of a reader that takes nothing: the pipe,
+        // the chunk read off it, the stream's short queue and its window.
+        const TOTAL: u64 = 4 << 20;
         let server = start();
         let owner = server.owner().await;
-        let done = server.dir.join("done");
-        let script = format!("head -c {TOTAL} /dev/zero; touch '{}'", done.display());
+        // The program opens the FIFO once it has written everything.
+        let fifo = server.dir.join("written");
+        let (mut written, _) = fifo_held(&fifo);
+        let script = format!("head -c {TOTAL} /dev/zero; exec 3>'{}'", fifo.display());
         let mut stream = within(
             owner.stream(
                 "exec.run",
@@ -2264,11 +2265,30 @@ mod services {
         )
         .await
         .unwrap();
-        started(&mut stream).await;
-        // Each chunk read credits the next: the program is never more than
-        // AHEAD bytes past what the reader took.
+        let (exec_id, _) = started(&mut stream).await;
+
+        // The reader takes nothing more: the program's output fills the
+        // window and the queue, and then waits for the reader.
+        let waits = format!("exec_id={exec_id}");
+        let waiting = server.wait_logged_event("the program's output waited", |lines| {
+            lines.iter().any(|line| {
+                line.contains("exec output waits for the reader") && line.contains(&waits)
+            })
+        });
+        tokio::select! {
+            biased;
+            _ = &mut written => panic!("the program wrote {TOTAL} bytes to a reader that took none"),
+            () = waiting => {}
+        }
+        // Held back: it cannot have written everything while nothing is taken.
+        assert_eq!(
+            written.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+            "the program wrote {TOTAL} bytes to a reader that took none"
+        );
+
+        // Taken, it all comes, and the program goes on to its end.
         let mut taken = 0u64;
-        let mut seen_done = None;
         while let Some(chunk) = within(stream.next()).await {
             let chunk = chunk.unwrap().bytes().unwrap();
             if let Some(tilr_bus::exec::run_chunk::Chunk::Output(output)) =
@@ -2276,16 +2296,9 @@ mod services {
             {
                 taken += output.data.len() as u64;
             }
-            if seen_done.is_none() && done.exists() {
-                seen_done = Some(taken);
-            }
         }
         assert_eq!(taken, TOTAL);
-        let seen_done = seen_done.unwrap_or(TOTAL);
-        assert!(
-            seen_done + AHEAD >= TOTAL,
-            "the program was done when the reader had taken {seen_done} of {TOTAL}"
-        );
+        within(written).await.expect("the program wrote everything");
     }
 
     #[tokio::test]
