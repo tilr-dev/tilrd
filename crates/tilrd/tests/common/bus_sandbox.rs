@@ -204,3 +204,15 @@ pub fn leftovers(runtime: &Path, pane_id: &str) -> [PathBuf; 2] {
     let dir = runtime.join("sandbox");
     [dir.join(pane_id), dir.join(format!("{pane_id}.request"))]
 }
+
+/// Wait until the screen of `watch` shows `text`; fails with the screen if it does not
+/// within [`super::TIMEOUT`] (less than the wait for each frame).
+pub async fn shows(watch: &mut super::bus_panes::Watching, text: &str) {
+    let limit = super::TIMEOUT - std::time::Duration::from_secs(5);
+    if tokio::time::timeout(limit, watch.wait_screen(text))
+        .await
+        .is_err()
+    {
+        panic!("never shown: {text:?}; screen:\n{}", watch.screen.text());
+    }
+}

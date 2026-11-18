@@ -3,7 +3,7 @@
 ### Requirement: A sandboxed profile starts a sandboxed pane
 On a server that lists `sandbox` in `server.info.features`, `pane.create` with a profile that has `[sandbox]` SHALL start the pane with its program and every process it starts restricted to that table's grants, and `PaneInfo.sandboxed` SHALL be true. A pane without such a profile SHALL have `sandboxed` false and SHALL be unrestricted as before.
 
-**Verified by**: not tested yet; the bus-level tests come with the pane methods (tasks 2.2).
+**Verified by**: `sandbox::a_sandboxed_profile_starts_a_sandboxed_pane`.
 
 #### Scenario: Sandboxed and not
 - **WHEN** the owner creates one pane with a sandboxed profile and one without a profile
@@ -12,7 +12,7 @@ On a server that lists `sandbox` in `server.info.features`, `pane.create` with a
 ### Requirement: The sandbox feature is offered where it can be enforced
 `sandbox` SHALL be listed in `server.info.features` only on Linux on x86_64 or aarch64 with Landlock ABI 4 or later and seccomp, or on macOS when `/usr/bin/sandbox-exec` applies a probe profile to `/usr/bin/true` within 2 s. On Landlock ABI 4 or 5 a sandboxed pane SHALL start without signal scoping, the one thing weaker there, and the server SHALL log a warning naming the pane and the ABI.
 
-**Verified by**: unit tests `sandbox::tests::a_kernel_without_signal_scoping_is_named_in_a_warning`, `sandbox::tests::linux::signals_follow_the_kernels_scoping`; over the bus not tested yet (tasks 2.1).
+**Verified by**: unit tests `sandbox::tests::a_kernel_without_signal_scoping_is_named_in_a_warning`, `sandbox::tests::linux::signals_follow_the_kernels_scoping`, `sandbox::sandbox_is_offered_where_it_can_be_enforced` (failpoints `sandbox-unavailable`, `sandbox-abi-4`).
 
 #### Scenario: No sandbox on this host
 - **WHEN** the server runs with the failpoint `sandbox-unavailable`
@@ -25,7 +25,7 @@ On a server that lists `sandbox` in `server.info.features`, `pane.create` with a
 ### Requirement: Files outside the grants cannot be read or written
 In a sandboxed pane and every process it starts, a path under `read_write` SHALL be readable, writable and executable; under `read_only` readable and executable, not writable. Any other file's contents MUST be neither readable nor writable and any other directory MUST NOT be listed, except the system directories, `/etc`, `/proc`, `/sys`, the pane's terminal devices and, with `client` or `server`, the file `/etc/resolv.conf` links to.
 
-**Verified by**: unit tests `sandbox::tests::linux::a_sandboxed_program_writes_only_where_it_may`, `sandbox::tests::linux::a_child_of_the_sandboxed_program_is_restricted_too`; over the bus not tested yet (tasks 2.2).
+**Verified by**: unit tests `sandbox::tests::linux::a_sandboxed_program_writes_only_where_it_may`, `sandbox::tests::linux::a_child_of_the_sandboxed_program_is_restricted_too`; `sandbox::a_sandboxed_pane_writes_only_where_it_may`, `sandbox::a_child_of_the_shell_is_restricted_too`.
 
 #### Scenario: Write outside
 - **WHEN** a profile grants `read_write = ["<w>"]`, `read_only = ["<r>"]`, and the pane runs `touch <w>/a <r>/b <o>/c` (another directory `<o>` of the user)
@@ -73,7 +73,7 @@ A profile MAY grant `/dev/pts` (or a path covering it) in `read_write`; its pane
 ### Requirement: Only readable programs run
 A sandboxed pane SHALL be able to run the programs under its grants, the `executables` (names looked up in the pane's `PATH` when it is created), the program the pane was started with and the system's programs, and MUST NOT be able to run a program it cannot read. A program it can read it can run another way (a copy in its `TMPDIR`, `memfd_create` and `execve`, `ld.so`): readable implies runnable.
 
-**Verified by**: unit tests `sandbox::tests::linux::only_granted_programs_run_in_a_sandbox`, `sandbox::tests::linux::a_readable_program_runs_from_memory_too`.
+**Verified by**: unit tests `sandbox::tests::linux::only_granted_programs_run_in_a_sandbox`, `sandbox::tests::linux::a_readable_program_runs_from_memory_too`; `sandbox::only_granted_programs_run`, `sandbox::a_command_from_the_request_runs_in_the_profiles_sandbox`.
 
 #### Scenario: A program in the user's directory
 - **WHEN** the user has an executable `<o>/tool` outside the grants and the pane runs `<o>/tool`
@@ -86,7 +86,7 @@ A sandboxed pane SHALL be able to run the programs under its grants, the `execut
 ### Requirement: Programs made inside run inside
 A script or binary created in a `read_write` directory of a sandboxed pane SHALL be executable inside that pane without any step outside it. The binary of a test may be a copy of a system program where the platform lets a copy run (Linux) or one the test builds inside the pane.
 
-**Verified by**: unit test `sandbox::tests::linux::a_script_and_a_binary_made_inside_run_inside`; over the bus not tested yet (tasks 2.2).
+**Verified by**: unit test `sandbox::tests::linux::a_script_and_a_binary_made_inside_run_inside`; `sandbox::a_script_and_a_binary_made_inside_run_inside`.
 
 #### Scenario: Script and compiled binary
 - **WHEN** the pane writes `#!/bin/sh` + `echo ok` to `<w>/t.sh`, runs `chmod +x <w>/t.sh && <w>/t.sh`, and puts a binary printing its arguments at `<w>/e` (on Linux a copy of `/bin/echo`) and runs `<w>/e hi`
@@ -95,7 +95,7 @@ A script or binary created in a `read_write` directory of a sandboxed pane SHALL
 ### Requirement: Network follows the profile
 With `network = "none"` a sandboxed pane MUST NOT open TCP connections nor send UDP, and on Linux every `socket()` but netlink is refused; with `"client"` it SHALL connect out over TCP and MUST NOT accept TCP connections nor `listen`, only TCP streams and datagrams of IPv4 and IPv6 are made, and UDP SHALL NOT be restricted (a documented limit on Linux); with `"server"` it SHALL do both.
 
-**Verified by**: unit tests `sandbox::tests::linux::network_follows_the_request`, `sandbox::linux::tests::the_filter_refuses_what_the_sandbox_does_not_allow`; over the bus not tested yet (tasks 2.2).
+**Verified by**: unit tests `sandbox::tests::linux::network_follows_the_request`, `sandbox::linux::tests::the_filter_refuses_what_the_sandbox_does_not_allow`; `sandbox::network_follows_the_profile`.
 
 #### Scenario: None
 - **WHEN** a test listener runs on 127.0.0.1 and a `none` pane tries to connect to it
@@ -156,7 +156,7 @@ A sandboxed pane's program SHALL inherit no descriptor of the pane process but i
 ### Requirement: A sandboxed pane is a normal terminal
 A sandboxed pane SHALL behave as any pane for the terminal: raw and canonical mode (`stty`), full-screen programs, job control (`Ctrl+Z`, `bg`, `fg`, `jobs`), `Ctrl+C`, window size changes, and `pane.command_finished`.
 
-**Verified by**: unit tests `sandbox::tests::linux::raw_mode_and_window_size_work_in_a_sandbox`, `sandbox::tests::linux::job_control_works_in_a_sandbox`, `sandbox::tests::linux::a_full_screen_editor_works_in_a_sandbox`; over the bus and `pane.command_finished` not tested yet (tasks 2.3).
+**Verified by**: unit tests `sandbox::tests::linux::raw_mode_and_window_size_work_in_a_sandbox`, `sandbox::tests::linux::job_control_works_in_a_sandbox`, `sandbox::tests::linux::a_full_screen_editor_works_in_a_sandbox`; `sandbox::raw_mode_and_job_control_work_in_a_sandboxed_pane` (`pane.command_finished` included), `sandbox::a_pager_and_an_editor_work_in_a_sandboxed_pane`.
 
 #### Scenario: Raw mode
 - **WHEN** the pane runs `stty raw -echo; dd bs=1 count=1 2>/dev/null | od -c; stty sane` and the client inputs `x`
@@ -173,7 +173,7 @@ A sandboxed pane SHALL behave as any pane for the terminal: raw and canonical mo
 ### Requirement: The variables of a sandboxed pane
 A sandboxed pane's environment SHALL hold only `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`, `TILR_PANE`, `TMPDIR`, `PATH`, the variables named in `[sandbox] env` with the server's values, and the profile's `[env]`, except that `TILR_*`, `SSH_AUTH_SOCK` and `SSH_AGENT_PID` are dropped from both. `PATH`, unless set, SHALL be the `executables`' directories followed by `/usr/bin:/bin:/usr/sbin:/sbin`.
 
-**Verified by**: unit tests `sandbox::tests::a_sandboxed_pane_gets_only_its_variables`, `sandbox::tests::linux::a_sandboxed_program_has_only_its_variables`; over the bus not tested yet (tasks 2.2).
+**Verified by**: unit tests `sandbox::tests::a_sandboxed_pane_gets_only_its_variables`, `sandbox::tests::linux::a_sandboxed_program_has_only_its_variables`; `sandbox::a_sandboxed_pane_has_only_its_variables`.
 
 #### Scenario: Allowlist
 - **WHEN** the server runs with `LANG=C.UTF-8` and `SECRET=x`, and the profile says `env = ["LANG", "TILR_SHIMS"]` and `[env] TILR_SOCKET = "/x"`
@@ -191,7 +191,7 @@ The pane process of a sandboxed pane SHALL get its sandbox request and the serve
 ### Requirement: A sandboxed pane cannot reach the server
 From a sandboxed pane it MUST NOT be possible to create a Unix-domain socket that reaches another process (Linux: see the socket requirement; macOS: no Unix socket connect is allowed), so neither the server's socket, the host-events and agent sockets nor any other Unix socket can be reached; nor to read the server's state directory.
 
-**Verified by**: unit test `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server`; over the bus not tested yet (tasks 2.2).
+**Verified by**: unit test `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server`; `sandbox::a_sandboxed_pane_cannot_reach_the_server`.
 
 #### Scenario: Connect to the server socket
 - **WHEN** a sandboxed pane with `network = "server"` runs a granted program that connects to the server's Unix socket path, given on its command line
@@ -200,7 +200,7 @@ From a sandboxed pane it MUST NOT be possible to create a Unix-domain socket tha
 ### Requirement: A grant cannot expose the server's files
 A grant that covers or lies inside the state directory, the runtime directory, the configuration directory (the `--config` file's and the profiles directory included) SHALL be refused with `bad_request` starting `create pane: sandbox: `, read-only included, and so SHALL a `read_write` grant covering the server's executable. The check SHALL be made on what is opened for the rule, so a path made a link later cannot slip past it.
 
-**Verified by**: unit tests `sandbox::tests::a_grant_covering_a_server_directory_is_refused`, `sandbox::tests::the_servers_executable_and_configuration_are_protected`, `sandbox::tests::linux::a_grant_that_became_a_link_to_a_server_directory_is_refused`, `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server`; over the bus not tested yet (tasks 2.2).
+**Verified by**: unit tests `sandbox::tests::a_grant_covering_a_server_directory_is_refused`, `sandbox::tests::the_servers_executable_and_configuration_are_protected`, `sandbox::tests::linux::a_grant_that_became_a_link_to_a_server_directory_is_refused`, `sandbox::tests::linux::a_sandboxed_program_cannot_reach_the_server`; `sandbox::a_grant_over_the_state_directory_is_refused`, `sandbox::a_grant_over_a_configuration_elsewhere_is_refused`.
 
 #### Scenario: Home granted
 - **WHEN** a profile says `read_only = ["~"]` and the state directory is under home
@@ -217,7 +217,7 @@ A grant that covers or lies inside the state directory, the runtime directory, t
 ### Requirement: A sandbox that cannot be applied starts nothing
 If the restriction cannot be installed for a pane, its program MUST NOT run and the caller SHALL get `bad_request` starting `create pane: sandbox: `; no pane SHALL be listed for the request.
 
-**Verified by**: unit test `sandbox::tests::linux::a_sandbox_that_cannot_be_applied_starts_nothing`; over the bus (failpoints `sandbox-apply`, `sandbox-exec-missing`) not tested yet (tasks 2.2, `sandbox-macos`).
+**Verified by**: unit test `sandbox::tests::linux::a_sandbox_that_cannot_be_applied_starts_nothing`; `sandbox::a_sandbox_that_cannot_be_applied_starts_nothing` (failpoint `sandbox-apply`); on macOS (`sandbox-exec-missing`) by `sandbox-macos`.
 
 #### Scenario: Install fails
 - **WHEN** the failpoint makes installing the restriction fail and the profile's command is `touch <marker>`
@@ -230,7 +230,7 @@ If the restriction cannot be installed for a pane, its program MUST NOT run and 
 ### Requirement: Sandbox leftovers are removed
 The private temporary directory of a sandboxed pane (`TMPDIR`, `<runtime dir>/sandbox/<pane id>/`, mode 0700), the file its request was handed over in and any other per-pane artifact the server makes for the sandbox SHALL be removed when the pane ends, and those of panes that no longer run SHALL be removed when the server starts.
 
-**Verified by**: unit tests `sandbox::tests::a_sandboxed_panes_directory_is_private_and_removed`, `sandbox::tests::a_request_reaches_the_pane_process_in_a_private_file`, `sandbox::tests::linux::the_private_tmpdir_is_writable`; over the bus not tested yet (tasks 2.3).
+**Verified by**: unit tests `sandbox::tests::a_sandboxed_panes_directory_is_private_and_removed`, `sandbox::tests::a_request_reaches_the_pane_process_in_a_private_file`, `sandbox::tests::linux::the_private_tmpdir_is_writable`; `sandbox::a_sandboxed_panes_leftovers_are_removed`.
 
 #### Scenario: Pane ends
 - **WHEN** a sandboxed pane writes `$TMPDIR/x` and is closed

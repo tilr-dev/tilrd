@@ -428,7 +428,7 @@ command = ["/bin/sh"]                    # absent or empty: your login shell
 cwd = "~/work"                           # absolute or ~; never relative
 [env]                                    # set over the server's environment
 GREETING = "hi"                          # not TILR_*; TERM, COLORTERM, SHELL stay the server's
-[sandbox]                                # optional; the profile is refused until this server can enforce it
+[sandbox]                                # optional; refused where the server cannot enforce it
 read_only = ["~/docs"]
 read_write = ["~/work"]
 executables = ["/usr/bin/git"]
