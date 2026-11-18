@@ -396,9 +396,21 @@ async fn providing_emitting_and_subscribing_need_rights() {
     .await;
 }
 
-/// A call that passed authorization and found no method: in this build the
-/// methods of `bus-core-services` (`server.*`) are not there yet (the broker
-/// authorizes before it routes).
+/// A payload no method decodes: a `server.*` call with it passes authorization
+/// (the broker authorizes before it routes) and its method refuses it before
+/// doing anything.
+const MALFORMED: &str = "{";
+
+/// A call that passed authorization and that its method refused as malformed.
+fn allowed_but_malformed(result: Result<String, BusError>) {
+    match result {
+        Err(error) if error.code == codes::BAD_REQUEST => {}
+        other => panic!("expected the call to pass authorization, got {other:?}"),
+    }
+}
+
+/// A call that passed authorization and found no method (the broker authorizes
+/// before it routes).
 fn allowed_but_absent(result: Result<String, BusError>) {
     match result {
         Err(error) if error.code == codes::NOT_FOUND && error.message.starts_with("no method ") => {
@@ -428,11 +440,11 @@ async fn control_methods_need_control_rights() {
     let t1 = wait_up(&server, &owner, "t-1").await;
     let t2 = wait_up(&server, &owner, "t-2").await;
     // The owner: every control method; server.reload and server.update pass
-    // authorization and have no provider in this build.
+    // authorization (a malformed request: nothing reloads or updates).
     assert_eq!(names(&owner).await, ["t-1", "t-2"]);
     method_list(&owner).await;
     for method in ["server.reload", "server.update"] {
-        allowed_but_absent(calls(&owner, method, "", CallOptions::default()).await);
+        allowed_but_malformed(calls(&owner, method, MALFORMED, CallOptions::default()).await);
     }
 
     let (none, _) = mint(&owner, "none", Rights::default().call(&["*"])).await;
@@ -504,8 +516,8 @@ async fn control_methods_need_control_rights() {
     )
     .await;
     let bus = participant(&server, &server_rights, "s").await;
-    allowed_but_absent(calls(&bus, "server.reload", "", CallOptions::default()).await);
-    allowed_but_absent(calls(&bus, "server.update", "", CallOptions::default()).await);
+    allowed_but_malformed(calls(&bus, "server.reload", MALFORMED, CallOptions::default()).await);
+    allowed_but_malformed(calls(&bus, "server.update", MALFORMED, CallOptions::default()).await);
     denied(calls(&bus, "bus.reload", "", CallOptions::default()).await);
 
     // token: minting only rights it holds itself, under its own name.
@@ -751,8 +763,8 @@ async fn a_stopped_instances_token_is_revoked() {
 async fn server_command_is_the_owners_on_the_unix_socket_only() {
     let server = start();
     let owner = server.owner().await;
-    // The owner on the Unix socket: passes (no provider in this build).
-    allowed_but_absent(calls(&owner, "server.command", "", CallOptions::default()).await);
+    // The owner on the Unix socket: passes (a malformed request runs nothing).
+    allowed_but_malformed(calls(&owner, "server.command", MALFORMED, CallOptions::default()).await);
     // The owner on TCP, with the access token: denied.
     let tcp_owner = Bus::connect(
         Transport::WebSocket {
@@ -784,7 +796,7 @@ async fn server_command_is_the_owners_on_the_unix_socket_only() {
     denied(calls(&bus, "server.command", "", CallOptions::default()).await);
     denied(calls(&owner, "server.command", "", with(&every)).await);
     // server.update is a control action: `call` does not cover it, `control` does.
-    allowed_but_absent(calls(&bus, "server.update", "", CallOptions::default()).await);
+    allowed_but_malformed(calls(&bus, "server.update", MALFORMED, CallOptions::default()).await);
     let (calls_only, _) = mint(&owner, "c", Rights::default().call(&["*", "server.*"])).await;
     let bus = participant(&server, &calls_only, "c").await;
     denied(calls(&bus, "server.update", "", CallOptions::default()).await);

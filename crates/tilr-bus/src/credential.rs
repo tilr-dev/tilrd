@@ -49,7 +49,7 @@ impl Credential {
 
 #[cfg(test)]
 mod tests {
-    use biscuit_auth::{AuthorizerBuilder, Biscuit, KeyPair};
+    use biscuit_auth::{AuthorizerBuilder, AuthorizerLimits, Biscuit, KeyPair};
 
     use super::*;
 
@@ -78,6 +78,12 @@ mod tests {
             .unwrap()
             .code("allow if method($m), call($m); deny if true;")
             .unwrap()
+            // biscuit-auth's default time limit (1 ms) runs out under load and
+            // reads as a refusal; this test is about what the blocks allow.
+            .set_limits(AuthorizerLimits {
+                max_time: std::time::Duration::from_secs(10),
+                ..AuthorizerLimits::default()
+            })
             .build(&token)
             .unwrap();
         authorizer.authorize().is_ok()
