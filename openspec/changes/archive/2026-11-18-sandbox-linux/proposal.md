@@ -8,7 +8,7 @@
 grants, fail closed, `TMPDIR` and cleanup, the `sandbox` feature check), `sandbox/linux.rs`,
 the sandbox hook in `crates/tilrd/src/pty.rs` (`spawn_shell`), the Landlock and seccomp
 dependencies, failpoints `sandbox-unavailable`, `sandbox-abi-4`, `sandbox-apply` (appended to
-`fail.rs`), `tests/common/bus_sandbox.rs`, `crates/tilrd/tests/sandbox.rs`, itests UC-0S1,
+`fail.rs`), `tests/common/bus_sandbox.rs`, `crates/tilrd/tests/sandbox.rs`,
 README "Sandboxed panes" (created).
 
 ## Why
