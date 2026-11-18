@@ -474,8 +474,15 @@ mod linux {
             .await
     }
 
+    /// The real file of `/bin/sh`: a program of its own, which a renamed copy still is
+    /// (a multicall `/bin/echo`, as Rust coreutils makes it, is not).
+    fn shell_program() -> PathBuf {
+        std::fs::canonicalize("/bin/sh").unwrap()
+    }
+
+    /// A copy of [`shell_program`] at `to`; `<to> -c 'echo X'` prints `X`.
     fn copy_program(to: &Path) {
-        std::fs::copy("/bin/echo", to).unwrap();
+        std::fs::copy(shell_program(), to).unwrap();
         std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
@@ -527,8 +534,9 @@ mod linux {
             format!("/nowhere:{}:/usr/bin:/bin", tree.text("x")),
         )];
         let (o, x) = (tree.text("o"), tree.text("x"));
-        let script =
-            format!("{o}/tool A; echo rc=$?; {x}/granted B; byname C; ls {x} || echo nolist");
+        let script = format!(
+            "{o}/tool -c 'echo A'; echo rc=$?; {x}/granted -c 'echo B'; byname -c 'echo C'; ls {x} || echo nolist"
+        );
         let (_, out) = run(&tree, &request, &script).await;
         assert!(
             out.contains("Permission denied") && out.contains("rc=126"),
@@ -546,7 +554,8 @@ mod linux {
         let w = tree.text("w");
         let script = format!(
             "printf '#!/bin/sh\\necho ok\\n' > {w}/t.sh && chmod +x {w}/t.sh && {w}/t.sh && \
-             cp /bin/echo {w}/e && {w}/e hi"
+             cp {sh} {w}/e && {w}/e -c 'echo hi'",
+            sh = shell_program().display()
         );
         let (code, out) = run(&tree, &tree.request(Network::None), &script).await;
         assert_eq!(code, Some(0), "{out}");
@@ -1153,7 +1162,7 @@ mod linux {
             "import os\n\
              fd = os.memfd_create('tool')\n\
              os.write(fd, open({:?}, 'rb').read())\n\
-             os.execve(fd, ['tool', 'ran-from-memory'], {{}})\n",
+             os.execve(fd, ['tool', '-c', 'echo ran-from-memory'], {{'PATH': '/usr/bin:/bin'}})\n",
             tree.text("r/tool")
         );
         let out = python(&tree, &tree.request(Network::None), &code).await;

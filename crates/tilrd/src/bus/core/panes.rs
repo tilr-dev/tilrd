@@ -869,13 +869,7 @@ fn create(
         cwd,
         request_id: 0,
     };
-    // A sandboxed pane gets the profile's `[env]` in its request, set over an
-    // environment made from scratch (S6), not in the pane process's.
-    let sandbox = snapshot.as_ref().and_then(|snapshot| {
-        let spec = snapshot.sandbox.as_ref()?;
-        Some(sandbox_request(spec, &snapshot.env))
-    });
-    let env = if sandbox.is_some() { Vec::new() } else { env };
+    let (env, sandbox) = env_and_sandbox(snapshot.as_ref(), env);
     match start_pane(s, &create, caller.from.to_string(), &env, sandbox) {
         Ok((pane_id, rx)) => {
             if let Some(snapshot) = snapshot {
@@ -943,6 +937,22 @@ fn applies(
         request,
         dirs: crate::sandbox::server_dirs(),
     }))
+}
+
+/// What the pane process of a pane of `snapshot` gets: `env` (the profile's `[env]`)
+/// in its environment for an unsandboxed pane; for a sandboxed one nothing there and
+/// the sandbox request, whose `[env]` is set over an environment made from scratch
+/// (S6), so no value of it stays in the pane process's environment.
+fn env_and_sandbox(
+    snapshot: Option<&crate::profile::Snapshot>,
+    env: Vec<(OsString, OsString)>,
+) -> (Vec<(OsString, OsString)>, Option<crate::sandbox::Request>) {
+    let sandbox = snapshot.and_then(|snapshot| {
+        let spec = snapshot.sandbox.as_ref()?;
+        Some(sandbox_request(spec, &snapshot.env))
+    });
+    let env = if sandbox.is_some() { Vec::new() } else { env };
+    (env, sandbox)
 }
 
 /// The sandbox of a pane of a profile: its `[sandbox]` table and `[env]` as the
@@ -2480,6 +2490,30 @@ mod tests {
         );
         assert_ne!(owner, numbered_identity(&Identity::Owner, "d"));
         assert_eq!(numbered_identity(&Identity::Owner, ""), "");
+    }
+
+    #[test]
+    fn a_sandboxed_profiles_env_stays_out_of_the_pane_process() {
+        let mut snapshot = crate::profile::Snapshot::default();
+        snapshot.env.insert("API_TOKEN".into(), "tok-123".into());
+        let env = || vec![(OsString::from("API_TOKEN"), OsString::from("tok-123"))];
+        // Unsandboxed: the profile's [env] is the pane process's.
+        let (plain, none) = env_and_sandbox(Some(&snapshot), env());
+        assert_eq!(plain, env());
+        assert!(none.is_none());
+        // Sandboxed: only in the request.
+        snapshot.sandbox = Some(crate::profile::SandboxSpec {
+            network: crate::profile::Network::Client,
+            ..crate::profile::SandboxSpec::default()
+        });
+        let (boxed, request) = env_and_sandbox(Some(&snapshot), env());
+        assert!(boxed.is_empty(), "{boxed:?}");
+        let request = request.expect("a sandbox request");
+        assert_eq!(
+            request.env,
+            [("API_TOKEN".to_owned(), "tok-123".to_owned())]
+        );
+        assert_eq!(request.network, crate::sandbox::Network::Client);
     }
 
     #[test]

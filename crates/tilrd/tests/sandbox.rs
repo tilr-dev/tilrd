@@ -58,7 +58,7 @@ use tilr_bus::pane::{CloseReply, CloseRequest, PaneActivity, PaneActivityKind};
 
 /// Landlock ABI 4 (the failpoint `sandbox-abi-4`): offered, and a pane starts
 /// with the warning that it can signal the user's other processes.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "failpoints"))]
 async fn starts_without_signal_scoping_on_abi_4() {
     let boxed = Boxed::start("sandbox-abi-4=error");
     let bus = boxed.owner().await;
@@ -82,10 +82,18 @@ async fn refused(bus: &Bus, profile: &str, command: &[&str]) -> BusError {
     err
 }
 
+/// The real file of `/bin/sh`: a program of its own, which a renamed copy still is
+/// (a multicall `/bin/echo`, as Rust coreutils makes it, is not).
+#[cfg(target_os = "linux")]
+fn shell_program() -> std::path::PathBuf {
+    std::fs::canonicalize("/bin/sh").unwrap()
+}
+
+/// A copy of [`shell_program`] at `to`; `<to> -c 'echo X'` prints `X`.
 #[cfg(target_os = "linux")]
 fn copy_program(to: &std::path::Path) {
     std::fs::create_dir_all(to.parent().unwrap()).unwrap();
-    std::fs::copy("/bin/echo", to).unwrap();
+    std::fs::copy(shell_program(), to).unwrap();
     std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -176,7 +184,7 @@ async fn only_granted_programs_run() {
     );
     let (o, x) = (boxed.text("o"), boxed.text("x"));
     let bus = boxed.owner().await;
-    let script = format!("{o}/tool A; echo rc=$?; {x}/granted B");
+    let script = format!("{o}/tool -c 'echo A'; echo rc=$?; {x}/granted -c 'echo B'");
     let (_, out) = boxed.run(&bus, "box", &script).await;
     assert!(
         out.contains("Permission denied") && out.contains("rc=126"),
@@ -194,7 +202,8 @@ async fn a_script_and_a_binary_made_inside_run_inside() {
     let bus = boxed.owner().await;
     let script = format!(
         "printf '#!/bin/sh\\necho ok\\n' > {w}/t.sh && chmod +x {w}/t.sh && {w}/t.sh && \
-         cp /bin/echo {w}/e && {w}/e hi"
+         cp {sh} {w}/e && {w}/e -c 'echo hi'",
+        sh = shell_program().display()
     );
     let (_, out) = boxed.run(&bus, "box", &script).await;
     assert_eq!(out, "ok\nhi\n");
