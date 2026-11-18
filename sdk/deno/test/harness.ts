@@ -12,7 +12,6 @@ import { SUBPROTOCOL } from "../src/transport.ts";
 export const REPO = new URL("../../../", import.meta.url).pathname.replace(/\/$/, "");
 export const RUNTIME = new URL("./runtime.ts", import.meta.url).pathname;
 
-/** The tilrd to test: `TILRD`, else the workspace's debug build. */
 /**
  * A new configuration directory, in a tree that passes the server's check of the
  * directories above a launch profile (owned by the user or root, not writable by group
@@ -25,6 +24,7 @@ function configDir(): string {
   return Deno.makeTempDirSync({ dir: base, prefix: "sdk-config-" });
 }
 
+/** The tilrd to test: `TILRD`, else the workspace's debug build. */
 export function tilrdPath(): string {
   const path = Deno.env.get("TILRD") || `${REPO}/target/debug/tilrd`;
   try {
