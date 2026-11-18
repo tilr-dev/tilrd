@@ -805,7 +805,6 @@ raw clients that write envelopes by hand (`tests/common/bus.rs`).
 | A stream is a call answered in chunks and End; a cancel reaches the provider; a reply to a stream is `bad_reply` | `bus::a_stream_is_a_call_answered_in_chunks` |
 | Events reach the subscribers connected now, by NATS patterns, once each, without history | `bus::events_reach_the_subscribers_connected_now` |
 | A participant with the same client id supersedes the older (close 4000) | `bus::a_participant_with_the_same_client_id_supersedes_the_older` |
-| A connection superseded by a newer one of the same client before it was announced up stays ended: it is never announced up | `supervisor::bus::broker::tests::a_connection_superseded_before_it_is_announced_is_never_up` |
 | The end of a relayed bulk stream, End or an error, comes after its chunks | `bus::the_end_of_a_relayed_bulk_stream_comes_after_its_chunks` |
 | The end of a native bulk stream comes after its chunks | `supervisor::bus::broker::tests::the_end_of_a_bulk_stream_comes_after_its_chunks` |
 | A late end of a cancelled native call leaves a new call of the same id alone | `supervisor::bus::broker::tests::a_late_end_of_a_cancelled_call_leaves_a_new_call_of_its_id_alone` |
@@ -953,3 +952,28 @@ and the test runtime (`crates/tilr-bus/examples/test_runtime.rs`) as the module;
 | A method a configured instance provided, or its `provide` rights name exactly, is `unavailable` while no provider is up (also before the instance first ran); a pattern names none, an unknown name is `not_found` | `bus::a_method_of_a_configured_instance_is_unavailable_while_it_is_down` |
 | `bus.start` answers once the broker entered the instance (held just before, failpoint `bus-registering:t-1`, it has not answered and the instance is `starting`); when it answers, the instance's methods are callable, listed by `bus.methods` and known (`unavailable` once it is stopped) | `bus::a_started_instance_is_callable_and_listed_when_bus_start_returns` |
 | A stopped instance is offered no new call by method before it is listed `draining`: held between the two (failpoint `bus-draining:t-1`), a call of its method is `unavailable` and `bus.methods` does not list it | `bus::a_draining_instance_is_offered_no_calls_before_it_is_listed_draining` |
+
+## Launch profiles (`pane-profiles`) - `tests/profiles.rs`, `src/profile.rs`, `src/bus/core/profiles.rs`
+
+| Use case | Test |
+|---|---|
+| A profile is the file `<name>.toml` in the configuration directory's `profiles/`; a pane created with it reports its name and command in the reply, in the `pane.created` event and in `pane.list`, a pane without one names none; tilrd provides `pane.profiles` | `profiles::a_pane_starts_with_the_profile_from_the_config_directory` |
+| `profiles_dir` in `server.toml` names another directory, and the default one is not read | `profiles::profiles_dir_names_another_directory` |
+| `profiles_dir` defaults to `profiles/` next to the configuration file in use, must be absolute or `~`, and is the key's value otherwise | `config::tests::profiles_dir_defaults_next_to_the_configuration_file` |
+| The default profiles directory next to a relative configuration file is made absolute | `config::tests::a_relative_configuration_file_gives_an_absolute_profiles_dir` |
+| A profile file or directory that group or others can write, or that another user owns, does not load, and the error names the file; root may own them | `profiles::a_profile_others_can_write_is_refused`, `profile::tests::a_profile_others_can_write_does_not_load`, `profile::tests::only_the_user_or_root_may_own_a_profile_or_a_directory_above_it` |
+| A symlinked profile is judged where it really is and must be a regular file; a group-writable directory of its target is refused | `profiles::a_symlinked_profile_in_a_group_writable_directory_is_refused`, `profile::tests::a_symlinked_profile_is_judged_where_it_lives` |
+| Every directory above the profiles directory is checked up to `/` or the home directory (the home itself included), as sshd does | `profiles::a_group_writable_directory_above_the_profiles_is_refused`, `profile::tests::the_directories_above_are_checked_up_to_the_home_directory` |
+| A profile larger than 64 KiB is refused, naming the file | `profiles::a_profile_larger_than_the_bound_is_refused`, `profile::tests::a_profile_is_read_up_to_its_bound` |
+| A FIFO in place of a profile is refused at once, without waiting for a writer | `profiles::a_fifo_in_place_of_a_profile_is_refused_without_hanging` |
+| A profile name is never a path: traversal, absolute and hidden names are refused before any file is read | `profiles::a_profile_name_is_never_a_path`, `profile::tests::names_never_are_paths`, `supervisor::bus::core::profiles::tests::a_bad_name_is_refused_before_any_file_is_touched` |
+| An unknown profile or a missing directory is `no such profile` and the connection stays open; a profiles directory that cannot be read is an error of `pane.profiles`, not an empty listing | `profiles::an_unknown_profile_is_an_error`, `profile::tests::a_missing_profile_or_directory_is_no_such_profile` |
+| A misspelt key makes the profile invalid; the error names the file and the key; strict TOML for every `[sandbox]` key | `profiles::a_misspelt_key_makes_the_profile_invalid`, `profile::tests::every_sandbox_key_is_parsed`, `supervisor::bus::core::profiles::tests::an_unknown_or_invalid_profile_is_bad_request_with_its_file` |
+| Paths in a profile are absolute or `~`; relative ones are refused; `~` is the home directory; `.` and `..` fold | `profile::tests::relative_paths_are_refused`, `profile::tests::tilde_is_the_home_directory` |
+| `[env]` and `[sandbox] env` names cannot be empty, contain `=`, or start with `TILR_` | `profile::tests::tilr_variables_cannot_be_set` |
+| The request's command and an existing directory win over the profile's, the profile's `[env]` stays and `TERM` is the server's | `profiles::request_fields_override_the_profile`, `supervisor::bus::core::profiles::tests::the_request_wins_and_the_profiles_environment_stays` |
+| Without a directory of its own a profile pane starts in the home directory, with the login shell | `supervisor::bus::core::profiles::tests::a_profile_without_a_directory_falls_back_to_home` |
+| A request that names no profile is left to `pane.create` | `supervisor::bus::core::profiles::tests::no_profile_is_left_to_pane_create` |
+| A profile is read on every create: an edit applies to the next pane only | `profiles::an_edited_profile_applies_to_the_next_pane_only` |
+| A profile with `[sandbox]` is refused where the server cannot enforce it, and its program never starts; the start path itself refuses a sandbox it does not apply | `profiles::a_sandboxed_profile_is_refused_where_it_cannot_be_enforced`, `supervisor::bus::core::profiles::tests::prepare_create_refuses_a_sandbox_it_cannot_enforce`, `supervisor::bus::core::panes::tests::the_start_path_refuses_a_sandbox_it_does_not_apply` |
+| `pane.profiles` lists the profiles sorted by name with their errors, skips other files, cuts long texts, answers in protobuf and JSON; `sandboxed` is said of an invalid profile with a `[sandbox]` table too | `profiles::profiles_are_listed_with_their_errors`, `profile::tests::the_listing_is_sorted_with_errors_and_skips_other_files`, `profile::tests::only_a_sandbox_table_counts_as_a_sandbox` |
