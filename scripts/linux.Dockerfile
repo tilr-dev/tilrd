@@ -2,7 +2,7 @@
 # scripts/linux-build.sh, scripts/release.sh and .github/workflows/release.yml).
 # The base image is pinned by digest (Rust 1.99 on Debian 12: release binaries need glibc
 # 2.36 or newer); Dependabot bumps it (docker ecosystem, /scripts).
-FROM rust:1.99-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
+FROM rust:1.100-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea
 
 # vim-tiny (vi) and less: full-screen programs the sandbox tests run, as on the GitHub runner.
 RUN apt-get update \
